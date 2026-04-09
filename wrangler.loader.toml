@@ -8,8 +8,8 @@ compatibility_flags = ["nodejs_compat"]
 
 [[d1_databases]]
 binding = "DB"
-database_name = "webxni-db"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_name = "webxni_db"
+database_id = "c2240507-7d37-43c8-94bd-fb098aeedfc8"
 
 [[r2_buckets]]
 binding = "MEDIA"
