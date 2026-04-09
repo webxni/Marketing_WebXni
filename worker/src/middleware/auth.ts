@@ -78,6 +78,7 @@ export async function authMiddleware(
   next: Next,
 ): Promise<Response | void> {
   if (c.req.path.startsWith('/api/auth/')) return next();
+  if (c.req.path.startsWith('/api/setup')) return next();
 
   const sessionId = getCookie(c, 'session');
   if (!sessionId) return c.json({ error: 'Unauthorized' }, 401);

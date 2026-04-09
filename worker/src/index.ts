@@ -18,6 +18,7 @@ import { reportRoutes }  from './routes/reports';
 import { serviceRoutes }  from './routes/services';
 import { logRoutes }      from './routes/logs';
 import { settingsRoutes } from './routes/settings';
+import { setupRoutes }    from './routes/setup';
 
 const app = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -40,6 +41,9 @@ app.route('/api/settings', settingsRoutes);
 app.get('/api/health', (c) =>
   c.json({ status: 'ok', ts: Date.now(), version: '2.0.0' }),
 );
+
+// One-time setup — disabled automatically after first admin is created
+app.route('/api/setup', setupRoutes);
 
 // ─── Scheduled cron handler ───────────────────────────────────────────────────
 export default {
