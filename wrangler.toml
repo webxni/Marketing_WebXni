@@ -24,7 +24,7 @@ binding = "IMAGES"
 bucket_name = "webxni-images"
 
 [[kv_namespaces]]
-binding = "SESSION"
+binding = "KV_BINDING"
 id = "fd77c3e7e1c247758cc440561c78a302"
 
 [[services]]

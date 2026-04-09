@@ -12,7 +12,7 @@ const SETTINGS_KEY = 'settings:system';
 
 async function loadSettings(env: Env): Promise<Record<string, string>> {
   try {
-    const raw = await env.SESSION.get(SETTINGS_KEY);
+    const raw = await env.KV_BINDING.get(SETTINGS_KEY);
     return raw ? JSON.parse(raw) : {};
   } catch {
     return {};
@@ -35,6 +35,6 @@ settingsRoutes.put('/', requirePermission('settings.edit'), async (c) => {
     return c.json({ error: 'settings object required' }, 400);
   }
 
-  await c.env.SESSION.put(SETTINGS_KEY, JSON.stringify(settings));
+  await c.env.KV_BINDING.put(SETTINGS_KEY, JSON.stringify(settings));
   return c.json({ ok: true });
 });

@@ -9,7 +9,7 @@ export interface Env {
   DB: D1Database;
   MEDIA: R2Bucket;
   IMAGES: R2Bucket;
-  SESSION: KVNamespace;
+  KV_BINDING: KVNamespace;
   LOADER: Fetcher;
   UPLOAD_POST_API_KEY: string;
   OPENAI_API_KEY: string;

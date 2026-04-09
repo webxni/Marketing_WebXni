@@ -27,7 +27,7 @@ export async function rateLimitMiddleware(
   const rlKey = `rl:${bucketKey}:${minute}`;
 
   try {
-    const raw = await c.env.SESSION.get(rlKey);
+    const raw = await c.env.KV_BINDING.get(rlKey);
     const count = raw ? parseInt(raw, 10) : 0;
 
     if (count >= limit) {
@@ -39,7 +39,7 @@ export async function rateLimitMiddleware(
     }
 
     // Increment — TTL slightly over window so old buckets expire automatically
-    await c.env.SESSION.put(rlKey, String(count + 1), { expirationTtl: WINDOW_SEC + 5 });
+    await c.env.KV_BINDING.put(rlKey, String(count + 1), { expirationTtl: WINDOW_SEC + 5 });
   } catch {
     // KV failure → fail open (never block legitimate traffic on KV hiccup)
   }

@@ -82,7 +82,7 @@ export async function authMiddleware(
   const sessionId = getCookie(c, 'session');
   if (!sessionId) return c.json({ error: 'Unauthorized' }, 401);
 
-  const raw = await c.env.SESSION.get(`session:${sessionId}`);
+  const raw = await c.env.KV_BINDING.get(`session:${sessionId}`);
   if (!raw) return c.json({ error: 'Session expired' }, 401);
 
   let session: SessionData;

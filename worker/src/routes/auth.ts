@@ -45,7 +45,7 @@ authRoutes.post('/login', async (c) => {
     role:   user.role as SessionData['role'],
   };
 
-  await c.env.SESSION.put(`session:${sessionId}`, JSON.stringify(sessionData), {
+  await c.env.KV_BINDING.put(`session:${sessionId}`, JSON.stringify(sessionData), {
     expirationTtl: 7 * 24 * 60 * 60,
   });
 
@@ -62,7 +62,7 @@ authRoutes.post('/login', async (c) => {
 
 authRoutes.post('/logout', async (c) => {
   const sessionId = getCookie(c, 'session');
-  if (sessionId) await c.env.SESSION.delete(`session:${sessionId}`);
+  if (sessionId) await c.env.KV_BINDING.delete(`session:${sessionId}`);
   deleteCookie(c, 'session', { path: '/' });
   return c.json({ ok: true });
 });
