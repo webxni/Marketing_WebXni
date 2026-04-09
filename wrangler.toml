@@ -10,9 +10,8 @@ crons = [
   "0 */6 * * *",  # Posting check — every 6 hours
 ]
 
-[[routes]]
-pattern = "marketing.webxni.com/*"
-custom_domain = true
+[custom_domains]
+enabled = true
 
 [[d1_databases]]
 binding = "DB"
