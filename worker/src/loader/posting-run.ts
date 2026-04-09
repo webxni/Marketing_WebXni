@@ -1,0 +1,439 @@
+/**
+ * LOADER: Posting run — full port of post_content.py run()
+ * Executed in background by LOADER binding.
+ * Handles: dry-run, real posting, multi-location GBP, idempotency, writeback.
+ */
+import type { Env, ClientGbpLocationRow, PostRow } from '../types';
+import {
+  listReadyPosts,
+  getClientWithConfig,
+  createPostingJob,
+  updatePostingJob,
+  upsertPostPlatform,
+  setPostStatus,
+} from '../db/queries';
+import { UploadPostClient, UploadPostError } from '../services/uploadpost';
+import { preflight } from '../modules/preflight';
+import { makeIdempotencyKey } from '../modules/idempotency';
+import { getCaption, normalizePlatform, SKIP_PLATFORMS } from '../modules/captions';
+import {
+  getScheduledTime,
+  isVideoUrl,
+  inferMediaTypeFromAssetType,
+  requiresMedia,
+} from '../modules/media';
+import { buildExtraParams, extractTrackingId } from '../modules/posting';
+
+export interface PostingRunParams {
+  mode: 'dry_run' | 'real';
+  client_filter?: string;
+  platform_filter?: string;
+  limit?: number;
+  triggered_by?: string;
+}
+
+export interface PostingStats {
+  processed: number;
+  posted: number;
+  skipped: number;
+  blocked: number;
+  failed: number;
+}
+
+export async function runPosting(env: Env, params: PostingRunParams): Promise<PostingStats> {
+  const dryRun = params.mode === 'dry_run';
+  const stats: PostingStats = { processed: 0, posted: 0, skipped: 0, blocked: 0, failed: 0 };
+
+  const job = await createPostingJob(env.DB, {
+    triggered_by: params.triggered_by ?? 'api',
+    mode: params.mode,
+    client_filter: params.client_filter,
+    platform_filter: params.platform_filter,
+    limit_count: params.limit ?? 50,
+  });
+
+  const up = new UploadPostClient(env.UPLOAD_POST_API_KEY);
+
+  try {
+    const posts = await listReadyPosts(env.DB, params.client_filter, params.limit ?? 50);
+
+    for (const post of posts) {
+      await processPost(env, up, post, params, stats, dryRun, job.id);
+    }
+
+    await updatePostingJob(env.DB, job.id, 'completed', JSON.stringify(stats));
+  } catch (err) {
+    await updatePostingJob(
+      env.DB,
+      job.id,
+      'failed',
+      JSON.stringify({ ...stats, error: String(err) }),
+    );
+    throw err;
+  }
+
+  return stats;
+}
+
+async function processPost(
+  env: Env,
+  up: UploadPostClient,
+  post: PostRow,
+  params: PostingRunParams,
+  stats: PostingStats,
+  dryRun: boolean,
+  jobId: string,
+): Promise<void> {
+  stats.processed++;
+
+  const client = await getClientWithConfig(env.DB, post.client_id);
+  if (!client) {
+    await writeError(env.DB, post.id, 'Client not found in DB');
+    stats.skipped++;
+    return;
+  }
+
+  const platforms: string[] = JSON.parse(post.platforms ?? '[]');
+  const publishDate = post.publish_date ?? 'nodate';
+  const sched_time = getScheduledTime(post.publish_date);
+
+  // Detect media kind
+  let mediaKind: 'image' | 'video' | null = null;
+  let mediaUrl: string | null = null;
+
+  if (post.asset_r2_key) {
+    mediaUrl = post.asset_r2_key; // Will be resolved to R2 URL or Drive URL below
+    if (isVideoUrl(post.asset_r2_key)) {
+      mediaKind = 'video';
+    } else {
+      mediaKind = inferMediaTypeFromAssetType(post.asset_type) ?? 'image';
+    }
+  }
+
+  // Guard: image/video posts require an asset
+  if (!post.asset_r2_key && requiresMedia(post.content_type ?? '')) {
+    const msg =
+      'Image/video post requires Asset URL — upload to R2 then set asset_r2_key in DB.';
+    if (!dryRun) await writeError(env.DB, post.id, msg);
+    stats.skipped++;
+    return;
+  }
+
+  // Download image bytes once (reused across platforms)
+  // Videos are passed as URL — never buffered
+  let photoBytes: ArrayBuffer | null = null;
+  let photoContentType = 'image/jpeg';
+  let photoFilename = 'image.jpg';
+
+  if (mediaUrl && mediaKind === 'image' && !dryRun) {
+    const obj = await env.MEDIA.get(post.asset_r2_key!);
+    if (obj) {
+      photoBytes = await obj.arrayBuffer();
+      photoContentType = obj.httpMetadata?.contentType ?? 'image/jpeg';
+      photoFilename = post.asset_r2_key!.split('/').pop() ?? 'image.jpg';
+    }
+  }
+
+  // Resolve video R2 URL (presigned-like — use public URL pattern)
+  let videoR2Url: string | null = null;
+  if (mediaKind === 'video' && post.asset_r2_key) {
+    // R2 public bucket URL — adjust if using custom domain
+    videoR2Url = `https://pub-${env.DB}.r2.dev/${post.asset_r2_key}`;
+  }
+
+  for (const notionPlatform of platforms) {
+    const platform = normalizePlatform(notionPlatform);
+
+    // Apply --platform filter
+    if (params.platform_filter && platform !== normalizePlatform(params.platform_filter)) {
+      continue;
+    }
+
+    // Skip non-Upload-Post platforms
+    if (SKIP_PLATFORMS.has(platform)) {
+      continue;
+    }
+
+    // Multi-location GBP (ETB has LA/WA/OR)
+    if (platform === 'google_business' && client.gbp_locations.length > 0) {
+      await postGbpMultiLocation(
+        env, up, post, client, sched_time, publishDate,
+        photoBytes, photoContentType, photoFilename,
+        videoR2Url, mediaKind, dryRun, stats, jobId,
+      );
+      continue;
+    }
+
+    const caption = getCaption(post, platform);
+
+    const result = await preflight(client, platform, caption);
+    if (!result.ok) {
+      if (result.tag === 'BLOCKED') stats.blocked++;
+      else stats.skipped++;
+      // Record skip/blocked in post_platforms
+      if (!dryRun) {
+        await upsertPostPlatform(env.DB, {
+          post_id: post.id,
+          platform,
+          status: result.tag.toLowerCase(),
+          error_message: result.reason,
+        });
+      }
+      continue;
+    }
+
+    // Anti-duplicate: skip if already posted
+    if (!dryRun) {
+      const existing = await env.DB
+        .prepare('SELECT tracking_id FROM post_platforms WHERE post_id = ? AND platform = ?')
+        .bind(post.id, platform)
+        .first<{ tracking_id: string | null }>();
+      if (existing?.tracking_id) {
+        stats.skipped++;
+        continue;
+      }
+    }
+
+    const platCfg = client.platforms.find((p) => normalizePlatform(p.platform) === platform);
+    if (!platCfg) continue;
+
+    const extra = buildExtraParams(platform, platCfg, post);
+    const idemKey = await makeIdempotencyKey(post.id, platform, publishDate);
+
+    if (dryRun) {
+      const endpoint =
+        mediaKind === 'video'
+          ? 'POST /api/upload (video)'
+          : mediaKind === 'image'
+            ? 'POST /api/upload_photos (photo)'
+            : 'POST /api/upload_text (text)';
+      console.log(`[DRY-RUN] ${post.title} → ${platform}`);
+      console.log(`  endpoint: ${endpoint}`);
+      console.log(`  user: ${client.upload_post_profile}`);
+      console.log(`  scheduled: ${sched_time}`);
+      console.log(`  idem_key: ${idemKey}`);
+      console.log(`  caption: ${(caption ?? '').slice(0, 100)}...`);
+      continue;
+    }
+
+    // ── Real post ──────────────────────────────────────────────────────────
+    try {
+      let response;
+
+      if (mediaKind === 'video' && videoR2Url) {
+        response = await up.postVideo({
+          user: client.upload_post_profile!,
+          platform,
+          title: caption!,
+          videoUrl: videoR2Url,
+          scheduled_date: sched_time,
+          idempotency_key: idemKey,
+          ...extra,
+        });
+      } else if (mediaKind === 'image' && photoBytes) {
+        response = await up.postPhoto({
+          user: client.upload_post_profile!,
+          platform,
+          title: caption!,
+          photoStream: new Blob([photoBytes]).stream() as unknown as ReadableStream<Uint8Array>,
+          photoFilename,
+          photoContentType,
+          scheduled_date: sched_time,
+          idempotency_key: idemKey,
+          ...extra,
+        });
+      } else {
+        response = await up.postText({
+          user: client.upload_post_profile!,
+          platform,
+          title: caption!,
+          scheduled_date: sched_time,
+          idempotency_key: idemKey,
+          ...extra,
+        });
+      }
+
+      const trackingId = extractTrackingId(response);
+      if (trackingId) {
+        await upsertPostPlatform(env.DB, {
+          post_id: post.id,
+          platform,
+          tracking_id: `UP:${trackingId}`,
+          status: 'sent',
+          idempotency_key: idemKey,
+        });
+      }
+      stats.posted++;
+    } catch (err) {
+      if (err instanceof UploadPostError && err.isIdempotent) {
+        // Already submitted — mark as sent
+        await upsertPostPlatform(env.DB, {
+          post_id: post.id,
+          platform,
+          tracking_id: `UP:IDEM:${idemKey}`,
+          status: 'idempotent',
+          idempotency_key: idemKey,
+        });
+        stats.posted++;
+      } else {
+        const msg = err instanceof UploadPostError
+          ? `HTTP ${err.status}: ${err.body.slice(0, 300)}`
+          : String(err);
+        await upsertPostPlatform(env.DB, {
+          post_id: post.id,
+          platform,
+          status: 'failed',
+          error_message: msg,
+          idempotency_key: idemKey,
+        });
+        stats.failed++;
+      }
+    }
+  }
+
+  // Post-loop: update post status
+  if (!dryRun) {
+    if (stats.posted > 0) {
+      await setPostStatus(env.DB, post.id, 'scheduled', 'Posted');
+    } else if (stats.failed > 0) {
+      await setPostStatus(env.DB, post.id, 'failed', 'Failed');
+    }
+  }
+}
+
+async function postGbpMultiLocation(
+  env: Env,
+  up: UploadPostClient,
+  post: PostRow,
+  client: Awaited<ReturnType<typeof getClientWithConfig>>,
+  schedTime: string,
+  publishDate: string,
+  photoBytes: ArrayBuffer | null,
+  photoContentType: string,
+  photoFilename: string,
+  videoR2Url: string | null,
+  mediaKind: 'image' | 'video' | null,
+  dryRun: boolean,
+  stats: PostingStats,
+  _jobId: string,
+): Promise<void> {
+  if (!client) return;
+
+  const locations: ClientGbpLocationRow[] = client.gbp_locations;
+
+  for (const loc of locations) {
+    if (loc.paused === 1) {
+      stats.skipped++;
+      continue;
+    }
+
+    // Get location-specific caption field (e.g. cap_gbp_la)
+    const captionField = loc.caption_field as keyof PostRow | null;
+    const caption =
+      (captionField ? (post[captionField] as string | null) : null) ??
+      post.cap_google_business;
+
+    if (!caption) {
+      stats.skipped++;
+      continue;
+    }
+
+    const platformKey = `google_business_${loc.label.toLowerCase()}`;
+    const idemKey = await makeIdempotencyKey(post.id, platformKey, publishDate);
+    const profile = loc.upload_post_profile ?? client.upload_post_profile!;
+
+    if (dryRun) {
+      console.log(`[DRY-RUN] GBP ${loc.label}: ${loc.location_id}`);
+      console.log(`  caption: ${caption.slice(0, 100)}...`);
+      continue;
+    }
+
+    // Anti-duplicate check
+    const postedField = loc.posted_field ?? `gbp_${loc.label.toLowerCase()}`;
+    const existing = await env.DB
+      .prepare('SELECT tracking_id FROM post_platforms WHERE post_id = ? AND platform = ?')
+      .bind(post.id, postedField)
+      .first<{ tracking_id: string | null }>();
+    if (existing?.tracking_id) {
+      stats.skipped++;
+      continue;
+    }
+
+    const extra = { gbp_location_id: loc.location_id };
+
+    try {
+      let response;
+      if (mediaKind === 'video' && videoR2Url) {
+        response = await up.postVideo({
+          user: profile,
+          platform: 'google_business',
+          title: caption,
+          videoUrl: videoR2Url,
+          scheduled_date: schedTime,
+          idempotency_key: idemKey,
+          ...extra,
+        });
+      } else if (mediaKind === 'image' && photoBytes) {
+        response = await up.postPhoto({
+          user: profile,
+          platform: 'google_business',
+          title: caption,
+          photoStream: new Blob([photoBytes]).stream() as unknown as ReadableStream<Uint8Array>,
+          photoFilename,
+          photoContentType,
+          scheduled_date: schedTime,
+          idempotency_key: idemKey,
+          ...extra,
+        });
+      } else {
+        response = await up.postText({
+          user: profile,
+          platform: 'google_business',
+          title: caption,
+          scheduled_date: schedTime,
+          idempotency_key: idemKey,
+          ...extra,
+        });
+      }
+
+      const trackingId = extractTrackingId(response);
+      await upsertPostPlatform(env.DB, {
+        post_id: post.id,
+        platform: postedField,
+        tracking_id: trackingId ? `UP:${trackingId}` : null,
+        status: 'sent',
+        idempotency_key: idemKey,
+      });
+      stats.posted++;
+    } catch (err) {
+      if (err instanceof UploadPostError && err.isIdempotent) {
+        await upsertPostPlatform(env.DB, {
+          post_id: post.id,
+          platform: postedField,
+          tracking_id: `UP:IDEM:${idemKey}`,
+          status: 'idempotent',
+        });
+        stats.posted++;
+      } else {
+        const msg = err instanceof UploadPostError
+          ? `HTTP ${err.status}: ${err.body.slice(0, 200)}`
+          : String(err);
+        await upsertPostPlatform(env.DB, {
+          post_id: post.id,
+          platform: postedField,
+          status: 'failed',
+          error_message: msg,
+        });
+        stats.failed++;
+      }
+    }
+  }
+}
+
+async function writeError(db: D1Database, postId: string, msg: string): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await db
+    .prepare('UPDATE posts SET error_log = ?, updated_at = ? WHERE id = ?')
+    .bind(`[${new Date().toISOString()}] ${msg}`, now, postId)
+    .run();
+}

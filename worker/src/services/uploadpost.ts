@@ -1,0 +1,212 @@
+/**
+ * Upload-Post API client
+ * Docs: https://docs.upload-post.com
+ * Auth: Authorization: Apikey YOUR_KEY
+ *
+ * Three posting endpoints:
+ *   /api/upload_text   — text posts (no media)
+ *   /api/upload_photos — image posts (multipart)
+ *   /api/upload        — video posts (URL)
+ *
+ * Port of post_content.py UploadPostClient
+ */
+
+const BASE = 'https://api.upload-post.com';
+
+export interface UploadPostResponse {
+  success: boolean;
+  message?: string;
+  job_id?: string;
+  request_id?: string;
+  total_platforms?: number;
+  [key: string]: unknown;
+}
+
+export class UploadPostError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly body: string,
+  ) {
+    super(`Upload-Post HTTP ${status}: ${body.slice(0, 300)}`);
+    this.name = 'UploadPostError';
+  }
+
+  /** 400 with idempotency/already/duplicate → treat as already submitted */
+  get isIdempotent(): boolean {
+    const lower = this.body.toLowerCase();
+    return (
+      this.status === 400 &&
+      (lower.includes('idempotency') ||
+        lower.includes('already') ||
+        lower.includes('duplicate'))
+    );
+  }
+}
+
+export interface PostTextParams {
+  user: string;
+  platform: string;
+  title: string;
+  scheduled_date?: string;
+  idempotency_key?: string;
+  facebook_page_id?: string;
+  target_linkedin_page_id?: string;
+  gbp_location_id?: string;
+  [key: string]: string | undefined;
+}
+
+export interface PostPhotoParams {
+  user: string;
+  platform: string;
+  title: string;
+  photoStream: ReadableStream<Uint8Array>;
+  photoFilename: string;
+  photoContentType: string;
+  scheduled_date?: string;
+  idempotency_key?: string;
+  facebook_page_id?: string;
+  target_linkedin_page_id?: string;
+  pinterest_board_id?: string;
+  gbp_location_id?: string;
+}
+
+export interface PostVideoParams {
+  user: string;
+  platform: string;
+  title: string;
+  videoUrl: string;
+  scheduled_date?: string;
+  idempotency_key?: string;
+  youtube_title?: string;
+  youtube_description?: string;
+  privacyStatus?: string;
+  privacy_level?: string;
+  gbp_location_id?: string;
+  [key: string]: string | undefined;
+}
+
+export class UploadPostClient {
+  private readonly auth: Record<string, string>;
+
+  constructor(private readonly apiKey: string) {
+    this.auth = { Authorization: `Apikey ${apiKey}` };
+  }
+
+  /** POST /api/upload_text — text posts: facebook, linkedin, x, threads, bluesky, google_business */
+  async postText(params: PostTextParams): Promise<UploadPostResponse> {
+    const fd = new FormData();
+    for (const [k, v] of Object.entries(params)) {
+      if (k === 'idempotency_key' || v === undefined) continue;
+      fd.append(k === 'platform' ? 'platform[]' : k, v);
+    }
+    return this._call('/api/upload_text', fd, params.idempotency_key);
+  }
+
+  /**
+   * POST /api/upload_photos — image posts (multipart)
+   * Streams from R2 — does NOT buffer into memory to avoid Worker limits.
+   */
+  async postPhoto(params: PostPhotoParams): Promise<UploadPostResponse> {
+    const fd = new FormData();
+    fd.append('user', params.user);
+    fd.append('platform[]', params.platform);
+    fd.append('title', params.title);
+    if (params.scheduled_date) fd.append('scheduled_date', params.scheduled_date);
+    if (params.facebook_page_id) fd.append('facebook_page_id', params.facebook_page_id);
+    if (params.target_linkedin_page_id) fd.append('target_linkedin_page_id', params.target_linkedin_page_id);
+    if (params.pinterest_board_id) fd.append('pinterest_board_id', params.pinterest_board_id);
+    if (params.gbp_location_id) fd.append('gbp_location_id', params.gbp_location_id);
+    fd.append(
+      'photos[]',
+      new File([params.photoStream], params.photoFilename, { type: params.photoContentType }),
+    );
+    return this._call('/api/upload_photos', fd, params.idempotency_key);
+  }
+
+  /** POST /api/upload — video URL posts: tiktok, instagram, youtube, facebook, etc. */
+  async postVideo(params: PostVideoParams): Promise<UploadPostResponse> {
+    const fd = new FormData();
+    for (const [k, v] of Object.entries(params)) {
+      if (k === 'idempotency_key' || k === 'videoUrl' || v === undefined) continue;
+      fd.append(k === 'platform' ? 'platform[]' : k, v);
+    }
+    fd.append('video', params.videoUrl);
+    return this._call('/api/upload', fd, params.idempotency_key);
+  }
+
+  /** GET /api/uploadposts/status — poll async/scheduled post status */
+  async getStatus(params: { jobId?: string; requestId?: string }): Promise<unknown> {
+    const qs = new URLSearchParams();
+    if (params.jobId) qs.set('job_id', params.jobId);
+    if (params.requestId) qs.set('request_id', params.requestId);
+    const r = await fetch(`${BASE}/api/uploadposts/status?${qs}`, {
+      headers: this.auth,
+    });
+    if (!r.ok) throw new UploadPostError(r.status, await r.text());
+    return r.json();
+  }
+
+  /** GET /api/uploadposts/history — for URL fetch-back after posts go live */
+  async getHistory(limit = 100): Promise<{ history: Array<Record<string, unknown>> }> {
+    const r = await fetch(`${BASE}/api/uploadposts/history?limit=${limit}`, {
+      headers: this.auth,
+    });
+    if (!r.ok) throw new UploadPostError(r.status, await r.text());
+    return r.json() as Promise<{ history: Array<Record<string, unknown>> }>;
+  }
+
+  /** GET /api/uploadposts/google-business/locations — list GBP location IDs */
+  async getGbpLocations(profile: string): Promise<unknown> {
+    const r = await fetch(
+      `${BASE}/api/uploadposts/google-business/locations?profile=${encodeURIComponent(profile)}`,
+      { headers: this.auth },
+    );
+    if (!r.ok) throw new UploadPostError(r.status, await r.text());
+    return r.json();
+  }
+
+  /** GET /api/uploadposts/pinterest/boards — list Pinterest board IDs */
+  async getPinterestBoards(profile: string): Promise<unknown> {
+    const r = await fetch(
+      `${BASE}/api/uploadposts/pinterest/boards?profile=${encodeURIComponent(profile)}`,
+      { headers: this.auth },
+    );
+    if (!r.ok) throw new UploadPostError(r.status, await r.text());
+    return r.json();
+  }
+
+  /** GET /api/uploadposts/linkedin/pages — list LinkedIn page IDs */
+  async getLinkedinPages(profile: string): Promise<unknown> {
+    const r = await fetch(
+      `${BASE}/api/uploadposts/linkedin/pages?profile=${encodeURIComponent(profile)}`,
+      { headers: this.auth },
+    );
+    if (!r.ok) throw new UploadPostError(r.status, await r.text());
+    return r.json();
+  }
+
+  /** Verify API key — lightweight check via history endpoint */
+  async verify(): Promise<boolean> {
+    try {
+      await this.getHistory(1);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async _call(
+    path: string,
+    body: FormData,
+    idempotencyKey?: string,
+  ): Promise<UploadPostResponse> {
+    const headers: Record<string, string> = { ...this.auth };
+    if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
+    const r = await fetch(`${BASE}${path}`, { method: 'POST', headers, body });
+    if (!r.ok) {
+      const text = await r.text();
+      throw new UploadPostError(r.status, text);
+    }
+    return r.json() as Promise<UploadPostResponse>;
+  }
+}
