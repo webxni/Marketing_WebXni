@@ -1,0 +1,142 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --color-bg:       #0a0b0e;
+    --color-surface:  #111318;
+    --color-card:     #161b22;
+    --color-border:   #21262d;
+    --color-muted:    #8b949e;
+    --color-accent:   #7c3aed;
+    --color-success:  #3fb950;
+    --color-warning:  #d29922;
+    --color-error:    #f85149;
+    --color-info:     #58a6ff;
+    --color-purple:   #bc8cff;
+  }
+
+  * { @apply border-border; }
+
+  body {
+    @apply bg-bg text-white font-sans;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: var(--color-surface); }
+  ::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--color-muted); }
+}
+
+@layer components {
+  /* Card */
+  .card {
+    @apply bg-card border border-border rounded-lg;
+  }
+
+  /* Form inputs */
+  .input {
+    @apply bg-surface border border-border rounded-md px-3 py-2
+           text-white placeholder-muted text-sm
+           focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent
+           transition-colors;
+  }
+
+  /* Buttons */
+  .btn {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium
+           transition-all duration-150 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn bg-accent hover:bg-accent-hover text-white;
+  }
+  .btn-secondary {
+    @apply btn bg-surface hover:bg-card border border-border text-white;
+  }
+  .btn-ghost {
+    @apply btn hover:bg-surface text-muted hover:text-white;
+  }
+  .btn-danger {
+    @apply btn bg-red-600 hover:bg-red-700 text-white;
+  }
+  .btn-sm {
+    @apply px-3 py-1.5 text-xs;
+  }
+  .btn-icon {
+    @apply p-2 rounded-md hover:bg-surface transition-colors text-muted hover:text-white;
+  }
+
+  /* Table */
+  .table-wrapper {
+    @apply overflow-x-auto rounded-lg border border-border;
+  }
+  table.data-table {
+    @apply w-full text-sm;
+  }
+  table.data-table th {
+    @apply bg-surface px-4 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider;
+  }
+  table.data-table td {
+    @apply px-4 py-3 border-t border-border;
+  }
+  table.data-table tr:hover td {
+    @apply bg-surface/50;
+  }
+
+  /* Status badges */
+  .badge {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium;
+  }
+  .badge-draft      { @apply badge bg-gray-500/20 text-gray-400; }
+  .badge-approved   { @apply badge bg-blue-500/20 text-blue-400; }
+  .badge-ready      { @apply badge bg-indigo-500/20 text-indigo-400; }
+  .badge-scheduled  { @apply badge bg-green-500/20 text-green-400; }
+  .badge-posted     { @apply badge bg-green-500/20 text-green-400; }
+  .badge-failed     { @apply badge bg-red-500/20 text-red-400; }
+  .badge-blocked    { @apply badge bg-orange-500/20 text-orange-400; }
+  .badge-active     { @apply badge bg-green-500/20 text-green-400; }
+  .badge-inactive   { @apply badge bg-gray-500/20 text-gray-400; }
+  .badge-pending    { @apply badge bg-yellow-500/20 text-yellow-400; }
+  .badge-running    { @apply badge bg-blue-500/20 text-blue-400; }
+  .badge-completed  { @apply badge bg-green-500/20 text-green-400; }
+
+  /* Page layout */
+  .page-header {
+    @apply flex items-center justify-between mb-6;
+  }
+  .page-title {
+    @apply text-xl font-semibold text-white;
+  }
+  .page-subtitle {
+    @apply text-sm text-muted mt-0.5;
+  }
+
+  /* Section header */
+  .section-label {
+    @apply text-xs font-medium text-muted uppercase tracking-wider;
+  }
+
+  /* Metric card */
+  .metric-card {
+    @apply card p-5;
+  }
+  .metric-value {
+    @apply text-3xl font-bold text-white;
+  }
+  .metric-label {
+    @apply text-sm text-muted mt-1;
+  }
+}
+
+/* Print styles for PDF reports */
+@media print {
+  .no-print { display: none !important; }
+  .print-break { page-break-before: always; }
+  body { background: white !important; color: #111 !important; }
+  .card { border: 1px solid #ddd !important; background: white !important; }
+  table.data-table th { background: #f4f4f4 !important; color: #333 !important; }
+  table.data-table td { color: #333 !important; border-color: #eee !important; }
+}

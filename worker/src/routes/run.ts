@@ -49,11 +49,11 @@ runRoutes.post('/posting', async (c) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           mode,
-          job_id: job.id,
-          client_filter: client,
+          job_id:          job.id,   // pass so LOADER reuses, doesn't create a second job
+          client_filter:   client,
           platform_filter: platform,
           limit,
-          triggered_by: 'api',
+          triggered_by:    'api',
         }),
       }),
     ),

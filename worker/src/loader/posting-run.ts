@@ -26,6 +26,7 @@ import { buildExtraParams, extractTrackingId } from '../modules/posting';
 
 export interface PostingRunParams {
   mode: 'dry_run' | 'real';
+  job_id?: string;          // pass from caller to avoid double job creation
   client_filter?: string;
   platform_filter?: string;
   limit?: number;
@@ -44,13 +45,19 @@ export async function runPosting(env: LoaderEnv, params: PostingRunParams): Prom
   const dryRun = params.mode === 'dry_run';
   const stats: PostingStats = { processed: 0, posted: 0, skipped: 0, blocked: 0, failed: 0 };
 
-  const job = await createPostingJob(env.DB, {
-    triggered_by: params.triggered_by ?? 'api',
-    mode: params.mode,
-    client_filter: params.client_filter,
-    platform_filter: params.platform_filter,
-    limit_count: params.limit ?? 50,
-  });
+  // Reuse a job_id created by the caller (run.ts already calls createPostingJob).
+  // Only create a new one when called directly without a job_id.
+  let jobId = params.job_id;
+  if (!jobId) {
+    const job = await createPostingJob(env.DB, {
+      triggered_by: params.triggered_by ?? 'api',
+      mode: params.mode,
+      client_filter: params.client_filter,
+      platform_filter: params.platform_filter,
+      limit_count: params.limit ?? 50,
+    });
+    jobId = job.id;
+  }
 
   const up = new UploadPostClient(env.UPLOAD_POST_API_KEY);
 
@@ -61,11 +68,11 @@ export async function runPosting(env: LoaderEnv, params: PostingRunParams): Prom
       await processPost(env, up, post, params, stats, dryRun, job.id);
     }
 
-    await updatePostingJob(env.DB, job.id, 'completed', JSON.stringify(stats));
+    await updatePostingJob(env.DB, jobId, 'completed', JSON.stringify(stats));
   } catch (err) {
     await updatePostingJob(
       env.DB,
-      job.id,
+      jobId,
       'failed',
       JSON.stringify({ ...stats, error: String(err) }),
     );
