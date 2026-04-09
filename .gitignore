@@ -2,12 +2,12 @@ node_modules/
 .wrangler/
 dist/
 build/
+!frontend/build/
 .env
 .env.local
 *.log
 .DS_Store
 frontend/.svelte-kit/
-frontend/build/
 /tmp/
 *.json.bak
 .clawhub/

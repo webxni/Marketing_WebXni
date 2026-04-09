@@ -1,0 +1,27 @@
+# LOADER worker — background job runner
+# Deployed separately BEFORE the main worker (service binding dependency)
+# Deploy: wrangler deploy --config wrangler.loader.toml
+name = "marketing-webxni-loader"
+main = "worker/src/loader/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "webxni-db"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "webxni-media"
+
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "webxni-images"
+
+[vars]
+R2_MEDIA_PUBLIC_URL = ""
+
+# Secrets (same as main worker — set via: wrangler secret put --config wrangler.loader.toml UPLOAD_POST_API_KEY)
+# UPLOAD_POST_API_KEY
+# OPENAI_API_KEY

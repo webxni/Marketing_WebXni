@@ -59,7 +59,7 @@ export interface PostPhotoParams {
   user: string;
   platform: string;
   title: string;
-  photoStream: ReadableStream<Uint8Array>;
+  photoBytes: ArrayBuffer;       // raw bytes from R2 — File() accepts ArrayBuffer
   photoFilename: string;
   photoContentType: string;
   scheduled_date?: string;
@@ -88,7 +88,7 @@ export interface PostVideoParams {
 export class UploadPostClient {
   private readonly auth: Record<string, string>;
 
-  constructor(private readonly apiKey: string) {
+  constructor(apiKey: string) {
     this.auth = { Authorization: `Apikey ${apiKey}` };
   }
 
@@ -118,7 +118,7 @@ export class UploadPostClient {
     if (params.gbp_location_id) fd.append('gbp_location_id', params.gbp_location_id);
     fd.append(
       'photos[]',
-      new File([params.photoStream], params.photoFilename, { type: params.photoContentType }),
+      new File([params.photoBytes], params.photoFilename, { type: params.photoContentType }),
     );
     return this._call('/api/upload_photos', fd, params.idempotency_key);
   }

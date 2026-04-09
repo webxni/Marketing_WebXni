@@ -7,11 +7,11 @@
  *   POST https://loader/fetch-urls    → fetchUrls()
  *   POST https://loader/run-generation → runGeneration() (Phase 1 / Phase 2)
  */
-import type { Env } from '../types';
+import type { LoaderEnv } from '../types';
 import { runPosting } from './posting-run';
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: LoaderEnv): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
 

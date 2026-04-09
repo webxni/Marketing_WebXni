@@ -3,7 +3,7 @@
  * Executed in background by LOADER binding.
  * Handles: dry-run, real posting, multi-location GBP, idempotency, writeback.
  */
-import type { Env, ClientGbpLocationRow, PostRow } from '../types';
+import type { LoaderEnv, ClientGbpLocationRow, PostRow } from '../types';
 import {
   listReadyPosts,
   getClientWithConfig,
@@ -40,7 +40,7 @@ export interface PostingStats {
   failed: number;
 }
 
-export async function runPosting(env: Env, params: PostingRunParams): Promise<PostingStats> {
+export async function runPosting(env: LoaderEnv, params: PostingRunParams): Promise<PostingStats> {
   const dryRun = params.mode === 'dry_run';
   const stats: PostingStats = { processed: 0, posted: 0, skipped: 0, blocked: 0, failed: 0 };
 
@@ -76,7 +76,7 @@ export async function runPosting(env: Env, params: PostingRunParams): Promise<Po
 }
 
 async function processPost(
-  env: Env,
+  env: LoaderEnv,
   up: UploadPostClient,
   post: PostRow,
   params: PostingRunParams,
@@ -134,11 +134,12 @@ async function processPost(
     }
   }
 
-  // Resolve video R2 URL (presigned-like — use public URL pattern)
+  // Resolve video R2 URL — requires MEDIA bucket to have public access enabled.
+  // Set R2_MEDIA_PUBLIC_URL in wrangler.toml [vars] after enabling public access
+  // in Cloudflare R2 dashboard (format: https://pub-<hash>.r2.dev or custom domain).
   let videoR2Url: string | null = null;
-  if (mediaKind === 'video' && post.asset_r2_key) {
-    // R2 public bucket URL — adjust if using custom domain
-    videoR2Url = `https://pub-${env.DB}.r2.dev/${post.asset_r2_key}`;
+  if (mediaKind === 'video' && post.asset_r2_key && env.R2_MEDIA_PUBLIC_URL) {
+    videoR2Url = `${env.R2_MEDIA_PUBLIC_URL.replace(/\/$/, '')}/${post.asset_r2_key}`;
   }
 
   for (const notionPlatform of platforms) {
@@ -235,7 +236,7 @@ async function processPost(
           user: client.upload_post_profile!,
           platform,
           title: caption!,
-          photoStream: new Blob([photoBytes]).stream() as unknown as ReadableStream<Uint8Array>,
+          photoBytes,
           photoFilename,
           photoContentType,
           scheduled_date: sched_time,
@@ -302,7 +303,7 @@ async function processPost(
 }
 
 async function postGbpMultiLocation(
-  env: Env,
+  env: LoaderEnv,
   up: UploadPostClient,
   post: PostRow,
   client: Awaited<ReturnType<typeof getClientWithConfig>>,
@@ -378,7 +379,7 @@ async function postGbpMultiLocation(
           user: profile,
           platform: 'google_business',
           title: caption,
-          photoStream: new Blob([photoBytes]).stream() as unknown as ReadableStream<Uint8Array>,
+          photoBytes,
           photoFilename,
           photoContentType,
           scheduled_date: schedTime,
