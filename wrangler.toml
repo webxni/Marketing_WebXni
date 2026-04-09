@@ -12,8 +12,8 @@ crons = [
 
 [[d1_databases]]
 binding = "DB"
-database_name = "webxni-db"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_name = "webxni_db"
+database_id = "c2240507-7d37-43c8-94bd-fb098aeedfc8"
 
 [[r2_buckets]]
 binding = "MEDIA"
@@ -25,7 +25,7 @@ bucket_name = "webxni-images"
 
 [[kv_namespaces]]
 binding = "SESSION"
-id = "REPLACE_WITH_YOUR_SESSION_KV_ID"
+id = "fd77c3e7e1c247758cc440561c78a302"
 
 [[services]]
 binding = "LOADER"
