@@ -65,7 +65,7 @@ export async function runPosting(env: LoaderEnv, params: PostingRunParams): Prom
     const posts = await listReadyPosts(env.DB, params.client_filter, params.limit ?? 50);
 
     for (const post of posts) {
-      await processPost(env, up, post, params, stats, dryRun, job.id);
+      await processPost(env, up, post, params, stats, dryRun, jobId);
     }
 
     await updatePostingJob(env.DB, jobId, 'completed', JSON.stringify(stats));

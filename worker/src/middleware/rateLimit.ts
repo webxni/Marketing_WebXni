@@ -14,7 +14,7 @@ const WINDOW_SEC = 60;
 export async function rateLimitMiddleware(
   c: Context<{ Bindings: Env; Variables: { user: SessionData } }>,
   next: Next,
-): Promise<Response> {
+): Promise<Response | void> {
   const isAuth = c.req.path.startsWith('/api/auth/');
   const limit = isAuth ? AUTH_LIMIT : DEFAULT_LIMIT;
 

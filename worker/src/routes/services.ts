@@ -23,8 +23,9 @@ import { getClientBySlug } from '../db/queries';
 export const serviceRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
-async function resolveClient(c: { env: { DB: D1Database }; req: { param: (k: string) => string } }) {
-  return getClientBySlug(c.env.DB, c.req.param('slug'));
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function resolveClient(c: any) {
+  return getClientBySlug(c.env.DB, c.req.param('slug') as string);
 }
 
 // ─── CATEGORIES ──────────────────────────────────────────────────────────────

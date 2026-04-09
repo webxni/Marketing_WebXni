@@ -72,3 +72,59 @@ authRoutes.get('/me', (c) => {
   if (!user) return c.json({ error: 'Not authenticated' }, 401);
   return c.json({ user });
 });
+
+/** PUT /api/auth/profile — update display name */
+authRoutes.put('/profile', async (c) => {
+  const user = c.get('user');
+  if (!user) return c.json({ error: 'Not authenticated' }, 401);
+
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON' }, 400); }
+
+  const schema = z.object({ name: z.string().min(1).max(100) });
+  const parsed = schema.safeParse(body);
+  if (!parsed.success) return c.json({ error: 'Invalid input' }, 400);
+
+  await c.env.DB
+    .prepare('UPDATE users SET name = ?, updated_at = ? WHERE id = ?')
+    .bind(parsed.data.name, Math.floor(Date.now() / 1000), user.userId)
+    .run();
+
+  return c.json({ ok: true });
+});
+
+/** POST /api/auth/change-password */
+authRoutes.post('/change-password', async (c) => {
+  const user = c.get('user');
+  if (!user) return c.json({ error: 'Not authenticated' }, 401);
+
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON' }, 400); }
+
+  const schema = z.object({
+    current_password: z.string().min(1),
+    new_password:     z.string().min(8),
+  });
+  const parsed = schema.safeParse(body);
+  if (!parsed.success) return c.json({ error: 'Invalid input' }, 400);
+
+  const row = await c.env.DB
+    .prepare('SELECT password_hash FROM users WHERE id = ?')
+    .bind(user.userId)
+    .first<{ password_hash: string }>();
+
+  if (!row) return c.json({ error: 'User not found' }, 404);
+
+  const valid = await verifyPassword(parsed.data.current_password, row.password_hash);
+  if (!valid) return c.json({ error: 'Current password is incorrect' }, 401);
+
+  const { hashPassword } = await import('./users');
+  const newHash = await hashPassword(parsed.data.new_password);
+
+  await c.env.DB
+    .prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?')
+    .bind(newHash, Math.floor(Date.now() / 1000), user.userId)
+    .run();
+
+  return c.json({ ok: true });
+});

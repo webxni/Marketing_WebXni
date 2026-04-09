@@ -62,53 +62,40 @@ runRoutes.post('/posting', async (c) => {
   return c.json({ ok: true, job_id: job.id, mode }, 202);
 });
 
-/** POST /api/run/generate — trigger content generation */
+/** POST /api/run/generate — trigger content generation (Phase 1 or 2) */
 runRoutes.post('/generate', async (c) => {
-  let body: unknown;
-  try {
-    body = await c.req.json();
-  } catch {
-    body = {};
-  }
+  let body: Record<string, unknown> = {};
+  try { body = (await c.req.json()) as Record<string, unknown>; } catch { /* use empty */ }
 
-  const schema = z.object({
-    phase: z.literal(1).or(z.literal(2)),
-    client: z.string().optional(),
-    week_start: z.string().optional(),
-  });
+  const jobId = crypto.randomUUID().replace(/-/g, '').toLowerCase();
+  const user = c.get('user');
 
-  const parsed = schema.safeParse(body);
-  if (!parsed.success) {
-    return c.json({ error: 'Invalid input' }, 400);
-  }
-
-  // Dispatch to LOADER
-  const runId = crypto.randomUUID().replace(/-/g, '').toLowerCase();
   c.executionCtx.waitUntil(
     c.env.LOADER.fetch(
       new Request('https://loader/run-generation', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...parsed.data, run_id: runId, triggered_by: 'api' }),
+        body: JSON.stringify({ ...body, job_id: jobId, triggered_by: user?.userId ?? 'api' }),
       }),
     ),
   );
 
-  return c.json({ ok: true, run_id: runId }, 202);
+  return c.json({ ok: true, job_id: jobId }, 202);
 });
 
 /** POST /api/run/fetch-urls — poll Upload-Post history and write real URLs back */
 runRoutes.post('/fetch-urls', async (c) => {
+  const jobId = crypto.randomUUID().replace(/-/g, '').toLowerCase();
   c.executionCtx.waitUntil(
     c.env.LOADER.fetch(
       new Request('https://loader/fetch-urls', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ triggered_by: 'api' }),
+        body: JSON.stringify({ job_id: jobId, triggered_by: 'api' }),
       }),
     ),
   );
-  return c.json({ ok: true, message: 'fetch-urls dispatched' }, 202);
+  return c.json({ ok: true, job_id: jobId }, 202);
 });
 
 /** GET /api/run/jobs — list recent posting jobs */

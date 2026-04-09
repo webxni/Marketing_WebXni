@@ -15,7 +15,9 @@ import { assetRoutes }   from './routes/assets';
 import { runRoutes }     from './routes/run';
 import { userRoutes }    from './routes/users';
 import { reportRoutes }  from './routes/reports';
-import { serviceRoutes } from './routes/services';
+import { serviceRoutes }  from './routes/services';
+import { logRoutes }      from './routes/logs';
+import { settingsRoutes } from './routes/settings';
 
 const app = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -31,7 +33,9 @@ app.route('/api/posts',   postRoutes);
 app.route('/api/assets',  assetRoutes);
 app.route('/api/run',     runRoutes);
 app.route('/api/users',   userRoutes);
-app.route('/api/reports', reportRoutes);
+app.route('/api/reports',  reportRoutes);
+app.route('/api/logs',     logRoutes);
+app.route('/api/settings', settingsRoutes);
 
 app.get('/api/health', (c) =>
   c.json({ status: 'ok', ts: Date.now(), version: '2.0.0' }),

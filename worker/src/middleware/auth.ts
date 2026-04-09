@@ -76,7 +76,7 @@ export function hasPermission(role: SessionData['role'], permission: Permission)
 export async function authMiddleware(
   c: Context<{ Bindings: Env; Variables: { user: SessionData } }>,
   next: Next,
-): Promise<Response> {
+): Promise<Response | void> {
   if (c.req.path.startsWith('/api/auth/')) return next();
 
   const sessionId = getCookie(c, 'session');
@@ -103,7 +103,7 @@ export function requirePermission(permission: Permission) {
   return async (
     c: Context<{ Bindings: Env; Variables: { user: SessionData } }>,
     next: Next,
-  ): Promise<Response> => {
+  ): Promise<Response | void> => {
     const user = c.get('user');
     if (!user) return c.json({ error: 'Unauthorized' }, 401);
     if (!hasPermission(user.role, permission)) {

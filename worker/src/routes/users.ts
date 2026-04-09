@@ -135,7 +135,7 @@ userRoutes.post('/:id/reactivate', requirePermission('users.manage'), async (c) 
 // ─────────────────────────────────────────────────────────────────────────────
 // PBKDF2 password hashing (WebCrypto — native to Workers runtime, no npm dep)
 // ─────────────────────────────────────────────────────────────────────────────
-async function hashPassword(password: string): Promise<string> {
+export async function hashPassword(password: string): Promise<string> {
   const enc = new TextEncoder();
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
