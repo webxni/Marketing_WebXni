@@ -14,6 +14,7 @@ export interface Env {
   UPLOAD_POST_API_KEY: string;
   OPENAI_API_KEY: string;
   R2_MEDIA_PUBLIC_URL: string;
+  NOTION_API_TOKEN?: string;  // optional — only needed for Notion import
 }
 
 /** LOADER worker bindings (no SESSION / ASSETS) */
@@ -54,25 +55,40 @@ export interface UserRow {
 }
 
 export interface ClientRow {
-  id:                     string;
-  slug:                   string;
-  canonical_name:         string;
-  package:                string | null;
-  status:                 string | null;
-  manual_only:            number;
-  requires_approval_from: string | null;
-  language:               string | null;
-  upload_post_profile:    string | null;
-  owner_group:            string | null;
-  never_mix_with:         string | null;
-  wp_domain:              string | null;
-  wp_url:                 string | null;
-  wp_auth:                string | null;
-  wp_template:            string | null;
-  brand_json:             string | null;
-  notes:                  string | null;
-  created_at:             number;
-  updated_at:             number;
+  id:                       string;
+  slug:                     string;
+  canonical_name:           string;
+  package:                  string | null;
+  status:                   string | null;
+  manual_only:              number;
+  requires_approval_from:   string | null;
+  language:                 string | null;
+  upload_post_profile:      string | null;
+  owner_group:              string | null;
+  never_mix_with:           string | null;
+  // WordPress — legacy fields (kept for backwards compat)
+  wp_domain:                string | null;
+  wp_url:                   string | null;
+  wp_auth:                  string | null;
+  wp_template:              string | null;
+  // WordPress — new per-client credential fields (migration 0004)
+  wp_admin_url:             string | null;
+  wp_base_url:              string | null;
+  wp_rest_base:             string | null;
+  wp_username:              string | null;
+  wp_application_password:  string | null;
+  wp_default_post_status:   string | null;
+  wp_default_author_id:     number | null;
+  wp_default_category_ids:  string | null;  // JSON array e.g. "[1,5,12]"
+  wp_template_key:          string | null;
+  wp_featured_image_mode:   string | null;
+  wp_excerpt_mode:          string | null;
+  // Notion sync
+  notion_page_id:           string | null;
+  brand_json:               string | null;
+  notes:                    string | null;
+  created_at:               number;
+  updated_at:               number;
 }
 
 export interface ClientPlatformRow {
@@ -182,6 +198,22 @@ export interface PostRow {
   asset_type:             string | null;
   canva_link:             string | null;
   wp_post_url:            string | null;
+  wp_post_id:             number | null;
+  wp_post_status:         string | null;
+  // GBP advanced fields (migration 0004)
+  gbp_topic_type:         string | null;  // 'STANDARD'|'EVENT'|'OFFER'
+  gbp_cta_type:           string | null;  // 'LEARN_MORE'|'BOOK'|'ORDER'|'SHOP'|'SIGN_UP'|'CALL'
+  gbp_cta_url:            string | null;
+  gbp_event_title:        string | null;
+  gbp_event_start_date:   string | null;
+  gbp_event_start_time:   string | null;
+  gbp_event_end_date:     string | null;
+  gbp_event_end_time:     string | null;
+  gbp_coupon_code:        string | null;
+  gbp_redeem_url:         string | null;
+  gbp_terms:              string | null;
+  // Notion sync
+  notion_page_id:         string | null;
   ready_for_automation:   number;
   asset_delivered:        number;
   skarleth_status:        string | null;
@@ -193,6 +225,19 @@ export interface PostRow {
   created_by:             string | null;
   created_at:             number;
   updated_at:             number;
+}
+
+export interface WpTemplateRow {
+  id:            string;
+  client_id:     string | null;
+  template_key:  string;
+  name:          string;
+  html_template: string;
+  css:           string | null;
+  description:   string | null;
+  is_default:    number;
+  created_at:    number;
+  updated_at:    number;
 }
 
 export interface PostPlatformRow {

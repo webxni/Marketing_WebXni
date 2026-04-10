@@ -10,8 +10,10 @@
   let client: Client | null = null;
   let loading = true;
   let saving = false;
+  let testingWp = false;
+  let wpTestResult: { ok: boolean; user?: { name: string }; error?: string } | null = null;
 
-  // Form fields
+  // ── Basic fields ────────────────────────────────────────────────────────────
   let canonical_name = '';
   let slug_field = '';
   let packageField = '';
@@ -19,21 +21,38 @@
   let language = '';
   let manual_only = false;
   let requires_approval_from = '';
-  let upload_post_profile = '';
-  let wp_domain = '';
   let notes = '';
   let brand_json = '';
   let brand_json_error = '';
 
-  const packages = ['starter','growth','premium','enterprise'];
-  const statuses = ['active','inactive','paused'];
-  const languages = ['en','es','fr','pt'];
+  // ── Upload-Post ─────────────────────────────────────────────────────────────
+  let upload_post_profile = '';
+
+  // ── WordPress ───────────────────────────────────────────────────────────────
+  let wp_base_url = '';
+  let wp_admin_url = '';
+  let wp_rest_base = '/wp-json/wp/v2';
+  let wp_username = '';
+  let wp_application_password = '';
+  let wp_default_post_status = 'draft';
+  let wp_default_author_id = '';
+  let wp_default_category_ids = '';
+  let wp_template_key = '';
+  let wp_featured_image_mode = 'upload';
+  let wp_excerpt_mode = 'auto';
+
+  const packages   = ['starter','growth','premium','enterprise'];
+  const statuses   = ['active','inactive','paused'];
+  const languages  = ['en','es','fr','pt'];
+  const postStatuses = ['draft','publish'];
+  const imgModes   = ['upload','url','none'];
+  const excerptModes = ['auto','manual','none'];
 
   onMount(async () => {
     try {
-      const r = await clientsApi.get(($page.params.slug ?? ''));
+      const r = await clientsApi.get($page.params.slug ?? '');
       client = r.client;
-      // Pre-fill form
+      // Basic
       canonical_name           = client.canonical_name;
       slug_field               = client.slug;
       packageField             = client.package ?? '';
@@ -41,10 +60,22 @@
       language                 = client.language ?? 'en';
       manual_only              = client.manual_only === 1;
       requires_approval_from   = client.requires_approval_from ?? '';
-      upload_post_profile      = client.upload_post_profile ?? '';
-      wp_domain                = client.wp_domain ?? '';
       notes                    = client.notes ?? '';
       brand_json               = client.brand_json ? JSON.stringify(JSON.parse(client.brand_json), null, 2) : '';
+      // Upload-Post
+      upload_post_profile      = client.upload_post_profile ?? '';
+      // WordPress
+      wp_base_url              = client.wp_base_url ?? client.wp_domain ?? '';
+      wp_admin_url             = client.wp_admin_url ?? '';
+      wp_rest_base             = client.wp_rest_base ?? '/wp-json/wp/v2';
+      wp_username              = client.wp_username ?? '';
+      wp_application_password  = client.wp_application_password ?? '';
+      wp_default_post_status   = client.wp_default_post_status ?? 'draft';
+      wp_default_author_id     = client.wp_default_author_id?.toString() ?? '';
+      wp_default_category_ids  = client.wp_default_category_ids ?? '';
+      wp_template_key          = client.wp_template_key ?? client.wp_template ?? '';
+      wp_featured_image_mode   = client.wp_featured_image_mode ?? 'upload';
+      wp_excerpt_mode          = client.wp_excerpt_mode ?? 'auto';
     } catch { toast.error('Failed to load client'); }
     finally { loading = false; }
   });
@@ -52,27 +83,50 @@
   function validateBrandJson() {
     if (!brand_json.trim()) { brand_json_error = ''; return true; }
     try { JSON.parse(brand_json); brand_json_error = ''; return true; }
-    catch (e) { brand_json_error = 'Invalid JSON'; return false; }
+    catch { brand_json_error = 'Invalid JSON'; return false; }
+  }
+
+  async function testWordPress() {
+    testingWp = true;
+    wpTestResult = null;
+    try {
+      wpTestResult = await clientsApi.wpTest($page.params.slug ?? '');
+    } catch (e) {
+      wpTestResult = { ok: false, error: String(e) };
+    } finally {
+      testingWp = false;
+    }
   }
 
   async function save() {
     if (!validateBrandJson()) return;
     saving = true;
     try {
-      await clientsApi.update(($page.params.slug ?? ''), {
+      await clientsApi.update($page.params.slug ?? '', {
         canonical_name,
-        package:                 packageField || null,
+        package:                  packageField || null,
         status,
-        language:                language || null,
-        manual_only:             manual_only ? 1 : 0,
-        requires_approval_from:  requires_approval_from || null,
-        upload_post_profile:     upload_post_profile || null,
-        wp_domain:               wp_domain || null,
-        notes:                   notes || null,
-        brand_json:              brand_json.trim() ? brand_json.trim() : null,
+        language:                 language || null,
+        manual_only:              manual_only ? 1 : 0,
+        requires_approval_from:   requires_approval_from || null,
+        upload_post_profile:      upload_post_profile || null,
+        notes:                    notes || null,
+        brand_json:               brand_json.trim() ? brand_json.trim() : null,
+        // WordPress
+        wp_base_url:              wp_base_url || null,
+        wp_admin_url:             wp_admin_url || null,
+        wp_rest_base:             wp_rest_base || '/wp-json/wp/v2',
+        wp_username:              wp_username || null,
+        wp_application_password:  wp_application_password || null,
+        wp_default_post_status:   wp_default_post_status || 'draft',
+        wp_default_author_id:     wp_default_author_id ? parseInt(wp_default_author_id, 10) : null,
+        wp_default_category_ids:  wp_default_category_ids || null,
+        wp_template_key:          wp_template_key || null,
+        wp_featured_image_mode:   wp_featured_image_mode || 'upload',
+        wp_excerpt_mode:          wp_excerpt_mode || 'auto',
       });
       toast.success('Client updated');
-      goto(`/clients/${($page.params.slug ?? '')}`);
+      goto(`/clients/${$page.params.slug ?? ''}`);
     } catch (e) { toast.error(String(e)); }
     finally { saving = false; }
   }
@@ -103,7 +157,8 @@
   </div>
 
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-    <!-- Basic info -->
+
+    <!-- Basic Info -->
     <div class="card p-5">
       <h3 class="section-label mb-4">Basic Info</h3>
       <div class="space-y-4">
@@ -146,17 +201,14 @@
       </div>
     </div>
 
-    <!-- Automation config -->
+    <!-- Upload-Post / Automation -->
     <div class="card p-5">
       <h3 class="section-label mb-4">Automation</h3>
       <div class="space-y-4">
         <div>
           <label class="block text-xs text-muted mb-1.5">Upload-Post Profile</label>
-          <input type="text" bind:value={upload_post_profile} placeholder="profile-slug" class="input w-full font-mono text-xs" />
-        </div>
-        <div>
-          <label class="block text-xs text-muted mb-1.5">WordPress Domain</label>
-          <input type="text" bind:value={wp_domain} placeholder="example.com" class="input w-full" />
+          <input type="text" bind:value={upload_post_profile} placeholder="Elite_Team_Builders" class="input w-full font-mono text-xs" />
+          <p class="text-xs text-muted mt-1">Must match exact profile slug in Upload-Post dashboard.</p>
         </div>
         <div>
           <label class="block text-xs text-muted mb-1.5">Requires Approval From</label>
@@ -164,7 +216,102 @@
         </div>
         <div class="flex items-center gap-2">
           <input type="checkbox" bind:checked={manual_only} id="manual-only" class="rounded" />
-          <label for="manual-only" class="text-xs text-muted cursor-pointer">Manual only (skip automation)</label>
+          <label for="manual-only" class="text-xs text-muted cursor-pointer">Manual only (skip automation entirely)</label>
+        </div>
+      </div>
+    </div>
+
+    <!-- WordPress Integration -->
+    <div class="card p-5 lg:col-span-2">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="section-label">WordPress Integration</h3>
+        <button
+          class="btn-secondary btn-sm text-xs"
+          on:click={testWordPress}
+          disabled={testingWp}
+        >
+          {testingWp ? 'Testing…' : 'Test Connection'}
+        </button>
+      </div>
+
+      {#if wpTestResult}
+        <div class="mb-4 px-3 py-2 rounded-lg text-xs {wpTestResult.ok ? 'bg-green-500/10 border border-green-500/30 text-green-400' : 'bg-red-500/10 border border-red-500/30 text-red-400'}">
+          {#if wpTestResult.ok}
+            Connected as <strong>{wpTestResult.user?.name}</strong>
+          {:else}
+            Connection failed: {wpTestResult.error}
+          {/if}
+        </div>
+      {/if}
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <label class="block text-xs text-muted mb-1.5">Site URL (wp_base_url)</label>
+          <input type="url" bind:value={wp_base_url} placeholder="https://example.com" class="input w-full" />
+          <p class="text-xs text-muted mt-1">Main WordPress site URL without trailing slash.</p>
+        </div>
+        <div>
+          <label class="block text-xs text-muted mb-1.5">Admin URL (optional)</label>
+          <input type="url" bind:value={wp_admin_url} placeholder="https://example.com/wp-admin" class="input w-full" />
+        </div>
+        <div>
+          <label class="block text-xs text-muted mb-1.5">REST Base</label>
+          <input type="text" bind:value={wp_rest_base} placeholder="/wp-json/wp/v2" class="input w-full font-mono text-xs" />
+          <p class="text-xs text-muted mt-1">Default: /wp-json/wp/v2</p>
+        </div>
+        <div>
+          <label class="block text-xs text-muted mb-1.5">WP Username</label>
+          <input type="text" bind:value={wp_username} placeholder="admin" class="input w-full" autocomplete="off" />
+        </div>
+        <div>
+          <label class="block text-xs text-muted mb-1.5">Application Password</label>
+          <input
+            type="password"
+            bind:value={wp_application_password}
+            placeholder="xxxx xxxx xxxx xxxx xxxx xxxx"
+            class="input w-full font-mono text-xs"
+            autocomplete="new-password"
+          />
+          <p class="text-xs text-muted mt-1">Generate in WP Admin → Users → Application Passwords.</p>
+        </div>
+        <div>
+          <label class="block text-xs text-muted mb-1.5">Default Post Status</label>
+          <select bind:value={wp_default_post_status} class="input w-full">
+            {#each postStatuses as s}
+              <option value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>
+            {/each}
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs text-muted mb-1.5">Default Author ID</label>
+          <input type="number" bind:value={wp_default_author_id} placeholder="1" class="input w-full" />
+          <p class="text-xs text-muted mt-1">Get from WP → Users. Use Test Connection first.</p>
+        </div>
+        <div>
+          <label class="block text-xs text-muted mb-1.5">Default Category IDs (JSON array)</label>
+          <input type="text" bind:value={wp_default_category_ids} placeholder="[1, 5, 12]" class="input w-full font-mono text-xs" />
+          <p class="text-xs text-muted mt-1">e.g. [1, 5] — use Pull Categories to find IDs.</p>
+        </div>
+        <div>
+          <label class="block text-xs text-muted mb-1.5">Template Key</label>
+          <input type="text" bind:value={wp_template_key} placeholder="etb" class="input w-full font-mono text-xs" />
+          <p class="text-xs text-muted mt-1">References a saved wp_templates entry.</p>
+        </div>
+        <div>
+          <label class="block text-xs text-muted mb-1.5">Featured Image Mode</label>
+          <select bind:value={wp_featured_image_mode} class="input w-full">
+            {#each imgModes as m}
+              <option value={m}>{m.charAt(0).toUpperCase() + m.slice(1)}</option>
+            {/each}
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs text-muted mb-1.5">Excerpt Mode</label>
+          <select bind:value={wp_excerpt_mode} class="input w-full">
+            {#each excerptModes as m}
+              <option value={m}>{m.charAt(0).toUpperCase() + m.slice(1)}</option>
+            {/each}
+          </select>
         </div>
       </div>
     </div>
@@ -181,7 +328,7 @@
       <textarea
         bind:value={brand_json}
         rows="8"
-        placeholder="&#123;&quot;primary_color&quot;:&quot;#000&quot;,&quot;font&quot;:&quot;Inter&quot;&#125;"
+        placeholder='&#123;"primary_color":"#000","font":"Inter"&#125;'
         class="input w-full resize-none font-mono text-xs"
         class:border-red-500={brand_json_error}
         on:blur={validateBrandJson}
@@ -189,8 +336,9 @@
       {#if brand_json_error}
         <p class="text-xs text-red-400 mt-1">{brand_json_error}</p>
       {:else}
-        <p class="text-xs text-muted mt-1">JSON object with brand metadata (colors, fonts, etc.)</p>
+        <p class="text-xs text-muted mt-1">JSON object with brand metadata (colors, fonts, phone, cta_text…)</p>
       {/if}
     </div>
+
   </div>
 {/if}

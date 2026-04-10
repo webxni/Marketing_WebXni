@@ -15,24 +15,36 @@ reportRoutes.use('/*', requirePermission('reports.view'));
 
 /** GET /api/reports/overview */
 reportRoutes.get('/overview', async (c) => {
-  const [totalClients, totalPosts, postedPosts, failedPosts, pendingApprovals, recentJobs] =
+  // Wrap each query in its own try-catch so a single schema gap can't 500 the dashboard
+  const safeCount = async (sql: string): Promise<number> => {
+    try {
+      const r = await c.env.DB.prepare(sql).first<{ n: number }>();
+      return r?.n ?? 0;
+    } catch { return 0; }
+  };
+
+  const safeJobs = async (): Promise<unknown[]> => {
+    try {
+      const r = await c.env.DB
+        .prepare(
+          'SELECT id, mode, status, client_filter, stats_json, created_at, completed_at FROM posting_jobs ORDER BY created_at DESC LIMIT 5',
+        )
+        .all();
+      return r.results ?? [];
+    } catch { return []; }
+  };
+
+  const [clients, total_posts, posted, failed, pending_approvals, recent_jobs] =
     await Promise.all([
-      c.env.DB.prepare("SELECT COUNT(*) as n FROM clients WHERE status = 'active'").first<{ n: number }>(),
-      c.env.DB.prepare("SELECT COUNT(*) as n FROM posts").first<{ n: number }>(),
-      c.env.DB.prepare("SELECT COUNT(*) as n FROM posts WHERE status = 'scheduled' OR status = 'posted'").first<{ n: number }>(),
-      c.env.DB.prepare("SELECT COUNT(*) as n FROM posts WHERE status = 'failed'").first<{ n: number }>(),
-      c.env.DB.prepare("SELECT COUNT(*) as n FROM posts WHERE status = 'approved'").first<{ n: number }>(),
-      c.env.DB.prepare('SELECT id, mode, status, stats_json, created_at, completed_at FROM posting_jobs ORDER BY created_at DESC LIMIT 5').all(),
+      safeCount("SELECT COUNT(*) as n FROM clients WHERE status = 'active'"),
+      safeCount('SELECT COUNT(*) as n FROM posts'),
+      safeCount("SELECT COUNT(*) as n FROM posts WHERE status = 'scheduled' OR status = 'posted'"),
+      safeCount("SELECT COUNT(*) as n FROM posts WHERE status = 'failed'"),
+      safeCount("SELECT COUNT(*) as n FROM posts WHERE status = 'approved'"),
+      safeJobs(),
     ]);
 
-  return c.json({
-    clients:           totalClients?.n ?? 0,
-    total_posts:       totalPosts?.n ?? 0,
-    posted:            postedPosts?.n ?? 0,
-    failed:            failedPosts?.n ?? 0,
-    pending_approvals: pendingApprovals?.n ?? 0,
-    recent_jobs:       recentJobs.results,
-  });
+  return c.json({ clients, total_posts, posted, failed, pending_approvals, recent_jobs });
 });
 
 /** GET /api/reports/posting-stats?from=YYYY-MM-DD&to=YYYY-MM-DD&client=slug */

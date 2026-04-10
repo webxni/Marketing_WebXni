@@ -24,6 +24,24 @@
   let assetR2Key = '';
   let dryRun = false;
 
+  // GBP advanced fields — only shown when google_business is selected
+  let gbp_topic_type = 'STANDARD';
+  let gbp_cta_type = '';
+  let gbp_cta_url = '';
+  let gbp_event_title = '';
+  let gbp_event_start_date = '';
+  let gbp_event_start_time = '';
+  let gbp_event_end_date = '';
+  let gbp_event_end_time = '';
+  let gbp_coupon_code = '';
+  let gbp_redeem_url = '';
+  let gbp_terms = '';
+
+  $: gbpSelected = selectedPlatforms.includes('google_business');
+  $: showEventFields = gbpSelected && gbp_topic_type === 'EVENT';
+  $: showOfferFields = gbpSelected && gbp_topic_type === 'OFFER';
+  $: showCtaUrl = gbpSelected && gbp_cta_type && gbp_cta_type !== 'CALL';
+
   const allPlatforms = [
     'facebook','instagram','linkedin','x','threads',
     'tiktok','pinterest','bluesky','youtube','google_business','website_blog'
@@ -66,6 +84,20 @@
         const key = `cap_${p}` as string;
         captionFields[key] = captions[p] || masterCaption;
       }
+      const gbpFields = gbpSelected ? {
+        gbp_topic_type:       gbp_topic_type || null,
+        gbp_cta_type:         gbp_cta_type || null,
+        gbp_cta_url:          gbp_cta_url || null,
+        gbp_event_title:      gbp_event_title || null,
+        gbp_event_start_date: gbp_event_start_date || null,
+        gbp_event_start_time: gbp_event_start_time || null,
+        gbp_event_end_date:   gbp_event_end_date || null,
+        gbp_event_end_time:   gbp_event_end_time || null,
+        gbp_coupon_code:      gbp_coupon_code || null,
+        gbp_redeem_url:       gbp_redeem_url || null,
+        gbp_terms:            gbp_terms || null,
+      } : {};
+
       const r = await postsApi.create({
         client_slug:      clientSlug,
         title:            title || null,
@@ -77,6 +109,7 @@
         dry_run:          dryRun,
         status:           action === 'draft' ? 'draft' : 'approved',
         ...captionFields,
+        ...gbpFields,
       });
       toast.success(action === 'draft' ? 'Post saved as draft' : 'Post submitted for publishing');
       goto(`/posts/${r.post.id}`);
@@ -239,6 +272,94 @@
       </div>
     </div>
     {/if}
+    <!-- Google Business Profile advanced fields -->
+    {#if gbpSelected}
+    <div class="card p-5">
+      <h3 class="section-label mb-4">Google Business Profile</h3>
+      <div class="space-y-4">
+
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="block text-xs text-muted mb-1.5">Post Type</label>
+            <select bind:value={gbp_topic_type} class="input w-full">
+              <option value="STANDARD">Standard</option>
+              <option value="EVENT">Event</option>
+              <option value="OFFER">Offer</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs text-muted mb-1.5">Call to Action</label>
+            <select bind:value={gbp_cta_type} class="input w-full">
+              <option value="">None</option>
+              <option value="LEARN_MORE">Learn More</option>
+              <option value="BOOK">Book</option>
+              <option value="ORDER">Order Online</option>
+              <option value="SHOP">Shop</option>
+              <option value="SIGN_UP">Sign Up</option>
+              <option value="CALL">Call Now</option>
+            </select>
+          </div>
+        </div>
+
+        {#if showCtaUrl}
+        <div>
+          <label class="block text-xs text-muted mb-1.5">CTA URL <span class="text-red-400">*</span></label>
+          <input type="url" bind:value={gbp_cta_url} placeholder="https://…" class="input w-full" />
+        </div>
+        {/if}
+
+        {#if showEventFields}
+        <div class="border border-border rounded-lg p-4 space-y-3">
+          <p class="text-xs text-accent font-medium">Event Details</p>
+          <div>
+            <label class="block text-xs text-muted mb-1.5">Event Title <span class="text-red-400">*</span></label>
+            <input type="text" bind:value={gbp_event_title} placeholder="Grand Opening…" class="input w-full" />
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs text-muted mb-1.5">Start Date <span class="text-red-400">*</span></label>
+              <input type="date" bind:value={gbp_event_start_date} class="input w-full" />
+            </div>
+            <div>
+              <label class="block text-xs text-muted mb-1.5">Start Time</label>
+              <input type="time" bind:value={gbp_event_start_time} class="input w-full" />
+            </div>
+            <div>
+              <label class="block text-xs text-muted mb-1.5">End Date <span class="text-red-400">*</span></label>
+              <input type="date" bind:value={gbp_event_end_date} class="input w-full" />
+            </div>
+            <div>
+              <label class="block text-xs text-muted mb-1.5">End Time</label>
+              <input type="time" bind:value={gbp_event_end_time} class="input w-full" />
+            </div>
+          </div>
+        </div>
+        {/if}
+
+        {#if showOfferFields}
+        <div class="border border-border rounded-lg p-4 space-y-3">
+          <p class="text-xs text-accent font-medium">Offer Details</p>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs text-muted mb-1.5">Coupon Code</label>
+              <input type="text" bind:value={gbp_coupon_code} placeholder="SAVE20" class="input w-full font-mono" />
+            </div>
+            <div>
+              <label class="block text-xs text-muted mb-1.5">Redeem URL</label>
+              <input type="url" bind:value={gbp_redeem_url} placeholder="https://…" class="input w-full" />
+            </div>
+          </div>
+          <div>
+            <label class="block text-xs text-muted mb-1.5">Terms & Conditions</label>
+            <textarea bind:value={gbp_terms} rows="2" placeholder="Offer valid until…" class="input w-full resize-none text-xs"></textarea>
+          </div>
+        </div>
+        {/if}
+
+      </div>
+    </div>
+    {/if}
+
   </div>
 
   <!-- Right: platform selector + actions -->

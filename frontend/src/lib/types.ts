@@ -20,25 +20,43 @@ export interface SessionUser {
 }
 
 export interface Client {
-  id:                     string;
-  slug:                   string;
-  canonical_name:         string;
-  package:                string | null;
-  status:                 string | null;
-  manual_only:            number;
-  requires_approval_from: string | null;
-  language:               string | null;
-  upload_post_profile:    string | null;
-  owner_group:            string | null;
-  wp_domain:              string | null;
-  brand_json:             string | null;
-  notes:                  string | null;
-  created_at:             number;
-  updated_at:             number;
+  id:                       string;
+  slug:                     string;
+  canonical_name:           string;
+  package:                  string | null;
+  status:                   string | null;
+  manual_only:              number;
+  requires_approval_from:   string | null;
+  language:                 string | null;
+  upload_post_profile:      string | null;
+  owner_group:              string | null;
+  // WordPress legacy
+  wp_domain:                string | null;
+  wp_url:                   string | null;
+  wp_auth:                  string | null;
+  wp_template:              string | null;
+  // WordPress — new credential fields
+  wp_admin_url:             string | null;
+  wp_base_url:              string | null;
+  wp_rest_base:             string | null;
+  wp_username:              string | null;
+  wp_application_password:  string | null;
+  wp_default_post_status:   string | null;
+  wp_default_author_id:     number | null;
+  wp_default_category_ids:  string | null;
+  wp_template_key:          string | null;
+  wp_featured_image_mode:   string | null;
+  wp_excerpt_mode:          string | null;
+  // Notion
+  notion_page_id:           string | null;
+  brand_json:               string | null;
+  notes:                    string | null;
+  created_at:               number;
+  updated_at:               number;
   // joined
-  platforms?:             ClientPlatform[];
-  gbp_locations?:         GbpLocation[];
-  restrictions?:          string[];
+  platforms?:               ClientPlatform[];
+  gbp_locations?:           GbpLocation[];
+  restrictions?:            string[];
 }
 
 export interface ClientPlatform {
@@ -121,6 +139,21 @@ export interface Post {
   asset_r2_bucket:      string | null;
   canva_link:           string | null;
   wp_post_url:          string | null;
+  wp_post_id:           number | null;
+  wp_post_status:       string | null;
+  // GBP advanced fields
+  gbp_topic_type:       string | null;
+  gbp_cta_type:         string | null;
+  gbp_cta_url:          string | null;
+  gbp_event_title:      string | null;
+  gbp_event_start_date: string | null;
+  gbp_event_start_time: string | null;
+  gbp_event_end_date:   string | null;
+  gbp_event_end_time:   string | null;
+  gbp_coupon_code:      string | null;
+  gbp_redeem_url:       string | null;
+  gbp_terms:            string | null;
+  notion_page_id:       string | null;
   ready_for_automation: number;
   asset_delivered:      number;
   skarleth_status:      string | null;

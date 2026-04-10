@@ -63,7 +63,6 @@ runRoutes.post('/generate', async (c) => {
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { /* use empty */ }
 
   const jobId = crypto.randomUUID().replace(/-/g, '').toLowerCase();
-  const user = c.get('user');
 
   // Generation not yet implemented — log and return
   console.log('Generation run requested', { jobId, body });

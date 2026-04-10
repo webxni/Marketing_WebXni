@@ -13,7 +13,9 @@
   let manual_only = false;
   let requires_approval_from = '';
   let upload_post_profile = '';
-  let wp_domain = '';
+  let wp_base_url = '';
+  let wp_username = '';
+  let wp_application_password = '';
   let notes = '';
 
   const packages = ['starter','growth','premium','enterprise'];
@@ -36,16 +38,18 @@
     saving = true;
     try {
       const r = await clientsApi.create({
-        canonical_name:         canonical_name.trim(),
-        slug:                   slug.trim(),
-        package:                packageField || null,
+        canonical_name:          canonical_name.trim(),
+        slug:                    slug.trim(),
+        package:                 packageField || null,
         status,
         language,
-        manual_only:            manual_only ? 1 : 0,
-        requires_approval_from: requires_approval_from || null,
-        upload_post_profile:    upload_post_profile || null,
-        wp_domain:              wp_domain || null,
-        notes:                  notes || null,
+        manual_only:             manual_only ? 1 : 0,
+        requires_approval_from:  requires_approval_from || null,
+        upload_post_profile:     upload_post_profile || null,
+        wp_base_url:             wp_base_url || null,
+        wp_username:             wp_username || null,
+        wp_application_password: wp_application_password || null,
+        notes:                   notes || null,
       });
       toast.success(`Client "${canonical_name}" created`);
       goto(`/clients/${r.client.slug}`);
@@ -122,11 +126,21 @@
     <div class="space-y-4">
       <div>
         <label for="upload_post_profile" class="block text-xs text-muted mb-1.5">Upload-Post Profile</label>
-        <input id="upload_post_profile" type="text" bind:value={upload_post_profile} placeholder="profile-slug" class="input w-full font-mono text-xs" />
+        <input id="upload_post_profile" type="text" bind:value={upload_post_profile} placeholder="Elite_Team_Builders" class="input w-full font-mono text-xs" />
+        <p class="text-xs text-muted mt-1">Exact profile slug from Upload-Post dashboard.</p>
       </div>
       <div>
-        <label for="wp_domain" class="block text-xs text-muted mb-1.5">WordPress Domain</label>
-        <input id="wp_domain" type="text" bind:value={wp_domain} placeholder="example.com" class="input w-full" />
+        <label for="wp_base_url" class="block text-xs text-muted mb-1.5">WordPress Site URL</label>
+        <input id="wp_base_url" type="url" bind:value={wp_base_url} placeholder="https://example.com" class="input w-full" />
+      </div>
+      <div>
+        <label for="wp_username" class="block text-xs text-muted mb-1.5">WP Username</label>
+        <input id="wp_username" type="text" bind:value={wp_username} placeholder="admin" class="input w-full" autocomplete="off" />
+      </div>
+      <div>
+        <label for="wp_application_password" class="block text-xs text-muted mb-1.5">WP Application Password</label>
+        <input id="wp_application_password" type="password" bind:value={wp_application_password} placeholder="xxxx xxxx xxxx xxxx xxxx xxxx" class="input w-full font-mono text-xs" autocomplete="new-password" />
+        <p class="text-xs text-muted mt-1">Generate in WP Admin → Users → Application Passwords. Full config in client edit.</p>
       </div>
       <div>
         <label for="requires_approval_from" class="block text-xs text-muted mb-1.5">Requires Approval From</label>

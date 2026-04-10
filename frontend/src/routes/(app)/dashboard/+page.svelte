@@ -12,9 +12,16 @@
   let error   = '';
 
   onMount(async () => {
-    try { stats = await reportsApi.overview(); }
-    catch (e) { error = String(e); }
-    finally { loading = false; }
+    try {
+      stats = await reportsApi.overview();
+    } catch (e) {
+      // Show a user-friendly message; log full error to console for debugging
+      const msg = e instanceof Error ? e.message : String(e);
+      error = msg.includes('401') ? 'Session expired — please log in again.' : `Failed to load dashboard: ${msg}`;
+      console.error('[Dashboard] overview fetch failed:', e);
+    } finally {
+      loading = false;
+    }
   });
 
   async function triggerPosting(dryRun: boolean) {
@@ -53,8 +60,15 @@
     <MetricCard label="Active Clients"    value={stats.clients}           href="/clients" />
     <MetricCard label="Total Posts"       value={stats.total_posts}       href="/posts" />
     <MetricCard label="Posted"            value={stats.posted}            color="success" />
-    <MetricCard label="Pending Approval"  value={stats.pending_approvals} href="/approvals" color={stats.pending_approvals > 0 ? 'warning' : 'default'} />
+    <MetricCard label="Failed"            value={stats.failed}            href="/posts?status=failed" color={stats.failed > 0 ? 'error' : 'default'} />
   </div>
+  {#if stats.pending_approvals > 0}
+  <div class="mb-6 flex items-center gap-3 px-4 py-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-sm text-yellow-400">
+    <span>⚠</span>
+    <span>{stats.pending_approvals} post{stats.pending_approvals !== 1 ? 's' : ''} waiting for approval</span>
+    <a href="/approvals" class="ml-auto text-xs underline hover:no-underline">Review now →</a>
+  </div>
+  {/if}
 
   <!-- Two columns -->
   <div class="grid grid-cols-1 md:grid-cols-2 gap-6">

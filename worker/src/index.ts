@@ -8,17 +8,19 @@ import { authMiddleware } from './middleware/auth';
 import { rateLimitMiddleware } from './middleware/rateLimit';
 
 // Routes
-import { authRoutes }    from './routes/auth';
-import { clientRoutes }  from './routes/clients';
-import { postRoutes }    from './routes/posts';
-import { assetRoutes }   from './routes/assets';
-import { runRoutes }     from './routes/run';
-import { userRoutes }    from './routes/users';
-import { reportRoutes }  from './routes/reports';
-import { serviceRoutes }  from './routes/services';
-import { logRoutes }      from './routes/logs';
-import { settingsRoutes } from './routes/settings';
-import { setupRoutes }    from './routes/setup';
+import { authRoutes }      from './routes/auth';
+import { clientRoutes }    from './routes/clients';
+import { postRoutes }      from './routes/posts';
+import { assetRoutes }     from './routes/assets';
+import { runRoutes }       from './routes/run';
+import { userRoutes }      from './routes/users';
+import { reportRoutes }    from './routes/reports';
+import { serviceRoutes }   from './routes/services';
+import { logRoutes }       from './routes/logs';
+import { settingsRoutes }  from './routes/settings';
+import { setupRoutes }     from './routes/setup';
+import { wordpressRoutes } from './routes/wordpress';
+import { notionRoutes }    from './routes/notion';
 
 const app = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -27,16 +29,18 @@ app.use('/api/*', rateLimitMiddleware);
 app.use('/api/*', authMiddleware);
 
 // ─── Routes ──────────────────────────────────────────────────────────────────
-app.route('/api/auth',    authRoutes);
-app.route('/api/clients', clientRoutes);
-app.route('/api/clients', serviceRoutes);   // nested: /api/clients/:slug/services, /areas, etc.
-app.route('/api/posts',   postRoutes);
-app.route('/api/assets',  assetRoutes);
-app.route('/api/run',     runRoutes);
-app.route('/api/users',   userRoutes);
-app.route('/api/reports',  reportRoutes);
-app.route('/api/logs',     logRoutes);
-app.route('/api/settings', settingsRoutes);
+app.route('/api/auth',      authRoutes);
+app.route('/api/clients',   clientRoutes);
+app.route('/api/clients',   serviceRoutes);    // nested: /api/clients/:slug/services, /areas, etc.
+app.route('/api/clients',   wordpressRoutes);  // nested: /api/clients/:slug/wordpress/*
+app.route('/api/posts',     postRoutes);
+app.route('/api/assets',    assetRoutes);
+app.route('/api/run',       runRoutes);
+app.route('/api/users',     userRoutes);
+app.route('/api/reports',   reportRoutes);
+app.route('/api/logs',      logRoutes);
+app.route('/api/settings',  settingsRoutes);
+app.route('/api/notion',    notionRoutes);
 
 app.get('/api/health', (c) =>
   c.json({ status: 'ok', ts: Date.now(), version: '2.0.0' }),
