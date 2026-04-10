@@ -32,7 +32,7 @@ binding = "LOADER"
 service = "marketing-webxni-loader"
 
 [[routes]]
-pattern = "marketing.webxni.com/*"
+pattern = "marketing.webxni.com"
 custom_domain = true
 
 [assets]
