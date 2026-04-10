@@ -45,6 +45,16 @@ app.get('/api/health', (c) =>
 // One-time setup — disabled automatically after first admin is created
 app.route('/api/setup', setupRoutes);
 
+// ─── Static assets & SPA fallback ─────────────────────────────────────────────
+app.all('/*', async (c) => {
+  // If it's an API route that reached here, it's a 404
+  if (c.req.path.startsWith('/api/')) {
+    return c.json({ error: 'Not Found' }, 404);
+  }
+  // Otherwise, serve from Cloudflare Assets
+  return c.env.ASSETS.fetch(c.req.raw);
+});
+
 // ─── Scheduled cron handler ───────────────────────────────────────────────────
 import { runPosting } from './loader/posting-run';
 

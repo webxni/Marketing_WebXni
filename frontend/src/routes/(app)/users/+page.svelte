@@ -147,24 +147,24 @@
 <Modal open={showCreate} title="Add User" on:close={() => (showCreate = false)}>
   <div class="space-y-4" slot="body">
     <div>
-      <label class="block text-xs text-muted mb-1.5">Full Name</label>
-      <input type="text" bind:value={newName} placeholder="Jane Smith" class="input w-full" />
+      <label for="newName" class="block text-xs text-muted mb-1.5">Full Name</label>
+      <input id="newName" type="text" bind:value={newName} placeholder="Jane Smith" class="input w-full" />
     </div>
     <div>
-      <label class="block text-xs text-muted mb-1.5">Email</label>
-      <input type="email" bind:value={newEmail} placeholder="jane@example.com" class="input w-full" />
+      <label for="newEmail" class="block text-xs text-muted mb-1.5">Email</label>
+      <input id="newEmail" type="email" bind:value={newEmail} placeholder="jane@example.com" class="input w-full" />
     </div>
     <div>
-      <label class="block text-xs text-muted mb-1.5">Role</label>
-      <select bind:value={newRole} class="input w-full">
+      <label for="newRole" class="block text-xs text-muted mb-1.5">Role</label>
+      <select id="newRole" bind:value={newRole} class="input w-full">
         {#each roles as r}
           <option value={r}>{r.charAt(0).toUpperCase() + r.slice(1)}</option>
         {/each}
       </select>
     </div>
     <div>
-      <label class="block text-xs text-muted mb-1.5">Initial Password</label>
-      <input type="password" bind:value={newPassword} placeholder="••••••••" class="input w-full" autocomplete="new-password" />
+      <label for="newPassword" class="block text-xs text-muted mb-1.5">Initial Password</label>
+      <input id="newPassword" type="password" bind:value={newPassword} placeholder="••••••••" class="input w-full" autocomplete="new-password" />
     </div>
   </div>
   <div class="flex justify-end gap-2" slot="footer">

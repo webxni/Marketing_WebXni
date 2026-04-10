@@ -79,8 +79,9 @@
     <h3 class="section-label mb-4">Basic Info</h3>
     <div class="space-y-4">
       <div>
-        <label class="block text-xs text-muted mb-1.5">Business Name <span class="text-red-400">*</span></label>
+        <label for="canonical_name" class="block text-xs text-muted mb-1.5">Business Name <span class="text-red-400">*</span></label>
         <input
+          id="canonical_name"
           type="text"
           bind:value={canonical_name}
           on:blur={generateSlug}
@@ -89,14 +90,14 @@
         />
       </div>
       <div>
-        <label class="block text-xs text-muted mb-1.5">Slug <span class="text-red-400">*</span></label>
-        <input type="text" bind:value={slug} placeholder="elite-team-builders" class="input w-full font-mono text-xs" />
+        <label for="slug" class="block text-xs text-muted mb-1.5">Slug <span class="text-red-400">*</span></label>
+        <input id="slug" type="text" bind:value={slug} placeholder="elite-team-builders" class="input w-full font-mono text-xs" />
         <p class="text-xs text-muted mt-1">Unique identifier. Auto-filled from name. Cannot be changed later.</p>
       </div>
       <div class="grid grid-cols-2 gap-3">
         <div>
-          <label class="block text-xs text-muted mb-1.5">Package</label>
-          <select bind:value={packageField} class="input w-full">
+          <label for="package" class="block text-xs text-muted mb-1.5">Package</label>
+          <select id="package" bind:value={packageField} class="input w-full">
             <option value="">—</option>
             {#each packages as p}
               <option value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>
@@ -104,8 +105,8 @@
           </select>
         </div>
         <div>
-          <label class="block text-xs text-muted mb-1.5">Language</label>
-          <select bind:value={language} class="input w-full">
+          <label for="language" class="block text-xs text-muted mb-1.5">Language</label>
+          <select id="language" bind:value={language} class="input w-full">
             {#each languages as l}
               <option value={l}>{l.toUpperCase()}</option>
             {/each}
@@ -120,16 +121,16 @@
     <h3 class="section-label mb-4">Automation</h3>
     <div class="space-y-4">
       <div>
-        <label class="block text-xs text-muted mb-1.5">Upload-Post Profile</label>
-        <input type="text" bind:value={upload_post_profile} placeholder="profile-slug" class="input w-full font-mono text-xs" />
+        <label for="upload_post_profile" class="block text-xs text-muted mb-1.5">Upload-Post Profile</label>
+        <input id="upload_post_profile" type="text" bind:value={upload_post_profile} placeholder="profile-slug" class="input w-full font-mono text-xs" />
       </div>
       <div>
-        <label class="block text-xs text-muted mb-1.5">WordPress Domain</label>
-        <input type="text" bind:value={wp_domain} placeholder="example.com" class="input w-full" />
+        <label for="wp_domain" class="block text-xs text-muted mb-1.5">WordPress Domain</label>
+        <input id="wp_domain" type="text" bind:value={wp_domain} placeholder="example.com" class="input w-full" />
       </div>
       <div>
-        <label class="block text-xs text-muted mb-1.5">Requires Approval From</label>
-        <input type="text" bind:value={requires_approval_from} placeholder="e.g. Lee" class="input w-full" />
+        <label for="requires_approval_from" class="block text-xs text-muted mb-1.5">Requires Approval From</label>
+        <input id="requires_approval_from" type="text" bind:value={requires_approval_from} placeholder="e.g. Lee" class="input w-full" />
       </div>
       <div class="flex items-center gap-2">
         <input type="checkbox" bind:checked={manual_only} id="manual-only" class="rounded" />
@@ -141,6 +142,6 @@
   <!-- Notes -->
   <div class="card p-5 lg:col-span-2">
     <h3 class="section-label mb-4">Notes</h3>
-    <textarea bind:value={notes} rows="3" placeholder="Content restrictions, contact info, special instructions…" class="input w-full resize-none text-sm"></textarea>
+    <textarea id="notes" bind:value={notes} rows="3" placeholder="Content restrictions, contact info, special instructions…" class="input w-full resize-none text-sm"></textarea>
   </div>
 </div>

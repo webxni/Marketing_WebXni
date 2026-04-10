@@ -108,12 +108,12 @@
       <h3 class="section-label mb-4">Basic Info</h3>
       <div class="space-y-4">
         <div>
-          <label class="block text-xs text-muted mb-1.5">Canonical Name <span class="text-red-400">*</span></label>
-          <input type="text" bind:value={canonical_name} class="input w-full" />
+          <label for="canonical_name" class="block text-xs text-muted mb-1.5">Canonical Name <span class="text-red-400">*</span></label>
+          <input id="canonical_name" type="text" bind:value={canonical_name} class="input w-full" />
         </div>
         <div>
-          <label class="block text-xs text-muted mb-1.5">Slug</label>
-          <input type="text" value={slug_field} class="input w-full opacity-50 cursor-not-allowed" readonly />
+          <label for="slug" class="block text-xs text-muted mb-1.5">Slug</label>
+          <input id="slug" type="text" value={slug_field} class="input w-full opacity-50 cursor-not-allowed" readonly />
           <p class="text-xs text-muted mt-1">Slug cannot be changed after creation.</p>
         </div>
         <div class="grid grid-cols-2 gap-3">

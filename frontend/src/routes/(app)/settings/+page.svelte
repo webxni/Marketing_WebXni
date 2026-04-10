@@ -89,12 +89,12 @@
     <h3 class="section-label mb-4">Profile</h3>
     <div class="space-y-4">
       <div>
-        <label class="block text-xs text-muted mb-1.5">Full Name</label>
-        <input type="text" bind:value={name} class="input w-full" />
+        <label for="name" class="block text-xs text-muted mb-1.5">Full Name</label>
+        <input id="name" type="text" bind:value={name} class="input w-full" />
       </div>
       <div>
-        <label class="block text-xs text-muted mb-1.5">Email</label>
-        <input type="email" value={email} class="input w-full opacity-50 cursor-not-allowed" readonly />
+        <label for="email" class="block text-xs text-muted mb-1.5">Email</label>
+        <input id="email" type="email" value={email} class="input w-full opacity-50 cursor-not-allowed" readonly />
         <p class="text-xs text-muted mt-1">Email cannot be changed. Contact an admin.</p>
       </div>
       <div class="flex justify-end">
@@ -110,16 +110,16 @@
     <h3 class="section-label mb-4">Change Password</h3>
     <div class="space-y-4">
       <div>
-        <label class="block text-xs text-muted mb-1.5">Current Password</label>
-        <input type="password" bind:value={currentPassword} class="input w-full" autocomplete="current-password" />
+        <label for="currentPassword" class="block text-xs text-muted mb-1.5">Current Password</label>
+        <input id="currentPassword" type="password" bind:value={currentPassword} class="input w-full" autocomplete="current-password" />
       </div>
       <div>
-        <label class="block text-xs text-muted mb-1.5">New Password</label>
-        <input type="password" bind:value={newPassword} class="input w-full" autocomplete="new-password" />
+        <label for="newPassword" class="block text-xs text-muted mb-1.5">New Password</label>
+        <input id="newPassword" type="password" bind:value={newPassword} class="input w-full" autocomplete="new-password" />
       </div>
       <div>
-        <label class="block text-xs text-muted mb-1.5">Confirm New Password</label>
-        <input type="password" bind:value={confirmPassword} class="input w-full" autocomplete="new-password" />
+        <label for="confirmPassword" class="block text-xs text-muted mb-1.5">Confirm New Password</label>
+        <input id="confirmPassword" type="password" bind:value={confirmPassword} class="input w-full" autocomplete="new-password" />
       </div>
       <div class="flex justify-end">
         <button class="btn-primary btn-sm" on:click={changePassword} disabled={savingPassword}>

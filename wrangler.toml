@@ -34,9 +34,7 @@ custom_domain = true
 [assets]
 directory = "./frontend/build"
 binding = "ASSETS"
-# Let worker handle all routes so it can serve index.html as fallback for SPA
-
-# SPA mode — fall back to index.html for client-side routes like /dashboard
+run_worker_first = ["/api/*"]
 not_found_handling = "single-page-application"
 
 [vars]
