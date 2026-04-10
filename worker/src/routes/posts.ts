@@ -201,12 +201,9 @@ postRoutes.post('/:id/publish', async (c) => {
   const { createPostingJob } = await import('../db/queries');
   const job = await createPostingJob(c.env.DB, { triggered_by: 'api', mode: dryRun ? 'dry_run' : 'real', client_filter: undefined });
 
+  const { runPosting } = await import('../loader/posting-run');
   c.executionCtx.waitUntil(
-    c.env.LOADER.fetch(new Request('https://loader/run-posting', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: dryRun ? 'dry_run' : 'real', entry_id: post.id, job_id: job.id, triggered_by: 'api' }),
-    })),
+    runPosting(c.env, { mode: dryRun ? 'dry_run' : 'real', job_id: job.id, triggered_by: 'api' }),
   );
 
   return c.json({ ok: true, job_id: job.id, dry_run: dryRun }, 202);

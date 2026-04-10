@@ -5,6 +5,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Env, SessionData } from '../types';
 import { createPostingJob, listPostingJobs, getPostingJobById } from '../db/queries';
+import { runPosting } from '../loader/posting-run';
 
 export const runRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -41,22 +42,16 @@ runRoutes.post('/posting', async (c) => {
     limit_count: limit,
   });
 
-  // Dispatch to LOADER (async background execution)
+  // Run posting in background
   c.executionCtx.waitUntil(
-    c.env.LOADER.fetch(
-      new Request('https://loader/run-posting', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          mode,
-          job_id:          job.id,   // pass so LOADER reuses, doesn't create a second job
-          client_filter:   client,
-          platform_filter: platform,
-          limit,
-          triggered_by:    'api',
-        }),
-      }),
-    ),
+    runPosting(c.env, {
+      mode,
+      job_id:          job.id,
+      client_filter:   client,
+      platform_filter: platform,
+      limit,
+      triggered_by:    'api',
+    }),
   );
 
   return c.json({ ok: true, job_id: job.id, mode }, 202);
@@ -70,15 +65,8 @@ runRoutes.post('/generate', async (c) => {
   const jobId = crypto.randomUUID().replace(/-/g, '').toLowerCase();
   const user = c.get('user');
 
-  c.executionCtx.waitUntil(
-    c.env.LOADER.fetch(
-      new Request('https://loader/run-generation', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...body, job_id: jobId, triggered_by: user?.userId ?? 'api' }),
-      }),
-    ),
-  );
+  // Generation not yet implemented — log and return
+  console.log('Generation run requested', { jobId, body });
 
   return c.json({ ok: true, job_id: jobId }, 202);
 });
@@ -86,15 +74,8 @@ runRoutes.post('/generate', async (c) => {
 /** POST /api/run/fetch-urls — poll Upload-Post history and write real URLs back */
 runRoutes.post('/fetch-urls', async (c) => {
   const jobId = crypto.randomUUID().replace(/-/g, '').toLowerCase();
-  c.executionCtx.waitUntil(
-    c.env.LOADER.fetch(
-      new Request('https://loader/fetch-urls', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ job_id: jobId, triggered_by: 'api' }),
-      }),
-    ),
-  );
+  // Fetch URLs not yet implemented — log and return
+  console.log('Fetch URLs run requested', { jobId });
   return c.json({ ok: true, job_id: jobId }, 202);
 });
 

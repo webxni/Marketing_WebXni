@@ -34,8 +34,10 @@ custom_domain = true
 [assets]
 directory = "./frontend/build"
 binding = "ASSETS"
-# Worker handles /api/* before static assets are checked
-run_worker_first = ["/api/*"]
+# Let worker handle all routes so it can serve index.html as fallback for SPA
+
+# SPA mode — fall back to index.html for client-side routes like /dashboard
+not_found_handling = "single-page-application"
 
 [vars]
 # Public base URL for the MEDIA R2 bucket (set after enabling public access in Cloudflare R2 dashboard)
