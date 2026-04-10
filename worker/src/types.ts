@@ -10,7 +10,6 @@ export interface Env {
   MEDIA: R2Bucket;
   IMAGES: R2Bucket;
   KV_BINDING: KVNamespace;
-  LOADER: Fetcher;
   UPLOAD_POST_API_KEY: string;
   OPENAI_API_KEY: string;
   R2_MEDIA_PUBLIC_URL: string;

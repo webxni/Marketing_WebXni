@@ -46,26 +46,21 @@ app.get('/api/health', (c) =>
 app.route('/api/setup', setupRoutes);
 
 // ─── Scheduled cron handler ───────────────────────────────────────────────────
+import { runPosting } from './loader/posting-run';
+
 export default {
   fetch: app.fetch,
 
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
-    const dispatch = (path: string, body: Record<string, unknown>) =>
-      env.LOADER.fetch(new Request(`https://loader${path}`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify(body),
-      }));
-
     if (event.cron === '0 7 * * 0') {
-      // Sunday 7AM — Phase 1 content generation
-      ctx.waitUntil(dispatch('/run-generation', { phase: 1, triggered_by: 'cron' }));
+      // Sunday 7AM — Phase 1 content generation (not yet implemented)
+      console.log('Generation cron triggered');
     } else if (event.cron === '0 2 * * *') {
-      // Daily 2AM — fetch real post URLs from Upload-Post history
-      ctx.waitUntil(dispatch('/fetch-urls', { triggered_by: 'cron' }));
+      // Daily 2AM — fetch real post URLs (not yet implemented)
+      console.log('Fetch URLs cron triggered');
     } else if (event.cron === '0 */6 * * *') {
       // Every 6h — automated posting check
-      ctx.waitUntil(dispatch('/run-posting', { mode: 'real', triggered_by: 'cron', limit: 50 }));
+      ctx.waitUntil(runPosting(env as any, { mode: 'real', triggered_by: 'cron', limit: 50 }));
     }
   },
 };
