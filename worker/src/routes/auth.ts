@@ -23,19 +23,33 @@ authRoutes.post('/login', async (c) => {
 
   const { email, password } = parsed.data;
 
-  const user = await c.env.DB
-    .prepare('SELECT id, email, name, role, password_hash, is_active FROM users WHERE email = ?')
-    .bind(email.toLowerCase())
-    .first<{ id: string; email: string; name: string; role: string; password_hash: string; is_active: number }>();
+  let user: { id: string; email: string; name: string; role: string; password_hash: string; is_active: number } | null;
+  try {
+    user = await c.env.DB
+      .prepare('SELECT id, email, name, role, password_hash, is_active FROM users WHERE email = ?')
+      .bind(email.toLowerCase())
+      .first<{ id: string; email: string; name: string; role: string; password_hash: string; is_active: number }>();
+  } catch (e) {
+    console.error('DB SELECT failed:', e);
+    return c.json({ error: 'Database error', detail: String(e) }, 500);
+  }
 
   if (!user || user.is_active === 0) return c.json({ error: 'Invalid credentials' }, 401);
 
-  const valid = await verifyPassword(password, user.password_hash);
+  let valid: boolean;
+  try {
+    valid = await verifyPassword(password, user.password_hash);
+  } catch (e) {
+    console.error('verifyPassword failed:', e);
+    return c.json({ error: 'Auth error', detail: String(e) }, 500);
+  }
   if (!valid) return c.json({ error: 'Invalid credentials' }, 401);
 
-  // Update last login
+  // Update last login (best-effort — don't fail login if column missing)
   const now = Math.floor(Date.now() / 1000);
-  await c.env.DB.prepare('UPDATE users SET last_login = ? WHERE id = ?').bind(now, user.id).run();
+  try {
+    await c.env.DB.prepare('UPDATE users SET last_login = ? WHERE id = ?').bind(now, user.id).run();
+  } catch { /* last_login column may not exist yet — ignore */ }
 
   const sessionId = crypto.randomUUID();
   const sessionData: SessionData = {
@@ -45,9 +59,14 @@ authRoutes.post('/login', async (c) => {
     role:   user.role as SessionData['role'],
   };
 
-  await c.env.KV_BINDING.put(`session:${sessionId}`, JSON.stringify(sessionData), {
-    expirationTtl: 7 * 24 * 60 * 60,
-  });
+  try {
+    await c.env.KV_BINDING.put(`session:${sessionId}`, JSON.stringify(sessionData), {
+      expirationTtl: 7 * 24 * 60 * 60,
+    });
+  } catch (e) {
+    console.error('KV session write failed:', e);
+    return c.json({ error: 'Session error', detail: String(e) }, 500);
+  }
 
   setCookie(c, 'session', sessionId, {
     httpOnly: true,

@@ -44,6 +44,6 @@ export async function rateLimitMiddleware(
     // KV failure → fail open (never block legitimate traffic on KV hiccup)
   }
 
+  await next();
   c.res.headers.set('X-RateLimit-Limit', String(limit));
-  return next();
 }
