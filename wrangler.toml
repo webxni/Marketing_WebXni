@@ -5,7 +5,7 @@ compatibility_flags = ["nodejs_compat"]
 
 [triggers]
 crons = [
-  "0 7 * * 0",    # Weekly generation — Sunday 7AM
+  "0 7 * * SUN",  # Weekly generation — Sunday 7AM
   "0 2 * * *",    # Fetch real URLs from Upload-Post history — daily 2AM
   "0 */6 * * *",  # Posting check — every 6 hours
 ]

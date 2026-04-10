@@ -52,7 +52,7 @@ export default {
   fetch: app.fetch,
 
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
-    if (event.cron === '0 7 * * 0') {
+    if (event.cron === '0 7 * * SUN') {
       // Sunday 7AM — Phase 1 content generation (not yet implemented)
       console.log('Generation cron triggered');
     } else if (event.cron === '0 2 * * *') {
