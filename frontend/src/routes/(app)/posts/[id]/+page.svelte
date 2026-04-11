@@ -239,68 +239,6 @@
         {/each}
       </div>
 
-      <div class="mt-4 space-y-2">
-        <div class="flex items-center justify-between">
-          <span class="text-xs text-muted">Ready for Automation</span>
-          <span class="text-xs {post.ready_for_automation ? 'text-green-400' : 'text-muted'}">
-            {post.ready_for_automation ? 'Yes' : 'No'}
-          </span>
-        </div>
-        <div class="flex items-center justify-between">
-          <span class="text-xs text-muted">Asset Delivered</span>
-          <div class="flex items-center gap-2">
-            <span class="text-xs {post.asset_delivered ? 'text-green-400' : 'text-muted'}">
-              {post.asset_delivered ? 'Yes' : 'No'}
-            </span>
-            {#if can('posts.edit')}
-              <button class="text-[10px] text-muted hover:text-white border border-border rounded px-1.5 py-0.5" on:click={toggleAssetDelivered}>
-                {post.asset_delivered ? 'Unmark' : 'Mark delivered'}
-              </button>
-            {/if}
-          </div>
-        </div>
-        {#if post.skarleth_status}
-        <div class="flex items-center justify-between">
-          <span class="text-xs text-muted">Skarleth Status</span>
-          <span class="text-xs text-white">{post.skarleth_status}</span>
-        </div>
-        {/if}
-      </div>
-
-      <!-- Skarleth Notes -->
-      <div class="mt-4">
-        <div class="flex items-center justify-between mb-1">
-          <h4 class="text-xs text-muted">Notes</h4>
-          {#if !skarlethNotesEdit && can('posts.edit')}
-            <button class="text-[10px] text-muted hover:text-white" on:click={startEditNotes}>Edit</button>
-          {/if}
-        </div>
-        {#if skarlethNotesEdit}
-          <textarea bind:value={skarlethNotesDraft} rows="3" class="input w-full text-xs resize-none mb-1"></textarea>
-          <div class="flex gap-1 justify-end">
-            <button class="btn-ghost btn-sm text-xs" on:click={() => skarlethNotesEdit = false}>Cancel</button>
-            <button class="btn-primary btn-sm text-xs" on:click={saveNotes}>Save</button>
-          </div>
-        {:else if post.skarleth_notes}
-          <p class="text-xs text-muted bg-surface rounded p-2">{post.skarleth_notes}</p>
-        {:else}
-          <p class="text-xs text-muted italic">No notes.</p>
-        {/if}
-      </div>
-
-      <!-- Asset upload -->
-      {#if can('posts.edit') && !post.asset_delivered}
-      <div class="mt-4">
-        <h4 class="text-xs text-muted mb-2">Upload Asset</h4>
-        <div class="flex gap-2">
-          <input type="file" accept="image/*,video/*" bind:files={assetFile} class="input text-xs flex-1" />
-          <button class="btn-secondary btn-sm text-xs" on:click={uploadAsset} disabled={uploadingAsset || !assetFile?.[0]}>
-            {uploadingAsset ? 'Uploading…' : 'Upload'}
-          </button>
-        </div>
-      </div>
-      {/if}
-
       {#if post.error_log}
       <div class="mt-4">
         <h4 class="text-xs text-muted mb-2">Error Log</h4>
@@ -308,18 +246,6 @@
       </div>
       {/if}
     </div>
-
-    {#if post.asset_r2_key && post.asset_delivered}
-    <div class="card p-5">
-      <h3 class="section-label mb-3">Asset</h3>
-      <div class="text-xs text-muted mb-2 font-mono truncate">{post.asset_r2_key}</div>
-      {#if post.content_type === 'image' || post.content_type === 'reel'}
-        <p class="text-xs text-green-400">Image/video asset delivered to R2.</p>
-      {:else}
-        <p class="text-xs text-green-400">Asset delivered.</p>
-      {/if}
-    </div>
-    {/if}
 
     {#if post.master_caption}
     <div class="card p-5 md:col-span-2">
