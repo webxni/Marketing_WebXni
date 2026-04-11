@@ -1,11 +1,19 @@
 import { api } from './client';
-import type { PostingJob } from '../types';
+import type { PostingJob, GenerationRun } from '../types';
+
+export interface GenerateParams {
+  client_slugs?:    string[];
+  date_from:        string;
+  date_to:          string;
+  content_types:    string[];
+  platform_filter?: string[];
+}
 
 export const runApi = {
   triggerPosting: (params: Record<string, unknown> = {}) =>
     api.post<{ ok: boolean; job_id: string; mode: string }>('/api/run/posting', params),
 
-  triggerGenerate: (params: Record<string, unknown> = {}) =>
+  triggerGenerate: (params: GenerateParams) =>
     api.post<{ ok: boolean; job_id: string }>('/api/run/generate', params),
 
   fetchUrls: (params: Record<string, unknown> = {}) =>
@@ -16,6 +24,12 @@ export const runApi = {
 
   getJob: (id: string) =>
     api.get<{ job: PostingJob }>(`/api/run/jobs/${id}`),
+
+  listGenerationRuns: () =>
+    api.get<{ runs: GenerationRun[] }>('/api/run/generate/runs'),
+
+  getGenerationRun: (id: string) =>
+    api.get<{ run: GenerationRun }>(`/api/run/generate/runs/${id}`),
 
   getStatus: (trackingId: string) =>
     api.get<{ status: unknown }>(`/api/run/status/${trackingId}`),

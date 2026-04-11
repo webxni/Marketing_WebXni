@@ -421,6 +421,64 @@ export async function listPostingJobs(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// GENERATION RUNS
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface GenerationRunRow {
+  id:                string;
+  phase:             number;
+  triggered_by:      string | null;
+  week_start:        string;
+  client_filter:     string | null;
+  status:            string;
+  clients_processed: string | null;
+  posts_created:     number;
+  posts_updated:     number;
+  error_log:         string | null;
+  created_at:        number;
+  completed_at:      number | null;
+}
+
+export async function createGenerationRun(
+  db: D1Database,
+  data: { triggered_by: string; date_range: string; client_filter: string | null },
+): Promise<GenerationRunRow> {
+  const id  = crypto.randomUUID().replace(/-/g, '').toLowerCase();
+  const now = Math.floor(Date.now() / 1000);
+  await db
+    .prepare(
+      `INSERT INTO generation_runs
+         (id, phase, triggered_by, week_start, client_filter, status, posts_created, posts_updated, created_at)
+       VALUES (?, 1, ?, ?, ?, 'running', 0, 0, ?)`,
+    )
+    .bind(id, data.triggered_by, data.date_range, data.client_filter, now)
+    .run();
+  return (await getGenerationRunById(db, id))!;
+}
+
+export async function getGenerationRunById(
+  db: D1Database,
+  id: string,
+): Promise<GenerationRunRow | null> {
+  const r = await db
+    .prepare('SELECT * FROM generation_runs WHERE id = ?')
+    .bind(id)
+    .first<GenerationRunRow>();
+  return r ?? null;
+}
+
+export async function listGenerationRuns(
+  db: D1Database,
+  limit = 20,
+): Promise<GenerationRunRow[]> {
+  const r = await db
+    .prepare('SELECT * FROM generation_runs ORDER BY created_at DESC LIMIT ?')
+    .bind(limit)
+    .all<GenerationRunRow>();
+  return r.results;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // AUDIT LOG
 // ─────────────────────────────────────────────────────────────────────────────
 

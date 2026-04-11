@@ -213,6 +213,21 @@ export interface PostingJob {
   completed_at:    number | null;
 }
 
+export interface GenerationRun {
+  id:                string;
+  phase:             number;
+  triggered_by:      string | null;
+  week_start:        string;
+  client_filter:     string | null;
+  status:            string;
+  clients_processed: string | null;
+  posts_created:     number;
+  posts_updated:     number;
+  error_log:         string | null;
+  created_at:        number;
+  completed_at:      number | null;
+}
+
 export interface OverviewStats {
   clients:           number;
   total_posts:       number;

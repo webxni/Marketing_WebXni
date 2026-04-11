@@ -4,8 +4,12 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Env, SessionData } from '../types';
-import { createPostingJob, listPostingJobs, getPostingJobById } from '../db/queries';
+import {
+  createPostingJob, listPostingJobs, getPostingJobById,
+  createGenerationRun, listGenerationRuns, getGenerationRunById,
+} from '../db/queries';
 import { runPosting } from '../loader/posting-run';
+import { runGeneration } from '../loader/generation-run';
 import { UploadPostClient } from '../services/uploadpost';
 
 /**
@@ -120,17 +124,78 @@ runRoutes.post('/posting', async (c) => {
   return c.json({ ok: true, job_id: job.id, mode }, 202);
 });
 
-/** POST /api/run/generate — trigger content generation (Phase 1 or 2) */
+/** POST /api/run/generate — trigger AI content generation */
 runRoutes.post('/generate', async (c) => {
   let body: Record<string, unknown> = {};
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { /* use empty */ }
 
-  const jobId = crypto.randomUUID().replace(/-/g, '').toLowerCase();
+  // Resolve client slugs
+  const clientSlugs: string[] = Array.isArray(body.client_slugs)
+    ? (body.client_slugs as string[])
+    : typeof body.client_filter === 'string' && body.client_filter !== 'all'
+      ? [body.client_filter]
+      : [];
 
-  // Generation not yet implemented — log and return
-  console.log('Generation run requested', { jobId, body });
+  // Build dates array from date_from/date_to or explicit dates array
+  let dates: string[] = [];
+  if (Array.isArray(body.dates) && (body.dates as string[]).length > 0) {
+    dates = body.dates as string[];
+  } else {
+    const from = typeof body.date_from === 'string' ? body.date_from : null;
+    const to   = typeof body.date_to   === 'string' ? body.date_to   : from;
+    if (!from) return c.json({ error: 'date_from is required' }, 400);
+    const d   = new Date(from);
+    const end = new Date(to!);
+    while (d <= end) {
+      dates.push(d.toISOString().split('T')[0]);
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+  }
 
-  return c.json({ ok: true, job_id: jobId }, 202);
+  if (dates.length === 0) return c.json({ error: 'No dates specified' }, 400);
+  if (dates.length > 60)  return c.json({ error: 'Max 60 dates per run' }, 400);
+
+  const contentTypes: string[] = Array.isArray(body.content_types)
+    ? (body.content_types as string[])
+    : typeof body.content_type === 'string'
+      ? [body.content_type]
+      : ['image'];
+
+  const platformFilter: string[] = Array.isArray(body.platform_filter)
+    ? (body.platform_filter as string[])
+    : [];
+
+  const run = await createGenerationRun(c.env.DB, {
+    triggered_by:  c.get('user').userId,
+    date_range:    `${dates[0]}:${dates[dates.length - 1]}`,
+    client_filter: clientSlugs.length > 0 ? JSON.stringify(clientSlugs) : null,
+  });
+
+  c.executionCtx.waitUntil(
+    runGeneration(c.env, {
+      run_id:          run.id,
+      client_slugs:    clientSlugs,
+      dates,
+      content_types:   contentTypes,
+      platform_filter: platformFilter,
+      triggered_by:    c.get('user').userId,
+    }),
+  );
+
+  return c.json({ ok: true, job_id: run.id }, 202);
+});
+
+/** GET /api/run/generate/runs — list recent generation runs */
+runRoutes.get('/generate/runs', async (c) => {
+  const runs = await listGenerationRuns(c.env.DB, 30);
+  return c.json({ runs });
+});
+
+/** GET /api/run/generate/runs/:id — single generation run */
+runRoutes.get('/generate/runs/:id', async (c) => {
+  const run = await getGenerationRunById(c.env.DB, c.req.param('id'));
+  if (!run) return c.json({ error: 'Not found' }, 404);
+  return c.json({ run });
 });
 
 /** POST /api/run/fetch-urls — poll Upload-Post history and write real URLs back */
