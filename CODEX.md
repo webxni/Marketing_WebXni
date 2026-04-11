@@ -1,0 +1,358 @@
+# CODEX.md — AI Agent Collaboration Guide for Marketing_WebXni
+
+**Role:** You are acting as a principal product architect, senior UX auditor,
+full-stack systems designer, and AI workflow engineer for this platform.
+
+**First rule:** Read this entire file before making any changes. Then read
+`CLAUDE.md`. Then audit the specific files mentioned before touching them.
+
+---
+
+## What this platform is
+
+A production marketing automation SaaS for a social media agency (WebXni).
+It manages ~9 active client accounts and automates social media posting to
+Facebook, Instagram, LinkedIn, TikTok, Pinterest, Google Business, YouTube,
+X (Twitter), Threads, Bluesky, and WordPress blogs.
+
+**Live URL:** https://marketing.webxni.com  
+**Stack:** Cloudflare Workers (Hono) + D1 (SQLite) + SvelteKit 4 + R2 + KV  
+**Deployment:** `npx wrangler deploy` (no CI/CD auto-deploy from GitHub push)
+
+---
+
+## CRITICAL — DO NOT BREAK THESE
+
+These modules are working in production. Do not modify their core logic
+unless the task explicitly requires it.
+
+| Module | File | What it does |
+|--------|------|-------------|
+| Posting loop | `worker/src/loader/posting-run.ts` | Reads ready posts, runs preflight, submits to Upload-Post API |
+| Preflight | `worker/src/modules/preflight.ts` | 12-check validation before any post is sent |
+| Upload-Post client | `worker/src/services/uploadpost.ts` | API client for upload-post.com |
+| Auth middleware | `worker/src/middleware/auth.ts` | Session-based auth via KV |
+| Rate limiter | `worker/src/middleware/rateLimit.ts` | Prevents abuse |
+| Idempotency | `worker/src/modules/idempotency.ts` | Prevents double-posting |
+| Caption mapper | `worker/src/modules/captions.ts` | Maps platform → caption field |
+| All `/api/auth/*` routes | `worker/src/routes/auth.ts` | Login/logout/session |
+| Client CRUD | `worker/src/routes/clients.ts` | Full client management |
+| Post CRUD | `worker/src/routes/posts.ts` | Post lifecycle management |
+| Asset upload | `worker/src/routes/assets.ts` | R2 media handling |
+| WordPress service | `worker/src/services/wordpress.ts` | WP REST API client |
+| Notion service | `worker/src/services/notion.ts` | Notion import/export |
+
+---
+
+## Architecture
+
+```
+Browser → SvelteKit (Cloudflare Assets) 
+       ↓ /api/*
+Hono router (Cloudflare Worker) → D1 (SQLite) / R2 / KV
+       ↓
+Upload-Post API  |  WordPress REST API  |  Notion API  |  OpenAI API
+```
+
+### Cron schedule (wrangler.toml)
+| Schedule | Trigger | Status |
+|----------|---------|--------|
+| `0 7 * * SUN` | Sunday 7AM — weekly AI generation | Partially implemented |
+| `0 2 * * *` | Daily 2AM — fetch real URLs from Upload-Post | Working |
+| `0 */6 * * *` | Every 6h — automated posting check | Working |
+
+---
+
+## Database tables (D1 / SQLite)
+
+| Table | Purpose |
+|-------|---------|
+| `users` | Admin/operator/viewer accounts |
+| `clients` | Client accounts (9 active) |
+| `client_platforms` | Per-client platform credentials |
+| `client_gbp_locations` | ETB's 3 Google Business locations |
+| `client_restrictions` | Forbidden terms per client |
+| `posts` | All posts (draft → posted lifecycle) |
+| `post_platforms` | Per-platform posting status + tracking IDs |
+| `post_versions` | Edit history snapshots |
+| `assets` | R2 media registry |
+| `posting_jobs` | Posting run job records |
+| `posting_attempts` | Per-post-platform attempt log |
+| `generation_runs` | AI content generation run records |
+| `audit_logs` | All significant actions |
+| `packages` | Content packages (posts/mo, freq, platforms) |
+| `client_intelligence` | Brand voice, SEO strategy, content angles |
+| `client_feedback` | Positive/negative content feedback |
+| `client_categories` | Business categories |
+| `client_services` | Service offerings |
+| `client_service_areas` | Service areas |
+| `client_offers` | Special offers |
+| `settings` | System config in KV (`settings:system`) |
+| `wp_templates` | WordPress template configs |
+
+### Migration rules (ALWAYS follow these)
+1. **Never edit `db/schema.sql`** to add columns
+2. Write `db/migrations/XXXX_description.sql` with `ALTER TABLE ADD COLUMN`
+3. Run: `wrangler d1 execute webxni-db --file=db/migrations/XXXX.sql --remote`
+4. Update `worker/src/types.ts` (the interface)
+5. Update `frontend/src/lib/types.ts` (the frontend type)
+6. If it's a client field: add to `CLIENT_WRITABLE_FIELDS` in `worker/src/routes/clients.ts`
+
+---
+
+## Post status lifecycle
+
+```
+draft → pending_approval → approved → ready → scheduled → posted
+                                           ↘ failed
+                                           ↘ cancelled
+```
+
+Gates before automation can post:
+- `ready_for_automation = 1`
+- `asset_delivered = 1`  
+- `status = 'ready'`
+- Preflight passes for each platform
+
+---
+
+## Frontend structure
+
+```
+frontend/src/routes/(app)/
+  dashboard/     — overview stats
+  posts/         — post list + [id] detail + [id]/edit + new
+  clients/       — client list + [slug] detail (complex)
+  automation/    — AI generation + posting controls + run history
+  packages/      — content package management
+  calendar/      — post calendar view
+  approvals/     — approval queue
+  reports/       — client reports
+  settings/      — system settings
+  users/         — user management
+  logs/          — audit log viewer
+
+frontend/src/lib/api/
+  auth.ts        — login, logout, session
+  clients.ts     — client CRUD + platforms + intelligence
+  posts.ts       — post CRUD + approve/reject/ready
+  packages.ts    — package CRUD
+  run.ts         — trigger generation/posting, list runs
+  reports.ts     — reports
+  users.ts       — user management
+  index.ts       — re-exports all
+```
+
+### Frontend coding rules
+- Svelte 4 legacy syntax: `bind:value`, `on:click`, `$:` reactivity
+- All API calls use typed wrappers in `$lib/api/` — never raw `fetch()` in pages
+- Use `toast.success()` / `toast.error()` from `$lib/stores/ui` for feedback
+- Types live in `frontend/src/lib/types.ts` — keep in sync with `worker/src/types.ts`
+- CSS uses Tailwind + custom classes defined in `frontend/src/app.css`
+- Color accent is Google Blue `#1a73e8` — not purple
+
+---
+
+## AI Content Generation (implemented)
+
+**Route:** `POST /api/run/generate`  
+**File:** `worker/src/loader/generation-run.ts`  
+**OpenAI service:** `worker/src/services/openai.ts`
+
+### What it does
+1. Reads client's package from DB (posts/mo, content type mix, frequency, platforms)
+2. Builds a content-type sequence (images/videos/reels/blogs evenly interleaved)
+3. Builds publish dates based on `posting_frequency` (daily/3x_week/twice_weekly/weekly/biweekly/monthly)
+4. For each client × date → calls GPT-4o to generate platform-specific content
+5. Creates post as `status = 'draft'` in DB
+
+### Designer prompts (always in Spanish)
+- `ai_image_prompt` — detailed image/design brief for the designer (Midjourney/Canva style)
+- `ai_video_prompt` — video direction for Reels/TikTok/Shorts
+- These are ALWAYS generated in Spanish regardless of client language
+
+### Frontend trigger
+`frontend/src/routes/(app)/automation/+page.svelte`
+- 3-column layout: Clients | Period (month+year) | Summary+Action
+- Shows generation run history below
+
+### Post detail designer tab
+`frontend/src/routes/(app)/posts/[id]/+page.svelte`
+- Tab "🎨 Diseño" shows ai_image_prompt, ai_video_prompt, video_script in Spanish
+- Context card shows post metadata for the designer's reference
+
+---
+
+## Clients (current active)
+
+| Slug | Domain | WP |
+|------|--------|----|
+| `caliview-builders` | caliviewbuilders.com | Yes |
+| `americas-professional-builders` | americasprofessionalbuildersinc.com | Yes |
+| `daniels-locksmith` | danielslockkey.com | Yes |
+| `unlocked-pros` | unlockedpros.com | Yes |
+| `247-lockout-pasadena` | 247lockoutpasadena.com | Yes |
+| `golden-touch-roofing` | goldentouch-roofing.com | Yes |
+| `724-locksmith-ca` | 724locksmithca.com | Yes |
+| `marvin-solis` | marvinsolis.com | Yes |
+| `elite-team-builders` | eliteteambuildersinc.com | Yes + 3 GBP |
+
+### ETB multi-location GBP
+ETB has 3 Google Business locations: LA, WA, OR.
+- Caption fields: `cap_gbp_la`, `cap_gbp_wa`, `cap_gbp_or`
+- Each location has its own `upload_post_location_id` in `client_gbp_locations`
+- Posting loop handles these automatically via `client_gbp_locations` table
+
+---
+
+## Secrets (Cloudflare — set via `wrangler secret put`)
+
+| Secret | Purpose |
+|--------|---------|
+| `UPLOAD_POST_API_KEY` | Upload-Post API auth |
+| `OPENAI_API_KEY` | AI content generation |
+| `NOTION_API_TOKEN` | Notion import/export |
+
+---
+
+## What is NOT yet implemented (future work)
+
+These are explicitly unfinished — do not remove stubs:
+
+1. **Sunday generation cron** — `0 7 * * SUN` in wrangler.toml triggers but doesn't
+   run generation yet. Wire it to call `runGeneration` for all active clients.
+
+2. **WordPress blog auto-post** — `wp_post_url` field exists, `wordpress.ts` service
+   is ready, but posting loop doesn't create WP drafts yet.
+
+3. **Approval workflow notifications** — no email/Slack notifications when a post
+   is submitted for approval.
+
+4. **Canva API** — links stored as reference only, no API integration.
+
+5. **PDF monthly reports** — report data is available, PDF export not built.
+
+6. **Notion auto-sync on cron** — manual only via API for now.
+
+7. **Real-time posting status** — currently requires page refresh to see updates.
+
+---
+
+## How to add a new feature
+
+### New API route
+1. `worker/src/routes/my-feature.ts` — Hono instance
+2. Register in `worker/src/index.ts`: `app.route('/api/my-feature', myRoutes)`
+3. Add typed API wrapper in `frontend/src/lib/api/my-feature.ts`
+4. Export from `frontend/src/lib/api/index.ts`
+
+### New DB column
+See "Migration rules" above — always migrations, never schema.sql edits.
+
+### New platform
+1. Add to `allPlatforms` in `frontend/src/routes/(app)/posts/new/+page.svelte`
+2. Migration: `ALTER TABLE posts ADD COLUMN cap_newplatform TEXT`
+3. Update `PostRow` in `worker/src/types.ts`
+4. Update `Post` in `frontend/src/lib/types.ts`
+5. Add to caption extraction in `worker/src/modules/captions.ts`
+6. Add to `PLATFORM_META` in `frontend/src/lib/types.ts`
+7. Add to OpenAI prompt in `worker/src/services/openai.ts`
+
+---
+
+## How to deploy
+
+```bash
+# 1. TypeScript check (must pass)
+cd worker && npx tsc --noEmit
+
+# 2. Frontend build (must pass)
+cd frontend && npm run build
+
+# 3. Deploy (uploads assets + worker)
+npx wrangler deploy
+
+# 4. Run any pending migrations
+wrangler d1 execute webxni-db --file=db/migrations/XXXX_description.sql --remote
+```
+
+Or use the deploy script: `bash deploy.sh`
+
+---
+
+## Before touching any file — checklist
+
+- [ ] Have you read this file and CLAUDE.md?
+- [ ] Have you read the specific file(s) you're about to edit?
+- [ ] Are you making an additive change (not a rewrite)?
+- [ ] Will your change break any existing working module?
+- [ ] Does a DB change need a migration file?
+- [ ] Are both `worker/src/types.ts` and `frontend/src/lib/types.ts` updated?
+- [ ] Did you run `npx tsc --noEmit` and `npm run build` before deploying?
+
+---
+
+## Code style rules
+
+### Worker (TypeScript / Hono)
+- Prepared statements only: `.prepare('...').bind(...).run()`
+- New DB queries go in `worker/src/db/queries.ts`, not inline
+- Return `c.json({ error: '...' }, 4xx)` for errors
+- Audit important actions: `writeAuditLog(db, { ... })`
+- Wrap `waitUntil()` for background tasks
+
+### Frontend (Svelte 4)
+- Svelte 4 syntax — NOT Svelte 5 runes (`$state`, `$effect`, etc.)
+- `bind:value` for inputs, `on:click` for events
+- No TypeScript casts in template (`as Type`) — use helper functions
+- `class:variant` directives with `/` cause issues — use ternary string instead
+
+### General
+- No speculative abstractions — build only what is needed
+- No backwards-compat shims
+- Keep types in sync between worker and frontend
+- Emojis only if user asked for them
+
+---
+
+## Platform badge colors (dark background)
+
+These colors are intentional for visibility on dark UI:
+
+| Platform | Color |
+|----------|-------|
+| facebook | `#1877F2` |
+| instagram | gradient / `#E1306C` |
+| x (twitter) | `#E7E9EA` (light on dark) |
+| threads | `#AAAAAA` |
+| tiktok | `#EE1D52` |
+| linkedin | `#0A66C2` |
+| youtube | `#FF0000` |
+| pinterest | `#E60023` |
+| bluesky | `#0085FF` |
+| google_business | `#4285F4` |
+
+Do NOT use `#000000` for any platform badge — invisible on dark background.
+
+---
+
+## Key things the owner cares about
+
+1. **The designer (Skarleth)** uploads media externally. The platform does NOT
+   need to manage asset delivery from her — she submits for approval manually.
+   The "Mark delivered / Ready for Automation" operational panel was intentionally
+   REMOVED from the post detail page.
+
+2. **Content is approved by the owner (Marvin)** before being marked Ready.
+   The workflow: draft → submit for review → approve → (Skarleth adds media) → ready → auto-posted by cron.
+
+3. **Spanish design prompts** are for Skarleth the designer, not for the client.
+   Always generate them in Spanish regardless of client language.
+
+4. **Generation is package-driven.** Never ask the user to pick content types
+   or frequencies manually — read from the client's package.
+
+5. **Google Blue accent** (`#1a73e8`), not purple. This was an explicit design choice.
+
+6. **This is a real production system** with real clients. Be conservative.
+   When in doubt, don't change working code.
