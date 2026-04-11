@@ -240,17 +240,32 @@ curl -X POST https://marketing.webxni.com/api/clients/elite-team-builders/wordpr
 
 ---
 
-## Deployment
+## Deployment — FULL sequence every time
+
+**GitHub push does NOT deploy to Cloudflare.** Both must be done separately after every change.
 
 ```bash
-# TypeScript check
-cd worker && npx tsc --noEmit
+# 1. TypeScript check (must pass — zero errors)
+cd worker && npx tsc --noEmit && cd ..
 
-# Build frontend
+# 2. Build frontend
 cd frontend && npm run build && cd ..
 
-# Deploy
+# 3. Deploy to Cloudflare (frontend assets + worker)
 npx wrangler deploy
+
+# 4. Run pending DB migrations (only if schema changed)
+npx wrangler d1 execute webxni-db --file=db/migrations/XXXX_description.sql --remote
+
+# 5. Commit your changes
+git add <changed files>
+git commit -m "Description of what changed"
+
+# 6. Push to GitHub
+git push
 ```
 
-Or: `bash deploy.sh`
+Do steps 1–3 first (deploy), then 5–6 (commit + push).
+If wrangler fails, nothing gets committed as shipped.
+
+Or: `bash deploy.sh` (runs steps 1–3 only — still commit/push manually after)

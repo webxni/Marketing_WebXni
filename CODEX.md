@@ -260,23 +260,42 @@ See "Migration rules" above — always migrations, never schema.sql edits.
 
 ---
 
-## How to deploy
+## How to deploy — FULL sequence every time
+
+GitHub push does NOT deploy to Cloudflare. You must run wrangler manually.
+Always follow this exact order:
 
 ```bash
-# 1. TypeScript check (must pass)
-cd worker && npx tsc --noEmit
+# Step 1 — TypeScript check (must pass, zero errors)
+cd worker && npx tsc --noEmit && cd ..
 
-# 2. Frontend build (must pass)
-cd frontend && npm run build
+# Step 2 — Build frontend (must pass)
+cd frontend && npm run build && cd ..
 
-# 3. Deploy (uploads assets + worker)
+# Step 3 — Deploy to Cloudflare (uploads frontend assets + worker code)
 npx wrangler deploy
 
-# 4. Run any pending migrations
-wrangler d1 execute webxni-db --file=db/migrations/XXXX_description.sql --remote
+# Step 4 — Run any pending DB migrations (only if schema changed)
+npx wrangler d1 execute webxni-db --file=db/migrations/XXXX_description.sql --remote
+
+# Step 5 — Commit all changes to git
+git add <changed files>
+git commit -m "Short description of what changed"
+
+# Step 6 — Push to GitHub
+git push
 ```
 
-Or use the deploy script: `bash deploy.sh`
+**Why this order matters:**
+- Deploy before commit — if wrangler fails, nothing is committed as "done"
+- TypeScript and build checks catch errors before they reach production
+- GitHub is source of truth for code history, Cloudflare is the live runtime
+- They are independent — both must be done after every change
+
+Or use the deploy script (does steps 1-3 only — still commit/push manually):
+```bash
+bash deploy.sh
+```
 
 ---
 
