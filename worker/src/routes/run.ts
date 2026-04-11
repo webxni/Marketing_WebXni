@@ -155,30 +155,22 @@ runRoutes.post('/generate', async (c) => {
   if (dates.length === 0) return c.json({ error: 'No dates specified' }, 400);
   if (dates.length > 60)  return c.json({ error: 'Max 60 dates per run' }, 400);
 
-  const contentTypes: string[] = Array.isArray(body.content_types)
-    ? (body.content_types as string[])
-    : typeof body.content_type === 'string'
-      ? [body.content_type]
-      : ['image'];
-
-  const platformFilter: string[] = Array.isArray(body.platform_filter)
-    ? (body.platform_filter as string[])
-    : [];
+  const periodStart = dates[0];
+  const periodEnd   = dates[dates.length - 1];
 
   const run = await createGenerationRun(c.env.DB, {
     triggered_by:  c.get('user').userId,
-    date_range:    `${dates[0]}:${dates[dates.length - 1]}`,
+    date_range:    `${periodStart}:${periodEnd}`,
     client_filter: clientSlugs.length > 0 ? JSON.stringify(clientSlugs) : null,
   });
 
   c.executionCtx.waitUntil(
     runGeneration(c.env, {
-      run_id:          run.id,
-      client_slugs:    clientSlugs,
-      dates,
-      content_types:   contentTypes,
-      platform_filter: platformFilter,
-      triggered_by:    c.get('user').userId,
+      run_id:       run.id,
+      client_slugs: clientSlugs,
+      period_start: periodStart,
+      period_end:   periodEnd,
+      triggered_by: c.get('user').userId,
     }),
   );
 

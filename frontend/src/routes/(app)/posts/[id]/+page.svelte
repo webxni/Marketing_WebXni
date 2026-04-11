@@ -15,7 +15,7 @@
   let post: Post | null = null;
   let platforms: PostPlatform[] = [];
   let loading = true;
-  let activeTab: 'overview' | 'captions' | 'platforms' | 'blog' = 'overview';
+  let activeTab: 'overview' | 'captions' | 'platforms' | 'blog' | 'diseno' = 'overview';
   let showApproveConfirm = false;
   let showRejectConfirm = false;
   let showReadyConfirm = false;
@@ -175,10 +175,11 @@
   <!-- Tabs -->
   <div class="flex border-b border-border mb-6">
     {#each [
-      { key: 'overview',  label: 'Overview'  },
-      { key: 'captions',  label: 'Captions'  },
-      { key: 'platforms', label: 'Platforms' },
-      { key: 'blog',      label: 'Blog'      },
+      { key: 'overview',  label: 'Overview'   },
+      { key: 'captions',  label: 'Captions'   },
+      { key: 'platforms', label: 'Platforms'  },
+      { key: 'blog',      label: 'Blog'       },
+      { key: 'diseno',    label: '🎨 Diseño'  },
     ] as tab}
       <button
         class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors
@@ -316,6 +317,101 @@
           {/each}
         </tbody>
       </table>
+    </div>
+    {/if}
+  </div>
+  {/if}
+
+  <!-- Diseño tab (for designer — in Spanish) -->
+  {#if activeTab === 'diseno'}
+  <div class="space-y-5">
+    <!-- Header -->
+    <div class="card p-5 border border-purple-500/20 bg-purple-500/5">
+      <div class="flex items-start gap-3">
+        <span class="text-2xl">🎨</span>
+        <div>
+          <h2 class="text-base font-semibold text-white">Sección para la Diseñadora</h2>
+          <p class="text-xs text-muted mt-0.5">Instrucciones generadas por IA para crear el material visual de este post.</p>
+        </div>
+      </div>
+    </div>
+
+    {#if post.ai_image_prompt}
+    <div class="card p-5">
+      <div class="flex items-center gap-2 mb-3">
+        <span class="text-lg">🖼️</span>
+        <h3 class="text-sm font-semibold text-white">Prompt para Imagen / Diseño</h3>
+      </div>
+      <p class="text-sm text-white/90 whitespace-pre-wrap leading-relaxed bg-white/5 rounded-lg p-4 border border-white/10">{post.ai_image_prompt}</p>
+      <div class="mt-3 flex gap-2">
+        <span class="text-xs text-muted">Usa este prompt en:</span>
+        <span class="text-xs text-purple-300 font-medium">Midjourney · Canva · Adobe Firefly · DALL-E</span>
+      </div>
+    </div>
+    {/if}
+
+    {#if post.ai_video_prompt}
+    <div class="card p-5">
+      <div class="flex items-center gap-2 mb-3">
+        <span class="text-lg">🎬</span>
+        <h3 class="text-sm font-semibold text-white">Concepto de Video</h3>
+      </div>
+      <p class="text-sm text-white/90 whitespace-pre-wrap leading-relaxed bg-white/5 rounded-lg p-4 border border-white/10">{post.ai_video_prompt}</p>
+      <div class="mt-3 flex gap-2">
+        <span class="text-xs text-muted">Referencia para:</span>
+        <span class="text-xs text-purple-300 font-medium">Reels · TikTok · YouTube Shorts</span>
+      </div>
+    </div>
+    {/if}
+
+    {#if post.video_script}
+    <div class="card p-5">
+      <div class="flex items-center gap-2 mb-3">
+        <span class="text-lg">🎙️</span>
+        <h3 class="text-sm font-semibold text-white">Guión del Video</h3>
+      </div>
+      <pre class="text-sm text-white/90 whitespace-pre-wrap leading-relaxed bg-white/5 rounded-lg p-4 border border-white/10 font-sans">{post.video_script}</pre>
+    </div>
+    {/if}
+
+    {#if !post.ai_image_prompt && !post.ai_video_prompt && !post.video_script}
+    <div class="card p-10 text-center">
+      <span class="text-4xl block mb-3">🎨</span>
+      <p class="text-sm text-muted mb-1">No hay prompts de diseño para este post.</p>
+      <p class="text-xs text-muted">Los prompts se generan automáticamente cuando se crea contenido con IA.</p>
+    </div>
+    {/if}
+
+    <!-- Post context summary for the designer -->
+    {#if post.master_caption || post.content_type}
+    <div class="card p-5 bg-white/3">
+      <h3 class="text-xs font-medium text-muted mb-3 uppercase tracking-wide">Contexto del Post</h3>
+      <div class="grid grid-cols-2 gap-3 text-xs">
+        {#if post.content_type}
+        <div>
+          <span class="text-muted">Tipo de contenido:</span>
+          <span class="text-white ml-1 capitalize">{post.content_type}</span>
+        </div>
+        {/if}
+        {#if post.publish_date}
+        <div>
+          <span class="text-muted">Fecha de publicación:</span>
+          <span class="text-white ml-1">{formatDate(post.publish_date)}</span>
+        </div>
+        {/if}
+        {#if post.title}
+        <div class="col-span-2">
+          <span class="text-muted">Título del post:</span>
+          <span class="text-white ml-1">{post.title}</span>
+        </div>
+        {/if}
+        {#if post.master_caption}
+        <div class="col-span-2">
+          <span class="text-muted block mb-1">Caption principal:</span>
+          <p class="text-white/80 italic bg-white/5 rounded p-2">{post.master_caption}</p>
+        </div>
+        {/if}
+      </div>
     </div>
     {/if}
   </div>

@@ -22,6 +22,9 @@ export interface GeneratedPost {
   meta_description?:   string;
   target_keyword?:     string;
   video_script?:       string;
+  // Designer prompts (always generated in Spanish)
+  ai_image_prompt?:    string;
+  ai_video_prompt?:    string;
 }
 
 export interface GenerationContext {
@@ -97,6 +100,14 @@ Return a JSON object with the following fields (include only fields relevant to 
   if (isYoutube)  p += '\n- "youtube_title": SEO-optimized YouTube title (60-70 chars)\n- "youtube_description": YouTube description with timestamps placeholder, links placeholder, CTA (200-400 chars)';
   if (isBlog)     p += '\n- "blog_content": complete HTML blog post body (600-900 words, use <h2>, <h3>, <p>, <ul> tags, keyword-rich)\n- "seo_title": SEO page title with primary keyword (55-60 chars)\n- "meta_description": compelling meta description (150-155 chars)\n- "target_keyword": primary SEO keyword phrase';
   if (isVideo)    p += '\n- "video_script": 30-60 second video script — hook line, 3 body points, strong CTA';
+
+  // Designer prompts — always in Spanish regardless of content language
+  if (!isBlog) {
+    p += '\n- "ai_image_prompt": (ALWAYS IN SPANISH) Prompt detallado para diseñadora — describe la imagen/diseño: estilo visual, colores, composición, elementos, ambiente, texto sugerido. Formato estilo Midjourney/Canva. 2-4 oraciones.';
+  }
+  if (isVideo) {
+    p += '\n- "ai_video_prompt": (ALWAYS IN SPANISH) Concepto de video para la diseñadora — describe la escena, movimiento, estilo cinematográfico, música sugerida, transiciones. 2-3 oraciones.';
+  }
 
   p += '\n\nIMPORTANT: Return ONLY valid JSON. No markdown code blocks, no explanation outside the JSON.';
   return p;
