@@ -24,6 +24,23 @@
   let assetR2Key = '';
   let dryRun = false;
 
+  // Content fields — shown based on contentType
+  let blog_content = '';
+  let seo_title = '';
+  let meta_description = '';
+  let target_keyword = '';
+  let post_slug = '';
+  let youtube_title = '';
+  let youtube_description = '';
+  let video_script = '';
+  let ai_image_prompt = '';
+  let ai_video_prompt = '';
+
+  $: isBlog    = contentType === 'blog';
+  $: isYoutube = selectedPlatforms.includes('youtube');
+  $: isVideo   = contentType === 'video' || contentType === 'reel';
+  $: isImage   = contentType === 'image';
+
   // GBP advanced fields — only shown when google_business is selected
   let gbp_topic_type = 'STANDARD';
   let gbp_cta_type = '';
@@ -36,6 +53,11 @@
   let gbp_coupon_code = '';
   let gbp_redeem_url = '';
   let gbp_terms = '';
+
+  // GBP multi-location captions (ETB)
+  let cap_gbp_la = '';
+  let cap_gbp_wa = '';
+  let cap_gbp_or = '';
 
   $: gbpSelected = selectedPlatforms.includes('google_business');
   $: showEventFields = gbpSelected && gbp_topic_type === 'EVENT';
@@ -96,8 +118,23 @@
         gbp_coupon_code:      gbp_coupon_code || null,
         gbp_redeem_url:       gbp_redeem_url || null,
         gbp_terms:            gbp_terms || null,
+        cap_gbp_la:           cap_gbp_la || null,
+        cap_gbp_wa:           cap_gbp_wa || null,
+        cap_gbp_or:           cap_gbp_or || null,
       } : {};
 
+      const contentFields = {
+        blog_content:        isBlog    ? (blog_content || null)        : null,
+        seo_title:           isBlog    ? (seo_title || null)           : null,
+        meta_description:    isBlog    ? (meta_description || null)    : null,
+        target_keyword:      isBlog    ? (target_keyword || null)      : null,
+        slug:                isBlog    ? (post_slug || null)           : null,
+        youtube_title:       isYoutube ? (youtube_title || null)       : null,
+        youtube_description: isYoutube ? (youtube_description || null) : null,
+        video_script:        isVideo   ? (video_script || null)        : null,
+        ai_image_prompt:     isImage   ? (ai_image_prompt || null)     : null,
+        ai_video_prompt:     isVideo   ? (ai_video_prompt || null)     : null,
+      };
       const r = await postsApi.create({
         client_slug:      clientSlug,
         title:            title || null,
@@ -107,11 +144,12 @@
         master_caption:   masterCaption,
         asset_r2_key:     assetR2Key || null,
         dry_run:          dryRun,
-        status:           action === 'draft' ? 'draft' : 'approved',
+        status:           action === 'draft' ? 'draft' : 'pending_approval',
         ...captionFields,
         ...gbpFields,
+        ...contentFields,
       });
-      toast.success(action === 'draft' ? 'Post saved as draft' : 'Post submitted for publishing');
+      toast.success(action === 'draft' ? 'Post saved as draft' : 'Post submitted for review');
       goto(`/posts/${r.post.id}`);
     } catch (e) { toast.error(String(e)); }
     finally { submitting = false; }
@@ -121,6 +159,10 @@
     try {
       const r = await clientsApi.list('active');
       clients = r.clients;
+      // Pre-fill publish date if ?date=YYYY-MM-DD was passed from the calendar
+      const url = new URL(window.location.href);
+      const dateParam = url.searchParams.get('date');
+      if (dateParam && !publishDate) publishDate = `${dateParam}T09:00`;
     } finally { loading = false; }
   });
 
@@ -234,6 +276,89 @@
       ></textarea>
       <p class="text-xs text-muted mt-1">{masterCaption.length} characters</p>
     </div>
+
+    <!-- Blog content -->
+    {#if isBlog}
+    <div class="card p-5">
+      <h3 class="section-label mb-4">Blog Content</h3>
+      <div class="space-y-4">
+        <div>
+          <label for="blog_content" class="block text-xs text-muted mb-1.5">Body (HTML) <span class="text-red-400">*</span></label>
+          <textarea
+            id="blog_content"
+            bind:value={blog_content}
+            rows="12"
+            placeholder="<p>Write your blog post body here. You can use HTML tags.</p>"
+            class="input w-full resize-y font-mono text-xs"
+          ></textarea>
+          <p class="text-xs text-muted mt-1">HTML is passed directly to WordPress REST API. Paste from your editor or write manually.</p>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label for="seo_title" class="block text-xs text-muted mb-1.5">SEO Title</label>
+            <input id="seo_title" type="text" bind:value={seo_title} placeholder="SEO-optimized title…" class="input w-full" />
+          </div>
+          <div>
+            <label for="target_keyword" class="block text-xs text-muted mb-1.5">Target Keyword</label>
+            <input id="target_keyword" type="text" bind:value={target_keyword} placeholder="e.g. locksmith los angeles" class="input w-full" />
+          </div>
+          <div>
+            <label for="post_slug" class="block text-xs text-muted mb-1.5">Post Slug (optional)</label>
+            <input id="post_slug" type="text" bind:value={post_slug} placeholder="locksmith-los-angeles" class="input w-full font-mono text-xs" />
+            <p class="text-xs text-muted mt-1">Leave blank — WordPress will auto-generate from title.</p>
+          </div>
+          <div>
+            <label for="meta_description" class="block text-xs text-muted mb-1.5">Meta Description</label>
+            <input id="meta_description" type="text" bind:value={meta_description} placeholder="150-character summary for search engines…" class="input w-full" />
+          </div>
+        </div>
+      </div>
+    </div>
+    {/if}
+
+    <!-- YouTube content -->
+    {#if isYoutube}
+    <div class="card p-5">
+      <h3 class="section-label mb-4">YouTube</h3>
+      <div class="space-y-4">
+        <div>
+          <label for="youtube_title" class="block text-xs text-muted mb-1.5">Video Title</label>
+          <input id="youtube_title" type="text" bind:value={youtube_title} placeholder="How to… | Client Name" class="input w-full" />
+        </div>
+        <div>
+          <label for="youtube_description" class="block text-xs text-muted mb-1.5">Video Description</label>
+          <textarea id="youtube_description" bind:value={youtube_description} rows="5" placeholder="Full YouTube description with hashtags, links…" class="input w-full resize-none text-sm"></textarea>
+        </div>
+      </div>
+    </div>
+    {/if}
+
+    <!-- Video / Reel content -->
+    {#if isVideo}
+    <div class="card p-5">
+      <h3 class="section-label mb-4">Video / Reel</h3>
+      <div class="space-y-4">
+        <div>
+          <label for="video_script" class="block text-xs text-muted mb-1.5">Script / Voiceover</label>
+          <textarea id="video_script" bind:value={video_script} rows="6" placeholder="Hook line…&#10;Body content…&#10;Call to action…" class="input w-full resize-none text-sm"></textarea>
+        </div>
+        <div>
+          <label for="ai_video_prompt" class="block text-xs text-muted mb-1.5">AI Video Prompt (optional)</label>
+          <textarea id="ai_video_prompt" bind:value={ai_video_prompt} rows="3" placeholder="Describe the scene, style, and mood for AI video generation…" class="input w-full resize-none text-xs font-mono"></textarea>
+        </div>
+      </div>
+    </div>
+    {/if}
+
+    <!-- Image prompt -->
+    {#if isImage}
+    <div class="card p-5">
+      <h3 class="section-label mb-4">Image Prompt (optional)</h3>
+      <label for="ai_image_prompt" class="block text-xs text-muted mb-1.5">AI Image Generation Prompt</label>
+      <textarea id="ai_image_prompt" bind:value={ai_image_prompt} rows="3" placeholder="Describe the image: style, subject, colors, mood…" class="input w-full resize-none text-xs font-mono"></textarea>
+      <p class="text-xs text-muted mt-1">Used when AI image generation is triggered for this post.</p>
+    </div>
+    {/if}
 
     <!-- Per-platform captions -->
     {#if selectedPlatforms.length > 0}
@@ -356,6 +481,23 @@
         </div>
         {/if}
 
+        <!-- Multi-location overrides -->
+        <div class="border-t border-border pt-4 space-y-3">
+          <p class="text-xs text-muted">Multi-location caption overrides (optional — leave blank to use master caption for all locations)</p>
+          <div>
+            <label class="block text-xs text-muted mb-1.5">GBP — Los Angeles</label>
+            <textarea bind:value={cap_gbp_la} rows="2" placeholder="Leave blank for default…" class="input w-full resize-none font-mono text-xs"></textarea>
+          </div>
+          <div>
+            <label class="block text-xs text-muted mb-1.5">GBP — Washington</label>
+            <textarea bind:value={cap_gbp_wa} rows="2" placeholder="Leave blank for default…" class="input w-full resize-none font-mono text-xs"></textarea>
+          </div>
+          <div>
+            <label class="block text-xs text-muted mb-1.5">GBP — Oregon</label>
+            <textarea bind:value={cap_gbp_or} rows="2" placeholder="Leave blank for default…" class="input w-full resize-none font-mono text-xs"></textarea>
+          </div>
+        </div>
+
       </div>
     </div>
     {/if}
@@ -372,18 +514,26 @@
           <button class="btn-ghost btn-sm text-[10px]" on:click={clearAll}>None</button>
         </div>
       </div>
-      <div class="space-y-1.5">
+      <div class="space-y-1">
         {#each allPlatforms as p}
-          <label class="flex items-center gap-2.5 p-2 rounded-md cursor-pointer hover:bg-surface transition-colors
-            {selectedPlatforms.includes(p) ? 'bg-accent/5 border border-accent/20' : 'border border-transparent'}">
-            <input
-              type="checkbox"
-              checked={selectedPlatforms.includes(p)}
-              on:change={() => togglePlatform(p)}
-              class="rounded accent-violet-500"
-            />
+          <button
+            type="button"
+            class="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md transition-colors text-left
+              {selectedPlatforms.includes(p)
+                ? 'bg-accent/10 border border-accent/30 text-white'
+                : 'border border-transparent hover:bg-surface text-muted hover:text-white'}"
+            on:click={() => togglePlatform(p)}
+          >
+            <span class="w-4 h-4 flex-shrink-0 rounded border flex items-center justify-center
+              {selectedPlatforms.includes(p) ? 'bg-accent border-accent' : 'border-border'}">
+              {#if selectedPlatforms.includes(p)}
+                <svg class="w-2.5 h-2.5 text-white" viewBox="0 0 10 8" fill="currentColor">
+                  <path d="M1 4l3 3 5-6"/>
+                </svg>
+              {/if}
+            </span>
             <PlatformBadge platform={p} size="sm" />
-          </label>
+          </button>
         {/each}
       </div>
       <p class="text-xs text-muted mt-2">{selectedPlatforms.length} selected</p>

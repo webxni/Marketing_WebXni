@@ -36,6 +36,8 @@ const CLIENT_WRITABLE_FIELDS = new Set([
   'wp_template_key', 'wp_featured_image_mode', 'wp_excerpt_mode',
   // Notion
   'notion_page_id',
+  // Logo + brand colors (migration 0005)
+  'logo_r2_key', 'logo_url', 'brand_primary_color', 'brand_accent_color',
 ]);
 
 /** GET /api/clients */
@@ -82,7 +84,7 @@ clientRoutes.post('/', async (c) => {
   }
 
   const colNames = ['id', 'slug', 'canonical_name', ...extraFields, 'created_at', 'updated_at'].join(', ');
-  const placeholders = new Array(4 + extraFields.length).fill('?').join(', ');
+  const placeholders = new Array(5 + extraFields.length).fill('?').join(', ');
 
   await c.env.DB
     .prepare(`INSERT INTO clients (${colNames}) VALUES (${placeholders})`)
@@ -177,6 +179,9 @@ clientRoutes.put('/:slug/platforms/:platform', async (c) => {
     'account_id', 'username', 'page_id',
     'upload_post_board_id', 'upload_post_location_id',
     'privacy_level', 'privacy_status', 'notes',
+    // migration 0005
+    'profile_url', 'profile_username', 'connection_status',
+    'yt_channel_id', 'linkedin_urn',
   ]);
 
   const setClauses: string[] = [];

@@ -16,6 +16,12 @@
 
   let dryRun = false;
   let clientFilter = '';
+  let platformFilter = '';
+
+  const allPlatforms = [
+    'facebook','instagram','linkedin','x','threads',
+    'tiktok','pinterest','bluesky','youtube','google_business','website_blog'
+  ];
 
   async function load() {
     loading = true;
@@ -36,6 +42,7 @@
     try {
       const params: Record<string, unknown> = { dry_run: dry };
       if (clientFilter) params.client_filter = clientFilter;
+      if (platformFilter) params.platform_filter = platformFilter;
       const { job_id, mode } = await runApi.triggerPosting(params);
       toast.success(`Job started: ${job_id} (${mode})`);
       setTimeout(load, 1000);
@@ -94,42 +101,62 @@
   <h3 class="section-label mb-4">Trigger Job</h3>
   <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
     <div>
-      <label class="block text-xs text-muted mb-1.5">Client filter (optional)</label>
-      <select bind:value={clientFilter} class="input w-full text-sm">
+      <label for="client_filter" class="block text-xs text-muted mb-1.5">Client filter (optional)</label>
+      <select id="client_filter" bind:value={clientFilter} class="input w-full text-sm">
         <option value="">All clients</option>
         {#each clients as c}
           <option value={c.slug}>{c.canonical_name}</option>
         {/each}
       </select>
     </div>
-    <div class="flex items-end">
-      <label class="flex items-center gap-2 text-xs text-muted cursor-pointer">
-        <input type="checkbox" bind:checked={dryRun} class="rounded" />
+    <div>
+      <label for="platform_filter" class="block text-xs text-muted mb-1.5">Platform filter (optional)</label>
+      <select id="platform_filter" bind:value={platformFilter} class="input w-full text-sm">
+        <option value="">All platforms</option>
+        {#each allPlatforms as p}
+          <option value={p}>{p.replace(/_/g, ' ')}</option>
+        {/each}
+      </select>
+    </div>
+    <div class="flex items-end pb-1">
+      <label for="dry_run" class="flex items-center gap-2 text-xs text-muted cursor-pointer">
+        <input id="dry_run" type="checkbox" bind:checked={dryRun} class="rounded" />
         Dry run mode (no actual posting)
       </label>
     </div>
   </div>
-  <div class="flex flex-wrap gap-2">
+  <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-2">
     <button
-      class="btn-primary btn-sm"
+      class="btn-primary btn-sm flex flex-col items-start gap-1 h-auto py-3 px-4 text-left"
       disabled={triggering}
       on:click={() => trigger(dryRun)}
     >
-      {dryRun ? 'Dry Run Posting' : 'Run Posting'}
+      <span class="font-semibold">{dryRun ? 'Dry Run Posting' : 'Run Posting'}</span>
+      <span class="text-[11px] opacity-70 font-normal whitespace-normal">
+        {dryRun
+          ? 'Validates Ready posts without actually publishing. No changes made.'
+          : 'Picks up all Ready posts and submits them to Upload-Post and WordPress.'}
+      </span>
     </button>
     <button
-      class="btn-secondary btn-sm"
+      class="btn-secondary btn-sm flex flex-col items-start gap-1 h-auto py-3 px-4 text-left"
       disabled={triggering}
       on:click={triggerGenerate}
     >
-      Generate Content (Phase 1)
+      <span class="font-semibold">Generate Content</span>
+      <span class="text-[11px] opacity-70 font-normal whitespace-normal">
+        Phase 1 — AI generates captions and blog content for approved posts. (Coming soon)
+      </span>
     </button>
     <button
-      class="btn-secondary btn-sm"
+      class="btn-secondary btn-sm flex flex-col items-start gap-1 h-auto py-3 px-4 text-left"
       disabled={triggering}
       on:click={fetchUrls}
     >
-      Fetch Published URLs
+      <span class="font-semibold">Fetch Published URLs</span>
+      <span class="text-[11px] opacity-70 font-normal whitespace-normal">
+        Polls Upload-Post history and writes real post URLs back into the database.
+      </span>
     </button>
   </div>
 </div>

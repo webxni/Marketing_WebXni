@@ -63,20 +63,40 @@
     {#each filtered as client}
       <a href="/clients/{client.slug}" class="card p-5 hover:border-accent/30 transition-colors block">
         <div class="flex items-start justify-between mb-3">
-          <div class="w-9 h-9 rounded-lg bg-accent/10 flex items-center justify-center text-accent font-semibold text-sm">
-            {client.canonical_name[0]}
-          </div>
+          {#if client.logo_url}
+            <img src={client.logo_url} alt="{client.canonical_name} logo" class="w-9 h-9 rounded-lg object-contain bg-surface border border-border" />
+          {:else}
+            <div class="w-9 h-9 rounded-lg bg-accent/10 flex items-center justify-center text-accent font-semibold text-sm">
+              {client.canonical_name[0]}
+            </div>
+          {/if}
           <Badge status={client.status ?? 'active'} />
         </div>
         <div class="font-medium text-white text-sm mb-1">{client.canonical_name}</div>
         <div class="text-xs text-muted mb-3">{client.slug}</div>
-        <div class="flex items-center gap-3 text-xs text-muted">
+        <div class="flex items-center gap-2 flex-wrap text-xs text-muted mb-2">
           <span class="capitalize">{client.package ?? '—'}</span>
           {#if client.manual_only === 1}
-            <span class="badge-warning badge">manual</span>
+            <span class="px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-400 text-[10px]">manual</span>
           {/if}
           {#if client.language && client.language !== 'en'}
             <span class="uppercase">{client.language}</span>
+          {/if}
+        </div>
+        <!-- Integration status indicators -->
+        <div class="flex items-center gap-1.5">
+          {#if client.upload_post_profile}
+            <span class="px-1.5 py-0.5 rounded text-[10px] bg-accent/10 text-accent" title="Upload-Post connected: {client.upload_post_profile}">UP</span>
+          {:else}
+            <span class="px-1.5 py-0.5 rounded text-[10px] bg-surface text-muted" title="Upload-Post not configured">UP</span>
+          {/if}
+          {#if client.wp_base_url || client.wp_domain}
+            <span class="px-1.5 py-0.5 rounded text-[10px] bg-blue-500/10 text-blue-400" title="WordPress: {client.wp_base_url || client.wp_domain}">WP</span>
+          {:else}
+            <span class="px-1.5 py-0.5 rounded text-[10px] bg-surface text-muted" title="WordPress not configured">WP</span>
+          {/if}
+          {#if client.notion_page_id}
+            <span class="px-1.5 py-0.5 rounded text-[10px] bg-orange-500/10 text-orange-400" title="Synced with Notion">N</span>
           {/if}
         </div>
       </a>

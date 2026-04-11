@@ -6,6 +6,69 @@ import { z } from 'zod';
 import type { Env, SessionData } from '../types';
 import { createPostingJob, listPostingJobs, getPostingJobById } from '../db/queries';
 import { runPosting } from '../loader/posting-run';
+import { UploadPostClient } from '../services/uploadpost';
+
+/**
+ * Fetch published URLs from Upload-Post history.
+ * Queries all post_platforms with status='sent', fetches their real URLs,
+ * writes real_url back to post_platforms, and marks posts as 'posted'
+ * when all their platforms are confirmed.
+ */
+export async function runFetchUrls(env: Env, jobId: string): Promise<void> {
+  console.log('[fetch-urls] starting job', jobId);
+  const up = new UploadPostClient((env as unknown as { UPLOAD_POST_API_KEY: string }).UPLOAD_POST_API_KEY);
+  const db = (env as unknown as { DB: D1Database }).DB;
+
+  try {
+    // Fetch recent Upload-Post history (last 200 entries)
+    const { history } = await up.getHistory(200);
+    // Build a lookup: job_id/request_id → post URL
+    const urlMap = new Map<string, string>();
+    for (const entry of history) {
+      const jid = (entry['job_id'] ?? entry['request_id']) as string | undefined;
+      const url = (entry['post_url'] ?? entry['url'] ?? entry['link']) as string | undefined;
+      if (jid && url) urlMap.set(jid, url);
+    }
+
+    // Find all sent post_platforms that have a tracking_id
+    const rows = await db
+      .prepare(`SELECT pp.id, pp.post_id, pp.platform, pp.tracking_id
+                FROM post_platforms pp
+                WHERE pp.status = 'sent' AND pp.tracking_id IS NOT NULL`)
+      .all<{ id: string; post_id: string; platform: string; tracking_id: string }>();
+
+    let updated = 0;
+    for (const row of rows.results) {
+      const rawId = row.tracking_id.replace(/^UP:(IDEM:)?/, '');
+      const realUrl = urlMap.get(rawId);
+      if (!realUrl) continue;
+
+      await db
+        .prepare("UPDATE post_platforms SET real_url = ?, status = 'posted' WHERE id = ?")
+        .bind(realUrl, row.id)
+        .run();
+      updated++;
+
+      // Check if ALL platforms for this post are now confirmed (posted or skipped/idempotent)
+      const remaining = await db
+        .prepare(`SELECT COUNT(*) as n FROM post_platforms
+                  WHERE post_id = ? AND status NOT IN ('posted','skipped','blocked','idempotent')`)
+        .bind(row.post_id)
+        .first<{ n: number }>();
+      if ((remaining?.n ?? 1) === 0) {
+        const now = Math.floor(Date.now() / 1000);
+        await db
+          .prepare("UPDATE posts SET status = 'posted', automation_status = 'Posted', updated_at = ? WHERE id = ?")
+          .bind(now, row.post_id)
+          .run();
+      }
+    }
+
+    console.log(`[fetch-urls] done — updated ${updated} platform rows`);
+  } catch (err) {
+    console.error('[fetch-urls] error:', err);
+  }
+}
 
 export const runRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -73,8 +136,7 @@ runRoutes.post('/generate', async (c) => {
 /** POST /api/run/fetch-urls — poll Upload-Post history and write real URLs back */
 runRoutes.post('/fetch-urls', async (c) => {
   const jobId = crypto.randomUUID().replace(/-/g, '').toLowerCase();
-  // Fetch URLs not yet implemented — log and return
-  console.log('Fetch URLs run requested', { jobId });
+  c.executionCtx.waitUntil(runFetchUrls(c.env, jobId));
   return c.json({ ok: true, job_id: jobId }, 202);
 });
 

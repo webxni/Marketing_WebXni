@@ -3,7 +3,7 @@
   import { postsApi, clientsApi } from '$lib/api';
   import Badge from '$lib/components/ui/Badge.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
-  import { currentMonth, lastNMonths } from '$lib/utils';
+  import { currentMonth, monthRange } from '$lib/utils';
   import type { Post, Client } from '$lib/types';
 
   let posts: Post[] = [];
@@ -12,7 +12,7 @@
   let selectedMonth = currentMonth();
   let selectedClient = '';
 
-  const months = lastNMonths(6);
+  const months = monthRange(6, 12);
 
   // Calendar grid
   $: calendarData = buildCalendar(selectedMonth, posts);
@@ -120,19 +120,24 @@
         <div
           class="min-h-[100px] p-2 border-b border-r border-border
             {cell.today ? 'bg-accent/5' : ''}
-            {cell.date === 0 ? 'bg-surface' : ''}"
+            {cell.date === 0 ? 'bg-surface' : 'group'}"
           class:border-accent={cell.today}
         >
           {#if cell.date > 0}
-            <div class="text-xs font-medium mb-1
-              {cell.today ? 'text-accent' : 'text-muted'}
-            ">{cell.date}</div>
+            <div class="flex items-center justify-between mb-1">
+              <div class="text-xs font-medium {cell.today ? 'text-accent' : 'text-muted'}">{cell.date}</div>
+              <a
+                href="/posts/new?date={cell.iso}"
+                class="opacity-0 group-hover:opacity-100 transition-opacity text-[10px] text-accent hover:text-white"
+                title="Create post for {cell.iso}"
+              >+</a>
+            </div>
             <div class="space-y-1">
               {#each cell.posts.slice(0, 3) as post}
                 <a
                   href="/posts/{post.id}"
                   class="flex items-center gap-1 text-[10px] leading-tight hover:text-accent truncate"
-                  title="{post.title ?? '(untitled)'} · {post.client_name ?? ''}"
+                  title="{post.title ?? '(untitled)'}{post.client_name ? ' · ' + post.client_name : ''}{post.master_caption ? '\n' + post.master_caption.slice(0, 120) : ''}"
                 >
                   <span class="w-1.5 h-1.5 rounded-full flex-shrink-0 {statusDot[post.status ?? 'draft'] ?? 'bg-gray-500'}"></span>
                   <span class="text-muted truncate">{post.title ?? '(untitled)'}</span>

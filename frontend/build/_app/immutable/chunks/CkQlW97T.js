@@ -1,0 +1,1 @@
+import{a as r}from"./rHFc9lY3.js";const e={triggerPosting:(t={})=>r.post("/api/run/posting",t),triggerGenerate:(t={})=>r.post("/api/run/generate",t),fetchUrls:(t={})=>r.post("/api/run/fetch-urls",t),listJobs:()=>r.get("/api/run/jobs"),getJob:t=>r.get(`/api/run/jobs/${t}`),getStatus:t=>r.get(`/api/run/status/${t}`)};export{e as r};

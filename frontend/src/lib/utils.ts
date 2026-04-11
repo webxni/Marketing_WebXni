@@ -54,23 +54,24 @@ export function titleCase(s: string): string {
 /** Get badge CSS class for post status */
 export function statusClass(status: PostStatus | string | null | undefined): string {
   const map: Record<string, string> = {
-    draft:     'badge-draft',
-    approved:  'badge-approved',
-    ready:     'badge-ready',
-    scheduled: 'badge-scheduled',
-    posted:    'badge-posted',
-    failed:    'badge-failed',
-    blocked:   'badge-blocked',
-    cancelled: 'badge-draft',
-    running:   'badge-running',
-    completed: 'badge-completed',
-    pending:   'badge-pending',
-    sent:      'badge-scheduled',
-    active:    'badge-active',
-    inactive:  'badge-inactive',
-    ok:        'badge-completed',
-    skipped:   'badge-draft',
-    idempotent:'badge-scheduled',
+    draft:            'badge-draft',
+    pending_approval: 'badge-pending',
+    approved:         'badge-approved',
+    ready:            'badge-ready',
+    scheduled:        'badge-scheduled',
+    posted:           'badge-posted',
+    failed:           'badge-failed',
+    blocked:          'badge-blocked',
+    cancelled:        'badge-draft',
+    running:          'badge-running',
+    completed:        'badge-completed',
+    pending:          'badge-pending',
+    sent:             'badge-scheduled',
+    active:           'badge-active',
+    inactive:         'badge-inactive',
+    ok:               'badge-completed',
+    skipped:          'badge-draft',
+    idempotent:       'badge-scheduled',
   };
   return map[status ?? ''] ?? 'badge-draft';
 }
@@ -98,6 +99,23 @@ export function lastNMonths(n = 6): { value: string; label: string }[] {
   const result: { value: string; label: string }[] = [];
   const d = new Date();
   for (let i = 0; i < n; i++) {
+    const value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const label = d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    result.push({ value, label });
+    d.setMonth(d.getMonth() - 1);
+  }
+  return result;
+}
+
+/**
+ * Build a list of months spanning `past` months before today through `future` months ahead.
+ * Ordered newest-first (future months first, then current, then past).
+ */
+export function monthRange(past = 6, future = 12): { value: string; label: string }[] {
+  const result: { value: string; label: string }[] = [];
+  const d = new Date();
+  d.setMonth(d.getMonth() + future);
+  for (let i = 0; i < past + future + 1; i++) {
     const value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
     const label = d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
     result.push({ value, label });

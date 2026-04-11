@@ -1,7 +1,9 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
-  import { clientsApi } from '$lib/api';
+  import { clientsApi, packagesApi } from '$lib/api';
   import { toast } from '$lib/stores/ui';
+  import type { Package } from '$lib/types';
 
   let saving = false;
 
@@ -18,8 +20,12 @@
   let wp_application_password = '';
   let notes = '';
 
-  const packages = ['starter','growth','premium','enterprise'];
+  let dbPackages: Package[] = [];
   const languages = ['en','es','fr','pt'];
+
+  onMount(async () => {
+    try { const r = await packagesApi.list(); dbPackages = r.packages; } catch {}
+  });
 
   // Auto-generate slug from name
   function generateSlug() {
@@ -103,8 +109,8 @@
           <label for="package" class="block text-xs text-muted mb-1.5">Package</label>
           <select id="package" bind:value={packageField} class="input w-full">
             <option value="">—</option>
-            {#each packages as p}
-              <option value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>
+            {#each dbPackages as p}
+              <option value={p.slug}>{p.name}</option>
             {/each}
           </select>
         </div>

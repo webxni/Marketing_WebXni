@@ -19,18 +19,49 @@
   let newPassword = '';
   let confirmPassword = '';
 
-  // System settings (admin only)
+  // System settings raw store (admin only)
   let systemSettings: Record<string, string> = {};
-  let savingSystem = false;
+
+  // ── Automation / Cron ─────────────────────────────────────────────────────
+  let cronEnabled = true;
+  let postingHours = '9,15';
+  let savingCron = false;
+
+  // ── AI Provider ───────────────────────────────────────────────────────────
+  let aiProvider = 'openai';
+  let aiModel = '';
+  let aiApiKey = '';
+  let aiBaseUrl = '';
+  let savingAi = false;
+
+  const aiProviders = [
+    { value: 'openai',    label: 'OpenAI (GPT)' },
+    { value: 'anthropic', label: 'Anthropic (Claude)' },
+    { value: 'google',    label: 'Google (Gemini)' },
+    { value: 'custom',    label: 'Custom / Ollama' },
+  ];
+
+  const aiModelPlaceholders: Record<string, string> = {
+    openai:    'gpt-4o',
+    anthropic: 'claude-sonnet-4-5',
+    google:    'gemini-1.5-pro',
+    custom:    'llama3',
+  };
 
   onMount(async () => {
-    // Pre-fill from store
     const u = $userStore;
     if (u) { name = u.name; email = u.email; }
     if (hasRole('admin')) {
       try {
         const r = await api.get<{ settings: Record<string, string> }>('/api/settings');
         systemSettings = r.settings ?? {};
+        // Parse structured fields from flat KV
+        cronEnabled  = systemSettings['cron_enabled']  !== 'false';
+        postingHours = systemSettings['posting_hours'] ?? '9,15';
+        aiProvider   = systemSettings['ai_provider']   ?? 'openai';
+        aiModel      = systemSettings['ai_model']      ?? '';
+        aiApiKey     = systemSettings['ai_api_key']    ?? '';
+        aiBaseUrl    = systemSettings['ai_base_url']   ?? '';
       } catch {}
     }
     loading = false;
@@ -60,13 +91,40 @@
     finally { savingPassword = false; }
   }
 
-  async function saveSystem() {
-    savingSystem = true;
+  async function saveCron() {
+    savingCron = true;
     try {
-      await api.put('/api/settings', { settings: systemSettings });
-      toast.success('Settings saved');
+      const updated = {
+        ...systemSettings,
+        cron_enabled:  cronEnabled  ? 'true' : 'false',
+        posting_hours: postingHours.trim() || '9,15',
+      };
+      await api.put('/api/settings', { settings: updated });
+      systemSettings = updated;
+      toast.success('Schedule saved');
     } catch (e) { toast.error(String(e)); }
-    finally { savingSystem = false; }
+    finally { savingCron = false; }
+  }
+
+  async function saveAi() {
+    if (!aiApiKey.trim() && aiProvider !== 'custom') {
+      toast.error('API key is required');
+      return;
+    }
+    savingAi = true;
+    try {
+      const updated = {
+        ...systemSettings,
+        ai_provider: aiProvider,
+        ai_model:    aiModel.trim(),
+        ai_api_key:  aiApiKey.trim(),
+        ai_base_url: aiBaseUrl.trim(),
+      };
+      await api.put('/api/settings', { settings: updated });
+      systemSettings = updated;
+      toast.success('AI config saved');
+    } catch (e) { toast.error(String(e)); }
+    finally { savingAi = false; }
   }
 </script>
 
@@ -89,12 +147,12 @@
     <h3 class="section-label mb-4">Profile</h3>
     <div class="space-y-4">
       <div>
-        <label for="name" class="block text-xs text-muted mb-1.5">Full Name</label>
-        <input id="name" type="text" bind:value={name} class="input w-full" />
+        <label for="profile_name" class="block text-xs text-muted mb-1.5">Full Name</label>
+        <input id="profile_name" type="text" bind:value={name} class="input w-full" />
       </div>
       <div>
-        <label for="email" class="block text-xs text-muted mb-1.5">Email</label>
-        <input id="email" type="email" value={email} class="input w-full opacity-50 cursor-not-allowed" readonly />
+        <label for="profile_email" class="block text-xs text-muted mb-1.5">Email</label>
+        <input id="profile_email" type="email" value={email} class="input w-full opacity-50 cursor-not-allowed" readonly />
         <p class="text-xs text-muted mt-1">Email cannot be changed. Contact an admin.</p>
       </div>
       <div class="flex justify-end">
@@ -148,32 +206,92 @@
     </dl>
   </div>
 
-  <!-- System settings (admin only) -->
   {#if hasRole('admin')}
+
+  <!-- Automation Schedule -->
   <div class="card p-5">
-    <h3 class="section-label mb-4">System Settings</h3>
-    <div class="space-y-3">
-      {#each Object.entries(systemSettings) as [key, value]}
-        <div>
-          <label class="block text-xs text-muted mb-1 font-mono">{key}</label>
-          <input
-            type="text"
-            bind:value={systemSettings[key]}
-            class="input w-full text-xs font-mono"
-          />
-        </div>
-      {/each}
-      {#if Object.keys(systemSettings).length === 0}
-        <p class="text-xs text-muted">No system settings configured.</p>
-      {:else}
-        <div class="flex justify-end">
-          <button class="btn-primary btn-sm" on:click={saveSystem} disabled={savingSystem}>
-            {savingSystem ? 'Saving…' : 'Save Settings'}
-          </button>
-        </div>
-      {/if}
+    <h3 class="section-label mb-4">Automation Schedule</h3>
+    <div class="space-y-4">
+      <div class="flex items-center gap-2">
+        <input type="checkbox" id="cron_enabled" bind:checked={cronEnabled} class="rounded" />
+        <label for="cron_enabled" class="text-xs text-muted cursor-pointer">Enable automated posting (cron runs every 6 hours)</label>
+      </div>
+      <div>
+        <label for="posting_hours" class="block text-xs text-muted mb-1.5">Active Posting Hours (UTC, comma-separated)</label>
+        <input
+          id="posting_hours"
+          type="text"
+          bind:value={postingHours}
+          placeholder="9,15"
+          class="input w-full font-mono text-xs"
+          disabled={!cronEnabled}
+        />
+        <p class="text-xs text-muted mt-1">
+          Hours when the cron job will attempt to post (24h UTC). E.g. "9,15" = 9 AM and 3 PM.
+          The cron fires every 6h — it only processes posts if the current hour is in this list.
+        </p>
+      </div>
+      <div class="flex justify-end">
+        <button class="btn-primary btn-sm" on:click={saveCron} disabled={savingCron}>
+          {savingCron ? 'Saving…' : 'Save Schedule'}
+        </button>
+      </div>
     </div>
   </div>
+
+  <!-- AI Provider -->
+  <div class="card p-5 lg:col-span-2">
+    <h3 class="section-label mb-4">AI Provider</h3>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div>
+        <label for="ai_provider" class="block text-xs text-muted mb-1.5">Provider</label>
+        <select id="ai_provider" bind:value={aiProvider} class="input w-full">
+          {#each aiProviders as p}
+            <option value={p.value}>{p.label}</option>
+          {/each}
+        </select>
+      </div>
+      <div>
+        <label for="ai_model" class="block text-xs text-muted mb-1.5">Model</label>
+        <input
+          id="ai_model"
+          type="text"
+          bind:value={aiModel}
+          placeholder={aiModelPlaceholders[aiProvider] ?? 'model-name'}
+          class="input w-full font-mono text-xs"
+        />
+      </div>
+      <div>
+        <label for="ai_api_key" class="block text-xs text-muted mb-1.5">API Key</label>
+        <input
+          id="ai_api_key"
+          type="password"
+          bind:value={aiApiKey}
+          placeholder="sk-..."
+          class="input w-full font-mono text-xs"
+          autocomplete="new-password"
+        />
+      </div>
+      <div>
+        <label for="ai_base_url" class="block text-xs text-muted mb-1.5">Base URL <span class="text-muted font-normal">(custom / Ollama only)</span></label>
+        <input
+          id="ai_base_url"
+          type="url"
+          bind:value={aiBaseUrl}
+          placeholder="http://localhost:11434/v1"
+          class="input w-full font-mono text-xs"
+          disabled={aiProvider !== 'custom'}
+        />
+        <p class="text-xs text-muted mt-1">Leave blank for standard providers. Required for Custom/Ollama.</p>
+      </div>
+      <div class="md:col-span-2 flex justify-end">
+        <button class="btn-primary btn-sm" on:click={saveAi} disabled={savingAi}>
+          {savingAi ? 'Saving…' : 'Save AI Config'}
+        </button>
+      </div>
+    </div>
+  </div>
+
   {/if}
 
 </div>

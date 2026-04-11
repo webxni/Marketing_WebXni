@@ -2,10 +2,10 @@
   import { page } from '$app/stores';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
-  import { clientsApi } from '$lib/api';
+  import { clientsApi, packagesApi, assetsApi } from '$lib/api';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import { toast } from '$lib/stores/ui';
-  import type { Client } from '$lib/types';
+  import type { Client, Package } from '$lib/types';
 
   let client: Client | null = null;
   let loading = true;
@@ -25,6 +25,14 @@
   let brand_json = '';
   let brand_json_error = '';
 
+  // ── Branding ────────────────────────────────────────────────────────────────
+  let brand_primary_color = '';
+  let brand_accent_color = '';
+  let logo_url = '';
+  let logo_r2_key = '';
+  let logoFile: FileList | null = null;
+  let uploadingLogo = false;
+
   // ── Upload-Post ─────────────────────────────────────────────────────────────
   let upload_post_profile = '';
 
@@ -41,7 +49,7 @@
   let wp_featured_image_mode = 'upload';
   let wp_excerpt_mode = 'auto';
 
-  const packages   = ['starter','growth','premium','enterprise'];
+  let dbPackages: Package[] = [];
   const statuses   = ['active','inactive','paused'];
   const languages  = ['en','es','fr','pt'];
   const postStatuses = ['draft','publish'];
@@ -50,8 +58,12 @@
 
   onMount(async () => {
     try {
-      const r = await clientsApi.get($page.params.slug ?? '');
-      client = r.client;
+      const [clientRes, pkgRes] = await Promise.all([
+        clientsApi.get($page.params.slug ?? ''),
+        packagesApi.list(),
+      ]);
+      dbPackages = pkgRes.packages;
+      client = clientRes.client;
       // Basic
       canonical_name           = client.canonical_name;
       slug_field               = client.slug;
@@ -62,6 +74,11 @@
       requires_approval_from   = client.requires_approval_from ?? '';
       notes                    = client.notes ?? '';
       brand_json               = client.brand_json ? JSON.stringify(JSON.parse(client.brand_json), null, 2) : '';
+      // Branding
+      brand_primary_color      = client.brand_primary_color ?? '';
+      brand_accent_color       = client.brand_accent_color ?? '';
+      logo_url                 = client.logo_url ?? '';
+      logo_r2_key              = client.logo_r2_key ?? '';
       // Upload-Post
       upload_post_profile      = client.upload_post_profile ?? '';
       // WordPress
@@ -79,6 +96,18 @@
     } catch { toast.error('Failed to load client'); }
     finally { loading = false; }
   });
+
+  async function uploadLogo() {
+    if (!logoFile || !logoFile[0]) return;
+    uploadingLogo = true;
+    try {
+      const r = await assetsApi.upload(logoFile[0]);
+      logo_r2_key = r.r2_key;
+      logo_url = r.url;
+      toast.success('Logo uploaded');
+    } catch { toast.error('Logo upload failed'); }
+    finally { uploadingLogo = false; }
+  }
 
   function validateBrandJson() {
     if (!brand_json.trim()) { brand_json_error = ''; return true; }
@@ -112,6 +141,11 @@
         upload_post_profile:      upload_post_profile || null,
         notes:                    notes || null,
         brand_json:               brand_json.trim() ? brand_json.trim() : null,
+        // Branding
+        brand_primary_color:      brand_primary_color || null,
+        brand_accent_color:       brand_accent_color || null,
+        logo_url:                 logo_url || null,
+        logo_r2_key:              logo_r2_key || null,
         // WordPress
         wp_base_url:              wp_base_url || null,
         wp_admin_url:             wp_admin_url || null,
@@ -173,17 +207,17 @@
         </div>
         <div class="grid grid-cols-2 gap-3">
           <div>
-            <label class="block text-xs text-muted mb-1.5">Package</label>
-            <select bind:value={packageField} class="input w-full">
+            <label for="package" class="block text-xs text-muted mb-1.5">Package</label>
+            <select id="package" bind:value={packageField} class="input w-full">
               <option value="">—</option>
-              {#each packages as p}
-                <option value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>
+              {#each dbPackages as p}
+                <option value={p.slug}>{p.name}</option>
               {/each}
             </select>
           </div>
           <div>
-            <label class="block text-xs text-muted mb-1.5">Status</label>
-            <select bind:value={status} class="input w-full">
+            <label for="status" class="block text-xs text-muted mb-1.5">Status</label>
+            <select id="status" bind:value={status} class="input w-full">
               {#each statuses as s}
                 <option value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>
               {/each}
@@ -191,8 +225,8 @@
           </div>
         </div>
         <div>
-          <label class="block text-xs text-muted mb-1.5">Language</label>
-          <select bind:value={language} class="input w-full">
+          <label for="language" class="block text-xs text-muted mb-1.5">Language</label>
+          <select id="language" bind:value={language} class="input w-full">
             {#each languages as l}
               <option value={l}>{l.toUpperCase()}</option>
             {/each}
@@ -206,13 +240,13 @@
       <h3 class="section-label mb-4">Automation</h3>
       <div class="space-y-4">
         <div>
-          <label class="block text-xs text-muted mb-1.5">Upload-Post Profile</label>
-          <input type="text" bind:value={upload_post_profile} placeholder="Elite_Team_Builders" class="input w-full font-mono text-xs" />
+          <label for="upload_post_profile" class="block text-xs text-muted mb-1.5">Upload-Post Profile</label>
+          <input id="upload_post_profile" type="text" bind:value={upload_post_profile} placeholder="Elite_Team_Builders" class="input w-full font-mono text-xs" />
           <p class="text-xs text-muted mt-1">Must match exact profile slug in Upload-Post dashboard.</p>
         </div>
         <div>
-          <label class="block text-xs text-muted mb-1.5">Requires Approval From</label>
-          <input type="text" bind:value={requires_approval_from} placeholder="e.g. Lee" class="input w-full" />
+          <label for="requires_approval_from" class="block text-xs text-muted mb-1.5">Requires Approval From</label>
+          <input id="requires_approval_from" type="text" bind:value={requires_approval_from} placeholder="e.g. Lee" class="input w-full" />
         </div>
         <div class="flex items-center gap-2">
           <input type="checkbox" bind:checked={manual_only} id="manual-only" class="rounded" />
@@ -246,26 +280,27 @@
 
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
-          <label class="block text-xs text-muted mb-1.5">Site URL (wp_base_url)</label>
-          <input type="url" bind:value={wp_base_url} placeholder="https://example.com" class="input w-full" />
+          <label for="wp_base_url" class="block text-xs text-muted mb-1.5">Site URL (wp_base_url)</label>
+          <input id="wp_base_url" type="url" bind:value={wp_base_url} placeholder="https://example.com" class="input w-full" />
           <p class="text-xs text-muted mt-1">Main WordPress site URL without trailing slash.</p>
         </div>
         <div>
-          <label class="block text-xs text-muted mb-1.5">Admin URL (optional)</label>
-          <input type="url" bind:value={wp_admin_url} placeholder="https://example.com/wp-admin" class="input w-full" />
+          <label for="wp_admin_url" class="block text-xs text-muted mb-1.5">Admin URL (optional)</label>
+          <input id="wp_admin_url" type="url" bind:value={wp_admin_url} placeholder="https://example.com/wp-admin" class="input w-full" />
         </div>
         <div>
-          <label class="block text-xs text-muted mb-1.5">REST Base</label>
-          <input type="text" bind:value={wp_rest_base} placeholder="/wp-json/wp/v2" class="input w-full font-mono text-xs" />
+          <label for="wp_rest_base" class="block text-xs text-muted mb-1.5">REST Base</label>
+          <input id="wp_rest_base" type="text" bind:value={wp_rest_base} placeholder="/wp-json/wp/v2" class="input w-full font-mono text-xs" />
           <p class="text-xs text-muted mt-1">Default: /wp-json/wp/v2</p>
         </div>
         <div>
-          <label class="block text-xs text-muted mb-1.5">WP Username</label>
-          <input type="text" bind:value={wp_username} placeholder="admin" class="input w-full" autocomplete="off" />
+          <label for="wp_username" class="block text-xs text-muted mb-1.5">WP Username</label>
+          <input id="wp_username" type="text" bind:value={wp_username} placeholder="admin" class="input w-full" autocomplete="off" />
         </div>
         <div>
-          <label class="block text-xs text-muted mb-1.5">Application Password</label>
+          <label for="wp_application_password" class="block text-xs text-muted mb-1.5">Application Password</label>
           <input
+            id="wp_application_password"
             type="password"
             bind:value={wp_application_password}
             placeholder="xxxx xxxx xxxx xxxx xxxx xxxx"
@@ -275,39 +310,39 @@
           <p class="text-xs text-muted mt-1">Generate in WP Admin → Users → Application Passwords.</p>
         </div>
         <div>
-          <label class="block text-xs text-muted mb-1.5">Default Post Status</label>
-          <select bind:value={wp_default_post_status} class="input w-full">
+          <label for="wp_default_post_status" class="block text-xs text-muted mb-1.5">Default Post Status</label>
+          <select id="wp_default_post_status" bind:value={wp_default_post_status} class="input w-full">
             {#each postStatuses as s}
               <option value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>
             {/each}
           </select>
         </div>
         <div>
-          <label class="block text-xs text-muted mb-1.5">Default Author ID</label>
-          <input type="number" bind:value={wp_default_author_id} placeholder="1" class="input w-full" />
+          <label for="wp_default_author_id" class="block text-xs text-muted mb-1.5">Default Author ID</label>
+          <input id="wp_default_author_id" type="number" bind:value={wp_default_author_id} placeholder="1" class="input w-full" />
           <p class="text-xs text-muted mt-1">Get from WP → Users. Use Test Connection first.</p>
         </div>
         <div>
-          <label class="block text-xs text-muted mb-1.5">Default Category IDs (JSON array)</label>
-          <input type="text" bind:value={wp_default_category_ids} placeholder="[1, 5, 12]" class="input w-full font-mono text-xs" />
+          <label for="wp_default_category_ids" class="block text-xs text-muted mb-1.5">Default Category IDs (JSON array)</label>
+          <input id="wp_default_category_ids" type="text" bind:value={wp_default_category_ids} placeholder="[1, 5, 12]" class="input w-full font-mono text-xs" />
           <p class="text-xs text-muted mt-1">e.g. [1, 5] — use Pull Categories to find IDs.</p>
         </div>
         <div>
-          <label class="block text-xs text-muted mb-1.5">Template Key</label>
-          <input type="text" bind:value={wp_template_key} placeholder="etb" class="input w-full font-mono text-xs" />
+          <label for="wp_template_key" class="block text-xs text-muted mb-1.5">Template Key</label>
+          <input id="wp_template_key" type="text" bind:value={wp_template_key} placeholder="etb" class="input w-full font-mono text-xs" />
           <p class="text-xs text-muted mt-1">References a saved wp_templates entry.</p>
         </div>
         <div>
-          <label class="block text-xs text-muted mb-1.5">Featured Image Mode</label>
-          <select bind:value={wp_featured_image_mode} class="input w-full">
+          <label for="wp_featured_image_mode" class="block text-xs text-muted mb-1.5">Featured Image Mode</label>
+          <select id="wp_featured_image_mode" bind:value={wp_featured_image_mode} class="input w-full">
             {#each imgModes as m}
               <option value={m}>{m.charAt(0).toUpperCase() + m.slice(1)}</option>
             {/each}
           </select>
         </div>
         <div>
-          <label class="block text-xs text-muted mb-1.5">Excerpt Mode</label>
-          <select bind:value={wp_excerpt_mode} class="input w-full">
+          <label for="wp_excerpt_mode" class="block text-xs text-muted mb-1.5">Excerpt Mode</label>
+          <select id="wp_excerpt_mode" bind:value={wp_excerpt_mode} class="input w-full">
             {#each excerptModes as m}
               <option value={m}>{m.charAt(0).toUpperCase() + m.slice(1)}</option>
             {/each}
@@ -319,13 +354,56 @@
     <!-- Notes -->
     <div class="card p-5">
       <h3 class="section-label mb-4">Notes</h3>
-      <textarea bind:value={notes} rows="4" placeholder="Internal notes about this client…" class="input w-full resize-none text-sm"></textarea>
+      <label for="notes" class="sr-only">Notes</label>
+      <textarea id="notes" bind:value={notes} rows="4" placeholder="Internal notes about this client…" class="input w-full resize-none text-sm"></textarea>
+    </div>
+
+    <!-- Branding / Logo -->
+    <div class="card p-5">
+      <h3 class="section-label mb-4">Branding</h3>
+      <div class="space-y-4">
+        <!-- Logo upload -->
+        <div>
+          <label class="block text-xs text-muted mb-1.5">Logo</label>
+          {#if logo_url}
+            <div class="mb-2 flex items-center gap-3">
+              <img src={logo_url} alt="Client logo" class="w-16 h-16 object-contain rounded border border-border bg-surface" />
+              <button type="button" class="btn-ghost btn-sm text-xs text-red-400" on:click={() => { logo_url = ''; logo_r2_key = ''; }}>Remove</button>
+            </div>
+          {/if}
+          <div class="flex gap-2">
+            <input type="file" accept="image/*" bind:files={logoFile} class="input text-sm flex-1" />
+            <button type="button" class="btn-secondary btn-sm" on:click={uploadLogo} disabled={uploadingLogo || !logoFile?.[0]}>
+              {uploadingLogo ? 'Uploading…' : 'Upload'}
+            </button>
+          </div>
+        </div>
+        <!-- Brand colors -->
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label for="brand_primary" class="block text-xs text-muted mb-1.5">Primary Color</label>
+            <div class="flex gap-2 items-center">
+              <input type="color" bind:value={brand_primary_color} class="h-9 w-10 rounded border border-border bg-surface cursor-pointer" />
+              <input id="brand_primary" type="text" bind:value={brand_primary_color} placeholder="#000000" class="input flex-1 font-mono text-xs" />
+            </div>
+          </div>
+          <div>
+            <label for="brand_accent" class="block text-xs text-muted mb-1.5">Accent Color</label>
+            <div class="flex gap-2 items-center">
+              <input type="color" bind:value={brand_accent_color} class="h-9 w-10 rounded border border-border bg-surface cursor-pointer" />
+              <input id="brand_accent" type="text" bind:value={brand_accent_color} placeholder="#6366F1" class="input flex-1 font-mono text-xs" />
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Brand JSON -->
     <div class="card p-5">
       <h3 class="section-label mb-4">Brand JSON</h3>
+      <label for="brand_json" class="sr-only">Brand JSON</label>
       <textarea
+        id="brand_json"
         bind:value={brand_json}
         rows="8"
         placeholder='&#123;"primary_color":"#000","font":"Inter"&#125;'

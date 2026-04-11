@@ -34,17 +34,21 @@ reportRoutes.get('/overview', async (c) => {
     } catch { return []; }
   };
 
-  const [clients, total_posts, posted, failed, pending_approvals, recent_jobs] =
+  const [clients, total_posts, posted, failed, pending_approvals, drafts, approved, ready, scheduled, recent_jobs] =
     await Promise.all([
       safeCount("SELECT COUNT(*) as n FROM clients WHERE status = 'active'"),
       safeCount('SELECT COUNT(*) as n FROM posts'),
-      safeCount("SELECT COUNT(*) as n FROM posts WHERE status = 'scheduled' OR status = 'posted'"),
+      safeCount("SELECT COUNT(*) as n FROM posts WHERE status = 'posted'"),
       safeCount("SELECT COUNT(*) as n FROM posts WHERE status = 'failed'"),
+      safeCount("SELECT COUNT(*) as n FROM posts WHERE status = 'pending_approval'"),
+      safeCount("SELECT COUNT(*) as n FROM posts WHERE status = 'draft'"),
       safeCount("SELECT COUNT(*) as n FROM posts WHERE status = 'approved'"),
+      safeCount("SELECT COUNT(*) as n FROM posts WHERE status = 'ready'"),
+      safeCount("SELECT COUNT(*) as n FROM posts WHERE status = 'scheduled'"),
       safeJobs(),
     ]);
 
-  return c.json({ clients, total_posts, posted, failed, pending_approvals, recent_jobs });
+  return c.json({ clients, total_posts, posted, failed, pending_approvals, drafts, approved, ready, scheduled, recent_jobs });
 });
 
 /** GET /api/reports/posting-stats?from=YYYY-MM-DD&to=YYYY-MM-DD&client=slug */

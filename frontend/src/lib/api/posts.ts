@@ -50,4 +50,7 @@ export const postsApi = {
 
   getHistory: (id: string) =>
     api.get<{ versions: unknown[] }>(`/api/posts/${id}/history`),
+
+  delete: (id: string) =>
+    api.delete(`/api/posts/${id}`),
 };

@@ -4,7 +4,7 @@
   import MetricCard from '$lib/components/ui/MetricCard.svelte';
   import Badge from '$lib/components/ui/Badge.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
-  import { currentMonth, lastNMonths } from '$lib/utils';
+  import { currentMonth, monthRange } from '$lib/utils';
   import type { PostingStats, Client } from '$lib/types';
 
   let stats: PostingStats | null = null;
@@ -13,7 +13,7 @@
   let selectedMonth = currentMonth();
   let selectedClient = '';
 
-  const months = lastNMonths(6);
+  const months = monthRange(12, 3);
 
   async function load() {
     loading = true;

@@ -97,4 +97,35 @@ export const clientsApi = {
 
   deleteOffer: (slug: string, id: string) =>
     api.delete(`/api/clients/${slug}/offers/${id}`),
+
+  // Intelligence
+  getIntelligence: (slug: string) =>
+    api.get<{ intelligence: unknown }>(`/api/clients/${slug}/intelligence`),
+
+  saveIntelligence: (slug: string, data: Record<string, unknown>) =>
+    api.put<{ intelligence: unknown }>(`/api/clients/${slug}/intelligence`, data),
+
+  // Platform links
+  getPlatformLinks: (slug: string) =>
+    api.get<{ links: unknown }>(`/api/clients/${slug}/platform-links`),
+
+  savePlatformLinks: (slug: string, data: Record<string, unknown>) =>
+    api.put<{ links: unknown }>(`/api/clients/${slug}/platform-links`, data),
+
+  // Platform management
+  deletePlatform: (slug: string, platform: string) =>
+    api.delete(`/api/clients/${slug}/platforms/${platform}`),
+
+  // Feedback
+  getFeedback: (slug: string) =>
+    api.get<{ feedback: unknown[] }>(`/api/clients/${slug}/feedback`),
+
+  addFeedback: (slug: string, data: Record<string, unknown>) =>
+    api.post<{ feedback: unknown }>(`/api/clients/${slug}/feedback`, data),
+
+  updateFeedback: (slug: string, id: string, data: Record<string, unknown>) =>
+    api.patch<{ ok: boolean }>(`/api/clients/${slug}/feedback/${id}`, data),
+
+  deleteFeedback: (slug: string, id: string) =>
+    api.delete(`/api/clients/${slug}/feedback/${id}`),
 };

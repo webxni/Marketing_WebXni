@@ -1,0 +1,1 @@
+import{a as p}from"./rHFc9lY3.js";const s={list:()=>p.get("/api/packages"),listAll:()=>p.get("/api/packages/all"),create:a=>p.post("/api/packages",a),update:(a,e)=>p.put(`/api/packages/${a}`,e),delete:a=>p.delete(`/api/packages/${a}`)};export{s as p};

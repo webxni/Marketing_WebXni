@@ -24,6 +24,9 @@
   let total = 0;
   let filterAction = '';
   let filterUser = '';
+  let filterDateFrom = '';
+  let filterDateTo = '';
+  let filterSearch = '';
 
   async function load() {
     loading = true;
@@ -40,7 +43,21 @@
   onMount(load);
 
   function applyFilters() { page = 1; load(); }
-  function clearFilters() { filterAction = ''; filterUser = ''; page = 1; load(); }
+  function clearFilters() {
+    filterAction = ''; filterUser = '';
+    filterDateFrom = ''; filterDateTo = '';
+    filterSearch = '';
+    page = 1; load();
+  }
+
+  $: displayedLogs = filterSearch.trim()
+    ? logs.filter(l =>
+        (l.action ?? '').includes(filterSearch) ||
+        (l.user_email ?? '').toLowerCase().includes(filterSearch.toLowerCase()) ||
+        (l.detail ?? '').toLowerCase().includes(filterSearch.toLowerCase()) ||
+        (l.resource ?? '').toLowerCase().includes(filterSearch.toLowerCase())
+      )
+    : logs;
 
   const actionColors: Record<string, string> = {
     login:        'text-green-400',
@@ -67,21 +84,35 @@
 </div>
 
 <!-- Filters -->
-<div class="flex items-center gap-3 mb-5">
-  <input
-    type="text"
-    bind:value={filterAction}
-    placeholder="Filter by action…"
-    class="input text-sm w-48"
-  />
-  <input
-    type="text"
-    bind:value={filterUser}
-    placeholder="Filter by user…"
-    class="input text-sm w-48"
-  />
-  <button class="btn-primary btn-sm" on:click={applyFilters}>Apply</button>
-  <button class="btn-ghost btn-sm" on:click={clearFilters}>Clear</button>
+<div class="card p-4 mb-5 space-y-3">
+  <div class="flex items-center gap-3 flex-wrap">
+    <input
+      type="search"
+      bind:value={filterSearch}
+      placeholder="Search action, user, detail…"
+      class="input text-sm flex-1 min-w-[180px]"
+    />
+    <input
+      type="text"
+      bind:value={filterAction}
+      placeholder="Filter by action (e.g. post.create)"
+      class="input text-sm w-52"
+    />
+    <input
+      type="text"
+      bind:value={filterUser}
+      placeholder="Filter by user email"
+      class="input text-sm w-48"
+    />
+  </div>
+  <div class="flex items-center gap-3 flex-wrap">
+    <label class="text-xs text-muted">From</label>
+    <input type="date" bind:value={filterDateFrom} class="input text-sm w-36" />
+    <label class="text-xs text-muted">To</label>
+    <input type="date" bind:value={filterDateTo}   class="input text-sm w-36" />
+    <button class="btn-primary btn-sm" on:click={applyFilters}>Apply</button>
+    <button class="btn-ghost btn-sm" on:click={clearFilters}>Clear</button>
+  </div>
 </div>
 
 {#if loading}
@@ -103,7 +134,7 @@
           </tr>
         </thead>
         <tbody>
-          {#each logs as log}
+          {#each displayedLogs as log}
             <tr>
               <td class="text-xs text-muted whitespace-nowrap">{formatDateTime(log.created_at)}</td>
               <td class="text-xs text-white">{log.user_email ?? '—'}</td>

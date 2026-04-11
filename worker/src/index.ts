@@ -8,19 +8,21 @@ import { authMiddleware } from './middleware/auth';
 import { rateLimitMiddleware } from './middleware/rateLimit';
 
 // Routes
-import { authRoutes }      from './routes/auth';
-import { clientRoutes }    from './routes/clients';
-import { postRoutes }      from './routes/posts';
-import { assetRoutes }     from './routes/assets';
-import { runRoutes }       from './routes/run';
-import { userRoutes }      from './routes/users';
-import { reportRoutes }    from './routes/reports';
-import { serviceRoutes }   from './routes/services';
-import { logRoutes }       from './routes/logs';
-import { settingsRoutes }  from './routes/settings';
-import { setupRoutes }     from './routes/setup';
-import { wordpressRoutes } from './routes/wordpress';
-import { notionRoutes }    from './routes/notion';
+import { authRoutes }        from './routes/auth';
+import { clientRoutes }      from './routes/clients';
+import { postRoutes }        from './routes/posts';
+import { assetRoutes }       from './routes/assets';
+import { runRoutes }         from './routes/run';
+import { userRoutes }        from './routes/users';
+import { reportRoutes }      from './routes/reports';
+import { serviceRoutes }     from './routes/services';
+import { intelligenceRoutes } from './routes/intelligence';
+import { packageRoutes }     from './routes/packages';
+import { logRoutes }         from './routes/logs';
+import { settingsRoutes }    from './routes/settings';
+import { setupRoutes }       from './routes/setup';
+import { wordpressRoutes }   from './routes/wordpress';
+import { notionRoutes }      from './routes/notion';
 
 const app = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -31,13 +33,15 @@ app.use('/api/*', authMiddleware);
 // ─── Routes ──────────────────────────────────────────────────────────────────
 app.route('/api/auth',      authRoutes);
 app.route('/api/clients',   clientRoutes);
-app.route('/api/clients',   serviceRoutes);    // nested: /api/clients/:slug/services, /areas, etc.
-app.route('/api/clients',   wordpressRoutes);  // nested: /api/clients/:slug/wordpress/*
+app.route('/api/clients',   serviceRoutes);      // /api/clients/:slug/services, /areas, etc.
+app.route('/api/clients',   intelligenceRoutes); // /api/clients/:slug/intelligence, /platform-links, /platforms/:p (DELETE)
+app.route('/api/clients',   wordpressRoutes);    // /api/clients/:slug/wordpress/*
 app.route('/api/posts',     postRoutes);
 app.route('/api/assets',    assetRoutes);
 app.route('/api/run',       runRoutes);
 app.route('/api/users',     userRoutes);
 app.route('/api/reports',   reportRoutes);
+app.route('/api/packages',  packageRoutes);
 app.route('/api/logs',      logRoutes);
 app.route('/api/settings',  settingsRoutes);
 app.route('/api/notion',    notionRoutes);
@@ -61,6 +65,7 @@ app.all('/*', async (c) => {
 
 // ─── Scheduled cron handler ───────────────────────────────────────────────────
 import { runPosting } from './loader/posting-run';
+import { runFetchUrls } from './routes/run';
 
 export default {
   fetch: app.fetch,
@@ -70,11 +75,46 @@ export default {
       // Sunday 7AM — Phase 1 content generation (not yet implemented)
       console.log('Generation cron triggered');
     } else if (event.cron === '0 2 * * *') {
-      // Daily 2AM — fetch real post URLs (not yet implemented)
-      console.log('Fetch URLs cron triggered');
+      // Daily 2AM — fetch real post URLs from Upload-Post history
+      ctx.waitUntil((async () => {
+        try {
+          const jobId = crypto.randomUUID().replace(/-/g, '');
+          await runFetchUrls(env as Parameters<typeof runFetchUrls>[0], jobId);
+          console.log('Fetch URLs cron completed, job:', jobId);
+        } catch (err) {
+          console.error('Fetch URLs cron error:', err);
+        }
+      })());
     } else if (event.cron === '0 */6 * * *') {
-      // Every 6h — automated posting check
-      ctx.waitUntil(runPosting(env as any, { mode: 'real', triggered_by: 'cron', limit: 50 }));
+      // Every 6h — automated posting check (respects cron_enabled + posting_hours settings)
+      ctx.waitUntil((async () => {
+        try {
+          const raw = await (env as unknown as { KV_BINDING: KVNamespace }).KV_BINDING.get('settings:system');
+          const settings: Record<string, string> = raw ? JSON.parse(raw) : {};
+
+          // Check if automation is enabled
+          if (settings['cron_enabled'] === 'false') {
+            console.log('Cron posting skipped — cron_enabled=false');
+            return;
+          }
+
+          // Check if current UTC hour is in the allowed posting hours
+          const allowedHours = (settings['posting_hours'] ?? '9,15')
+            .split(',')
+            .map(h => parseInt(h.trim(), 10))
+            .filter(h => !isNaN(h));
+
+          const currentHour = new Date().getUTCHours();
+          if (allowedHours.length > 0 && !allowedHours.includes(currentHour)) {
+            console.log(`Cron posting skipped — hour ${currentHour} not in allowed hours [${allowedHours.join(',')}]`);
+            return;
+          }
+
+          await runPosting(env as any, { mode: 'real', triggered_by: 'cron', limit: 50 });
+        } catch (err) {
+          console.error('Cron posting error:', err);
+        }
+      })());
     }
   },
 };

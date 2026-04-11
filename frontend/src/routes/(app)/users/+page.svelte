@@ -25,6 +25,14 @@
 
   const roles: Role[] = ['admin','manager','editor','reviewer','operator'];
 
+  const roleDescriptions: Record<Role, string> = {
+    admin:    'Full access — manage users, clients, settings, and all posts',
+    manager:  'Manage clients and posts, run automation, view reports',
+    editor:   'Create and edit posts, upload assets, submit for approval',
+    reviewer: 'Approve or reject posts submitted by editors',
+    operator: 'Trigger posting runs and view automation logs only',
+  };
+
   async function load() {
     loading = true;
     try { const r = await usersApi.list(); users = r.users; }
@@ -161,6 +169,9 @@
           <option value={r}>{r.charAt(0).toUpperCase() + r.slice(1)}</option>
         {/each}
       </select>
+      {#if newRole && roleDescriptions[newRole]}
+        <p class="text-xs text-muted mt-1">{roleDescriptions[newRole]}</p>
+      {/if}
     </div>
     <div>
       <label for="newPassword" class="block text-xs text-muted mb-1.5">Initial Password</label>

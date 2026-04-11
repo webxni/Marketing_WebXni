@@ -1,7 +1,8 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import { onMount } from 'svelte';
-  import { postsApi } from '$lib/api';
+  import { goto } from '$app/navigation';
+  import { postsApi, assetsApi } from '$lib/api';
   import Badge from '$lib/components/ui/Badge.svelte';
   import PlatformBadge from '$lib/components/ui/PlatformBadge.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
@@ -18,6 +19,7 @@
   let showApproveConfirm = false;
   let showRejectConfirm = false;
   let showReadyConfirm = false;
+  let showDeleteConfirm = false;
 
   function setTab(key: string) { activeTab = key as typeof activeTab; }
 
@@ -32,6 +34,12 @@
 
   onMount(load);
 
+  async function submitForReview() {
+    if (!post) return;
+    try { await postsApi.update(post.id, { status: 'pending_approval' }); toast.success('Post submitted for review'); load(); }
+    catch { toast.error('Failed to submit'); }
+  }
+
   async function approve() {
     if (!post) return;
     try { await postsApi.approve(post.id); toast.success('Post approved'); load(); }
@@ -40,7 +48,7 @@
 
   async function reject() {
     if (!post) return;
-    try { await postsApi.reject(post.id); toast.success('Post rejected'); load(); }
+    try { await postsApi.reject(post.id); toast.success('Post sent back to draft'); load(); }
     catch { toast.error('Failed to reject'); }
   }
 
@@ -54,6 +62,52 @@
     if (!post) return;
     try { await postsApi.retry(post.id); toast.success('Retrying failed platforms'); load(); }
     catch { toast.error('Failed to retry'); }
+  }
+
+  async function toggleAssetDelivered() {
+    if (!post) return;
+    try {
+      await postsApi.update(post.id, { asset_delivered: post.asset_delivered ? 0 : 1 });
+      post = { ...post, asset_delivered: post.asset_delivered ? 0 : 1 };
+      toast.success(post.asset_delivered ? 'Asset marked as delivered' : 'Asset marked as not delivered');
+    } catch { toast.error('Failed to update'); }
+  }
+
+  let skarlethNotesEdit = false;
+  let skarlethNotesDraft = '';
+  function startEditNotes() { skarlethNotesDraft = post?.skarleth_notes ?? ''; skarlethNotesEdit = true; }
+  async function saveNotes() {
+    if (!post) return;
+    try {
+      await postsApi.update(post.id, { skarleth_notes: skarlethNotesDraft || null });
+      post = { ...post, skarleth_notes: skarlethNotesDraft || null };
+      skarlethNotesEdit = false;
+      toast.success('Notes saved');
+    } catch { toast.error('Failed to save'); }
+  }
+
+  let uploadingAsset = false;
+  let assetFile: FileList | null = null;
+  async function uploadAsset() {
+    if (!post || !assetFile || !assetFile[0]) return;
+    uploadingAsset = true;
+    try {
+      const r = await assetsApi.upload(assetFile[0], post.client_id ?? undefined, post.id);
+      await postsApi.update(post.id, { asset_r2_key: r.r2_key, asset_r2_bucket: r.bucket, asset_delivered: 1 });
+      assetFile = null;
+      toast.success('Asset uploaded and marked as delivered');
+      load();
+    } catch { toast.error('Upload failed'); }
+    finally { uploadingAsset = false; }
+  }
+
+  async function deletePost() {
+    if (!post) return;
+    try {
+      await postsApi.delete(post.id);
+      toast.success('Post deleted');
+      goto('/posts');
+    } catch (e) { toast.error(String(e)); }
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -71,6 +125,9 @@
     { key: 'cap_pinterest',       label: 'Pinterest' },
     { key: 'cap_bluesky',         label: 'Bluesky' },
     { key: 'cap_google_business', label: 'Google Business' },
+    { key: 'cap_gbp_la',          label: 'GBP — Los Angeles' },
+    { key: 'cap_gbp_wa',          label: 'GBP — Washington' },
+    { key: 'cap_gbp_or',          label: 'GBP — Oregon' },
   ];
 </script>
 
@@ -95,7 +152,14 @@
       </div>
     </div>
     <div class="flex gap-2">
-      {#if post.status === 'draft' && can('posts.approve')}
+      <a href="/posts/{post.id}/edit" class="btn-ghost btn-sm">Edit Content</a>
+      {#if can('posts.delete')}
+        <button class="btn-ghost btn-sm text-red-400" on:click={() => (showDeleteConfirm = true)}>Delete</button>
+      {/if}
+      {#if post.status === 'draft'}
+        <button class="btn-primary btn-sm" on:click={submitForReview}>Submit for Review</button>
+      {/if}
+      {#if post.status === 'pending_approval' && can('posts.approve')}
         <button class="btn-primary btn-sm" on:click={() => (showApproveConfirm = true)}>Approve</button>
         <button class="btn-danger btn-sm" on:click={() => (showRejectConfirm = true)}>Reject</button>
       {/if}
@@ -184,9 +248,16 @@
         </div>
         <div class="flex items-center justify-between">
           <span class="text-xs text-muted">Asset Delivered</span>
-          <span class="text-xs {post.asset_delivered ? 'text-green-400' : 'text-muted'}">
-            {post.asset_delivered ? 'Yes' : 'No'}
-          </span>
+          <div class="flex items-center gap-2">
+            <span class="text-xs {post.asset_delivered ? 'text-green-400' : 'text-muted'}">
+              {post.asset_delivered ? 'Yes' : 'No'}
+            </span>
+            {#if can('posts.edit')}
+              <button class="text-[10px] text-muted hover:text-white border border-border rounded px-1.5 py-0.5" on:click={toggleAssetDelivered}>
+                {post.asset_delivered ? 'Unmark' : 'Mark delivered'}
+              </button>
+            {/if}
+          </div>
         </div>
         {#if post.skarleth_status}
         <div class="flex items-center justify-between">
@@ -196,6 +267,40 @@
         {/if}
       </div>
 
+      <!-- Skarleth Notes -->
+      <div class="mt-4">
+        <div class="flex items-center justify-between mb-1">
+          <h4 class="text-xs text-muted">Notes</h4>
+          {#if !skarlethNotesEdit && can('posts.edit')}
+            <button class="text-[10px] text-muted hover:text-white" on:click={startEditNotes}>Edit</button>
+          {/if}
+        </div>
+        {#if skarlethNotesEdit}
+          <textarea bind:value={skarlethNotesDraft} rows="3" class="input w-full text-xs resize-none mb-1"></textarea>
+          <div class="flex gap-1 justify-end">
+            <button class="btn-ghost btn-sm text-xs" on:click={() => skarlethNotesEdit = false}>Cancel</button>
+            <button class="btn-primary btn-sm text-xs" on:click={saveNotes}>Save</button>
+          </div>
+        {:else if post.skarleth_notes}
+          <p class="text-xs text-muted bg-surface rounded p-2">{post.skarleth_notes}</p>
+        {:else}
+          <p class="text-xs text-muted italic">No notes.</p>
+        {/if}
+      </div>
+
+      <!-- Asset upload -->
+      {#if can('posts.edit') && !post.asset_delivered}
+      <div class="mt-4">
+        <h4 class="text-xs text-muted mb-2">Upload Asset</h4>
+        <div class="flex gap-2">
+          <input type="file" accept="image/*,video/*" bind:files={assetFile} class="input text-xs flex-1" />
+          <button class="btn-secondary btn-sm text-xs" on:click={uploadAsset} disabled={uploadingAsset || !assetFile?.[0]}>
+            {uploadingAsset ? 'Uploading…' : 'Upload'}
+          </button>
+        </div>
+      </div>
+      {/if}
+
       {#if post.error_log}
       <div class="mt-4">
         <h4 class="text-xs text-muted mb-2">Error Log</h4>
@@ -203,6 +308,18 @@
       </div>
       {/if}
     </div>
+
+    {#if post.asset_r2_key && post.asset_delivered}
+    <div class="card p-5">
+      <h3 class="section-label mb-3">Asset</h3>
+      <div class="text-xs text-muted mb-2 font-mono truncate">{post.asset_r2_key}</div>
+      {#if post.content_type === 'image' || post.content_type === 'reel'}
+        <p class="text-xs text-green-400">Image/video asset delivered to R2.</p>
+      {:else}
+        <p class="text-xs text-green-400">Asset delivered.</p>
+      {/if}
+    </div>
+    {/if}
 
     {#if post.master_caption}
     <div class="card p-5 md:col-span-2">
@@ -281,22 +398,43 @@
   <!-- Blog tab -->
   {#if activeTab === 'blog'}
   <div class="space-y-4">
-    {#if post.seo_title || post.meta_description}
+    {#if post.seo_title || post.meta_description || post.target_keyword || post.slug}
     <div class="card p-4">
-      <h3 class="section-label mb-3">SEO</h3>
-      {#if post.seo_title}<p class="text-sm font-medium text-white mb-1">{post.seo_title}</p>{/if}
-      {#if post.meta_description}<p class="text-xs text-muted">{post.meta_description}</p>{/if}
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="section-label">SEO</h3>
+        <a href="/posts/{post.id}/edit" class="btn-ghost btn-sm text-xs">Edit</a>
+      </div>
+      <dl class="space-y-2">
+        {#if post.seo_title}
+        <div><dt class="text-xs text-muted">SEO Title</dt><dd class="text-sm text-white mt-0.5">{post.seo_title}</dd></div>
+        {/if}
+        {#if post.target_keyword}
+        <div><dt class="text-xs text-muted">Target Keyword</dt><dd class="text-sm text-white mt-0.5">{post.target_keyword}</dd></div>
+        {/if}
+        {#if post.meta_description}
+        <div><dt class="text-xs text-muted">Meta Description</dt><dd class="text-xs text-muted mt-0.5">{post.meta_description}</dd></div>
+        {/if}
+        {#if post.slug}
+        <div><dt class="text-xs text-muted">URL Slug</dt><dd class="text-xs font-mono text-white mt-0.5">/{post.slug}</dd></div>
+        {/if}
+      </dl>
     </div>
     {/if}
     {#if post.blog_content}
     <div class="card p-5">
-      <h3 class="section-label mb-3">Blog Content</h3>
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="section-label">Blog Content</h3>
+        <a href="/posts/{post.id}/edit" class="btn-ghost btn-sm text-xs">Edit</a>
+      </div>
       <div class="prose prose-invert prose-sm max-w-none text-sm text-white">
         {@html post.blog_content}
       </div>
     </div>
     {:else}
-    <div class="card p-8 text-center text-sm text-muted">No blog content generated yet.</div>
+    <div class="card p-8 text-center">
+      <p class="text-sm text-muted mb-3">No blog content yet.</p>
+      <a href="/posts/{post.id}/edit" class="btn-primary btn-sm">Add Blog Content</a>
+    </div>
     {/if}
   </div>
   {/if}
@@ -326,4 +464,13 @@
   confirmLabel="Mark Ready"
   on:confirm={() => { showReadyConfirm = false; markReady(); }}
   on:cancel={() => (showReadyConfirm = false)}
+/>
+<ConfirmDialog
+  open={showDeleteConfirm}
+  title="Delete Post"
+  message="This will permanently delete &quot;{post?.title ?? 'this post'}&quot; and all its platform records. This cannot be undone."
+  confirmLabel="Delete"
+  confirmClass="btn-danger"
+  on:confirm={() => { showDeleteConfirm = false; deletePost(); }}
+  on:cancel={() => (showDeleteConfirm = false)}
 />

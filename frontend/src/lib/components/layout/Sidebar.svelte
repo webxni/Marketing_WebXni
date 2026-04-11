@@ -9,6 +9,7 @@
     { href: '/approvals',   icon: '✓', label: 'Approvals',   perm: 'posts.approve' },
     { href: '/calendar',    icon: '▦', label: 'Calendar',    perm: 'posts.view' },
     { href: '/clients',     icon: '◉', label: 'Clients',     perm: 'clients.view' },
+    { href: '/packages',    icon: '◈', label: 'Packages',    perm: 'settings.view' },
     { href: '/reports',     icon: '▣', label: 'Reports',     perm: 'reports.view' },
     { href: '/automation',  icon: '⚡', label: 'Automation',  perm: 'automation.trigger' },
     { href: '/users',       icon: '◎', label: 'Team',        perm: 'users.view' },

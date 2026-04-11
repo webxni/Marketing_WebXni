@@ -14,6 +14,43 @@
   let clients: Client[] = [];
   let loading = true;
 
+  // Bulk selection
+  let selected = new Set<string>();
+  let bulkProcessing = false;
+  $: allSelected = posts.length > 0 && selected.size === posts.length;
+  function toggleSelect(id: string) { if (selected.has(id)) selected.delete(id); else selected.add(id); selected = selected; }
+  function toggleAll() { selected = allSelected ? new Set() : new Set(posts.map(p => p.id)); }
+
+  async function bulkMarkReady() {
+    if (selected.size === 0) return;
+    bulkProcessing = true;
+    const ids = [...selected];
+    let done = 0;
+    for (const id of ids) {
+      try { await postsApi.markReady(id); done++; } catch { /* continue */ }
+    }
+    toast.success(`${done}/${ids.length} posts marked ready`);
+    selected = new Set();
+    load();
+    bulkProcessing = false;
+  }
+
+  async function bulkDelete() {
+    if (selected.size === 0) return;
+    if (!confirm(`Delete ${selected.size} posts? This cannot be undone.`)) return;
+    bulkProcessing = true;
+    const ids = [...selected];
+    let done = 0;
+    for (const id of ids) {
+      try { await postsApi.delete(id); done++; } catch { /* continue */ }
+    }
+    toast.success(`${done}/${ids.length} posts deleted`);
+    selected = new Set();
+    load();
+    bulkProcessing = false;
+  }
+
+  let filterSearch = '';
   let filterStatus = '';
   let filterClient = '';
   let filterPlatform = '';
@@ -46,12 +83,22 @@
 
   function applyFilters() { page = 1; load(); }
   function clearFilters() {
+    filterSearch = '';
     filterStatus = ''; filterClient = ''; filterPlatform = '';
     filterDateFrom = ''; filterDateTo = '';
     page = 1; load();
   }
 
-  const statuses = ['draft','approved','ready','scheduled','posted','failed','cancelled'];
+  // Client-side search filter on loaded results
+  $: displayedPosts = filterSearch.trim()
+    ? posts.filter(p =>
+        (p.title ?? '').toLowerCase().includes(filterSearch.toLowerCase()) ||
+        (p.master_caption ?? '').toLowerCase().includes(filterSearch.toLowerCase()) ||
+        (p.client_name ?? '').toLowerCase().includes(filterSearch.toLowerCase())
+      )
+    : posts;
+
+  const statuses = ['draft','pending_approval','approved','ready','scheduled','posted','failed','cancelled'];
   const platforms = ['facebook','instagram','linkedin','x','threads','tiktok','pinterest','bluesky','youtube','google_business','website_blog'];
 
   $: totalPages = Math.ceil(total / limit);
@@ -64,37 +111,60 @@
     <h1 class="page-title">Posts</h1>
     <p class="page-subtitle">{total} post{total === 1 ? '' : 's'} found</p>
   </div>
-  {#if can('posts.create')}
-    <a href="/posts/new" class="btn-primary btn-sm">+ New Post</a>
-  {/if}
+  <div class="flex items-center gap-2">
+    {#if selected.size > 0}
+      <span class="text-xs text-muted">{selected.size} selected</span>
+      {#if can('automation.trigger')}
+        <button class="btn-secondary btn-sm text-xs" disabled={bulkProcessing} on:click={bulkMarkReady}>
+          {bulkProcessing ? '…' : `Mark ${selected.size} Ready`}
+        </button>
+      {/if}
+      {#if can('posts.delete')}
+        <button class="btn-ghost btn-sm text-xs text-red-400" disabled={bulkProcessing} on:click={bulkDelete}>
+          Delete {selected.size}
+        </button>
+      {/if}
+    {/if}
+    {#if can('posts.create')}
+      <a href="/posts/new" class="btn-primary btn-sm">+ New Post</a>
+    {/if}
+  </div>
 </div>
 
 <!-- Filters -->
 <div class="card p-4 mb-5">
+  <div class="mb-3">
+    <input
+      type="search"
+      bind:value={filterSearch}
+      placeholder="Search by title, caption, or client…"
+      class="input w-full text-sm"
+    />
+  </div>
   <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
-    <select bind:value={filterStatus} class="input text-sm">
+    <select bind:value={filterStatus} class="input text-sm" on:change={applyFilters}>
       <option value="">All statuses</option>
       {#each statuses as s}
-        <option value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>
+        <option value={s}>{s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</option>
       {/each}
     </select>
 
-    <select bind:value={filterClient} class="input text-sm">
+    <select bind:value={filterClient} class="input text-sm" on:change={applyFilters}>
       <option value="">All clients</option>
       {#each clients as c}
         <option value={c.slug}>{c.canonical_name}</option>
       {/each}
     </select>
 
-    <select bind:value={filterPlatform} class="input text-sm">
+    <select bind:value={filterPlatform} class="input text-sm" on:change={applyFilters}>
       <option value="">All platforms</option>
       {#each platforms as p}
         <option value={p}>{p.replace(/_/g, ' ')}</option>
       {/each}
     </select>
 
-    <input type="date" bind:value={filterDateFrom} class="input text-sm" title="From date" />
-    <input type="date" bind:value={filterDateTo}   class="input text-sm" title="To date" />
+    <input type="date" bind:value={filterDateFrom} class="input text-sm" title="From date" on:change={applyFilters} />
+    <input type="date" bind:value={filterDateTo}   class="input text-sm" title="To date"  on:change={applyFilters} />
   </div>
   <div class="flex gap-2 mt-3">
     <button class="btn-primary btn-sm" on:click={applyFilters}>Apply</button>
@@ -104,8 +174,8 @@
 
 {#if loading}
   <div class="flex justify-center py-20"><Spinner size="lg" /></div>
-{:else if posts.length === 0}
-  <EmptyState title="No posts found" detail="Try adjusting your filters or create a new post." icon="✦">
+{:else if displayedPosts.length === 0}
+  <EmptyState title="No posts found" detail="Try adjusting your filters or search term." icon="✦">
     <svelte:fragment slot="action">
       {#if can('posts.create')}
         <a href="/posts/new" class="btn-primary btn-sm">Create Post</a>
@@ -118,6 +188,9 @@
       <table class="data-table">
         <thead>
           <tr>
+            <th class="w-8">
+              <input type="checkbox" checked={allSelected} on:change={toggleAll} class="rounded" />
+            </th>
             <th>Title / Client</th>
             <th>Status</th>
             <th>Platforms</th>
@@ -127,8 +200,11 @@
           </tr>
         </thead>
         <tbody>
-          {#each posts as post}
-            <tr>
+          {#each displayedPosts as post}
+            <tr class="{selected.has(post.id) ? 'bg-accent/5' : ''}">
+              <td>
+                <input type="checkbox" checked={selected.has(post.id)} on:change={() => toggleSelect(post.id)} class="rounded" />
+              </td>
               <td>
                 <div class="font-medium text-white text-sm">{post.title ?? '(untitled)'}</div>
                 <div class="text-xs text-muted">{post.client_name ?? post.client_slug ?? '—'}</div>

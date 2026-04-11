@@ -5,14 +5,14 @@
   import Badge from '$lib/components/ui/Badge.svelte';
   import PlatformBadge from '$lib/components/ui/PlatformBadge.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
-  import { formatDate, currentMonth, lastNMonths, parsePlatforms } from '$lib/utils';
+  import { formatDate, currentMonth, monthRange, parsePlatforms } from '$lib/utils';
   import type { MonthlyReport } from '$lib/types';
 
   let report: MonthlyReport | null = null;
   let loading = true;
   let error = '';
 
-  const months = lastNMonths(12);
+  const months = monthRange(12, 3);
   let selectedMonth = $page.url.searchParams.get('month') ?? currentMonth();
 
   async function load() {

@@ -51,6 +51,11 @@ export interface Client {
   notion_page_id:           string | null;
   brand_json:               string | null;
   notes:                    string | null;
+  // Logo + brand (migration 0005)
+  logo_r2_key:              string | null;
+  logo_url:                 string | null;
+  brand_primary_color:      string | null;
+  brand_accent_color:       string | null;
   created_at:               number;
   updated_at:               number;
   // joined
@@ -63,12 +68,22 @@ export interface ClientPlatform {
   id:                      string;
   client_id:               string;
   platform:                string;
+  account_id:              string | null;
   username:                string | null;
   page_id:                 string | null;
   upload_post_board_id:    string | null;
   upload_post_location_id: string | null;
+  privacy_level:           string | null;
+  privacy_status:          string | null;
+  profile_url:             string | null;
+  profile_username:        string | null;
+  connection_status:       string | null;
+  yt_channel_id:           string | null;
+  linkedin_urn:            string | null;
   paused:                  number;
   paused_reason:           string | null;
+  paused_since:            string | null;
+  notes:                   string | null;
 }
 
 export interface GbpLocation {
@@ -108,7 +123,7 @@ export interface ClientOffer {
   created_at:  number;
 }
 
-export type PostStatus = 'draft' | 'approved' | 'ready' | 'scheduled' | 'posted' | 'failed' | 'cancelled';
+export type PostStatus = 'draft' | 'pending_approval' | 'approved' | 'ready' | 'scheduled' | 'posted' | 'failed' | 'cancelled';
 
 export interface Post {
   id:                   string;
@@ -129,12 +144,21 @@ export interface Post {
   cap_pinterest:        string | null;
   cap_bluesky:          string | null;
   cap_google_business:  string | null;
+  // GBP multi-location (Elite Team Builders)
+  cap_gbp_la:           string | null;
+  cap_gbp_wa:           string | null;
+  cap_gbp_or:           string | null;
   youtube_title:        string | null;
   youtube_description:  string | null;
   blog_content:         string | null;
   seo_title:            string | null;
   meta_description:     string | null;
+  target_keyword:       string | null;
+  slug:                 string | null;   // WordPress post slug
+  video_script:         string | null;
   ai_image_prompt:      string | null;
+  ai_video_prompt:      string | null;
+  skarleth_notes:       string | null;
   asset_r2_key:         string | null;
   asset_r2_bucket:      string | null;
   canva_link:           string | null;
@@ -195,7 +219,71 @@ export interface OverviewStats {
   posted:            number;
   failed:            number;
   pending_approvals: number;
+  drafts:            number;
+  approved:          number;
+  ready:             number;
+  scheduled:         number;
   recent_jobs:       PostingJob[];
+}
+
+export interface Package {
+  id:                   string;
+  slug:                 string;
+  name:                 string;
+  posts_per_month:      number;
+  images_per_month:     number;
+  videos_per_month:     number;
+  reels_per_month:      number;
+  blog_posts_per_month: number;
+  platforms_included:   string;  // JSON array
+  includes_gbp:         number;
+  includes_blog:        number;
+  includes_bilingual:   number;
+  includes_stories:     number;
+  posting_frequency:    string;
+  cadence_notes:        string | null;
+  price_cents:          number | null;
+  active:               number;
+  sort_order:           number;
+}
+
+export interface ClientIntelligence {
+  id?:                  string;
+  client_id?:           string;
+  brand_voice:          string | null;
+  tone_keywords:        string | null;   // JSON array stored as string
+  prohibited_terms:     string | null;
+  approved_ctas:        string | null;
+  content_goals:        string | null;
+  service_priorities:   string | null;
+  content_angles:       string | null;
+  seasonal_notes:       string | null;
+  competitor_notes:     string | null;
+  audience_notes:       string | null;
+  primary_keyword:      string | null;
+  secondary_keywords:   string | null;
+  local_seo_themes:     string | null;
+  generation_language:  string | null;
+  humanization_style:   string | null;
+  monthly_snapshot:     string | null;
+  feedback_summary:     string | null;
+  last_research_at:     number | null;
+  updated_at?:          number;
+}
+
+export interface ClientPlatformLinks {
+  id?:            string;
+  facebook?:      string | null;
+  instagram?:     string | null;
+  tiktok?:        string | null;
+  youtube?:       string | null;
+  linkedin?:      string | null;
+  pinterest?:     string | null;
+  x?:             string | null;
+  threads?:       string | null;
+  bluesky?:       string | null;
+  google_business?: string | null;
+  website?:       string | null;
 }
 
 export interface PostingStats {
@@ -234,8 +322,9 @@ export const PLATFORM_META: Record<string, { label: string; color: string }> = {
 };
 
 export const STATUS_META: Record<string, { label: string; cls: string }> = {
-  draft:     { label: 'Draft',     cls: 'badge-draft'     },
-  approved:  { label: 'Approved',  cls: 'badge-approved'  },
+  draft:            { label: 'Draft',            cls: 'badge-draft'     },
+  pending_approval: { label: 'Pending Review',   cls: 'badge-pending'   },
+  approved:         { label: 'Approved',         cls: 'badge-approved'  },
   ready:     { label: 'Ready',     cls: 'badge-ready'     },
   scheduled: { label: 'Scheduled', cls: 'badge-scheduled' },
   posted:    { label: 'Posted',    cls: 'badge-posted'    },

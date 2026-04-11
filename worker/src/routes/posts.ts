@@ -117,6 +117,32 @@ postRoutes.post('/', async (c) => {
     cap_pinterest:       (body['cap_pinterest'] as string) ?? null,
     cap_bluesky:         (body['cap_bluesky'] as string) ?? null,
     cap_google_business: (body['cap_google_business'] as string) ?? null,
+    cap_gbp_la:          (body['cap_gbp_la'] as string) ?? null,
+    cap_gbp_wa:          (body['cap_gbp_wa'] as string) ?? null,
+    cap_gbp_or:          (body['cap_gbp_or'] as string) ?? null,
+    // Content fields
+    blog_content:        (body['blog_content'] as string) ?? null,
+    seo_title:           (body['seo_title'] as string) ?? null,
+    meta_description:    (body['meta_description'] as string) ?? null,
+    target_keyword:      (body['target_keyword'] as string) ?? null,
+    slug:                (body['slug'] as string) ?? null,
+    youtube_title:       (body['youtube_title'] as string) ?? null,
+    youtube_description: (body['youtube_description'] as string) ?? null,
+    video_script:        (body['video_script'] as string) ?? null,
+    ai_image_prompt:     (body['ai_image_prompt'] as string) ?? null,
+    ai_video_prompt:     (body['ai_video_prompt'] as string) ?? null,
+    // GBP
+    gbp_topic_type:       (body['gbp_topic_type'] as string) ?? null,
+    gbp_cta_type:         (body['gbp_cta_type'] as string) ?? null,
+    gbp_cta_url:          (body['gbp_cta_url'] as string) ?? null,
+    gbp_event_title:      (body['gbp_event_title'] as string) ?? null,
+    gbp_event_start_date: (body['gbp_event_start_date'] as string) ?? null,
+    gbp_event_start_time: (body['gbp_event_start_time'] as string) ?? null,
+    gbp_event_end_date:   (body['gbp_event_end_date'] as string) ?? null,
+    gbp_event_end_time:   (body['gbp_event_end_time'] as string) ?? null,
+    gbp_coupon_code:      (body['gbp_coupon_code'] as string) ?? null,
+    gbp_redeem_url:       (body['gbp_redeem_url'] as string) ?? null,
+    gbp_terms:            (body['gbp_terms'] as string) ?? null,
     asset_r2_key:        (body['asset_r2_key'] as string) ?? null,
     canva_link:          (body['canva_link'] as string) ?? null,
     created_by:          user.userId,
@@ -225,6 +251,38 @@ postRoutes.post('/:id/retry', async (c) => {
 postRoutes.get('/:id/platforms', async (c) => {
   const platforms = await getPostPlatforms(c.env.DB, c.req.param('id'));
   return c.json({ platforms });
+});
+
+/** DELETE /api/posts/:id */
+postRoutes.delete('/:id', async (c) => {
+  const user = c.get('user');
+  if (user.role !== 'admin' && user.role !== 'manager') {
+    return c.json({ error: 'Forbidden — only admin/manager can delete posts' }, 403);
+  }
+  const post = await getPostById(c.env.DB, c.req.param('id'));
+  if (!post) return c.json({ error: 'Not found' }, 404);
+
+  await c.env.DB
+    .prepare('DELETE FROM post_platforms WHERE post_id = ?')
+    .bind(post.id)
+    .run();
+  await c.env.DB
+    .prepare('DELETE FROM post_versions WHERE post_id = ?')
+    .bind(post.id)
+    .run();
+  await c.env.DB
+    .prepare('DELETE FROM posts WHERE id = ?')
+    .bind(post.id)
+    .run();
+
+  await writeAuditLog(c.env.DB, {
+    user_id: user.userId,
+    action: 'post.delete',
+    entity_type: 'post',
+    entity_id: post.id,
+    old_value: { title: post.title, status: post.status },
+  });
+  return c.json({ ok: true });
 });
 
 /** GET /api/posts/:id/history */

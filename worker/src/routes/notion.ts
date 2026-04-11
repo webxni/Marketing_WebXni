@@ -247,9 +247,11 @@ notionRoutes.post('/import/posts', async (c) => {
   try { body = (await c.req.json()) as Record<string, unknown>; }
   catch { return c.json({ error: 'Invalid JSON' }, 400); }
 
-  const { database_id, prop_map } = body as {
+  const { database_id, prop_map, date_from, date_to } = body as {
     database_id: string;
     prop_map: Record<string, string>;
+    date_from?: string;  // ISO date e.g. "2026-04-09" — filter by publish_date >= this
+    date_to?: string;    // ISO date e.g. "2026-04-09" — filter by publish_date <= this
   };
 
   if (!database_id) return c.json({ error: 'database_id is required' }, 400);
@@ -259,11 +261,37 @@ notionRoutes.post('/import/posts', async (c) => {
   try { notion = new NotionClient(getToken(c.env)); }
   catch (e) { return c.json({ error: String(e) }, 500); }
 
-  const pages = await notion.queryDatabase(database_id);
+  // Build Notion date filter if date range + publish_date prop mapping provided
+  let notionFilter: unknown;
+  if (date_from && prop_map.publish_date) {
+    const conditions: unknown[] = [
+      { property: prop_map.publish_date, date: { on_or_after: date_from } },
+    ];
+    if (date_to) {
+      conditions.push({ property: prop_map.publish_date, date: { on_or_before: date_to } });
+    }
+    notionFilter = conditions.length === 1 ? conditions[0] : { and: conditions };
+  }
+
+  const pages = await notion.queryDatabase(database_id, notionFilter);
+
+  // Local date filter as safety net (in case Notion prop name differs or filter not set)
+  const filteredPages = (date_from || date_to)
+    ? pages.filter(page => {
+        if (!prop_map.publish_date) return true;
+        const d = page.properties[prop_map.publish_date];
+        const dateStr = d?.type === 'date' ? d.date?.start ?? null : null;
+        if (!dateStr) return !date_from; // keep undated pages only if no lower bound
+        if (date_from && dateStr < date_from) return false;
+        if (date_to   && dateStr > date_to)   return false;
+        return true;
+      })
+    : pages;
+
   const results: { notion_id: string; action: string; title: string; error?: string }[] = [];
   const now = Math.floor(Date.now() / 1000);
 
-  for (const page of pages) {
+  for (const page of filteredPages) {
     const props = page.properties;
     const title = getText(props[prop_map.title]);
     if (!title) continue;
@@ -362,14 +390,16 @@ notionRoutes.post('/import/posts', async (c) => {
   }
 
   const counts = {
-    total:   results.length,
-    created: results.filter(r => r.action === 'created').length,
-    updated: results.filter(r => r.action === 'updated').length,
-    skipped: results.filter(r => r.action === 'skipped').length,
-    errors:  results.filter(r => r.action === 'error').length,
+    total:        results.length,
+    created:      results.filter(r => r.action === 'created').length,
+    updated:      results.filter(r => r.action === 'updated').length,
+    skipped:      results.filter(r => r.action === 'skipped').length,
+    errors:       results.filter(r => r.action === 'error').length,
+    pages_in_db:  pages.length,
+    pages_after_filter: filteredPages.length,
   };
 
-  return c.json({ ok: true, counts, results });
+  return c.json({ ok: true, counts, results, date_filter: { date_from: date_from ?? null, date_to: date_to ?? null } });
 });
 
 // ─── Export: write status back to Notion ─────────────────────────────────────

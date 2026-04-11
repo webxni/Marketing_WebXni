@@ -6,7 +6,7 @@ INSERT OR IGNORE INTO clients
    requires_approval_from, language, never_mix_with, upload_post_profile,
    wp_domain, wp_url, wp_auth, wp_template, brand_json, notes, created_at, updated_at)
 VALUES (
-  'c1ee3b8cd460e638498782098f', 'elite-team-builders', 'Elite Team Builders Inc.',
+  '0d36aaa77c7f8b78543eed61d', 'elite-team-builders', 'Elite Team Builders Inc.',
   'medium', 'active',
   NULL,
   0,
@@ -20,7 +20,7 @@ VALUES (
   'etb',
   '{"primary_color":"#1a1a2e","accent_color":"#c8a04a","company_name":"Elite Team Builders","tagline":"Seattle''s Premier Home Remodeling Experts","phone":"(888) 521-3549","phone_display":"(888) 521-3549","cta_text":"Call Elite Team Builders today for a free quote","cta_button_label":"Get Your Free Quote"}',
   'Brand colors Gold #c8a04a + Dark Blue #1a1a2e. Rotate LA/Seattle/Portland in posts.',
-  1775761125, 1775761125
+  1775844067, 1775844067
 );
 
 INSERT OR IGNORE INTO client_platforms
@@ -28,7 +28,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '63e72b831bb2b80b5f701ac89a', 'c1ee3b8cd460e638498782098f', 'bluesky',
+  '3e7c9f706445dc96120f8cb627', '0d36aaa77c7f8b78543eed61d', 'bluesky',
   '25696',
   'eliteteambuilders.bsky.social',
   NULL,
@@ -47,7 +47,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'abd60c910943337f04839274c6', 'c1ee3b8cd460e638498782098f', 'facebook',
+  '8bc57ef9b1759d863c7358f708', '0d36aaa77c7f8b78543eed61d', 'facebook',
   '21249',
   NULL,
   '897957086729693',
@@ -66,7 +66,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '4a15e9ac67c6368f7fa2a24cab', 'c1ee3b8cd460e638498782098f', 'instagram',
+  '5d5ae01df8e061f06d9347f792', '0d36aaa77c7f8b78543eed61d', 'instagram',
   '33069',
   'eliteteambuildersinc',
   NULL,
@@ -85,7 +85,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '7bc000b24404bbb85935164c09', 'c1ee3b8cd460e638498782098f', 'linkedin',
+  '89c64f9734af235c647460d354', '0d36aaa77c7f8b78543eed61d', 'linkedin',
   '12712',
   NULL,
   '111348080',
@@ -104,7 +104,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'ec5e585837576b68e17c2abee3', 'c1ee3b8cd460e638498782098f', 'pinterest',
+  'b22e241c5ce58edb8ecd4a198a', '0d36aaa77c7f8b78543eed61d', 'pinterest',
   '4422',
   'EliteTeamBuildersInc',
   NULL,
@@ -123,7 +123,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'fdbfcb4edf53250b3d437045a3', 'c1ee3b8cd460e638498782098f', 'threads',
+  '599dca0c165a6464613e4c6de7', '0d36aaa77c7f8b78543eed61d', 'threads',
   '4889',
   'eliteteambuildersinc',
   NULL,
@@ -142,7 +142,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '276dcd14c309f944503c73642', 'c1ee3b8cd460e638498782098f', 'tiktok',
+  'b8ac934eee8ab2c5d3ba56f88a', '0d36aaa77c7f8b78543eed61d', 'tiktok',
   '31425',
   'eliteteambuildersinc',
   NULL,
@@ -161,7 +161,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '956eca4c8cba54ed7229ff9d74', 'c1ee3b8cd460e638498782098f', 'x',
+  'e95f62fb5d00cac8b6ad312a26', '0d36aaa77c7f8b78543eed61d', 'x',
   '13230',
   'Eliteteaminc',
   NULL,
@@ -180,7 +180,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'b96dd0c5a8abb3837a79f1a5c6', 'c1ee3b8cd460e638498782098f', 'youtube',
+  '19f0acb8490cab81bea1ac0ed9', '0d36aaa77c7f8b78543eed61d', 'youtube',
   '28640',
   'Elite Team Builders Inc.',
   NULL,
@@ -197,7 +197,7 @@ VALUES (
 INSERT OR IGNORE INTO client_platforms
   (id, client_id, platform, account_id, upload_post_location_id, paused, notes)
 VALUES (
-  'c71a868c8162ef27c3c1aa2c55', 'c1ee3b8cd460e638498782098f', 'google_business',
+  '51cdc5e04da7326fc079e54b93', '0d36aaa77c7f8b78543eed61d', 'google_business',
   NULL,
   'locations/13908569498767872619',
   0, 'Multi-location GBP. LA confirmed active. WA confirmed active. OR pending verification (blocked). post_content.py reads gbp_locations array and posts to each non-paused location with its own caption field.'
@@ -206,7 +206,7 @@ VALUES (
 INSERT OR IGNORE INTO client_gbp_locations
   (id, client_id, label, location_id, upload_post_profile, caption_field, posted_field, paused, paused_reason, sort_order)
 VALUES (
-  '2814b23ae4244f63b8258a6c28', 'c1ee3b8cd460e638498782098f', 'LA', 'locations/13908569498767872619',
+  '93438dc8e4e84d0f5e2ca9464c', '0d36aaa77c7f8b78543eed61d', 'LA', 'locations/13908569498767872619',
   'Elite_Team_Builders',
   'Caption - Google Business LA',
   'Posted - Google Business LA',
@@ -218,7 +218,7 @@ VALUES (
 INSERT OR IGNORE INTO client_gbp_locations
   (id, client_id, label, location_id, upload_post_profile, caption_field, posted_field, paused, paused_reason, sort_order)
 VALUES (
-  'e12e8e7e03a268f18c3301b894', 'c1ee3b8cd460e638498782098f', 'WA', 'locations/13295643730305864087',
+  '94ab4fae3a028439ace0f8882c', '0d36aaa77c7f8b78543eed61d', 'WA', 'locations/13295643730305864087',
   'Elite_Team_Builders_WA',
   'Caption - Google Business WA',
   'Posted - Google Business WA',
@@ -230,7 +230,7 @@ VALUES (
 INSERT OR IGNORE INTO client_gbp_locations
   (id, client_id, label, location_id, upload_post_profile, caption_field, posted_field, paused, paused_reason, sort_order)
 VALUES (
-  '73292a3a3ea0968492528f1644', 'c1ee3b8cd460e638498782098f', 'OR', 'locations/15052454732110248566',
+  '0630b9a202a7133feceeca9372', '0d36aaa77c7f8b78543eed61d', 'OR', 'locations/15052454732110248566',
   'Elite_Team_Builders',
   'Caption - Google Business OR',
   'Posted - Google Business OR',
@@ -244,7 +244,7 @@ INSERT OR IGNORE INTO clients
    requires_approval_from, language, never_mix_with, upload_post_profile,
    wp_domain, wp_url, wp_auth, wp_template, brand_json, notes, created_at, updated_at)
 VALUES (
-  '3b1f6a40fed1f41bee225d109d', 'caliview-builders', 'CALI-VIEW BUILDERS',
+  'aaf8953e6df139e36f80e61dee', 'caliview-builders', 'CALI-VIEW BUILDERS',
   'medium', 'active',
   NULL,
   0,
@@ -258,18 +258,18 @@ VALUES (
   'caliview',
   '{"primary_color":"#1a3c6e","accent_color":"#f59e0b","company_name":"Caliview Builders","tagline":"Shaping your future, one project at a time","phone":"323-484-8458","phone_display":"(323) 484-8458","cta_text":"Call Caliview Builders for a free consultation — (323) 484-8458","cta_button_label":"Call for a Free Estimate"}',
   'Latino-owned. LGBTQ-friendly. Do NOT mention financing. CV Roofing is a separate subdomain — never mix with main brand. Owner: Ori Peretz — sole decision maker. Post weekdays only (Mon-Thu 9AM-5PM, Fri 9AM-3PM). Phone: (323) 484-8458.',
-  1775761125, 1775761125
+  1775844067, 1775844067
 );
 
-INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('3b1f6a40fed1f41bee225d109d', 'financing');
-INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('3b1f6a40fed1f41bee225d109d', 'solar');
+INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('aaf8953e6df139e36f80e61dee', 'financing');
+INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('aaf8953e6df139e36f80e61dee', 'solar');
 
 INSERT OR IGNORE INTO client_platforms
   (id, client_id, platform, account_id, username, page_id,
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '716b8c1794726aa7b6b355c3ae', '3b1f6a40fed1f41bee225d109d', 'bluesky',
+  'ec3fa3b1e3a98d4b64d4d7e5f9', 'aaf8953e6df139e36f80e61dee', 'bluesky',
   '26621',
   'caliviewbuilders.bsky.social',
   NULL,
@@ -288,7 +288,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '0bcde3a1bad243a0f833772b6f', '3b1f6a40fed1f41bee225d109d', 'facebook',
+  '85d3637ab523eae11bdfee976b', 'aaf8953e6df139e36f80e61dee', 'facebook',
   '21249',
   NULL,
   '114331738185501',
@@ -307,7 +307,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '3d28a419d5b8cdd3e9bb4337e', '3b1f6a40fed1f41bee225d109d', 'instagram',
+  'd255c5f32e1d7b34fcd9e1717', 'aaf8953e6df139e36f80e61dee', 'instagram',
   '33065',
   'caliviewbuilders',
   NULL,
@@ -326,7 +326,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '11301be24ca8e4a521b0cb9fab', '3b1f6a40fed1f41bee225d109d', 'linkedin',
+  'dc29377a661f6b28bb7bbdaf5b', 'aaf8953e6df139e36f80e61dee', 'linkedin',
   '12712',
   NULL,
   '112288361',
@@ -345,7 +345,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '76e1d45b07f22aaeeab2cbaf47', '3b1f6a40fed1f41bee225d109d', 'pinterest',
+  'f52d1b371f59134d662e6e1db', 'aaf8953e6df139e36f80e61dee', 'pinterest',
   '4595',
   'caliviewbuilders',
   NULL,
@@ -364,7 +364,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '06d1d1b5bd81d786dcda8a5c25', '3b1f6a40fed1f41bee225d109d', 'threads',
+  'd07e9c230b0a81171ecb7f24d', 'aaf8953e6df139e36f80e61dee', 'threads',
   '4975',
   'caliviewbuilders',
   NULL,
@@ -383,7 +383,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '48b56c6c129e67ce1d49872da4', '3b1f6a40fed1f41bee225d109d', 'tiktok',
+  'a97681f03e5716dadea8b98c35', 'aaf8953e6df139e36f80e61dee', 'tiktok',
   '32237',
   'caliviewbuilders26',
   NULL,
@@ -402,7 +402,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '35a70a03e7518b3bf53f5f3538', '3b1f6a40fed1f41bee225d109d', 'x',
+  '50a6bd28fb684ecd9c7a3a51d2', 'aaf8953e6df139e36f80e61dee', 'x',
   '13580',
   'caliviewbs',
   NULL,
@@ -421,7 +421,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '8da5c4177bbd80d7f7466cbf95', '3b1f6a40fed1f41bee225d109d', 'youtube',
+  '248cc531e7c376e5fbd4c15b7f', 'aaf8953e6df139e36f80e61dee', 'youtube',
   '29234',
   'ori peretz (CALI VIEW BUILDERS)',
   NULL,
@@ -440,7 +440,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '0e7efb1d48160185d80508adf', '3b1f6a40fed1f41bee225d109d', 'google_business',
+  'c1795317541c398be386f31032', 'aaf8953e6df139e36f80e61dee', 'google_business',
   NULL,
   NULL,
   NULL,
@@ -459,7 +459,7 @@ INSERT OR IGNORE INTO clients
    requires_approval_from, language, never_mix_with, upload_post_profile,
    wp_domain, wp_url, wp_auth, wp_template, brand_json, notes, created_at, updated_at)
 VALUES (
-  'b483bb76f13f2e37130acee12e', 'americas-professional-builders', 'America’s Professional Builders Inc',
+  '7b1fa045b1cffb44c82afdad69', 'americas-professional-builders', 'America’s Professional Builders Inc',
   'medium', 'active',
   NULL,
   0,
@@ -473,7 +473,7 @@ VALUES (
   'americas',
   '{"primary_color":"#1e3a5f","accent_color":"#c8a04a","company_name":"America''s Professional Builders","tagline":"Professional Construction You Can Trust","phone":"(818) 401-3808","phone_display":"(818) 401-3808","cta_text":"Call America''s Professional Builders for a free consultation","cta_button_label":"Free Consultation"}',
   'Strict brand separation from Elite Team Builders. 4.9 stars / 7000+ reviews.',
-  1775761125, 1775761125
+  1775844067, 1775844067
 );
 
 INSERT OR IGNORE INTO client_platforms
@@ -481,7 +481,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '53acd608bcec2c2b3ace4dc247', 'b483bb76f13f2e37130acee12e', 'bluesky',
+  'd00a823eb38eac7432f460a3b8', '7b1fa045b1cffb44c82afdad69', 'bluesky',
   '26630',
   'americaspbuilders.bsky.social',
   NULL,
@@ -500,7 +500,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '0893b733190accd51ee0ee3219', 'b483bb76f13f2e37130acee12e', 'facebook',
+  '6abde2fbe8882c559e8d14ee71', '7b1fa045b1cffb44c82afdad69', 'facebook',
   '21249',
   NULL,
   '1044450898746714',
@@ -519,7 +519,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'f139e869f7a7c139bdfaa34b2', 'b483bb76f13f2e37130acee12e', 'instagram',
+  '224ded1b5361eb9a11abd6ad9e', '7b1fa045b1cffb44c82afdad69', 'instagram',
   '33056',
   'americasprofessionalbuilders',
   NULL,
@@ -538,7 +538,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '5066e4c0cd52c594221903a602', 'b483bb76f13f2e37130acee12e', 'pinterest',
+  'cd0d1aadc341a497f087ba6641', '7b1fa045b1cffb44c82afdad69', 'pinterest',
   '4596',
   'americasprofessionalbuilders',
   NULL,
@@ -557,7 +557,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'dbb4e9a52050e829a9200d836f', 'b483bb76f13f2e37130acee12e', 'threads',
+  'b1dd5c6b5e192f7b7661e2a9ce', '7b1fa045b1cffb44c82afdad69', 'threads',
   '4976',
   'americasprofessionalbuilders',
   NULL,
@@ -576,7 +576,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '3a7672c6b04ba48f2e3e03cbeb', 'b483bb76f13f2e37130acee12e', 'tiktok',
+  '5900a83ed5628adf7a8068062d', '7b1fa045b1cffb44c82afdad69', 'tiktok',
   '32242',
   'americasprofessionalinc',
   NULL,
@@ -595,7 +595,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '602248409f6bf73b18fcf82f03', 'b483bb76f13f2e37130acee12e', 'x',
+  '16205cda9ec036fdb774154ce3', '7b1fa045b1cffb44c82afdad69', 'x',
   '13581',
   'AmericasPBInc26',
   NULL,
@@ -614,7 +614,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '71bee4c45a553072b200a48943', 'b483bb76f13f2e37130acee12e', 'linkedin',
+  '846ee1fb2bedabf9fe80983b8', '7b1fa045b1cffb44c82afdad69', 'linkedin',
   NULL,
   NULL,
   '112642026',
@@ -633,7 +633,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '5258da499a4b9b8545fda4f1e6', 'b483bb76f13f2e37130acee12e', 'google_business',
+  '700e3abf3264461e6f77422bd5', '7b1fa045b1cffb44c82afdad69', 'google_business',
   NULL,
   NULL,
   NULL,
@@ -652,7 +652,7 @@ INSERT OR IGNORE INTO clients
    requires_approval_from, language, never_mix_with, upload_post_profile,
    wp_domain, wp_url, wp_auth, wp_template, brand_json, notes, created_at, updated_at)
 VALUES (
-  '4158ff56a81fd3616459e3533', 'modern-vision-remodeling', 'Modern Vision Remodeling Experts',
+  '5083fe82d6774fe349f9ea31d9', 'modern-vision-remodeling', 'Modern Vision Remodeling Experts',
   'medium', 'active',
   NULL,
   0,
@@ -666,7 +666,7 @@ VALUES (
   NULL,
   NULL,
   'Automation enabled for Facebook, Instagram, Google Business. Lee''s content approval is strongly recommended before setting Ready for Automation in Notion — but is no longer a hard block.',
-  1775761125, 1775761125
+  1775844067, 1775844067
 );
 
 INSERT OR IGNORE INTO client_platforms
@@ -674,7 +674,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'e07d472e678c9213d71eeac30a', '4158ff56a81fd3616459e3533', 'facebook',
+  'd2938ef849715d0e00e3520fc', '5083fe82d6774fe349f9ea31d9', 'facebook',
   '21249',
   NULL,
   '102921882737718',
@@ -693,7 +693,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'f1b2bc61e5d415f13bd1f3831d', '4158ff56a81fd3616459e3533', 'instagram',
+  '862f8613649fa2a0a03e257d14', '5083fe82d6774fe349f9ea31d9', 'instagram',
   '33974',
   'modern_vision__remodeling',
   NULL,
@@ -712,7 +712,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '248bdd145516562df06328eb7f', '4158ff56a81fd3616459e3533', 'google_business',
+  'f4c80eb1dbbab3e3bd5c1f36f9', '5083fe82d6774fe349f9ea31d9', 'google_business',
   NULL,
   NULL,
   NULL,
@@ -731,7 +731,7 @@ INSERT OR IGNORE INTO clients
    requires_approval_from, language, never_mix_with, upload_post_profile,
    wp_domain, wp_url, wp_auth, wp_template, brand_json, notes, created_at, updated_at)
 VALUES (
-  'c5fd0d0753ea2fb8cf2b95d545', 'golden-touch-roofing', 'Golden Touch Roofing',
+  '118bafb6f023654e014f6a0f2b', 'golden-touch-roofing', 'Golden Touch Roofing',
   'medium', 'active',
   NULL,
   0,
@@ -745,7 +745,7 @@ VALUES (
   NULL,
   NULL,
   'Bilingual EN/ES. LGBTQ-friendly. Google Guaranteed. No posts on Saturday.',
-  1775761125, 1775761125
+  1775844067, 1775844067
 );
 
 INSERT OR IGNORE INTO client_platforms
@@ -753,7 +753,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'd5994fd7d15ed7d96d2a706f1e', 'c5fd0d0753ea2fb8cf2b95d545', 'bluesky',
+  '98684bba07a4bb7e8d0f6c1d3b', '118bafb6f023654e014f6a0f2b', 'bluesky',
   '27811',
   'goldentouchroofing.bsky.social',
   NULL,
@@ -772,7 +772,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'f07b9eb0e8afb31a061789ad74', 'c5fd0d0753ea2fb8cf2b95d545', 'facebook',
+  '9e720563e51383628be3f64fe8', '118bafb6f023654e014f6a0f2b', 'facebook',
   '21249',
   NULL,
   '631603223366401',
@@ -791,7 +791,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '46aee50eeaf4406474ae293ea', 'c5fd0d0753ea2fb8cf2b95d545', 'instagram',
+  '3b0c9126acfcbf30bdbfc5fe4f', '118bafb6f023654e014f6a0f2b', 'instagram',
   '33071',
   'goldentouch_roofing',
   NULL,
@@ -810,7 +810,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '95234fab9580653a5278182d6b', 'c5fd0d0753ea2fb8cf2b95d545', 'pinterest',
+  'a00a60d01a9c6abed03f1d922e', '118bafb6f023654e014f6a0f2b', 'pinterest',
   '4725',
   'goldentouchroofing',
   NULL,
@@ -829,7 +829,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '09bf9b9e7321caf749deadc19f', 'c5fd0d0753ea2fb8cf2b95d545', 'threads',
+  'f9baa7e4bb823819b89a798094', '118bafb6f023654e014f6a0f2b', 'threads',
   '5108',
   'goldentouch_roofing',
   NULL,
@@ -848,7 +848,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'b2db9428218220eacf62607e23', 'c5fd0d0753ea2fb8cf2b95d545', 'x',
+  '7f85fa0f49d0f69c5312fb67b2', '118bafb6f023654e014f6a0f2b', 'x',
   '14002',
   'GoldenTouchRoof',
   NULL,
@@ -867,7 +867,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '01ed1f7b3446918aae02fd61da', 'c5fd0d0753ea2fb8cf2b95d545', 'youtube',
+  'a193356fa7eaea6c5dedd277d3', '118bafb6f023654e014f6a0f2b', 'youtube',
   '28642',
   'Goldentouchroofing',
   NULL,
@@ -886,7 +886,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '0aa63e27c39ba6ea750f9570fe', 'c5fd0d0753ea2fb8cf2b95d545', 'linkedin',
+  '0f8cd411b4784f994dca1bb059', '118bafb6f023654e014f6a0f2b', 'linkedin',
   NULL,
   NULL,
   '112635151',
@@ -905,7 +905,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'aa80cd9d0322b448c67015730b', 'c5fd0d0753ea2fb8cf2b95d545', 'google_business',
+  'c291b669138bd26b6183b66de8', '118bafb6f023654e014f6a0f2b', 'google_business',
   NULL,
   NULL,
   NULL,
@@ -924,7 +924,7 @@ INSERT OR IGNORE INTO clients
    requires_approval_from, language, never_mix_with, upload_post_profile,
    wp_domain, wp_url, wp_auth, wp_template, brand_json, notes, created_at, updated_at)
 VALUES (
-  'bacafaa98c4e41a24abc8c492d', 'exceptional-home-builders-nw', 'Exceptional Home Builders NW',
+  '101ce7e876774356dcc078e51', 'exceptional-home-builders-nw', 'Exceptional Home Builders NW',
   'medium', 'active',
   NULL,
   0,
@@ -938,7 +938,7 @@ VALUES (
   NULL,
   NULL,
   'Use page 903212596218298 (Exceptional Home Builders NW). Page 193599287181114 (''Exceptional Home Builders'') is a different/older page — do not use until Marvin clarifies.',
-  1775761125, 1775761125
+  1775844067, 1775844067
 );
 
 INSERT OR IGNORE INTO client_platforms
@@ -946,7 +946,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'ab89fe16cffeb9ef0c1084026', 'bacafaa98c4e41a24abc8c492d', 'facebook',
+  '9d3c85709b7850e03c74ca5b46', '101ce7e876774356dcc078e51', 'facebook',
   '21249',
   NULL,
   '903212596218298',
@@ -965,7 +965,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '2d0ca27ed4b2c0ef56d342d124', 'bacafaa98c4e41a24abc8c492d', 'instagram',
+  '3ffffd5981edf69be48b084d4a', '101ce7e876774356dcc078e51', 'instagram',
   '33057',
   'exceptionalhomebuildersnw',
   NULL,
@@ -984,7 +984,7 @@ INSERT OR IGNORE INTO clients
    requires_approval_from, language, never_mix_with, upload_post_profile,
    wp_domain, wp_url, wp_auth, wp_template, brand_json, notes, created_at, updated_at)
 VALUES (
-  '3db00e3c93a11fb3d8b90f1e26', 'silver-roofing', 'Silver Roofing Specialist',
+  '96d97f8131c2a232985b89d9a3', 'silver-roofing', 'Silver Roofing Specialist',
   'medium', 'active',
   NULL,
   0,
@@ -998,7 +998,7 @@ VALUES (
   NULL,
   NULL,
   'INACTIVE in Notion as of 2026-03-31. Instagram paused since Feb 2026. Women-owned. Bilingual EN/ES.',
-  1775761125, 1775761125
+  1775844067, 1775844067
 );
 
 INSERT OR IGNORE INTO client_platforms
@@ -1006,7 +1006,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '4037830d74cbb6d9ff3ad2b4d4', '3db00e3c93a11fb3d8b90f1e26', 'instagram',
+  '8afe8e7e1c5d6efca6e8c3a63', '96d97f8131c2a232985b89d9a3', 'instagram',
   '33064',
   'silverstoneremodelinginc',
   NULL,
@@ -1025,7 +1025,7 @@ INSERT OR IGNORE INTO clients
    requires_approval_from, language, never_mix_with, upload_post_profile,
    wp_domain, wp_url, wp_auth, wp_template, brand_json, notes, created_at, updated_at)
 VALUES (
-  '7fc700a4decd97d2c54dee95dc', '247-lockout-locksmith', '24/7 Lockout Locksmith',
+  '49d8d459d80c11c0fb7743abd7', '247-lockout-locksmith', '24/7 Lockout Locksmith',
   'medium', 'active',
   'gabriel-algrably',
   0,
@@ -1039,22 +1039,22 @@ VALUES (
   'locksmith',
   '{"primary_color":"#1a1a2e","accent_color":"#e53e3e","company_name":"24/7 Lockout Locksmith Services","tagline":"Fast & Reliable — Available 24/7","phone":"818-984-4333","phone_display":"(818) 984-4333","cta_text":"Call 24/7 Lockout Locksmith — We respond in minutes","cta_button_label":"Call Now — 24/7"}',
   'Gabriel Algrably client. NEVER mention forbidden terms. Google Guaranteed.',
-  1775761125, 1775761125
+  1775844067, 1775844067
 );
 
-INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('7fc700a4decd97d2c54dee95dc', 'car key fob');
-INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('7fc700a4decd97d2c54dee95dc', 'key fob');
-INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('7fc700a4decd97d2c54dee95dc', 'duplicate key');
-INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('7fc700a4decd97d2c54dee95dc', 'duplicate keys');
-INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('7fc700a4decd97d2c54dee95dc', 'car key programming');
-INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('7fc700a4decd97d2c54dee95dc', 'key programming');
+INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('49d8d459d80c11c0fb7743abd7', 'car key fob');
+INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('49d8d459d80c11c0fb7743abd7', 'key fob');
+INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('49d8d459d80c11c0fb7743abd7', 'duplicate key');
+INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('49d8d459d80c11c0fb7743abd7', 'duplicate keys');
+INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('49d8d459d80c11c0fb7743abd7', 'car key programming');
+INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('49d8d459d80c11c0fb7743abd7', 'key programming');
 
 INSERT OR IGNORE INTO client_platforms
   (id, client_id, platform, account_id, username, page_id,
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'ca0d9391cd8d67743da0ab429', '7fc700a4decd97d2c54dee95dc', 'bluesky',
+  'b2de57ce123c1bf49422331ebb', '49d8d459d80c11c0fb7743abd7', 'bluesky',
   '26851',
   '247lockout.bsky.social',
   NULL,
@@ -1073,7 +1073,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '53cd7dfd690ad405454e9da1df', '7fc700a4decd97d2c54dee95dc', 'facebook',
+  '6d0912c13c039320ad9c095c03', '49d8d459d80c11c0fb7743abd7', 'facebook',
   '21249',
   NULL,
   '607402882449629',
@@ -1092,7 +1092,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'f56713cdfc66ab7da23c9d7f7', '7fc700a4decd97d2c54dee95dc', 'instagram',
+  'f6813d5305b3bf926627b5bc92', '49d8d459d80c11c0fb7743abd7', 'instagram',
   '33061',
   '247lockoutlocksmithservices',
   NULL,
@@ -1111,7 +1111,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '945b9394821a8b5bf2915320e1', '7fc700a4decd97d2c54dee95dc', 'pinterest',
+  '5a0518ab4480d1c4df97edda45', '49d8d459d80c11c0fb7743abd7', 'pinterest',
   '4617',
   '247lockouttec',
   NULL,
@@ -1130,7 +1130,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '6a031297cf719fe2cd8432118', '7fc700a4decd97d2c54dee95dc', 'threads',
+  '54201224d1a1a9750d1be7a3d8', '49d8d459d80c11c0fb7743abd7', 'threads',
   '4997',
   '247lockoutlocksmithservices',
   NULL,
@@ -1149,7 +1149,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '9cf29011ba21dc9deb15601909', '7fc700a4decd97d2c54dee95dc', 'tiktok',
+  '3404b7eee82bd404957c63ac06', '49d8d459d80c11c0fb7743abd7', 'tiktok',
   '32359',
   '247lockoutlocksmith',
   NULL,
@@ -1168,7 +1168,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '9857bd9af76cf4bec6634ca843', '7fc700a4decd97d2c54dee95dc', 'x',
+  '2eb4c2b5f2315dd56436757c2c', '49d8d459d80c11c0fb7743abd7', 'x',
   '13651',
   '7Lockout82535',
   NULL,
@@ -1187,7 +1187,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '92425283f3c1c3f4621cdd0f31', '7fc700a4decd97d2c54dee95dc', 'youtube',
+  'bb42cc91406967758402c271a', '49d8d459d80c11c0fb7743abd7', 'youtube',
   '29335',
   'Daniel Algrably (247 Lockout Locksmith)',
   NULL,
@@ -1206,7 +1206,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '99fec869f5db59e7ac07184f55', '7fc700a4decd97d2c54dee95dc', 'google_business',
+  'c7b0be370f31499380473fadc2', '49d8d459d80c11c0fb7743abd7', 'google_business',
   NULL,
   NULL,
   NULL,
@@ -1225,7 +1225,7 @@ INSERT OR IGNORE INTO clients
    requires_approval_from, language, never_mix_with, upload_post_profile,
    wp_domain, wp_url, wp_auth, wp_template, brand_json, notes, created_at, updated_at)
 VALUES (
-  '43b91373c0f681be36120a886e', '724-locksmith', '7/24 Locksmith Services',
+  'd190bfd63a61ea047e89f33467', '724-locksmith', '7/24 Locksmith Services',
   'medium', 'active',
   'gabriel-algrably',
   0,
@@ -1239,22 +1239,22 @@ VALUES (
   'locksmith',
   '{"primary_color":"#1a1a2e","accent_color":"#e53e3e","company_name":"7/24 Locksmith Services","tagline":"Professional Locksmith — Around the Clock","phone":"323-346-7344","phone_display":"(323) 346-7344","cta_text":"Call 7/24 Locksmith Services — Fast Response, Fair Prices","cta_button_label":"Call Now"}',
   'Gabriel Algrably client. NEVER mention forbidden terms.',
-  1775761125, 1775761125
+  1775844067, 1775844067
 );
 
-INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('43b91373c0f681be36120a886e', 'car key fob');
-INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('43b91373c0f681be36120a886e', 'key fob');
-INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('43b91373c0f681be36120a886e', 'duplicate key');
-INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('43b91373c0f681be36120a886e', 'duplicate keys');
-INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('43b91373c0f681be36120a886e', 'car key programming');
-INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('43b91373c0f681be36120a886e', 'key programming');
+INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('d190bfd63a61ea047e89f33467', 'car key fob');
+INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('d190bfd63a61ea047e89f33467', 'key fob');
+INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('d190bfd63a61ea047e89f33467', 'duplicate key');
+INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('d190bfd63a61ea047e89f33467', 'duplicate keys');
+INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('d190bfd63a61ea047e89f33467', 'car key programming');
+INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('d190bfd63a61ea047e89f33467', 'key programming');
 
 INSERT OR IGNORE INTO client_platforms
   (id, client_id, platform, account_id, username, page_id,
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '7874d4405d1477efa3a3adb7d1', '43b91373c0f681be36120a886e', 'bluesky',
+  '8d5763f90018ef4106db201e0f', 'd190bfd63a61ea047e89f33467', 'bluesky',
   '26862',
   '724locksmith.bsky.social',
   NULL,
@@ -1273,7 +1273,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '264316419bf6c1791ac9e51596', '43b91373c0f681be36120a886e', 'facebook',
+  '7d7b36087809b25cbc95941ac9', 'd190bfd63a61ea047e89f33467', 'facebook',
   '21249',
   NULL,
   '505255852666324',
@@ -1292,7 +1292,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '67998cac965d35f0da05e0b70e', '43b91373c0f681be36120a886e', 'instagram',
+  '0369b8b7b2d76ee60879185ca5', 'd190bfd63a61ea047e89f33467', 'instagram',
   '34119',
   '247locksmithservices',
   NULL,
@@ -1311,7 +1311,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'f572399bcc1261d1a0b6ecb8f5', '43b91373c0f681be36120a886e', 'threads',
+  '356c31b0caf05d9aeaa0544e35', 'd190bfd63a61ea047e89f33467', 'threads',
   '5001',
   '247locksmithservices',
   NULL,
@@ -1330,7 +1330,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'bf6478ae187cda304e002f585a', '43b91373c0f681be36120a886e', 'tiktok',
+  '2cc8098015c8cb4cb42835b377', 'd190bfd63a61ea047e89f33467', 'tiktok',
   '32374',
   'gabialgrably',
   NULL,
@@ -1349,7 +1349,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '97c55b174b9b486e7d1644ce06', '43b91373c0f681be36120a886e', 'x',
+  '36575b5ca8b8e16b0d32859176', 'd190bfd63a61ea047e89f33467', 'x',
   '13656',
   '724_locksmith',
   NULL,
@@ -1368,7 +1368,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'd29bf58772ee8f31b0d4ece074', '43b91373c0f681be36120a886e', 'youtube',
+  'a2bb9504b81a858028631668c', 'd190bfd63a61ea047e89f33467', 'youtube',
   '29350',
   'Gabi Algrably (7/24 Locksmith)',
   NULL,
@@ -1387,7 +1387,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '3fc3703c87301a62a6ad5e4e38', '43b91373c0f681be36120a886e', 'google_business',
+  '1ddbe475c09552b33cd66d09ab', 'd190bfd63a61ea047e89f33467', 'google_business',
   NULL,
   NULL,
   NULL,
@@ -1406,7 +1406,7 @@ INSERT OR IGNORE INTO clients
    requires_approval_from, language, never_mix_with, upload_post_profile,
    wp_domain, wp_url, wp_auth, wp_template, brand_json, notes, created_at, updated_at)
 VALUES (
-  '4030bfb3b3d36071770cd7a2e', 'unlockd-pros', 'Unlock´D Pros',
+  '94ea1744044a5622315bbf520a', 'unlockd-pros', 'Unlock´D Pros',
   'medium', 'active',
   'gabriel-algrably',
   0,
@@ -1420,22 +1420,22 @@ VALUES (
   'locksmith',
   '{"primary_color":"#0f172a","accent_color":"#3b82f6","company_name":"Unlock''D Pros","tagline":"Your Trusted Local Locksmith","phone":"818-392-6390","phone_display":"(818) 392-6390","cta_text":"Call Unlock''D Pros for immediate locksmith service","cta_button_label":"Call Now"}',
   'Gabriel Algrably client. NEVER mention forbidden terms. BSIS licensed.',
-  1775761125, 1775761125
+  1775844067, 1775844067
 );
 
-INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('4030bfb3b3d36071770cd7a2e', 'car key fob');
-INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('4030bfb3b3d36071770cd7a2e', 'key fob');
-INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('4030bfb3b3d36071770cd7a2e', 'duplicate key');
-INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('4030bfb3b3d36071770cd7a2e', 'duplicate keys');
-INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('4030bfb3b3d36071770cd7a2e', 'car key programming');
-INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('4030bfb3b3d36071770cd7a2e', 'key programming');
+INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('94ea1744044a5622315bbf520a', 'car key fob');
+INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('94ea1744044a5622315bbf520a', 'key fob');
+INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('94ea1744044a5622315bbf520a', 'duplicate key');
+INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('94ea1744044a5622315bbf520a', 'duplicate keys');
+INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('94ea1744044a5622315bbf520a', 'car key programming');
+INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('94ea1744044a5622315bbf520a', 'key programming');
 
 INSERT OR IGNORE INTO client_platforms
   (id, client_id, platform, account_id, username, page_id,
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '99dc6f733b6feed806c285a114', '4030bfb3b3d36071770cd7a2e', 'bluesky',
+  'a8b54ebcf86e76251a9518f2e6', '94ea1744044a5622315bbf520a', 'bluesky',
   '27478',
   'unlockdpros.bsky.social',
   NULL,
@@ -1454,7 +1454,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '7b81581fbac2a4fad37b358913', '4030bfb3b3d36071770cd7a2e', 'facebook',
+  'ec26f64d84e998beda20b35742', '94ea1744044a5622315bbf520a', 'facebook',
   '21249',
   NULL,
   '966214523248894',
@@ -1473,7 +1473,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '585910d8eacae5a77429b06dc3', '4030bfb3b3d36071770cd7a2e', 'instagram',
+  'd66cfd634f35c94a9e99251301', '94ea1744044a5622315bbf520a', 'instagram',
   '34615',
   'unlockdpros',
   NULL,
@@ -1492,7 +1492,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '770820ea4ce75f659d9b64d5ac', '4030bfb3b3d36071770cd7a2e', 'linkedin',
+  'a3bca7c2f324ed31bb7c81dc47', '94ea1744044a5622315bbf520a', 'linkedin',
   '12712',
   NULL,
   '111968679',
@@ -1511,7 +1511,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'b140ee6022af52af42edbda755', '4030bfb3b3d36071770cd7a2e', 'pinterest',
+  'aa2c75b516bbb3a91fc874c049', '94ea1744044a5622315bbf520a', 'pinterest',
   '4678',
   '1unlockedpros',
   NULL,
@@ -1530,7 +1530,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '21e73f74a764363a2f0d163c9f', '4030bfb3b3d36071770cd7a2e', 'threads',
+  '63c4f9e6f271324c38d63222', '94ea1744044a5622315bbf520a', 'threads',
   '5060',
   'unlockdpros',
   NULL,
@@ -1549,7 +1549,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '8bf1019369de18acefcc53af31', '4030bfb3b3d36071770cd7a2e', 'tiktok',
+  'e48ef96a0c21270becd4cf8cf5', '94ea1744044a5622315bbf520a', 'tiktok',
   '33101',
   'unlockdpros',
   NULL,
@@ -1568,7 +1568,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '1b71ce349c67b57ad038c24f34', '4030bfb3b3d36071770cd7a2e', 'x',
+  '90499808f3cc55d93117ac868c', '94ea1744044a5622315bbf520a', 'x',
   '14005',
   'UnlockDPros',
   NULL,
@@ -1587,7 +1587,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'ccfbb1004eb5837e66f5961209', '4030bfb3b3d36071770cd7a2e', 'youtube',
+  '3edcbde60ca4db76d21a845793', '94ea1744044a5622315bbf520a', 'youtube',
   '29831',
   'Gabriel Algrably (Unlock´D Pros)',
   NULL,
@@ -1606,7 +1606,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'e465523ef1e3c8f58b8b9b7d84', '4030bfb3b3d36071770cd7a2e', 'google_business',
+  'd83dfca318483095d28cc1b84b', '94ea1744044a5622315bbf520a', 'google_business',
   NULL,
   NULL,
   NULL,
@@ -1625,7 +1625,7 @@ INSERT OR IGNORE INTO clients
    requires_approval_from, language, never_mix_with, upload_post_profile,
    wp_domain, wp_url, wp_auth, wp_template, brand_json, notes, created_at, updated_at)
 VALUES (
-  'd3595b70c90898a7431acebf8a', 'daniels-locks-key', 'Daniel''s Locks & Key',
+  'b2d448c769e838ccd7a6e888f1', 'daniels-locks-key', 'Daniel''s Locks & Key',
   'medium', 'active',
   'gabriel-algrably',
   0,
@@ -1639,22 +1639,22 @@ VALUES (
   'locksmith',
   '{"primary_color":"#1a2e44","accent_color":"#f59e0b","company_name":"Daniel''s Lock & Key Service","tagline":"Expert Locksmith Services You Can Trust","phone":"310-600-2849","phone_display":"(310) 600-2849","cta_text":"Call Daniel''s Lock & Key for professional locksmith service","cta_button_label":"Call Now"}',
   'Gabriel Algrably client. NEVER mention forbidden terms. Owner-operated. Non-destructive entry differentiator.',
-  1775761125, 1775761125
+  1775844067, 1775844067
 );
 
-INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('d3595b70c90898a7431acebf8a', 'car key fob');
-INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('d3595b70c90898a7431acebf8a', 'key fob');
-INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('d3595b70c90898a7431acebf8a', 'duplicate key');
-INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('d3595b70c90898a7431acebf8a', 'duplicate keys');
-INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('d3595b70c90898a7431acebf8a', 'car key programming');
-INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('d3595b70c90898a7431acebf8a', 'key programming');
+INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('b2d448c769e838ccd7a6e888f1', 'car key fob');
+INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('b2d448c769e838ccd7a6e888f1', 'key fob');
+INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('b2d448c769e838ccd7a6e888f1', 'duplicate key');
+INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('b2d448c769e838ccd7a6e888f1', 'duplicate keys');
+INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('b2d448c769e838ccd7a6e888f1', 'car key programming');
+INSERT OR IGNORE INTO client_restrictions (client_id, term) VALUES ('b2d448c769e838ccd7a6e888f1', 'key programming');
 
 INSERT OR IGNORE INTO client_platforms
   (id, client_id, platform, account_id, username, page_id,
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '79fd2241a0c8500735be7f463a', 'd3595b70c90898a7431acebf8a', 'bluesky',
+  '589590cd197a9c9aeae3bec5d4', 'b2d448c769e838ccd7a6e888f1', 'bluesky',
   '27463',
   'danielslockkey.bsky.social',
   NULL,
@@ -1673,7 +1673,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'a6f963beee4db32691d29c6ec3', 'd3595b70c90898a7431acebf8a', 'facebook',
+  '8e01e63e7520c8ba5d598157cd', 'b2d448c769e838ccd7a6e888f1', 'facebook',
   '21249',
   NULL,
   '972987222574766',
@@ -1692,7 +1692,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '3b20335f600f105fd2a1968018', 'd3595b70c90898a7431acebf8a', 'instagram',
+  '2229704f1a823a63f661f672e', 'b2d448c769e838ccd7a6e888f1', 'instagram',
   '34596',
   'danielslock_keyservice',
   NULL,
@@ -1711,7 +1711,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '11962e5e9650e5068fe8807e1f', 'd3595b70c90898a7431acebf8a', 'pinterest',
+  '880d321836ccda9d4db0fcd306', 'b2d448c769e838ccd7a6e888f1', 'pinterest',
   '4677',
   'danielslocknkeys',
   NULL,
@@ -1730,7 +1730,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '4d49f8196e104af5b8b64f506e', 'd3595b70c90898a7431acebf8a', 'threads',
+  '7b7028b553a2c48c5eb34c2e38', 'b2d448c769e838ccd7a6e888f1', 'threads',
   '5059',
   'danielslock_keyservice',
   NULL,
@@ -1749,7 +1749,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '3b0befb233dbd588b8199b75ed', 'd3595b70c90898a7431acebf8a', 'tiktok',
+  'de8ad5da7e1f2c8d32ebd38b68', 'b2d448c769e838ccd7a6e888f1', 'tiktok',
   '33102',
   'danielslockandkeys',
   NULL,
@@ -1768,7 +1768,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '77811228029ba65e44e95dd957', 'd3595b70c90898a7431acebf8a', 'x',
+  '98531f1c15decb773bfcfe74c1', 'b2d448c769e838ccd7a6e888f1', 'x',
   '14004',
   'danielslockkeys',
   NULL,
@@ -1787,7 +1787,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '4504beaec3d6760f1c0802241b', 'd3595b70c90898a7431acebf8a', 'youtube',
+  '1cfb9267b64a152a8d3f241573', 'b2d448c769e838ccd7a6e888f1', 'youtube',
   '29832',
   'Daniel ben Algrably (Daniel''s Lock & Keys)',
   NULL,
@@ -1806,7 +1806,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '37d3ac244d81d07399ca037b73', 'd3595b70c90898a7431acebf8a', 'google_business',
+  '70a7587de87dac04b41c489b6a', 'b2d448c769e838ccd7a6e888f1', 'google_business',
   NULL,
   NULL,
   NULL,
@@ -1825,7 +1825,7 @@ INSERT OR IGNORE INTO clients
    requires_approval_from, language, never_mix_with, upload_post_profile,
    wp_domain, wp_url, wp_auth, wp_template, brand_json, notes, created_at, updated_at)
 VALUES (
-  '2ee8fc3c05a9999debb601f9e3', 'best-garage-door', 'Best Garage Door & Repair CA',
+  '7b90b396f9e4de6d738ba192e3', 'best-garage-door', 'Best Garage Door & Repair CA',
   'medium', 'active',
   NULL,
   0,
@@ -1839,7 +1839,7 @@ VALUES (
   NULL,
   NULL,
   'INACTIVE in Notion as of 2026-03-31. Post Mon-Fri only. AER Garage Door in Blotato.',
-  1775761125, 1775761125
+  1775844067, 1775844067
 );
 
 INSERT OR IGNORE INTO client_platforms
@@ -1847,7 +1847,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'b43f28061269cf452f5b366e01', '2ee8fc3c05a9999debb601f9e3', 'facebook',
+  'a23e2a7ef3df9d9512b3b70374', '7b90b396f9e4de6d738ba192e3', 'facebook',
   '21249',
   NULL,
   '276958339336840',
@@ -1866,7 +1866,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '8bca843546ffc0b5eda78d9e79', '2ee8fc3c05a9999debb601f9e3', 'instagram',
+  '814f1661bcff12a3c3c3f4f638', '7b90b396f9e4de6d738ba192e3', 'instagram',
   '33054',
   'best.garageca',
   NULL,
@@ -1885,7 +1885,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '9a780835d82c689f28031a8359', '2ee8fc3c05a9999debb601f9e3', 'threads',
+  '0390cd51c76579c67916b96e9a', '7b90b396f9e4de6d738ba192e3', 'threads',
   '5181',
   'best.garageca',
   NULL,
@@ -1904,7 +1904,7 @@ INSERT OR IGNORE INTO clients
    requires_approval_from, language, never_mix_with, upload_post_profile,
    wp_domain, wp_url, wp_auth, wp_template, brand_json, notes, created_at, updated_at)
 VALUES (
-  'f44da5cf8e4854ad4966ed71ae', 'ketty-robles-accounting', 'Ketty S Robles Accounting',
+  '95dbde14599be29b7284016c78', 'ketty-robles-accounting', 'Ketty S Robles Accounting',
   'medium', 'active',
   NULL,
   0,
@@ -1918,7 +1918,7 @@ VALUES (
   NULL,
   NULL,
   'Barter client (no cash). Facebook only. Bilingual EN/ES. ITIN specialization.',
-  1775761125, 1775761125
+  1775844067, 1775844067
 );
 
 INSERT OR IGNORE INTO client_platforms
@@ -1926,7 +1926,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'e3cee8baaf088ba61e626f7988', 'f44da5cf8e4854ad4966ed71ae', 'facebook',
+  '198bb94bce2242136482215826', '95dbde14599be29b7284016c78', 'facebook',
   '21249',
   NULL,
   '335460246944724',
@@ -1945,7 +1945,7 @@ INSERT OR IGNORE INTO clients
    requires_approval_from, language, never_mix_with, upload_post_profile,
    wp_domain, wp_url, wp_auth, wp_template, brand_json, notes, created_at, updated_at)
 VALUES (
-  'a21dcff765db20edd4c2d42d3d', 'jaz-makeup-artist', 'Jaz MakeUp Artist',
+  'c010bbf15aad91889dff35eb9', 'jaz-makeup-artist', 'Jaz MakeUp Artist',
   'medium', 'active',
   NULL,
   0,
@@ -1959,7 +1959,7 @@ VALUES (
   NULL,
   NULL,
   'ALL CONTENT IN SPANISH ONLY — Nicaragua audience. Beauty/makeup artist. Basic package, 3x/week. Owner: Jazmina.',
-  1775761125, 1775761125
+  1775844067, 1775844067
 );
 
 INSERT OR IGNORE INTO client_platforms
@@ -1967,7 +1967,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'b181d63a82079ac6704b356bb', 'a21dcff765db20edd4c2d42d3d', 'facebook',
+  '31022bd3364735734a0fd7e802', 'c010bbf15aad91889dff35eb9', 'facebook',
   '21249',
   NULL,
   '1100785716444095',
@@ -1986,7 +1986,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '60bdf697f48ac130f4bd2e9605', 'a21dcff765db20edd4c2d42d3d', 'instagram',
+  'a52b07863b7f4c1ac566767107', 'c010bbf15aad91889dff35eb9', 'instagram',
   '35759',
   'jaz.m.u.a',
   NULL,
@@ -2005,7 +2005,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '35347e8d0df421116f06e5bac4', 'a21dcff765db20edd4c2d42d3d', 'youtube',
+  '5556fa63a333e7d35b3d39eab7', 'c010bbf15aad91889dff35eb9', 'youtube',
   '30439',
   'Jazmina Fonseca (Jaz MakeUp Artist)',
   NULL,
@@ -2024,7 +2024,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '88225358019f56894dfe34060d', 'a21dcff765db20edd4c2d42d3d', 'google_business',
+  '26de001d7abb0e8f1aaac9093', 'c010bbf15aad91889dff35eb9', 'google_business',
   NULL,
   NULL,
   NULL,
@@ -2043,7 +2043,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'c145a643e6b5717b36d7cc48', 'a21dcff765db20edd4c2d42d3d', 'tiktok',
+  'd3a9d3f7f1badb6a7fad702ba5', 'c010bbf15aad91889dff35eb9', 'tiktok',
   NULL,
   NULL,
   NULL,
@@ -2062,7 +2062,7 @@ INSERT OR IGNORE INTO clients
    requires_approval_from, language, never_mix_with, upload_post_profile,
    wp_domain, wp_url, wp_auth, wp_template, brand_json, notes, created_at, updated_at)
 VALUES (
-  '4c808734ec4ee2c82c0ef620e5', 'webxni', 'WebXni',
+  '64c046039cbb1d7c5a20b44efe', 'webxni', 'WebXni',
   'medium', 'active',
   NULL,
   0,
@@ -2076,7 +2076,7 @@ VALUES (
   NULL,
   NULL,
   'Internal account. Keep separate from all client content.',
-  1775761125, 1775761125
+  1775844067, 1775844067
 );
 
 INSERT OR IGNORE INTO client_platforms
@@ -2084,7 +2084,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '98e03bf1c498430b62f09a91c', '4c808734ec4ee2c82c0ef620e5', 'bluesky',
+  '8cd38c7fac638f39fc35113811', '64c046039cbb1d7c5a20b44efe', 'bluesky',
   '27270',
   'webxni.bsky.social',
   NULL,
@@ -2103,7 +2103,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'cb6bb0c67be038ddbaeec0c99f', '4c808734ec4ee2c82c0ef620e5', 'facebook',
+  '3aae948bc5c87e243d656e5ca3', '64c046039cbb1d7c5a20b44efe', 'facebook',
   '21249',
   NULL,
   '108849464925643',
@@ -2122,7 +2122,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '506f202dbe3afe204567f616ce', '4c808734ec4ee2c82c0ef620e5', 'instagram',
+  '023571b5b0be41f47f5fe62444', '64c046039cbb1d7c5a20b44efe', 'instagram',
   '32735',
   'webxni',
   NULL,
@@ -2141,7 +2141,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '0548d96e47ec6cb6b4a584f6dd', '4c808734ec4ee2c82c0ef620e5', 'pinterest',
+  '10db741b53fddd567ffb5f6f33', '64c046039cbb1d7c5a20b44efe', 'pinterest',
   '4660',
   'WebXni',
   NULL,
@@ -2160,7 +2160,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  'abddd8cbfc59bc7ed7b4eb7b35', '4c808734ec4ee2c82c0ef620e5', 'tiktok',
+  '977e40a58553c45ca080fa72c6', '64c046039cbb1d7c5a20b44efe', 'tiktok',
   '32655',
   'webxnillc',
   NULL,
@@ -2179,7 +2179,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '28d1e489c2e24ac576886d701a', '4c808734ec4ee2c82c0ef620e5', 'youtube',
+  '618b67667e8d82e3154d44d03', '64c046039cbb1d7c5a20b44efe', 'youtube',
   '29550',
   'webxni (Webxni)',
   NULL,
@@ -2198,7 +2198,7 @@ INSERT OR IGNORE INTO client_platforms
    upload_post_board_id, upload_post_location_id,
    privacy_level, privacy_status, paused, paused_reason, paused_since, notes)
 VALUES (
-  '2bd40b5ea58a7af02e05103808', '4c808734ec4ee2c82c0ef620e5', 'google_business',
+  'd5aae06d85c7ac68ee5238e772', '64c046039cbb1d7c5a20b44efe', 'google_business',
   NULL,
   NULL,
   NULL,
