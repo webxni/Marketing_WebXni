@@ -9,7 +9,7 @@
   import { timeAgo, parseStats } from '$lib/utils';
   import type { PostingJob, GenerationRun, Client, Package } from '$lib/types';
 
-  // ── State ─────────────────────────────────────────────────────────────────
+  // ── Data ─────────────────────────────────────────────────────────────────────
   let clients:  Client[]  = [];
   let packages: Package[] = [];
   let genRuns:  GenerationRun[] = [];
@@ -20,56 +20,180 @@
   let triggering  = false;
   let historyTab: 'generation' | 'posting' = 'generation';
 
-  // ── Generation form ────────────────────────────────────────────────────────
-  let genMode: 'all' | 'select' = 'all';
-  let genSelectedSlugs: string[] = [];
+  // ── Client selection ──────────────────────────────────────────────────────────
+  let clientMode: 'all' | 'select' | 'by-package' = 'all';
+  let selectedSlugs: string[] = [];
+  let clientSearch  = '';
+  let filterPackage = '';
 
-  // Month/Year picker
-  const today     = new Date();
-  let genMonth    = today.getMonth(); // 0-11
-  let genYear     = today.getFullYear();
-  const months    = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-  const years     = [today.getFullYear(), today.getFullYear() + 1];
-
-  $: periodStart = `${genYear}-${String(genMonth + 1).padStart(2,'0')}-01`;
-  $: periodEnd   = new Date(genYear, genMonth + 1, 0).toISOString().split('T')[0]; // last day of month
-
-  // Estimate total posts
   $: pkgMap = Object.fromEntries(packages.map(p => [p.slug, p]));
-  $: activeClients = genMode === 'all' ? clients : clients.filter(c => genSelectedSlugs.includes(c.slug));
-  $: estimatedPosts = activeClients.reduce((sum, c) => {
-    const pkg = pkgMap[c.package ?? ''];
-    return sum + (pkg?.posts_per_month ?? 8);
-  }, 0);
+
+  $: filteredClients = (() => {
+    let list = clients;
+    if (clientSearch.trim())
+      list = list.filter(c => c.canonical_name.toLowerCase().includes(clientSearch.toLowerCase()));
+    if (filterPackage)
+      list = list.filter(c => c.package === filterPackage);
+    return list;
+  })();
+
+  $: activeClients = (() => {
+    if (clientMode === 'all') return clients;
+    if (clientMode === 'by-package') return filterPackage ? clients.filter(c => c.package === filterPackage) : clients;
+    return clients.filter(c => selectedSlugs.includes(c.slug));
+  })();
 
   function toggleClient(slug: string) {
-    if (genSelectedSlugs.includes(slug)) genSelectedSlugs = genSelectedSlugs.filter(s => s !== slug);
-    else genSelectedSlugs = [...genSelectedSlugs, slug];
+    if (selectedSlugs.includes(slug)) selectedSlugs = selectedSlugs.filter(s => s !== slug);
+    else selectedSlugs = [...selectedSlugs, slug];
+  }
+  function toggleAll() {
+    if (selectedSlugs.length === filteredClients.length) selectedSlugs = [];
+    else selectedSlugs = filteredClients.map(c => c.slug);
   }
 
+  // ── Date mode ────────────────────────────────────────────────────────────────
+  let dateMode: 'monthly' | 'custom' | 'preset' = 'monthly';
+  let activePreset: 'this-week' | 'next7' | 'next14' | 'next30' | null = null;
+
+  const today  = new Date();
+  const todayStr = today.toISOString().split('T')[0];
+
+  // Monthly
+  let genMonth = today.getMonth();
+  let genYear  = today.getFullYear();
+  const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const years  = [today.getFullYear(), today.getFullYear() + 1];
+
+  // Custom
+  let customStart = todayStr;
+  let customEnd   = addDays(today, 13); // default: 14-day range
+
+  function addDays(d: Date, n: number): string {
+    const x = new Date(d);
+    x.setUTCDate(x.getUTCDate() + n);
+    return x.toISOString().split('T')[0];
+  }
+
+  function applyPreset(preset: typeof activePreset) {
+    activePreset = preset;
+    dateMode = 'preset';
+    const now = new Date();
+    const t = now.toISOString().split('T')[0];
+    if (preset === 'this-week') {
+      const day = now.getUTCDay();
+      const mon = new Date(now);
+      mon.setUTCDate(now.getUTCDate() - (day === 0 ? 6 : day - 1));
+      const sun = new Date(mon);
+      sun.setUTCDate(mon.getUTCDate() + 6);
+      customStart = mon.toISOString().split('T')[0];
+      customEnd   = sun.toISOString().split('T')[0];
+    } else if (preset === 'next7')  { customStart = t; customEnd = addDays(now, 6);  }
+    else if (preset === 'next14')   { customStart = t; customEnd = addDays(now, 13); }
+    else if (preset === 'next30')   { customStart = t; customEnd = addDays(now, 29); }
+  }
+
+  // Resolved period
+  $: periodStart = dateMode === 'monthly'
+    ? `${genYear}-${String(genMonth + 1).padStart(2,'0')}-01`
+    : customStart;
+  $: periodEnd = dateMode === 'monthly'
+    ? new Date(genYear, genMonth + 1, 0).toISOString().split('T')[0]
+    : customEnd;
+
+  $: rangeDays = (() => {
+    const s = new Date(periodStart + 'T12:00:00Z');
+    const e = new Date(periodEnd   + 'T12:00:00Z');
+    return Math.max(1, Math.round((e.getTime() - s.getTime()) / 86400000) + 1);
+  })();
+
+  // ── Estimate helpers ──────────────────────────────────────────────────────────
+  function estimatePosts(client: Client): number {
+    const pkg = pkgMap[client.package ?? ''];
+    if (!pkg) return Math.max(1, Math.round(8 * rangeDays / 30));
+    return Math.max(1, Math.round(pkg.posts_per_month * rangeDays / 30));
+  }
+
+  function contentBreakdown(client: Client): { images: number; videos: number; blogs: number } {
+    const pkg = pkgMap[client.package ?? ''];
+    const total = estimatePosts(client);
+    if (!pkg || pkg.posts_per_month === 0) return { images: total, videos: 0, blogs: 0 };
+    const ratio = total / pkg.posts_per_month;
+    const blogs  = Math.round((pkg.blog_posts_per_month ?? 0) * ratio);
+    const videos = Math.round(((pkg.videos_per_month ?? 0) + (pkg.reels_per_month ?? 0)) * ratio);
+    const images = Math.max(0, total - blogs - videos);
+    return { images, videos, blogs };
+  }
+
+  function getWarnings(client: Client): string[] {
+    const w: string[] = [];
+    if (!client.package) w.push('No package');
+    if (!client.platforms || client.platforms.length === 0) w.push('No platforms');
+    return w;
+  }
+
+  $: totalEstimated = activeClients.reduce((s, c) => s + estimatePosts(c), 0);
+  $: clientsWithWarnings = activeClients.filter(c => getWarnings(c).length > 0);
+
+  // ── Date display helpers ──────────────────────────────────────────────────────
+  function fmtDate(iso: string): string {
+    const d = new Date(iso + 'T12:00:00Z');
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+  }
+  function fmtYear(iso: string): string {
+    return new Date(iso + 'T12:00:00Z').getUTCFullYear().toString();
+  }
+
+  $: buttonLabel = (() => {
+    if (generating) return 'Generating…';
+    if (dateMode === 'monthly') return `Generate ${months[genMonth]} ${genYear} Drafts`;
+    const s = fmtDate(periodStart);
+    const e = fmtDate(periodEnd);
+    const sameYear = fmtYear(periodStart) === fmtYear(periodEnd);
+    const label = sameYear ? `${s}–${e}` : `${s} ${fmtYear(periodStart)}–${e} ${fmtYear(periodEnd)}`;
+    if (activePreset === 'this-week')  return `Generate This Week's Drafts`;
+    if (activePreset === 'next7')      return `Generate Next 7 Days (${label})`;
+    if (activePreset === 'next14')     return `Generate Next 14 Days (${label})`;
+    if (activePreset === 'next30')     return `Generate Next 30 Days (${label})`;
+    return `Generate Drafts (${label})`;
+  })();
+
+  // ── Custom range validation ───────────────────────────────────────────────────
+  $: dateError = (() => {
+    if (dateMode === 'monthly') return null;
+    if (!customStart || !customEnd) return 'Select both start and end dates';
+    if (customStart > customEnd) return 'Start date must be before end date';
+    if (rangeDays > 92) return 'Range exceeds 92 days — generate by month instead';
+    return null;
+  })();
+
+  // ── Generate ─────────────────────────────────────────────────────────────────
   async function generate() {
-    if (genMode === 'select' && genSelectedSlugs.length === 0) {
+    if (clientMode === 'select' && selectedSlugs.length === 0) {
       toast.error('Select at least one client'); return;
     }
+    if (dateError) { toast.error(dateError); return; }
     generating = true;
     try {
-      const { job_id } = await runApi.triggerGenerate({
-        client_slugs: genMode === 'select' ? genSelectedSlugs : [],
-        date_from:    periodStart,
-        date_to:      periodEnd,
+      await runApi.triggerGenerate({
+        client_slugs: clientMode === 'select' ? selectedSlugs
+          : clientMode === 'by-package' && filterPackage ? activeClients.map(c => c.slug)
+          : [],
+        date_from: periodStart,
+        date_to:   periodEnd,
       });
-      toast.success(`Generation started — ~${estimatedPosts} drafts queued`);
+      toast.success(`Generation started — ~${totalEstimated} drafts queued`);
       historyTab = 'generation';
       setTimeout(loadGenRuns, 3000);
     } catch (e) { toast.error(String(e)); }
     finally { generating = false; }
   }
 
-  // ── Posting trigger ────────────────────────────────────────────────────────
+  // ── Posting trigger ───────────────────────────────────────────────────────────
   let dryRun = false;
   let postClientFilter   = '';
   let postPlatformFilter = '';
-  const allPlatforms = ['facebook','instagram','linkedin','x','threads','tiktok','pinterest','bluesky','youtube','google_business','website_blog'];
+  const allPlatforms = ['facebook','instagram','linkedin','x','threads','tiktok','pinterest','bluesky','youtube','google_business'];
 
   async function triggerPosting() {
     triggering = true;
@@ -77,8 +201,8 @@
       const params: Record<string,unknown> = { dry_run: dryRun };
       if (postClientFilter)   params.client_filter   = postClientFilter;
       if (postPlatformFilter) params.platform_filter = postPlatformFilter;
-      const { job_id, mode } = await runApi.triggerPosting(params);
-      toast.success(`Posting job started (${mode})`);
+      await runApi.triggerPosting(params);
+      toast.success(`Posting job started${dryRun ? ' (dry run)' : ''}`);
       setTimeout(loadJobs, 1500);
     } catch (e) { toast.error(String(e)); }
     finally { triggering = false; }
@@ -94,22 +218,18 @@
     finally { triggering = false; }
   }
 
-  // ── Data loaders ──────────────────────────────────────────────────────────
-  async function loadGenRuns()  { loadingGen  = true; try { genRuns = (await runApi.listGenerationRuns()).runs; }  finally { loadingGen  = false; } }
-  async function loadJobs()     { loadingJobs = true; try { jobs    = (await runApi.listJobs()).jobs; }            finally { loadingJobs = false; } }
+  // ── Loaders ───────────────────────────────────────────────────────────────────
+  async function loadGenRuns() { loadingGen  = true; try { genRuns = (await runApi.listGenerationRuns()).runs; } finally { loadingGen  = false; } }
+  async function loadJobs()    { loadingJobs = true; try { jobs    = (await runApi.listJobs()).jobs;           } finally { loadingJobs = false; } }
 
   onMount(async () => {
-    const [cr, pr, pkr] = await Promise.all([
-      clientsApi.list('active'),
-      packagesApi.list(),
-      packagesApi.listAll(),
-    ]);
+    const [cr, pkr] = await Promise.all([clientsApi.list('active'), packagesApi.listAll()]);
     clients  = cr.clients;
     packages = pkr.packages;
     await Promise.all([loadGenRuns(), loadJobs()]);
   });
 
-  // ── Helpers ───────────────────────────────────────────────────────────────
+  // ── Helpers ───────────────────────────────────────────────────────────────────
   function jobStats(job: PostingJob) {
     const s = parseStats(job.stats_json);
     return `${s.posted ?? 0} posted · ${s.failed ?? 0} failed · ${s.skipped ?? 0} skipped`;
@@ -119,10 +239,9 @@
     try { const a = JSON.parse(run.client_filter); return Array.isArray(a) ? a.join(', ') : run.client_filter; }
     catch { return run.client_filter; }
   }
-  function clientPkgInfo(c: Client): string {
-    const p = pkgMap[c.package ?? ''];
-    if (!p) return '';
-    return `${p.posts_per_month}/mo`;
+  function pkgLabel(pkg: Package | undefined): string {
+    if (!pkg) return '8 posts';
+    return `${pkg.posts_per_month}/mo`;
   }
 </script>
 
@@ -136,119 +255,265 @@
   <button class="btn-ghost btn-sm" on:click={() => { loadGenRuns(); loadJobs(); }}>Refresh</button>
 </div>
 
-<!-- ═══ CONTENT GENERATION ═══════════════════════════════════════════════════ -->
+<!-- ═══ CONTENT GENERATION ════════════════════════════════════════════════════ -->
 {#if can('automation.trigger')}
 <div class="card p-5 mb-5">
+
+  <!-- Header -->
   <div class="flex items-start justify-between mb-5">
     <div>
       <h3 class="text-sm font-semibold text-white mb-0.5">Generate Content</h3>
       <p class="text-xs text-muted">AI generates drafts based on each client's package, brand voice, and post history.</p>
     </div>
-    {#if estimatedPosts > 0}
-      <span class="text-xs px-2.5 py-1 rounded-full bg-accent/15 text-accent font-medium whitespace-nowrap">
-        ~{estimatedPosts} drafts
+    {#if totalEstimated > 0}
+      <span class="text-xs px-2.5 py-1 rounded-full bg-accent/15 text-accent font-medium whitespace-nowrap ml-3">
+        ~{totalEstimated} drafts
       </span>
     {/if}
   </div>
 
   <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
 
-    <!-- Clients -->
+    <!-- ── Col 1: Client selection ─────────────────────────────────────────── -->
     <div>
       <p class="text-xs text-muted uppercase tracking-wider mb-2">Clients</p>
+
+      <!-- Mode toggle -->
       <div class="flex rounded-md border border-border overflow-hidden text-xs mb-3">
-        <button class="flex-1 py-1.5 transition-colors {genMode === 'all' ? 'bg-accent text-white' : 'text-muted hover:text-white hover:bg-surface'}"
-          on:click={() => genMode = 'all'}>All active</button>
-        <button class="flex-1 py-1.5 transition-colors {genMode === 'select' ? 'bg-accent text-white' : 'text-muted hover:text-white hover:bg-surface'}"
-          on:click={() => genMode = 'select'}>Select</button>
+        <button
+          class="flex-1 py-1.5 transition-colors {clientMode === 'all' ? 'bg-accent text-white' : 'text-muted hover:text-white hover:bg-surface'}"
+          on:click={() => { clientMode = 'all'; filterPackage = ''; }}>All active</button>
+        <button
+          class="flex-1 py-1.5 transition-colors {clientMode === 'select' ? 'bg-accent text-white' : 'text-muted hover:text-white hover:bg-surface'}"
+          on:click={() => clientMode = 'select'}>Select</button>
+        <button
+          class="flex-1 py-1.5 transition-colors {clientMode === 'by-package' ? 'bg-accent text-white' : 'text-muted hover:text-white hover:bg-surface'}"
+          on:click={() => clientMode = 'by-package'}>Package</button>
       </div>
 
-      {#if genMode === 'select'}
-      <div class="border border-border rounded-lg overflow-hidden max-h-52 overflow-y-auto">
-        {#each clients as c}
-          <label class="flex items-center gap-2.5 px-3 py-2 hover:bg-surface cursor-pointer border-b border-border last:border-0 {genSelectedSlugs.includes(c.slug) ? 'bg-accent/5' : ''}">
-            <input type="checkbox" checked={genSelectedSlugs.includes(c.slug)} on:change={() => toggleClient(c.slug)} class="rounded flex-shrink-0" />
-            <span class="text-xs text-white flex-1 truncate">{c.canonical_name}</span>
-            {#if clientPkgInfo(c)}
-              <span class="text-[10px] text-muted flex-shrink-0">{clientPkgInfo(c)}</span>
-            {/if}
-          </label>
-        {/each}
-      </div>
-      {:else}
+      {#if clientMode === 'all'}
         <p class="text-xs text-muted">{clients.length} active clients — content types and platforms are read from each client's assigned package.</p>
+
+      {:else if clientMode === 'by-package'}
+        <select bind:value={filterPackage} class="input w-full text-xs mb-2">
+          <option value="">All packages</option>
+          {#each packages as p}
+            <option value={p.slug}>{p.name} ({clients.filter(c => c.package === p.slug).length} clients)</option>
+          {/each}
+        </select>
+        <p class="text-xs text-muted">{activeClients.length} client{activeClients.length !== 1 ? 's' : ''} selected</p>
+
+      {:else}
+        <!-- Search + package filter row -->
+        <div class="flex gap-1.5 mb-2">
+          <input
+            type="search"
+            placeholder="Search…"
+            bind:value={clientSearch}
+            class="input flex-1 text-xs py-1"
+          />
+          <select bind:value={filterPackage} class="input text-xs py-1 w-24">
+            <option value="">All</option>
+            {#each packages as p}
+              <option value={p.slug}>{p.name}</option>
+            {/each}
+          </select>
+        </div>
+
+        <!-- Select all / clear -->
+        <div class="flex items-center justify-between mb-1.5">
+          <button class="text-[10px] text-accent hover:underline" on:click={toggleAll}>
+            {selectedSlugs.length === filteredClients.length && filteredClients.length > 0 ? 'Deselect all' : 'Select all'}
+          </button>
+          <span class="text-[10px] text-muted">{selectedSlugs.length} selected</span>
+        </div>
+
+        <!-- Client list -->
+        <div class="border border-border rounded-lg overflow-hidden max-h-48 overflow-y-auto">
+          {#each filteredClients as c}
+            {@const warnings = getWarnings(c)}
+            <label class="flex items-center gap-2 px-3 py-1.5 hover:bg-surface cursor-pointer border-b border-border last:border-0 {selectedSlugs.includes(c.slug) ? 'bg-accent/5' : ''}">
+              <input type="checkbox" checked={selectedSlugs.includes(c.slug)} on:change={() => toggleClient(c.slug)} class="rounded flex-shrink-0" />
+              <span class="text-xs text-white flex-1 truncate">{c.canonical_name}</span>
+              {#if warnings.length > 0}
+                <span class="text-[10px] text-yellow-400 flex-shrink-0" title={warnings.join(', ')}>⚠</span>
+              {/if}
+              <span class="text-[10px] text-muted flex-shrink-0">{pkgLabel(pkgMap[c.package ?? ''])}</span>
+            </label>
+          {:else}
+            <p class="text-xs text-muted px-3 py-3">No clients match</p>
+          {/each}
+        </div>
       {/if}
     </div>
 
-    <!-- Period -->
+    <!-- ── Col 2: Date period ──────────────────────────────────────────────── -->
     <div>
       <p class="text-xs text-muted uppercase tracking-wider mb-2">Period</p>
-      <div class="grid grid-cols-2 gap-2 mb-3">
-        <div>
-          <label for="gen_month" class="block text-xs text-muted mb-1">Month</label>
-          <select id="gen_month" bind:value={genMonth} class="input w-full text-sm">
-            {#each months as m, i}
-              <option value={i}>{m}</option>
-            {/each}
-          </select>
-        </div>
-        <div>
-          <label for="gen_year" class="block text-xs text-muted mb-1">Year</label>
-          <select id="gen_year" bind:value={genYear} class="input w-full text-sm">
-            {#each years as y}
-              <option value={y}>{y}</option>
-            {/each}
-          </select>
-        </div>
+
+      <!-- Mode tabs -->
+      <div class="flex rounded-md border border-border overflow-hidden text-xs mb-3">
+        <button
+          class="flex-1 py-1.5 transition-colors {dateMode === 'monthly' ? 'bg-accent text-white' : 'text-muted hover:text-white hover:bg-surface'}"
+          on:click={() => { dateMode = 'monthly'; activePreset = null; }}>Monthly</button>
+        <button
+          class="flex-1 py-1.5 transition-colors {dateMode === 'custom' ? 'bg-accent text-white' : 'text-muted hover:text-white hover:bg-surface'}"
+          on:click={() => { dateMode = 'custom'; activePreset = null; }}>Custom</button>
+        <button
+          class="flex-1 py-1.5 transition-colors {dateMode === 'preset' ? 'bg-accent text-white' : 'text-muted hover:text-white hover:bg-surface'}"
+          on:click={() => { dateMode = 'preset'; activePreset = activePreset ?? 'next7'; applyPreset(activePreset); }}>Presets</button>
       </div>
-      <p class="text-xs text-muted">{periodStart} → {periodEnd}</p>
+
+      {#if dateMode === 'monthly'}
+        <div class="grid grid-cols-2 gap-2 mb-3">
+          <div>
+            <label class="block text-xs text-muted mb-1">Month</label>
+            <select bind:value={genMonth} class="input w-full text-xs">
+              {#each months as m, i}
+                <option value={i}>{m}</option>
+              {/each}
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs text-muted mb-1">Year</label>
+            <select bind:value={genYear} class="input w-full text-xs">
+              {#each years as y}
+                <option value={y}>{y}</option>
+              {/each}
+            </select>
+          </div>
+        </div>
+        <p class="text-xs text-muted">{periodStart} → {periodEnd} &nbsp;·&nbsp; {rangeDays} days</p>
+
+      {:else if dateMode === 'custom'}
+        <div class="grid grid-cols-2 gap-2 mb-3">
+          <div>
+            <label class="block text-xs text-muted mb-1">Start date</label>
+            <input type="date" bind:value={customStart} class="input w-full text-xs" />
+          </div>
+          <div>
+            <label class="block text-xs text-muted mb-1">End date</label>
+            <input type="date" bind:value={customEnd} min={customStart} class="input w-full text-xs" />
+          </div>
+        </div>
+        {#if dateError}
+          <p class="text-xs text-red-400 mb-1">⚠ {dateError}</p>
+        {:else}
+          <div class="text-xs text-muted space-y-0.5">
+            <p>{fmtDate(periodStart)} → {fmtDate(periodEnd)} &nbsp;·&nbsp; <span class="text-white font-medium">{rangeDays} days</span></p>
+            <p>~{totalEstimated} drafts across {activeClients.length} client{activeClients.length !== 1 ? 's' : ''}</p>
+          </div>
+        {/if}
+
+      {:else}
+        <!-- Presets -->
+        <div class="grid grid-cols-2 gap-2 mb-3">
+          <button
+            class="text-xs py-2 px-3 rounded-md border transition-colors text-left {activePreset === 'this-week' ? 'border-accent bg-accent/10 text-accent' : 'border-border text-muted hover:text-white hover:border-white/30'}"
+            on:click={() => applyPreset('this-week')}>This Week</button>
+          <button
+            class="text-xs py-2 px-3 rounded-md border transition-colors text-left {activePreset === 'next7' ? 'border-accent bg-accent/10 text-accent' : 'border-border text-muted hover:text-white hover:border-white/30'}"
+            on:click={() => applyPreset('next7')}>Next 7 Days</button>
+          <button
+            class="text-xs py-2 px-3 rounded-md border transition-colors text-left {activePreset === 'next14' ? 'border-accent bg-accent/10 text-accent' : 'border-border text-muted hover:text-white hover:border-white/30'}"
+            on:click={() => applyPreset('next14')}>Next 14 Days</button>
+          <button
+            class="text-xs py-2 px-3 rounded-md border transition-colors text-left {activePreset === 'next30' ? 'border-accent bg-accent/10 text-accent' : 'border-border text-muted hover:text-white hover:border-white/30'}"
+            on:click={() => applyPreset('next30')}>Next 30 Days</button>
+        </div>
+        {#if activePreset}
+          <p class="text-xs text-muted">
+            {fmtDate(periodStart)} → {fmtDate(periodEnd)}
+            &nbsp;·&nbsp; <span class="text-white font-medium">{rangeDays} days</span>
+          </p>
+        {/if}
+      {/if}
     </div>
 
-    <!-- Summary + Action -->
+    <!-- ── Col 3: Summary + Action ────────────────────────────────────────── -->
     <div class="flex flex-col justify-between">
       <div>
-        <p class="text-xs text-muted uppercase tracking-wider mb-2">Summary</p>
-        {#if activeClients.length > 0}
-          <ul class="space-y-1 mb-4 max-h-28 overflow-y-auto">
-            {#each activeClients.slice(0, 8) as c}
-              {@const pkg = pkgMap[c.package ?? '']}
-              <li class="flex items-center justify-between text-xs">
-                <span class="text-white truncate max-w-32">{c.canonical_name}</span>
-                <span class="text-muted ml-2 flex-shrink-0">{pkg ? `${pkg.posts_per_month} posts` : '8 posts'}</span>
+        <div class="flex items-center justify-between mb-2">
+          <p class="text-xs text-muted uppercase tracking-wider">Summary</p>
+          {#if totalEstimated > 0}
+            <span class="text-xs font-semibold text-white">{totalEstimated} total</span>
+          {/if}
+        </div>
+
+        {#if activeClients.length === 0}
+          <p class="text-xs text-muted">No clients selected.</p>
+        {:else}
+          <ul class="space-y-1 mb-3 max-h-36 overflow-y-auto">
+            {#each activeClients.slice(0, 10) as c}
+              {@const est  = estimatePosts(c)}
+              {@const bkdn = contentBreakdown(c)}
+              {@const warn = getWarnings(c)}
+              <li class="text-xs">
+                <div class="flex items-center justify-between">
+                  <span class="text-white truncate max-w-36 {warn.length > 0 ? 'text-yellow-300' : ''}"
+                    title={warn.length > 0 ? warn.join(', ') : c.canonical_name}>
+                    {#if warn.length > 0}<span class="mr-1">⚠</span>{/if}{c.canonical_name}
+                  </span>
+                  <span class="text-muted ml-1 flex-shrink-0">{est} posts</span>
+                </div>
+                <!-- content type chips -->
+                <div class="flex gap-1 mt-0.5">
+                  {#if bkdn.images > 0}
+                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-400">{bkdn.images} img</span>
+                  {/if}
+                  {#if bkdn.videos > 0}
+                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-400">{bkdn.videos} vid</span>
+                  {/if}
+                  {#if bkdn.blogs > 0}
+                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-green-500/15 text-green-400">{bkdn.blogs} blog</span>
+                  {/if}
+                </div>
               </li>
             {/each}
-            {#if activeClients.length > 8}
-              <li class="text-xs text-muted">+{activeClients.length - 8} more…</li>
+            {#if activeClients.length > 10}
+              <li class="text-xs text-muted">+{activeClients.length - 10} more…</li>
             {/if}
           </ul>
+
+          <!-- Warnings block -->
+          {#if clientsWithWarnings.length > 0}
+            <div class="text-[10px] text-yellow-400 bg-yellow-500/10 border border-yellow-500/20 rounded px-2.5 py-1.5 mb-3">
+              ⚠ {clientsWithWarnings.length} client{clientsWithWarnings.length !== 1 ? 's' : ''} with missing setup:
+              <span class="text-yellow-300">{clientsWithWarnings.slice(0,3).map(c => c.canonical_name.split(' ')[0]).join(', ')}{clientsWithWarnings.length > 3 ? '…' : ''}</span>
+            </div>
+          {/if}
         {/if}
       </div>
-      <button
-        class="btn-primary w-full py-2.5 text-sm font-medium"
-        disabled={generating || activeClients.length === 0}
-        on:click={generate}
-      >
-        {#if generating}
-          <span class="animate-pulse">Generating…</span>
-        {:else}
-          Generate {months[genMonth]} Drafts
-        {/if}
-      </button>
-      <p class="text-[11px] text-muted text-center mt-2">Draft → Designer adds media → Approve → Ready → Cron posts</p>
+
+      <!-- CTA -->
+      <div>
+        <button
+          class="btn-primary w-full py-2.5 text-sm font-medium"
+          disabled={generating || activeClients.length === 0 || !!dateError}
+          on:click={generate}
+        >
+          {#if generating}
+            <span class="animate-pulse">Generating…</span>
+          {:else}
+            {buttonLabel}
+          {/if}
+        </button>
+        <p class="text-[11px] text-muted text-center mt-2">Draft → Designer adds media → Approve → Ready → Cron posts</p>
+      </div>
     </div>
 
   </div>
 </div>
 {/if}
 
-<!-- ═══ POSTING TRIGGER ═══════════════════════════════════════════════════════ -->
+<!-- ═══ POSTING TRIGGER ════════════════════════════════════════════════════════ -->
 {#if can('automation.trigger')}
 <div class="card p-4 mb-5">
   <h3 class="section-label mb-3">Posting Controls</h3>
   <div class="flex flex-wrap items-end gap-3">
     <div>
-      <label for="post_client" class="block text-xs text-muted mb-1">Client</label>
-      <select id="post_client" bind:value={postClientFilter} class="input text-sm">
+      <label class="block text-xs text-muted mb-1">Client</label>
+      <select bind:value={postClientFilter} class="input text-sm">
         <option value="">All clients</option>
         {#each clients as c}
           <option value={c.slug}>{c.canonical_name}</option>
@@ -256,8 +521,8 @@
       </select>
     </div>
     <div>
-      <label for="post_platform" class="block text-xs text-muted mb-1">Platform</label>
-      <select id="post_platform" bind:value={postPlatformFilter} class="input text-sm">
+      <label class="block text-xs text-muted mb-1">Platform</label>
+      <select bind:value={postPlatformFilter} class="input text-sm">
         <option value="">All platforms</option>
         {#each allPlatforms as p}
           <option value={p}>{p.replace(/_/g,' ')}</option>
@@ -277,18 +542,16 @@
 </div>
 {/if}
 
-<!-- ═══ HISTORY ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ HISTORY ════════════════════════════════════════════════════════════════ -->
 <div class="flex border-b border-border mb-4">
-  {#each [['generation','Generation Runs'],['posting','Posting Jobs']] as [key, label]}
-    <button
-      class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors {historyTab === key
-        ? 'border-accent text-white' : 'border-transparent text-muted hover:text-white'}"
-      on:click={() => { historyTab = key; }}
-    >{label}</button>
-  {/each}
+  <button
+    class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors {historyTab === 'generation' ? 'border-accent text-white' : 'border-transparent text-muted hover:text-white'}"
+    on:click={() => { historyTab = 'generation'; }}>Generation Runs</button>
+  <button
+    class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors {historyTab === 'posting' ? 'border-accent text-white' : 'border-transparent text-muted hover:text-white'}"
+    on:click={() => { historyTab = 'posting'; }}>Posting Jobs</button>
 </div>
 
-<!-- Generation runs -->
 {#if historyTab === 'generation'}
   {#if loadingGen}
     <div class="flex justify-center py-12"><Spinner size="lg" /></div>
@@ -335,7 +598,6 @@
   {/if}
 {/if}
 
-<!-- Posting jobs -->
 {#if historyTab === 'posting'}
   {#if loadingJobs}
     <div class="flex justify-center py-12"><Spinner size="lg" /></div>
