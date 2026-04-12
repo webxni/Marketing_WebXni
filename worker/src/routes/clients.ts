@@ -38,6 +38,8 @@ const CLIENT_WRITABLE_FIELDS = new Set([
   'notion_page_id',
   // Logo + brand colors (migration 0005)
   'logo_r2_key', 'logo_url', 'brand_primary_color', 'brand_accent_color',
+  // Contact + identity (migration 0006)
+  'phone', 'email', 'owner_name', 'cta_text', 'cta_label', 'industry', 'state',
 ]);
 
 /** GET /api/clients */

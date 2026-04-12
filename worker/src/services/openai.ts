@@ -33,6 +33,11 @@ export interface GenerationContext {
     notes?:         string | null;
     brand_json?:    string | null;
     language?:      string | null;
+    phone?:         string | null;
+    cta_text?:      string | null;
+    industry?:      string | null;
+    state?:         string | null;
+    owner_name?:    string | null;
   };
   intelligence: {
     brand_voice?:         string | null;
@@ -67,9 +72,9 @@ function buildPrompt(ctx: GenerationContext): string {
   const isYoutube = platforms.includes('youtube');
   const lang      = client.language && client.language !== 'en' ? client.language : 'en';
 
-  let p = `You are a professional social media content writer for ${client.canonical_name}.${lang !== 'en' ? `\nWrite ALL content in ${lang}.` : ''}
+  let p = `You are a professional social media content writer for ${client.canonical_name}.${line(client.industry, `Industry: ${client.industry}`)}${line(client.state, `Location: ${client.state}`)}${lang !== 'en' ? `\nWrite ALL content in ${lang}.` : ''}
 
-BUSINESS CONTEXT:${line(i?.service_priorities, `- Services/Products: ${i?.service_priorities}`)}${line(i?.brand_voice, `- Brand voice: ${i?.brand_voice}`)}${line(i?.tone_keywords, `- Tone: ${i?.tone_keywords}`)}${line(i?.audience_notes, `- Target audience: ${i?.audience_notes}`)}${line(i?.content_goals, `- Content goals: ${i?.content_goals}`)}${line(i?.content_angles, `- Content angles to use: ${i?.content_angles}`)}${line(i?.local_seo_themes, `- Local SEO themes: ${i?.local_seo_themes}`)}${line(i?.primary_keyword, `- Primary keyword: ${i?.primary_keyword}`)}${line(i?.secondary_keywords, `- Secondary keywords: ${i?.secondary_keywords}`)}${line(i?.approved_ctas, `- Approved CTAs: ${i?.approved_ctas}`)}${line(i?.prohibited_terms, `- NEVER USE these words/phrases: ${i?.prohibited_terms}`)}${line(i?.humanization_style, `- Writing style note: ${i?.humanization_style}`)}${line(i?.seasonal_notes, `- Seasonal note: ${i?.seasonal_notes}`)}${line(client.notes, `- Additional context: ${client.notes}`)}`;
+BUSINESS CONTEXT:${line(i?.service_priorities, `- Services/Products: ${i?.service_priorities}`)}${line(i?.brand_voice, `- Brand voice: ${i?.brand_voice}`)}${line(i?.tone_keywords, `- Tone: ${i?.tone_keywords}`)}${line(i?.audience_notes, `- Target audience: ${i?.audience_notes}`)}${line(i?.content_goals, `- Content goals: ${i?.content_goals}`)}${line(i?.content_angles, `- Content angles to use: ${i?.content_angles}`)}${line(i?.local_seo_themes, `- Local SEO themes: ${i?.local_seo_themes}`)}${line(i?.primary_keyword, `- Primary keyword: ${i?.primary_keyword}`)}${line(i?.secondary_keywords, `- Secondary keywords: ${i?.secondary_keywords}`)}${line(client.cta_text, `- Preferred CTA: ${client.cta_text}`)}${line(i?.approved_ctas, `- Approved CTAs: ${i?.approved_ctas}`)}${line(i?.prohibited_terms, `- NEVER USE these words/phrases: ${i?.prohibited_terms}`)}${line(i?.humanization_style, `- Writing style note: ${i?.humanization_style}`)}${line(i?.seasonal_notes, `- Seasonal note: ${i?.seasonal_notes}`)}${line(client.notes, `- Additional context: ${client.notes}`)}`;
 
   if (recentTitles.length > 0) {
     p += `\n\nRECENT POSTS — do NOT repeat these topics or angles:\n${recentTitles.slice(0, 15).map(t => `- ${t}`).join('\n')}`;

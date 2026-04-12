@@ -1,7 +1,31 @@
-# CLAUDE.md — AI Collaboration Guide for Marketing_WebXni
+# CLAUDE.md
 
-This file tells Claude (and any future AI assistant) how to work with this codebase effectively.
-Read this before making any changes. Also read `CODEX.md` for the full architecture audit.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+Also read `CODEX.md` for the full architecture audit before making changes.
+
+---
+
+## Commands
+
+```bash
+# TypeScript check (worker)
+cd worker && npx tsc --noEmit
+
+# Type check (frontend — Svelte-specific)
+cd frontend && npm run check
+
+# Build frontend
+cd frontend && npm run build
+
+# Local dev (run both in separate terminals)
+npx wrangler dev                  # Worker on :8787
+cd frontend && npm run dev        # SvelteKit on :5173 (proxies /api/* to :8787)
+
+# Deploy — full sequence
+bash deploy.sh                    # Steps 1-3 (tsc + build + wrangler deploy)
+git add <files> && git commit ... && git push  # Steps 4-5
+```
 
 ---
 
@@ -35,7 +59,7 @@ TikTok, Pinterest, Google Business, YouTube, X, Threads, Bluesky, and WordPress 
 
 ### Database changes go in migrations
 - Never edit `db/schema.sql` to add new columns. Write a new migration file in `db/migrations/`.
-- Name migrations `XXXX_short_description.sql` in sequence.
+- Name migrations `XXXX_short_description.sql` in sequence. Current sequence is at `0005` — next is `0006`.
 - Migrations use `ALTER TABLE ADD COLUMN` — D1 supports SQLite syntax.
 - Run: `wrangler d1 execute webxni-db --file=db/migrations/XXXX_xxx.sql --remote`
 
@@ -60,6 +84,7 @@ TikTok, Pinterest, Google Business, YouTube, X, Threads, Bluesky, and WordPress 
 - Use `bind:value` for form state, `on:click` for events (**Svelte 4** legacy syntax — NOT Svelte 5 runes)
 - All types are in `frontend/src/lib/types.ts` — keep them in sync with `worker/src/types.ts`
 - No TypeScript casts (`as Type`) inside Svelte templates — use helper functions
+- `class:some/variant` directives with `/` in the name break Svelte — use ternary string instead
 
 ### Type sync rule
 When you add a column to the DB:
@@ -177,6 +202,20 @@ Each location has its own `upload_post_location_id`.
 
 ---
 
+## Cloudflare bindings
+
+| Binding | Type | Purpose |
+|---------|------|---------|
+| `DB` | D1 | Primary database |
+| `MEDIA` | R2 | Client media uploads (user-uploaded assets) |
+| `IMAGES` | R2 | Generated/system images |
+| `KV_BINDING` | KV | Sessions + `settings:system` config |
+| `ASSETS` | Static | SvelteKit frontend build |
+
+`R2_MEDIA_PUBLIC_URL` var must be set in wrangler.toml after enabling public access on the MEDIA bucket.
+
+---
+
 ## Secrets (set via `wrangler secret put`)
 
 | Secret | Purpose |
@@ -184,6 +223,25 @@ Each location has its own `upload_post_location_id`.
 | `UPLOAD_POST_API_KEY` | Upload-Post API auth |
 | `OPENAI_API_KEY` | AI content generation |
 | `NOTION_API_TOKEN` | Notion import/export (optional) |
+
+---
+
+## Platform badge colors (dark background — do not change)
+
+| Platform | Color |
+|----------|-------|
+| facebook | `#1877F2` |
+| instagram | `#E1306C` |
+| x (twitter) | `#E7E9EA` (light on dark) |
+| threads | `#AAAAAA` |
+| tiktok | `#EE1D52` |
+| linkedin | `#0A66C2` |
+| youtube | `#FF0000` |
+| pinterest | `#E60023` |
+| bluesky | `#0085FF` |
+| google_business | `#4285F4` |
+
+Do NOT use `#000000` — invisible on dark background.
 
 ---
 

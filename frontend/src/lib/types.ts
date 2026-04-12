@@ -56,6 +56,14 @@ export interface Client {
   logo_url:                 string | null;
   brand_primary_color:      string | null;
   brand_accent_color:       string | null;
+  // Contact + identity (migration 0006)
+  phone:                    string | null;
+  email:                    string | null;
+  owner_name:               string | null;
+  cta_text:                 string | null;
+  cta_label:                string | null;
+  industry:                 string | null;
+  state:                    string | null;
   created_at:               number;
   updated_at:               number;
   // joined
