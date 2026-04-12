@@ -17,7 +17,6 @@ export interface NotionFullImportParams {
   database_id:            string;
   notion_id_to_app_slug?: Record<string, string>;
   active_only?:           boolean;
-  force_sub_tables?:      boolean;
 }
 
 export const notionApi = {

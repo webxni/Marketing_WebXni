@@ -108,9 +108,8 @@
   }
 
   // ── Notion Integration ────────────────────────────────────────────────────
-  let syncingNotion  = false;
-  let forceSubTables = false;
-  let notionResult:  import('$lib/api/notion').NotionImportResponse | null = null;
+  let syncingNotion = false;
+  let notionResult: import('$lib/api/notion').NotionImportResponse | null = null;
 
   // Hardcoded WebXni Notion DB config — the DB ID and page→slug map never change
   const NOTION_DB_ID = '87e495b2-350a-45eb-a343-f6441dafa6cb';
@@ -137,7 +136,6 @@
         database_id:           NOTION_DB_ID,
         notion_id_to_app_slug: NOTION_SLUG_MAP,
         active_only:           true,
-        force_sub_tables:      forceSubTables,
       });
       notionResult = r;
       const { created = 0, updated = 0, skipped = 0, errors = 0 } = r.counts ?? {};
@@ -339,12 +337,8 @@
       Sync client profiles, intelligence, platforms, services, areas, and offers from the WebXni Notion database.
       Existing local data is never overwritten with empty Notion values.
     </p>
-    <div class="flex items-center gap-4 flex-wrap mb-4">
-      <label class="flex items-center gap-2 cursor-pointer">
-        <input type="checkbox" bind:checked={forceSubTables} class="rounded" />
-        <span class="text-xs text-muted">Force re-import services / areas / offers</span>
-      </label>
-      <span class="text-xs text-muted">DB: <code class="font-mono text-white/60">87e495b2…</code> · {Object.keys(NOTION_SLUG_MAP).length} known clients</span>
+    <div class="mb-4">
+      <span class="text-xs text-muted">DB: <code class="font-mono text-white/60">87e495b2…</code> · {Object.keys(NOTION_SLUG_MAP).length} clients mapped · imports profile, intelligence, platforms, social links</span>
     </div>
     <div class="flex items-center gap-3">
       <button
