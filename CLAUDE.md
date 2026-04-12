@@ -245,6 +245,20 @@ Do NOT use `#000000` — invisible on dark background.
 
 ---
 
+## Notion full-client import
+
+**Run after login:**
+```bash
+curl -b /tmp/wc.txt -X POST https://marketing.webxni.com/api/notion/import/clients/full \
+  -H "Content-Type: application/json" \
+  -d '{"database_id":"87e495b2-350a-45eb-a343-f6441dafa6cb","active_only":true,"notion_id_to_app_slug":{SEE CODEX.md}}'
+```
+Use `force_sub_tables: true` to re-import services/areas/offers for existing clients.
+
+Migration sequence is now at **0006** (next is 0007).
+
+---
+
 ## What's NOT implemented yet (future work)
 
 - **Sunday generation cron** — stub exists in index.ts, needs to call `runGeneration` for all clients

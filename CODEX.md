@@ -215,6 +215,67 @@ ETB has 3 Google Business locations: LA, WA, OR.
 
 ---
 
+## Notion full-client import (implemented — migration 0006)
+
+**Route:** `POST /api/notion/import/clients/full`  
+**File:** `worker/src/routes/notion.ts`
+
+Reads the WebXni Notion Clients DB and populates all 8 client tabs in one call.
+
+**Migration 0006** added first-class columns to `clients`:
+`phone`, `email`, `owner_name`, `cta_text`, `cta_label`, `industry`, `state`
+
+**Notion DB ID:** `87e495b2-350a-45eb-a343-f6441dafa6cb`
+
+**Known Notion → app slug map** (use as `notion_id_to_app_slug` body param):
+```json
+{
+  "1503627b-21c7-80ea-bc2b-d225d3829a67": "724-locksmith-ca",
+  "1e43627b-21c7-80cf-a316-e10315125274": "247-lockout-pasadena",
+  "2363627b-21c7-809c-a659-e06f0a90bc4e": "unlocked-pros",
+  "28d3627b-21c7-809f-a6d9-c3229a856a98": "daniels-locksmith",
+  "2f33627b-21c7-80b6-87fa-f66a889e8112": "elite-team-builders",
+  "2f33627b-21c7-80bb-8e98-d5333bb1bdfe": "americas-professional-builders",
+  "3353627b-21c7-8154-b7af-f96b2faac314": "caliview-builders",
+  "a1466972-fc09-4449-bb3e-cc5a7c49df26": "golden-touch-roofing",
+  "9b4731c8-67ba-45e8-9311-3b94b4ce84e0": "webxni",
+  "19943730-826e-4110-9753-ca29531c221d": "ketty-s-robles-accounting",
+  "3273627b-21c7-80c8-bba6-dae846a35c57": "jaz-makeup-artist",
+  "0533eada-a7f2-4798-8359-38a99cbbd53f": "modern-vision-remodeling-experts"
+}
+```
+
+Tabs populated per client: `profile`, `intelligence`, `social_links`, `platforms`, `restrictions`, `services`, `areas`, `offers`. Sub-tables are skipped if already populated (use `force_sub_tables: true` to re-import).
+
+**Run the import** (after login to get session cookie):
+```bash
+curl -b /tmp/wc.txt -X POST https://marketing.webxni.com/api/notion/import/clients/full \
+  -H "Content-Type: application/json" \
+  -d '{"database_id":"87e495b2-350a-45eb-a343-f6441dafa6cb","active_only":true,"notion_id_to_app_slug":{...}}'
+```
+
+---
+
+## Automation page — date modes (implemented)
+
+**File:** `frontend/src/routes/(app)/automation/+page.svelte`
+
+Three date modes (toggle between them):
+
+| Mode | Description |
+|------|-------------|
+| **Monthly** (default) | Month + Year pickers → full calendar month |
+| **Custom Range** | Start + End date pickers, validates max 92 days |
+| **Presets** | This Week / Next 7 / Next 14 / Next 30 days |
+
+Post estimate formula: `Math.round(posts_per_month * rangeDays / 30)`
+
+Content breakdown per client (shown in summary): `images`, `videos`, `blogs` proportional to package ratios.
+
+Client selection: All active | Select (with search + package filter) | By Package
+
+---
+
 ## What is NOT yet implemented (future work)
 
 These are explicitly unfinished — do not remove stubs:
