@@ -128,6 +128,11 @@ interface IntelRow {
   humanization_style?: string | null;
 }
 
+interface FeedbackRow {
+  sentiment: string;
+  note: string;
+}
+
 const DEFAULT_PACKAGE: PackageRow = {
   id: '', slug: 'default',
   posts_per_month: 8, images_per_month: 6, videos_per_month: 1,
@@ -135,6 +140,34 @@ const DEFAULT_PACKAGE: PackageRow = {
   platforms_included: '["facebook","instagram"]',
   posting_frequency: 'twice_weekly',
 };
+
+interface QueryContext {
+  step: string;
+  table?: string;
+  query?: string;
+}
+
+function stringifyError(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
+function formatContextError(
+  clientSlug: string,
+  context: QueryContext,
+  err: unknown,
+): string {
+  const parts = [
+    `client=${clientSlug}`,
+    `step=${context.step}`,
+  ];
+
+  if (context.table) parts.push(`table=${context.table}`);
+  if (context.query) parts.push(`query=${context.query.replace(/\s+/g, ' ').trim()}`);
+
+  parts.push(`error=${stringifyError(err)}`);
+  return parts.join(' | ');
+}
 
 export async function runGeneration(env: Env, params: GenerationParams): Promise<void> {
   const db  = env.DB;
@@ -156,12 +189,20 @@ export async function runGeneration(env: Env, params: GenerationParams): Promise
 
     // ── 2. Loop per client ──────────────────────────────────────────────────
     for (const client of clients) {
+      let setupContext: QueryContext = { step: 'initializing client setup' };
+
       try {
         // Load package for this client
         let pkg: PackageRow = DEFAULT_PACKAGE;
         if (client.package) {
+          const query = 'SELECT * FROM packages WHERE slug = ? AND active = 1';
+          setupContext = {
+            step: 'load package',
+            table: 'packages',
+            query,
+          };
           const p = await db
-            .prepare('SELECT * FROM packages WHERE slug = ? AND active = 1')
+            .prepare(query)
             .bind(client.package)
             .first<PackageRow>();
           if (p) pkg = p;
@@ -175,21 +216,39 @@ export async function runGeneration(env: Env, params: GenerationParams): Promise
         let defaultPlatforms: string[] = [];
         try { defaultPlatforms = JSON.parse(pkg.platforms_included); } catch { /* */ }
         if (defaultPlatforms.length === 0) {
+          const query = 'SELECT * FROM client_platforms WHERE client_id = ?';
+          setupContext = {
+            step: 'load fallback client platforms',
+            table: 'client_platforms',
+            query,
+          };
           const cp = await getClientPlatforms(db, client.id);
           defaultPlatforms = cp.map(p => p.platform);
         }
         if (defaultPlatforms.length === 0) defaultPlatforms = ['facebook', 'instagram'];
 
         // Load shared context once per client
+        const intelQuery = 'SELECT * FROM client_intelligence WHERE client_id = ?';
+        setupContext = {
+          step: 'load client intelligence',
+          table: 'client_intelligence',
+          query: intelQuery,
+        };
         const intel = await db
-          .prepare('SELECT * FROM client_intelligence WHERE client_id = ?')
+          .prepare(intelQuery)
           .bind(client.id)
           .first<IntelRow>() ?? null;
 
+        const feedbackQuery = 'SELECT sentiment, message AS note FROM client_feedback WHERE client_id = ? ORDER BY created_at DESC LIMIT 10';
+        setupContext = {
+          step: 'load recent client feedback',
+          table: 'client_feedback',
+          query: feedbackQuery,
+        };
         const fbRows = await db
-          .prepare('SELECT sentiment, note FROM client_feedback WHERE client_id = ? ORDER BY created_at DESC LIMIT 10')
+          .prepare(feedbackQuery)
           .bind(client.id)
-          .all<{ sentiment: string; note: string }>();
+          .all<FeedbackRow>();
 
         // ── 3. Generate one post per date ───────────────────────────────────
         for (let di = 0; di < dates.length; di++) {
@@ -265,18 +324,25 @@ export async function runGeneration(env: Env, params: GenerationParams): Promise
             console.log(`[gen] ✓ ${client.slug} / ${date} / ${contentType}`);
 
           } catch (err) {
-            const msg = `${client.slug}/${date}: ${String(err)}`;
+            const msg = `${client.slug}/${date}: ${stringifyError(err)}`;
             errors.push(msg);
             console.error('[gen] ✗', msg);
           }
         }
       } catch (err) {
-        errors.push(`${client.slug} setup: ${String(err)}`);
-        console.error('[gen] client error:', err);
+        const msg = formatContextError(client.slug, setupContext, err);
+        errors.push(msg);
+        console.error('[gen] client setup error:', {
+          client: client.slug,
+          step: setupContext.step,
+          table: setupContext.table ?? null,
+          query: setupContext.query ?? null,
+          error: stringifyError(err),
+        });
       }
     }
   } catch (err) {
-    errors.push(`Fatal: ${String(err)}`);
+    errors.push(`Fatal: ${stringifyError(err)}`);
     console.error('[gen] fatal:', err);
   }
 
