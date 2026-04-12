@@ -147,6 +147,8 @@ interface QueryContext {
   query?: string;
 }
 
+const SETTINGS_KEY = 'settings:system';
+
 function stringifyError(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
@@ -169,6 +171,15 @@ function formatContextError(
   return parts.join(' | ');
 }
 
+async function loadSystemSettings(env: Env): Promise<Record<string, string>> {
+  try {
+    const raw = await env.KV_BINDING.get(SETTINGS_KEY);
+    return raw ? JSON.parse(raw) as Record<string, string> : {};
+  } catch {
+    return {};
+  }
+}
+
 export async function runGeneration(env: Env, params: GenerationParams): Promise<void> {
   const db  = env.DB;
   const now = () => Math.floor(Date.now() / 1000);
@@ -179,6 +190,13 @@ export async function runGeneration(env: Env, params: GenerationParams): Promise
   const errors: string[] = [];
 
   try {
+    const settings = await loadSystemSettings(env);
+    const openAiApiKey = env.OPENAI_API_KEY || settings.ai_api_key || '';
+
+    if (!openAiApiKey) {
+      throw new Error('Missing OpenAI API key: neither env.OPENAI_API_KEY nor settings:system.ai_api_key is configured');
+    }
+
     // ── 1. Resolve clients ──────────────────────────────────────────────────
     const allClients = await listClients(db, 'active');
     const clients = params.client_slugs.length > 0
@@ -289,7 +307,7 @@ export async function runGeneration(env: Env, params: GenerationParams): Promise
               platforms:     defaultPlatforms,
             };
 
-            const generated = await generatePostContent(env.OPENAI_API_KEY, ctx);
+            const generated = await generatePostContent(openAiApiKey, ctx);
 
             const g = generated as unknown as Record<string, string | undefined>;
             const caps: Record<string, string | null> = {};
