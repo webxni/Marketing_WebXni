@@ -8,3 +8,4 @@ export * from './reports';
 export * from './run';
 export * from './assets';
 export * from './packages';
+export * from './notion';

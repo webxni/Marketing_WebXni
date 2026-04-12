@@ -127,8 +127,7 @@
 
   function getWarnings(client: Client): string[] {
     const w: string[] = [];
-    if (!client.package) w.push('No package');
-    if (!client.platforms || client.platforms.length === 0) w.push('No platforms');
+    if (!client.package) w.push('No package assigned');
     return w;
   }
 
