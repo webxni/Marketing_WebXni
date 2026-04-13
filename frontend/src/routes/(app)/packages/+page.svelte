@@ -19,7 +19,12 @@
     { key: 'wednesday', short: 'Wed' },
     { key: 'thursday',  short: 'Thu' },
     { key: 'friday',    short: 'Fri' },
-    { key: 'saturday',  short: 'Sat' },
+  ];
+
+  const FREQUENCY_OPTIONS = [
+    { value: 'weekly',   label: 'Weekly',   desc: 'Every week' },
+    { value: 'biweekly', label: 'Biweekly', desc: 'Every 2 weeks' },
+    { value: 'monthly',  label: 'Monthly',  desc: 'Once per month' },
   ];
 
   const CONTENT_TYPES = [
@@ -108,9 +113,9 @@
     return counts;
   }
 
-  function estimateMonthly(sched: Record<string, string[]>): { images: number; videos: number; reels: number; blogs: number; total: number } {
+  function estimateMonthly(sched: Record<string, string[]>, frequency = 'weekly'): { images: number; videos: number; reels: number; blogs: number; total: number } {
     const weekly = deriveCountsFromSchedule(sched);
-    const mult = 4.33;
+    const mult = frequency === 'biweekly' ? 2.17 : frequency === 'monthly' ? 1 : 4.33;
     return {
       images: Math.round(weekly.images * mult),
       videos: Math.round(weekly.videos * mult),
@@ -194,6 +199,10 @@
     return ct ? ct.label : type;
   }
 
+  function freqLabel(v: string): string {
+    return FREQUENCY_OPTIONS.find(o => o.value === v)?.label ?? v;
+  }
+
   function getPackageSchedule(pkg: Package): Record<string, string[]> {
     try {
       const raw = pkg.weekly_schedule;
@@ -204,8 +213,8 @@
     } catch { return {}; }
   }
 
-  $: editSchedule = editing ? getSchedule(editing) : {};
-  $: editMonthly  = estimateMonthly(editSchedule);
+  $: editSchedule  = editing ? getSchedule(editing) : {};
+  $: editMonthly   = estimateMonthly(editSchedule, editing?.posting_frequency ?? 'weekly');
 </script>
 
 <svelte:head><title>Packages — WebXni</title></svelte:head>
@@ -237,17 +246,37 @@
     </div>
   </div>
 
+  <!-- Frequency -->
+  <div class="mb-5">
+    <label class="block text-xs text-muted mb-2">Posting Frequency</label>
+    <div class="flex gap-2">
+      {#each FREQUENCY_OPTIONS as opt}
+        <button
+          type="button"
+          class="flex-1 px-3 py-2.5 rounded-lg border text-sm transition-colors
+            {editing.posting_frequency === opt.value
+              ? 'bg-accent/15 border-accent text-accent'
+              : 'border-border text-muted hover:text-white hover:border-border/60'}"
+          on:click={() => { if (editing) { editing.posting_frequency = opt.value; editing = editing; } }}
+        >
+          <span class="font-medium block">{opt.label}</span>
+          <span class="text-xs opacity-70">{opt.desc}</span>
+        </button>
+      {/each}
+    </div>
+  </div>
+
   <!-- Weekday Planner -->
   <div class="mb-5">
     <div class="flex items-center justify-between mb-2">
-      <label class="block text-xs text-muted">Weekly Content Planner</label>
+      <label class="block text-xs text-muted">Weekday Content Plan</label>
       {#if editMonthly.total > 0}
         <span class="text-xs text-muted">~<span class="text-white font-medium">{editMonthly.total}</span> posts/mo</span>
       {/if}
     </div>
 
     <!-- Day columns -->
-    <div class="grid grid-cols-6 gap-2 mb-3">
+    <div class="grid grid-cols-5 gap-2 mb-3">
       {#each DAYS as day}
         <div class="rounded-lg border border-border bg-surface p-2">
           <div class="text-xs font-medium text-center mb-2 {(editSchedule[day.key] ?? []).length > 0 ? 'text-white' : 'text-muted'}">{day.short}</div>
@@ -270,7 +299,12 @@
     <!-- Monthly totals derived from schedule -->
     {#if editMonthly.total > 0}
     <div class="px-4 py-3 rounded-lg bg-card border border-border">
-      <p class="text-xs text-muted mb-2">Estimated monthly output (× 4.33 weeks)</p>
+      <p class="text-xs text-muted mb-2">
+        Estimated monthly output
+        {#if editing.posting_frequency === 'biweekly'}(× 2.17 — every 2 weeks)
+        {:else if editing.posting_frequency === 'monthly'}(once per month — one cycle)
+        {:else}(× 4.33 weeks){/if}
+      </p>
       <div class="flex gap-4 flex-wrap text-xs">
         {#if editMonthly.images > 0}<span class="text-blue-400">{editMonthly.images} images</span>{/if}
         {#if editMonthly.videos > 0}<span class="text-purple-400">{editMonthly.videos} videos</span>{/if}
@@ -342,6 +376,8 @@
                 <span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-500/20 text-gray-400">inactive</span>
               {/if}
               <span class="text-xs font-mono text-muted">{pkg.slug}</span>
+              <span class="text-border">·</span>
+              <span class="text-xs text-muted">{freqLabel(pkg.posting_frequency)}</span>
               <span class="text-border">·</span>
               <span class="text-accent text-xs font-medium">~{pkg.posts_per_month}/mo</span>
             </div>

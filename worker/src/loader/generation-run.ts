@@ -110,11 +110,11 @@ function parsePostingDays(raw: string | null): number[] {
 /**
  * Build posting dates for the period.
  *
- * If weekly_schedule is provided, its keys define the active weekdays (ignores posting_days).
+ * Active weekdays are always derived from weekly_schedule keys (preferred) or posting_days.
  * Frequency:
- *   - weekly:   every occurrence of the active weekdays in the period
- *   - biweekly: active weekdays on alternating weeks (weeks 0, 2, 4…)
- *   - daily:    every calendar day (only when weekly_schedule is absent)
+ *   - weekly:   run the weekday pattern every week
+ *   - biweekly: run the weekday pattern on alternating weeks (weeks 0, 2, 4…)
+ *   - monthly:  run the weekday pattern once within the month (first occurrence of each day)
  */
 function buildDates(periodStart: string, periodEnd: string, frequency: string, postingDays: string | null, weeklySchedule?: string | null): string[] {
   // Derive active days from weekly_schedule if present
@@ -126,8 +126,7 @@ function buildDates(periodStart: string, periodEnd: string, frequency: string, p
           .map(d => DAY_NAME_TO_NUM[d])
           .filter(n => n !== undefined)
       );
-      const eff = frequency === 'daily' ? 'weekly' : frequency;
-      return buildDatesRaw(periodStart, periodEnd, eff, activeDayNums);
+      return buildDatesRaw(periodStart, periodEnd, frequency, activeDayNums);
     }
   }
   // Legacy path: derive from posting_days string
@@ -139,15 +138,6 @@ function buildDatesRaw(periodStart: string, periodEnd: string, frequency: string
   const start = new Date(periodStart + 'T12:00:00Z');
   const end   = new Date(periodEnd   + 'T12:00:00Z');
   const dates: string[] = [];
-
-  if (frequency === 'daily') {
-    const d = new Date(start);
-    while (d <= end) {
-      dates.push(d.toISOString().split('T')[0]);
-      d.setUTCDate(d.getUTCDate() + 1);
-    }
-    return dates;
-  }
 
   if (frequency === 'weekly') {
     const d = new Date(start);
@@ -174,7 +164,22 @@ function buildDatesRaw(periodStart: string, periodEnd: string, frequency: string
     return dates;
   }
 
-  // Fallback (old frequency values: 3x_week, twice_weekly, monthly) — treat as weekly
+  if (frequency === 'monthly') {
+    // One occurrence per active weekday — the first matching day in the period
+    const seen = new Set<number>();
+    const d = new Date(start);
+    while (d <= end) {
+      const wd = d.getUTCDay();
+      if (dayNums.has(wd) && !seen.has(wd)) {
+        dates.push(d.toISOString().split('T')[0]);
+        seen.add(wd);
+      }
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+    return dates;
+  }
+
+  // Fallback (legacy values: daily, 3x_week, twice_weekly) — treat as weekly
   const d = new Date(start);
   while (d <= end) {
     if (dayNums.has(d.getUTCDay())) dates.push(d.toISOString().split('T')[0]);
