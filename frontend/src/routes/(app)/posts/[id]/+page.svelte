@@ -100,6 +100,66 @@
   let addPlatform = '';
   let generatingCaption = false;
 
+  // GBP settings edit state
+  let editingGbp = false;
+  let gbpTopicType    = '';
+  let gbpCtaType      = '';
+  let gbpCtaUrl       = '';
+  let gbpEventTitle   = '';
+  let gbpStartDate    = '';
+  let gbpStartTime    = '';
+  let gbpEndDate      = '';
+  let gbpEndTime      = '';
+  let gbpCouponCode   = '';
+  let gbpRedeemUrl    = '';
+  let gbpTerms        = '';
+  let savingGbp       = false;
+
+  const GBP_CTA_TYPES_EDIT = ['BOOK','ORDER','SHOP','LEARN_MORE','SIGN_UP','CALL'];
+
+  function startEditGbp() {
+    if (!post) return;
+    gbpTopicType  = post.gbp_topic_type  ?? 'STANDARD';
+    gbpCtaType    = post.gbp_cta_type    ?? '';
+    gbpCtaUrl     = post.gbp_cta_url     ?? '';
+    gbpEventTitle = post.gbp_event_title ?? '';
+    gbpStartDate  = post.gbp_event_start_date ?? '';
+    gbpStartTime  = post.gbp_event_start_time ?? '';
+    gbpEndDate    = post.gbp_event_end_date   ?? '';
+    gbpEndTime    = post.gbp_event_end_time   ?? '';
+    gbpCouponCode = post.gbp_coupon_code ?? '';
+    gbpRedeemUrl  = post.gbp_redeem_url  ?? '';
+    gbpTerms      = post.gbp_terms       ?? '';
+    editingGbp = true;
+  }
+
+  async function saveGbp() {
+    if (!post) return;
+    savingGbp = true;
+    try {
+      await postsApi.update(post.id, {
+        gbp_topic_type:       gbpTopicType  || null,
+        gbp_cta_type:         gbpCtaType    || null,
+        gbp_cta_url:          gbpCtaUrl     || null,
+        gbp_event_title:      gbpEventTitle || null,
+        gbp_event_start_date: gbpStartDate  || null,
+        gbp_event_start_time: gbpStartTime  || null,
+        gbp_event_end_date:   gbpEndDate    || null,
+        gbp_event_end_time:   gbpEndTime    || null,
+        gbp_coupon_code:      gbpCouponCode || null,
+        gbp_redeem_url:       gbpRedeemUrl  || null,
+        gbp_terms:            gbpTerms      || null,
+      });
+      toast.success('GBP settings saved');
+      editingGbp = false;
+      load();
+    } catch (e) { toast.error(`Failed: ${e instanceof Error ? e.message : String(e)}`); }
+    finally { savingGbp = false; }
+  }
+
+  $: gbpHasData = post && (post.gbp_topic_type || post.gbp_cta_type || post.gbp_event_title || post.gbp_coupon_code);
+  $: gbpIsSelected = post && (JSON.parse(post.platforms ?? '[]') as string[]).includes('google_business');
+
   function getMissingPlatforms(p: typeof post): string[] {
     if (!p) return allPlatforms;
     const existing = JSON.parse(p.platforms ?? '[]') as string[];
@@ -316,6 +376,86 @@
       <p class="text-sm text-white">{post.youtube_title}</p>
       {#if post.youtube_description}
       <p class="text-xs text-muted mt-2 whitespace-pre-wrap">{post.youtube_description}</p>
+      {/if}
+    </div>
+    {/if}
+
+    <!-- GBP Settings card — only shown when google_business is a platform -->
+    {#if gbpIsSelected}
+    <div class="card p-4 border border-border">
+      <div class="flex items-center justify-between mb-3">
+        <h4 class="text-xs font-medium text-white">Google Business Profile Settings</h4>
+        {#if !editingGbp && can('posts.edit')}
+          <button class="btn-ghost btn-sm text-xs" on:click={startEditGbp}>Edit GBP</button>
+        {/if}
+      </div>
+
+      {#if editingGbp}
+      <div class="space-y-3">
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs text-muted mb-1">Post Type</label>
+            <select bind:value={gbpTopicType} class="input w-full text-sm">
+              <option value="STANDARD">Standard</option>
+              <option value="EVENT">Event</option>
+              <option value="OFFER">Offer</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs text-muted mb-1">CTA Type</label>
+            <select bind:value={gbpCtaType} class="input w-full text-sm">
+              <option value="">None</option>
+              {#each GBP_CTA_TYPES_EDIT as t}<option value={t}>{t}</option>{/each}
+            </select>
+          </div>
+          {#if gbpCtaType && gbpCtaType !== 'CALL'}
+          <div class="col-span-2">
+            <label class="block text-xs text-muted mb-1">CTA URL <span class="text-red-400">*</span></label>
+            <input type="url" bind:value={gbpCtaUrl} placeholder="https://…" class="input w-full text-sm font-mono" />
+          </div>
+          {/if}
+        </div>
+
+        {#if gbpTopicType === 'EVENT'}
+        <div class="border border-border rounded-lg p-3 space-y-2">
+          <p class="text-xs text-accent">Event Details</p>
+          <input type="text" bind:value={gbpEventTitle} placeholder="Event title" class="input w-full text-sm" />
+          <div class="grid grid-cols-2 gap-2">
+            <input type="date" bind:value={gbpStartDate} class="input w-full text-sm" />
+            <input type="time" bind:value={gbpStartTime} class="input w-full text-sm" />
+            <input type="date" bind:value={gbpEndDate} class="input w-full text-sm" />
+            <input type="time" bind:value={gbpEndTime} class="input w-full text-sm" />
+          </div>
+        </div>
+        {/if}
+
+        {#if gbpTopicType === 'OFFER'}
+        <div class="border border-border rounded-lg p-3 space-y-2">
+          <p class="text-xs text-accent">Offer Details</p>
+          <div class="grid grid-cols-2 gap-2">
+            <input type="text" bind:value={gbpCouponCode} placeholder="Coupon code" class="input w-full text-sm font-mono" />
+            <input type="url" bind:value={gbpRedeemUrl} placeholder="Redeem URL" class="input w-full text-sm font-mono" />
+          </div>
+          <input type="text" bind:value={gbpTerms} placeholder="Terms & conditions" class="input w-full text-sm" />
+        </div>
+        {/if}
+
+        <div class="flex justify-end gap-2">
+          <button class="btn-secondary btn-sm text-xs" on:click={() => (editingGbp = false)}>Cancel</button>
+          <button class="btn-primary btn-sm text-xs" on:click={saveGbp} disabled={savingGbp}>
+            {savingGbp ? 'Saving…' : 'Save GBP'}
+          </button>
+        </div>
+      </div>
+      {:else}
+      <dl class="space-y-1.5 text-xs">
+        <div class="flex gap-3"><dt class="text-muted w-24 flex-shrink-0">Post Type</dt><dd class="text-white">{post.gbp_topic_type ?? 'STANDARD'}</dd></div>
+        {#if post.gbp_cta_type}<div class="flex gap-3"><dt class="text-muted w-24 flex-shrink-0">CTA</dt><dd class="text-white">{post.gbp_cta_type}{post.gbp_cta_url ? ' → ' + post.gbp_cta_url : ''}</dd></div>{/if}
+        {#if post.gbp_event_title}<div class="flex gap-3"><dt class="text-muted w-24 flex-shrink-0">Event</dt><dd class="text-white">{post.gbp_event_title}</dd></div>{/if}
+        {#if post.gbp_event_start_date}<div class="flex gap-3"><dt class="text-muted w-24 flex-shrink-0">Dates</dt><dd class="text-white">{post.gbp_event_start_date} → {post.gbp_event_end_date ?? '—'}</dd></div>{/if}
+        {#if post.gbp_coupon_code}<div class="flex gap-3"><dt class="text-muted w-24 flex-shrink-0">Coupon</dt><dd class="text-white font-mono">{post.gbp_coupon_code}</dd></div>{/if}
+        {#if !gbpHasData}<p class="text-muted">No GBP settings configured. Click Edit GBP to add.</p>{/if}
+      </dl>
       {/if}
     </div>
     {/if}

@@ -43,8 +43,28 @@ export function buildExtraParams(
       break;
 
     case 'google_business':
-      if (platCfg.upload_post_location_id) {
-        extra.gbp_location_id = platCfg.upload_post_location_id;
+      // Location: prefer post-level override, fall back to platform config
+      if (post.gbp_location_id ?? platCfg.upload_post_location_id) {
+        extra.gbp_location_id = (post.gbp_location_id ?? platCfg.upload_post_location_id)!;
+      }
+      // Topic type (STANDARD/EVENT/OFFER)
+      if (post.gbp_topic_type) extra.gbp_topic_type = post.gbp_topic_type;
+      // CTA
+      if (post.gbp_cta_type) extra.gbp_cta_type = post.gbp_cta_type;
+      if (post.gbp_cta_url)  extra.gbp_cta_url  = post.gbp_cta_url;
+      // Event fields
+      if (post.gbp_topic_type === 'EVENT') {
+        if (post.gbp_event_title)      extra.gbp_event_title      = post.gbp_event_title;
+        if (post.gbp_event_start_date) extra.gbp_event_start_date = post.gbp_event_start_date;
+        if (post.gbp_event_start_time) extra.gbp_event_start_time = post.gbp_event_start_time;
+        if (post.gbp_event_end_date)   extra.gbp_event_end_date   = post.gbp_event_end_date;
+        if (post.gbp_event_end_time)   extra.gbp_event_end_time   = post.gbp_event_end_time;
+      }
+      // Offer fields
+      if (post.gbp_topic_type === 'OFFER') {
+        if (post.gbp_coupon_code) extra.gbp_coupon_code = post.gbp_coupon_code;
+        if (post.gbp_redeem_url)  extra.gbp_redeem_url  = post.gbp_redeem_url;
+        if (post.gbp_terms)       extra.gbp_terms        = post.gbp_terms;
       }
       break;
   }

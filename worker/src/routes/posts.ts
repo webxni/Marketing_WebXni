@@ -384,8 +384,23 @@ postRoutes.post('/:id/generate-caption', async (c) => {
     website_blog:    'blog teaser/excerpt, compelling lead paragraph (100-200 chars)',
   };
 
-  const instrText = platformInstructions[platform] ?? 'concise social media caption (100-250 chars)';
+  let instrText = platformInstructions[platform] ?? 'concise social media caption (100-250 chars)';
   const lang = client.language && client.language !== 'en' ? client.language : 'en';
+
+  // For GBP, inject CTA and topic type context into the instruction
+  if (platform === 'google_business') {
+    const GBP_CTA_INTENT: Record<string, string> = {
+      BOOK:       'End with a booking CTA — e.g. "Book your appointment today".',
+      ORDER:      'Include an ordering CTA — e.g. "Order now".',
+      SHOP:       'Include a shopping CTA — e.g. "Shop now".',
+      LEARN_MORE: 'Use informational tone. End with "Learn more".',
+      SIGN_UP:    'Include a sign-up CTA — e.g. "Sign up today".',
+      CALL:       `Include a direct call CTA — e.g. "Call us today".${client.phone ? ` Phone: ${client.phone}` : ''}`,
+    };
+    if (post.gbp_topic_type === 'OFFER') instrText += '. This is an OFFER post — highlight the deal/discount value.';
+    if (post.gbp_topic_type === 'EVENT') instrText += '. This is an EVENT post — create urgency and excitement.';
+    if (post.gbp_cta_type && GBP_CTA_INTENT[post.gbp_cta_type]) instrText += ` ${GBP_CTA_INTENT[post.gbp_cta_type]}`;
+  }
 
   const prompt = `You are a social media writer for ${client.canonical_name}.${client.industry ? ` Industry: ${client.industry}.` : ''}${lang !== 'en' ? ` Write in ${lang}.` : ''}
 ${intel?.brand_voice ? `Brand voice: ${intel.brand_voice}.` : ''}${intel?.prohibited_terms ? ` NEVER USE: ${intel.prohibited_terms}.` : ''}${client.cta_text ? ` Preferred CTA: ${client.cta_text}.` : ''}

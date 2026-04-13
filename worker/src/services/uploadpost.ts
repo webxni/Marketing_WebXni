@@ -52,6 +52,20 @@ export interface PostTextParams {
   facebook_page_id?: string;
   target_linkedin_page_id?: string;
   gbp_location_id?: string;
+  // GBP post type + CTA
+  gbp_topic_type?: string;        // 'STANDARD'|'EVENT'|'OFFER'
+  gbp_cta_type?: string;          // 'BOOK'|'ORDER'|'SHOP'|'LEARN_MORE'|'SIGN_UP'|'CALL'
+  gbp_cta_url?: string;
+  // GBP event fields
+  gbp_event_title?: string;
+  gbp_event_start_date?: string;
+  gbp_event_start_time?: string;
+  gbp_event_end_date?: string;
+  gbp_event_end_time?: string;
+  // GBP offer fields
+  gbp_coupon_code?: string;
+  gbp_redeem_url?: string;
+  gbp_terms?: string;
   [key: string]: string | undefined;
 }
 
@@ -68,6 +82,20 @@ export interface PostPhotoParams {
   target_linkedin_page_id?: string;
   pinterest_board_id?: string;
   gbp_location_id?: string;
+  // GBP post type + CTA
+  gbp_topic_type?: string;
+  gbp_cta_type?: string;
+  gbp_cta_url?: string;
+  // GBP event fields
+  gbp_event_title?: string;
+  gbp_event_start_date?: string;
+  gbp_event_start_time?: string;
+  gbp_event_end_date?: string;
+  gbp_event_end_time?: string;
+  // GBP offer fields
+  gbp_coupon_code?: string;
+  gbp_redeem_url?: string;
+  gbp_terms?: string;
 }
 
 export interface PostVideoParams {
@@ -115,7 +143,18 @@ export class UploadPostClient {
     if (params.facebook_page_id) fd.append('facebook_page_id', params.facebook_page_id);
     if (params.target_linkedin_page_id) fd.append('target_linkedin_page_id', params.target_linkedin_page_id);
     if (params.pinterest_board_id) fd.append('pinterest_board_id', params.pinterest_board_id);
-    if (params.gbp_location_id) fd.append('gbp_location_id', params.gbp_location_id);
+    if (params.gbp_location_id)   fd.append('gbp_location_id',    params.gbp_location_id);
+    if (params.gbp_topic_type)    fd.append('gbp_topic_type',      params.gbp_topic_type);
+    if (params.gbp_cta_type)      fd.append('gbp_cta_type',        params.gbp_cta_type);
+    if (params.gbp_cta_url)       fd.append('gbp_cta_url',         params.gbp_cta_url);
+    if (params.gbp_event_title)   fd.append('gbp_event_title',     params.gbp_event_title);
+    if (params.gbp_event_start_date) fd.append('gbp_event_start_date', params.gbp_event_start_date);
+    if (params.gbp_event_start_time) fd.append('gbp_event_start_time', params.gbp_event_start_time);
+    if (params.gbp_event_end_date)   fd.append('gbp_event_end_date',   params.gbp_event_end_date);
+    if (params.gbp_event_end_time)   fd.append('gbp_event_end_time',   params.gbp_event_end_time);
+    if (params.gbp_coupon_code)   fd.append('gbp_coupon_code',     params.gbp_coupon_code);
+    if (params.gbp_redeem_url)    fd.append('gbp_redeem_url',      params.gbp_redeem_url);
+    if (params.gbp_terms)         fd.append('gbp_terms',           params.gbp_terms);
     fd.append(
       'photos[]',
       new File([params.photoBytes], params.photoFilename, { type: params.photoContentType }),

@@ -98,6 +98,18 @@ export const clientsApi = {
   deleteOffer: (slug: string, id: string) =>
     api.delete(`/api/clients/${slug}/offers/${id}`),
 
+  getEvents: (slug: string) =>
+    api.get<{ events: unknown[] }>(`/api/clients/${slug}/events`),
+
+  createEvent: (slug: string, data: Record<string, unknown>) =>
+    api.post<{ event: unknown }>(`/api/clients/${slug}/events`, data),
+
+  updateEvent: (slug: string, id: string, data: Record<string, unknown>) =>
+    api.put<{ ok: boolean }>(`/api/clients/${slug}/events/${id}`, data),
+
+  deleteEvent: (slug: string, id: string) =>
+    api.delete(`/api/clients/${slug}/events/${id}`),
+
   // Intelligence
   getIntelligence: (slug: string) =>
     api.get<{ intelligence: unknown }>(`/api/clients/${slug}/intelligence`),

@@ -163,11 +163,21 @@ serviceRoutes.get('/:slug/offers', requirePermission('clients.view'), async (c) 
 });
 
 const offerSchema = z.object({
-  title:       z.string().min(1),
-  description: z.string().optional(),
-  cta_text:    z.string().optional(),
-  valid_until: z.string().optional(),
-  active:      z.boolean().optional().default(true),
+  title:           z.string().min(1),
+  description:     z.string().optional(),
+  cta_text:        z.string().optional(),
+  valid_until:     z.string().optional(),
+  active:          z.boolean().optional().default(true),
+  // GBP fields (migration 0009)
+  gbp_coupon_code: z.string().optional(),
+  gbp_redeem_url:  z.string().optional(),
+  gbp_terms:       z.string().optional(),
+  gbp_cta_type:    z.enum(['BOOK','ORDER','SHOP','LEARN_MORE','SIGN_UP','CALL']).optional(),
+  gbp_cta_url:     z.string().url().optional().or(z.literal('')),
+  gbp_location_id: z.string().optional(),
+  recurrence:      z.enum(['none','weekly','biweekly','monthly']).optional().default('none'),
+  next_run_date:   z.string().optional(),  // YYYY-MM-DD
+  paused:          z.boolean().optional(),
 });
 
 serviceRoutes.post('/:slug/offers', requirePermission('clients.edit'), async (c) => {
@@ -177,32 +187,49 @@ serviceRoutes.post('/:slug/offers', requirePermission('clients.edit'), async (c)
   try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON' }, 400); }
   const parsed = offerSchema.safeParse(body);
   if (!parsed.success) return c.json({ error: parsed.error.issues }, 400);
+  const d = parsed.data;
+  // Validation: gbp_cta_url required if gbp_cta_type is set
+  if (d.gbp_cta_type && d.gbp_cta_type !== 'CALL' && !d.gbp_cta_url) {
+    return c.json({ error: 'gbp_cta_url is required when gbp_cta_type is set (except CALL)' }, 400);
+  }
   const id = crypto.randomUUID().replace(/-/g, '');
   const now = Math.floor(Date.now() / 1000);
   await c.env.DB
-    .prepare('INSERT INTO client_offers (id, client_id, title, description, cta_text, valid_until, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-    .bind(id, client.id, parsed.data.title, parsed.data.description ?? null, parsed.data.cta_text ?? null,
-      parsed.data.valid_until ?? null, parsed.data.active ? 1 : 0, now)
+    .prepare(`INSERT INTO client_offers
+      (id, client_id, title, description, cta_text, valid_until, active,
+       gbp_coupon_code, gbp_redeem_url, gbp_terms, gbp_cta_type, gbp_cta_url,
+       gbp_location_id, recurrence, next_run_date, paused, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(
+      id, client.id, d.title, d.description ?? null, d.cta_text ?? null,
+      d.valid_until ?? null, d.active ? 1 : 0,
+      d.gbp_coupon_code ?? null, d.gbp_redeem_url ?? null, d.gbp_terms ?? null,
+      d.gbp_cta_type ?? null, d.gbp_cta_url ?? null,
+      d.gbp_location_id ?? null, d.recurrence ?? 'none',
+      d.next_run_date ?? null, d.paused ? 1 : 0, now,
+    )
     .run();
-  return c.json({ offer: { id, client_id: client.id, ...parsed.data } }, 201);
+  return c.json({ offer: { id, client_id: client.id, ...d } }, 201);
 });
+
+// Allowed columns for offer update (prevent mass-assignment)
+const OFFER_WRITABLE = new Set([
+  'title','description','cta_text','valid_until','active',
+  'gbp_coupon_code','gbp_redeem_url','gbp_terms','gbp_cta_type','gbp_cta_url',
+  'gbp_location_id','recurrence','next_run_date','last_posted_at','paused',
+]);
 
 serviceRoutes.put('/:slug/offers/:id', requirePermission('clients.edit'), async (c) => {
   const client = await resolveClient(c);
   if (!client) return c.json({ error: 'Not found' }, 404);
-  let body: unknown;
-  try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON' }, 400); }
-  const parsed = offerSchema.partial().safeParse(body);
-  if (!parsed.success) return c.json({ error: parsed.error.issues }, 400);
-  const updates = Object.entries(parsed.data)
-    .filter(([, v]) => v !== undefined)
-    .map(([k]) => `${k} = ?`);
-  const values = Object.entries(parsed.data)
-    .filter(([, v]) => v !== undefined)
-    .map(([, v]) => (typeof v === 'boolean' ? (v ? 1 : 0) : v));
-  if (updates.length === 0) return c.json({ error: 'Nothing to update' }, 400);
+  let body: Record<string, unknown>;
+  try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'Invalid JSON' }, 400); }
+  const entries = Object.entries(body).filter(([k]) => OFFER_WRITABLE.has(k));
+  if (entries.length === 0) return c.json({ error: 'Nothing to update' }, 400);
+  const sets   = entries.map(([k]) => `${k} = ?`);
+  const values = entries.map(([, v]) => (typeof v === 'boolean' ? (v ? 1 : 0) : v));
   await c.env.DB
-    .prepare(`UPDATE client_offers SET ${updates.join(', ')} WHERE id = ? AND client_id = ?`)
+    .prepare(`UPDATE client_offers SET ${sets.join(', ')} WHERE id = ? AND client_id = ?`)
     .bind(...values, c.req.param('id'), client.id).run();
   return c.json({ ok: true });
 });
@@ -212,6 +239,103 @@ serviceRoutes.delete('/:slug/offers/:id', requirePermission('clients.edit'), asy
   if (!client) return c.json({ error: 'Not found' }, 404);
   await c.env.DB
     .prepare('DELETE FROM client_offers WHERE id = ? AND client_id = ?')
+    .bind(c.req.param('id'), client.id).run();
+  return c.json({ ok: true });
+});
+
+// ─── EVENTS ──────────────────────────────────────────────────────────────────
+
+const eventSchema = z.object({
+  title:                z.string().min(1),
+  description:          z.string().optional(),
+  gbp_event_title:      z.string().optional(),
+  gbp_event_start_date: z.string().optional(),   // YYYY-MM-DD
+  gbp_event_start_time: z.string().optional(),   // HH:MM
+  gbp_event_end_date:   z.string().optional(),   // YYYY-MM-DD
+  gbp_event_end_time:   z.string().optional(),   // HH:MM
+  gbp_cta_type:         z.enum(['BOOK','ORDER','SHOP','LEARN_MORE','SIGN_UP','CALL']).optional(),
+  gbp_cta_url:          z.string().url().optional().or(z.literal('')),
+  gbp_location_id:      z.string().optional(),
+  recurrence:           z.enum(['once','weekly','biweekly','monthly']).optional().default('once'),
+  next_run_date:        z.string().optional(),
+  active:               z.boolean().optional().default(true),
+  paused:               z.boolean().optional(),
+});
+
+serviceRoutes.get('/:slug/events', requirePermission('clients.view'), async (c) => {
+  const client = await resolveClient(c);
+  if (!client) return c.json({ error: 'Not found' }, 404);
+  const rows = await c.env.DB
+    .prepare('SELECT * FROM client_events WHERE client_id = ? ORDER BY active DESC, created_at DESC')
+    .bind(client.id).all();
+  return c.json({ events: rows.results });
+});
+
+serviceRoutes.post('/:slug/events', requirePermission('clients.edit'), async (c) => {
+  const client = await resolveClient(c);
+  if (!client) return c.json({ error: 'Not found' }, 404);
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON' }, 400); }
+  const parsed = eventSchema.safeParse(body);
+  if (!parsed.success) return c.json({ error: parsed.error.issues }, 400);
+  const d = parsed.data;
+  // Validation: end date must be >= start date
+  if (d.gbp_event_start_date && d.gbp_event_end_date && d.gbp_event_end_date < d.gbp_event_start_date) {
+    return c.json({ error: 'gbp_event_end_date must be on or after gbp_event_start_date' }, 400);
+  }
+  if (d.gbp_cta_type && d.gbp_cta_type !== 'CALL' && !d.gbp_cta_url) {
+    return c.json({ error: 'gbp_cta_url is required when gbp_cta_type is set (except CALL)' }, 400);
+  }
+  const id = crypto.randomUUID().replace(/-/g, '');
+  const now = Math.floor(Date.now() / 1000);
+  await c.env.DB
+    .prepare(`INSERT INTO client_events
+      (id, client_id, title, description,
+       gbp_event_title, gbp_event_start_date, gbp_event_start_time,
+       gbp_event_end_date, gbp_event_end_time,
+       gbp_cta_type, gbp_cta_url, gbp_location_id,
+       recurrence, next_run_date, active, paused, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(
+      id, client.id, d.title, d.description ?? null,
+      d.gbp_event_title ?? null, d.gbp_event_start_date ?? null, d.gbp_event_start_time ?? null,
+      d.gbp_event_end_date ?? null, d.gbp_event_end_time ?? null,
+      d.gbp_cta_type ?? null, d.gbp_cta_url ?? null, d.gbp_location_id ?? null,
+      d.recurrence ?? 'once', d.next_run_date ?? null,
+      d.active ? 1 : 0, d.paused ? 1 : 0, now, now,
+    )
+    .run();
+  return c.json({ event: { id, client_id: client.id, ...d } }, 201);
+});
+
+const EVENT_WRITABLE = new Set([
+  'title','description','gbp_event_title',
+  'gbp_event_start_date','gbp_event_start_time','gbp_event_end_date','gbp_event_end_time',
+  'gbp_cta_type','gbp_cta_url','gbp_location_id',
+  'recurrence','next_run_date','last_posted_at','active','paused',
+]);
+
+serviceRoutes.put('/:slug/events/:id', requirePermission('clients.edit'), async (c) => {
+  const client = await resolveClient(c);
+  if (!client) return c.json({ error: 'Not found' }, 404);
+  let body: Record<string, unknown>;
+  try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'Invalid JSON' }, 400); }
+  const entries = Object.entries(body).filter(([k]) => EVENT_WRITABLE.has(k));
+  if (entries.length === 0) return c.json({ error: 'Nothing to update' }, 400);
+  const now = Math.floor(Date.now() / 1000);
+  const sets   = [...entries.map(([k]) => `${k} = ?`), 'updated_at = ?'];
+  const values = [...entries.map(([, v]) => (typeof v === 'boolean' ? (v ? 1 : 0) : v)), now];
+  await c.env.DB
+    .prepare(`UPDATE client_events SET ${sets.join(', ')} WHERE id = ? AND client_id = ?`)
+    .bind(...values, c.req.param('id'), client.id).run();
+  return c.json({ ok: true });
+});
+
+serviceRoutes.delete('/:slug/events/:id', requirePermission('clients.edit'), async (c) => {
+  const client = await resolveClient(c);
+  if (!client) return c.json({ error: 'Not found' }, 404);
+  await c.env.DB
+    .prepare('DELETE FROM client_events WHERE id = ? AND client_id = ?')
     .bind(c.req.param('id'), client.id).run();
   return c.json({ ok: true });
 });

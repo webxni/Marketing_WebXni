@@ -59,14 +59,29 @@ export interface GenerationContext {
   publishDate:   string;   // YYYY-MM-DD
   contentType:   string;   // image | video | reel | blog
   platforms:     string[];
+  // GBP-specific context (optional — only set when generating GBP caption)
+  gbpTopicType?: string | null;  // 'STANDARD'|'EVENT'|'OFFER'
+  gbpCtaType?:   string | null;  // 'BOOK'|'ORDER'|'SHOP'|'LEARN_MORE'|'SIGN_UP'|'CALL'
+  gbpOfferTitle?: string | null;
+  gbpEventTitle?: string | null;
 }
 
 function line(condition: unknown, text: string): string {
   return condition ? `\n${text}` : '';
 }
 
+// Maps GBP CTA type to a natural language instruction for caption generation
+const GBP_CTA_INTENT: Record<string, string> = {
+  BOOK:       'End with a clear booking CTA — e.g. "Book your appointment today" or "Schedule a visit".',
+  ORDER:      'Include an ordering CTA — e.g. "Order now" or "Get yours today".',
+  SHOP:       'Include a shopping CTA — e.g. "Shop our products" or "Visit our store".',
+  LEARN_MORE: 'Use an informational, educational tone. End with "Learn more" or "Find out more".',
+  SIGN_UP:    'Include a sign-up or registration CTA — e.g. "Sign up today" or "Register now".',
+  CALL:       'Include a direct call-to-action — e.g. "Call us today" or "Give us a call". If a phone number is available, include it.',
+};
+
 function buildPrompt(ctx: GenerationContext): string {
-  const { client, intelligence: i, recentTitles, feedback, publishDate, contentType, platforms } = ctx;
+  const { client, intelligence: i, recentTitles, feedback, publishDate, contentType, platforms, gbpTopicType, gbpCtaType, gbpOfferTitle, gbpEventTitle } = ctx;
   const isBlog    = contentType === 'blog';
   const isVideo   = contentType === 'video' || contentType === 'reel';
   const isYoutube = platforms.includes('youtube');
@@ -101,7 +116,13 @@ Return a JSON object with the following fields (include only fields relevant to 
   if (platforms.includes('tiktok'))          p += '\n- "cap_tiktok": TikTok caption with trending hashtags (150-250 chars + 5-10 hashtags)';
   if (platforms.includes('pinterest'))       p += '\n- "cap_pinterest": Pinterest description, keyword-rich, 100-200 chars + 5-8 hashtags';
   if (platforms.includes('bluesky'))         p += '\n- "cap_bluesky": Bluesky post, casual and direct, max 300 chars';
-  if (platforms.includes('google_business')) p += '\n- "cap_google_business": Google Business post, factual and local, 100-250 chars, NO hashtags';
+  if (platforms.includes('google_business')) {
+    let gbpInstruction = '\n- "cap_google_business": Google Business post, factual and local, 100-250 chars, NO hashtags';
+    if (gbpTopicType === 'OFFER' && gbpOfferTitle) gbpInstruction += `. This is a SPECIAL OFFER post for: "${gbpOfferTitle}". Highlight the offer value clearly.`;
+    if (gbpTopicType === 'EVENT' && gbpEventTitle) gbpInstruction += `. This is an EVENT post for: "${gbpEventTitle}". Create excitement and urgency around the event.`;
+    if (gbpCtaType && GBP_CTA_INTENT[gbpCtaType]) gbpInstruction += ` ${GBP_CTA_INTENT[gbpCtaType]}`;
+    p += gbpInstruction;
+  }
   if (isYoutube)  p += '\n- "youtube_title": SEO-optimized YouTube title (60-70 chars)\n- "youtube_description": YouTube description with timestamps placeholder, links placeholder, CTA (200-400 chars)';
   if (isBlog)     p += '\n- "blog_content": complete HTML blog post body (600-900 words, use <h2>, <h3>, <p>, <ul> tags, keyword-rich)\n- "seo_title": SEO page title with primary keyword (55-60 chars)\n- "meta_description": compelling meta description (150-155 chars)\n- "target_keyword": primary SEO keyword phrase';
   if (isVideo)    p += '\n- "video_script": 30-60 second video script — hook line, 3 body points, strong CTA';

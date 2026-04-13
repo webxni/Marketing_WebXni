@@ -159,14 +159,51 @@ export interface ClientServiceAreaRow {
 }
 
 export interface ClientOfferRow {
-  id:          string;
-  client_id:   string;
-  title:       string;
-  description: string | null;
-  cta_text:    string | null;
-  valid_until: string | null;
-  active:      number;
-  created_at:  number;
+  id:               string;
+  client_id:        string;
+  title:            string;
+  description:      string | null;
+  cta_text:         string | null;
+  valid_until:      string | null;
+  active:           number;
+  // GBP fields (migration 0009)
+  gbp_coupon_code:  string | null;
+  gbp_redeem_url:   string | null;
+  gbp_terms:        string | null;
+  gbp_cta_type:     string | null;
+  gbp_cta_url:      string | null;
+  gbp_location_id:  string | null;
+  recurrence:       string;   // 'none'|'weekly'|'biweekly'|'monthly'
+  next_run_date:    string | null;
+  last_posted_at:   string | null;
+  asset_r2_key:     string | null;
+  asset_r2_bucket:  string | null;
+  paused:           number;
+  created_at:       number;
+}
+
+export interface ClientEventRow {
+  id:                  string;
+  client_id:           string;
+  title:               string;
+  description:         string | null;
+  gbp_event_title:     string | null;
+  gbp_event_start_date: string | null;
+  gbp_event_start_time: string | null;
+  gbp_event_end_date:  string | null;
+  gbp_event_end_time:  string | null;
+  gbp_cta_type:        string | null;
+  gbp_cta_url:         string | null;
+  gbp_location_id:     string | null;
+  asset_r2_key:        string | null;
+  asset_r2_bucket:     string | null;
+  recurrence:          string;   // 'once'|'weekly'|'biweekly'|'monthly'
+  next_run_date:       string | null;
+  last_posted_at:      string | null;
+  active:              number;
+  paused:              number;
+  created_at:          number;
+  updated_at:          number;
 }
 
 export interface PostRow {
@@ -208,7 +245,8 @@ export interface PostRow {
   wp_post_url:            string | null;
   wp_post_id:             number | null;
   wp_post_status:         string | null;
-  // GBP advanced fields (migration 0004)
+  // GBP advanced fields (migration 0004 + 0009)
+  gbp_location_id:        string | null;  // per-post location override (migration 0009)
   gbp_topic_type:         string | null;  // 'STANDARD'|'EVENT'|'OFFER'
   gbp_cta_type:           string | null;  // 'LEARN_MORE'|'BOOK'|'ORDER'|'SHOP'|'SIGN_UP'|'CALL'
   gbp_cta_url:            string | null;

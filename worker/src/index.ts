@@ -65,6 +65,7 @@ app.all('/*', async (c) => {
 
 // ─── Scheduled cron handler ───────────────────────────────────────────────────
 import { runPosting } from './loader/posting-run';
+import { runRecurringGbp } from './loader/recurring-gbp-run';
 import { runFetchUrls } from './routes/run';
 
 export default {
@@ -110,6 +111,15 @@ export default {
             return;
           }
 
+          // Step 1: Generate posts for recurring offers/events
+          try {
+            const gbpStats = await runRecurringGbp(env as any);
+            console.log('Recurring GBP stats:', gbpStats);
+          } catch (gbpErr) {
+            console.error('Recurring GBP error:', gbpErr);
+          }
+
+          // Step 2: Run main posting loop (picks up newly generated posts too)
           await runPosting(env as any, { mode: 'real', triggered_by: 'cron', limit: 50 });
         } catch (err) {
           console.error('Cron posting error:', err);
