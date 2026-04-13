@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { reportsApi, clientsApi } from '$lib/api';
-  import MetricCard from '$lib/components/ui/MetricCard.svelte';
   import Badge from '$lib/components/ui/Badge.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import { currentMonth, monthRange } from '$lib/utils';
@@ -42,17 +41,39 @@
     ? stats.by_platform.reduce<Record<string, PlatformRollup>>((acc, row) => {
         if (!acc[row.platform]) acc[row.platform] = { posted: 0, failed: 0, total: 0 };
         acc[row.platform].total += row.count;
-        if (row.status === 'posted') acc[row.platform].posted += row.count;
+        if (row.status === 'sent' || row.status === 'posted') acc[row.platform].posted += row.count;
         if (row.status === 'failed') acc[row.platform].failed += row.count;
         return acc;
       }, {})
     : {};
 
+  $: platformEntries = Object.entries(platformRollup)
+    .sort((a, b) => b[1].total - a[1].total);
+
+  $: maxPlatformTotal = platformEntries.reduce((m, [, d]) => Math.max(m, d.total), 1);
+
+  // Summary totals from by_status
+  $: totalPosted = stats?.by_status.find(s => s.status === 'posted')?.count ?? 0;
+  $: totalFailed = stats?.by_status.find(s => s.status === 'failed')?.count ?? 0;
+  $: totalDraft   = stats?.by_status.find(s => s.status === 'draft')?.count ?? 0;
+  $: totalReady   = (stats?.by_status.find(s => s.status === 'ready')?.count ?? 0)
+                  + (stats?.by_status.find(s => s.status === 'approved')?.count ?? 0);
+  $: totalAll     = stats?.by_status.reduce((s, r) => s + r.count, 0) ?? 0;
+  $: overallPct   = pct(totalPosted, totalAll);
+
   const platformColors: Record<string, string> = {
     facebook: '#1877F2', instagram: '#E1306C', linkedin: '#0A66C2',
-    x: '#555', threads: '#111', tiktok: '#010101', pinterest: '#E60023',
-    bluesky: '#0085FF', youtube: '#FF0000', google_business: '#4285F4', website_blog: '#6366F1'
+    x: '#E7E9EA', threads: '#AAAAAA', tiktok: '#EE1D52', pinterest: '#E60023',
+    bluesky: '#0085FF', youtube: '#FF0000', google_business: '#4285F4',
   };
+
+  function platformLabel(p: string): string {
+    const map: Record<string, string> = {
+      google_business: 'Google Business', x: 'X / Twitter',
+      website_blog: 'Blog',
+    };
+    return map[p] ?? p.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  }
 </script>
 
 <svelte:head><title>Reports — WebXni</title></svelte:head>
@@ -62,60 +83,98 @@
     <h1 class="page-title">Reports</h1>
     <p class="page-subtitle">Posting performance overview</p>
   </div>
-</div>
-
-<!-- Filters -->
-<div class="flex items-center gap-3 mb-6">
-  <select bind:value={selectedMonth} class="input text-sm w-40">
-    {#each months as m}
-      <option value={m.value}>{m.label}</option>
-    {/each}
-  </select>
-  <select bind:value={selectedClient} class="input text-sm w-48">
-    <option value="">All clients</option>
-    {#each clients as c}
-      <option value={c.slug}>{c.canonical_name}</option>
-    {/each}
-  </select>
+  <div class="flex items-center gap-3">
+    <select bind:value={selectedMonth} class="input text-sm w-40">
+      {#each months as m}
+        <option value={m.value}>{m.label}</option>
+      {/each}
+    </select>
+    <select bind:value={selectedClient} class="input text-sm w-48">
+      <option value="">All clients</option>
+      {#each clients as c}
+        <option value={c.slug}>{c.canonical_name}</option>
+      {/each}
+    </select>
+  </div>
 </div>
 
 {#if loading}
   <div class="flex justify-center py-20"><Spinner size="lg" /></div>
 {:else if stats}
 
-  <!-- Status breakdown -->
-  <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-    {#each stats.by_status as s}
-      <div class="card p-4">
-        <div class="text-2xl font-bold text-white">{s.count}</div>
-        <div class="text-xs text-muted mt-1 capitalize">{s.status}</div>
-        <div class="mt-2"><Badge status={s.status} /></div>
-      </div>
-    {/each}
+  <!-- Summary bar -->
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+    <div class="card p-4">
+      <div class="text-3xl font-bold text-green-400">{totalPosted}</div>
+      <div class="text-xs text-muted mt-1">Published</div>
+    </div>
+    <div class="card p-4">
+      <div class="text-3xl font-bold text-accent">{overallPct}%</div>
+      <div class="text-xs text-muted mt-1">Success Rate</div>
+    </div>
+    <div class="card p-4">
+      <div class="text-3xl font-bold text-yellow-400">{totalReady}</div>
+      <div class="text-xs text-muted mt-1">Queued / Ready</div>
+    </div>
+    <div class="card p-4">
+      <div class="text-3xl font-bold {totalFailed > 0 ? 'text-red-400' : 'text-muted'}">{totalFailed}</div>
+      <div class="text-xs text-muted mt-1">Failed</div>
+    </div>
   </div>
 
+  <!-- Overall progress bar -->
+  {#if totalAll > 0}
+  <div class="card p-4 mb-6">
+    <div class="flex items-center justify-between mb-2">
+      <span class="text-xs text-muted">{totalAll} total posts this period</span>
+      <span class="text-xs text-white font-medium">{overallPct}% published</span>
+    </div>
+    <div class="h-3 bg-surface rounded-full overflow-hidden">
+      <div class="h-full rounded-full transition-all" style="width:{overallPct}%; background:#22c55e"></div>
+    </div>
+    <div class="flex gap-4 mt-2 text-[11px] text-muted">
+      <span class="text-green-400">{totalPosted} published</span>
+      <span class="text-yellow-400">{totalReady} queued</span>
+      <span class="text-muted">{totalDraft} draft</span>
+      {#if totalFailed > 0}<span class="text-red-400">{totalFailed} failed</span>{/if}
+    </div>
+  </div>
+  {/if}
+
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-    <!-- Per-platform breakdown -->
+
+    <!-- Platform bar chart -->
     <div class="card">
       <div class="px-5 py-4 border-b border-border">
         <h2 class="font-medium text-white text-sm">By Platform</h2>
       </div>
-      <div class="divide-y divide-border">
-        {#each Object.entries(platformRollup) as [platform, data]}
-          <div class="px-5 py-3 flex items-center justify-between">
+      <div class="p-5 space-y-4">
+        {#if platformEntries.length === 0}
+          <p class="text-xs text-muted text-center py-4">No platform data this period.</p>
+        {/if}
+        {#each platformEntries as [platform, data]}
+        {@const successPct = pct(data.posted, data.total)}
+        {@const color = platformColors[platform] ?? '#666'}
+        <div>
+          <div class="flex items-center justify-between mb-1.5">
             <div class="flex items-center gap-2">
-              <span
-                class="w-2 h-2 rounded-full"
-                style="background:{platformColors[platform] ?? '#666'}"
-              ></span>
-              <span class="text-sm text-white capitalize">{platform.replace(/_/g, ' ')}</span>
+              <span class="w-2.5 h-2.5 rounded-full flex-shrink-0" style="background:{color}"></span>
+              <span class="text-sm text-white">{platformLabel(platform)}</span>
             </div>
-            <div class="flex items-center gap-4 text-xs text-muted">
-              <span class="text-green-400">{data.posted} posted</span>
+            <div class="flex items-center gap-3 text-xs">
+              <span class="text-green-400">{data.posted}/{data.total}</span>
               {#if data.failed > 0}<span class="text-red-400">{data.failed} failed</span>{/if}
-              <span>{pct(data.posted, data.total)}%</span>
+              <span class="text-white font-medium w-8 text-right">{successPct}%</span>
             </div>
           </div>
+          <!-- Bar: green = posted, red = failed, grey = rest -->
+          <div class="h-2 bg-surface rounded-full overflow-hidden flex">
+            <div class="h-full rounded-l-full" style="width:{(data.posted/maxPlatformTotal)*100}%; background:{color}; opacity:0.85"></div>
+            {#if data.failed > 0}
+            <div class="h-full" style="width:{(data.failed/maxPlatformTotal)*100}%; background:#ef4444; opacity:0.7"></div>
+            {/if}
+          </div>
+        </div>
         {/each}
       </div>
     </div>
@@ -126,28 +185,52 @@
         <h2 class="font-medium text-white text-sm">By Client</h2>
         <span class="text-xs text-muted">Click for full report</span>
       </div>
+      {#if stats.by_client.length === 0}
+        <p class="text-xs text-muted text-center py-6">No data for this period.</p>
+      {:else}
       <div class="divide-y divide-border">
         {#each stats.by_client as c}
-          <a href="/reports/{c.slug}?month={selectedMonth}" class="px-5 py-3 flex items-center justify-between hover:bg-surface transition-colors block">
-            <div>
-              <div class="text-sm text-white">{c.canonical_name}</div>
-              <div class="text-xs text-muted">{c.total} posts</div>
-            </div>
-            <div class="flex items-center gap-3 text-xs">
+        {@const cp = pct(c.posted, c.total)}
+        <a
+          href="/reports/{c.slug}?month={selectedMonth}"
+          class="px-5 py-3.5 flex items-center gap-4 hover:bg-surface transition-colors"
+        >
+          <div class="flex-1 min-w-0">
+            <div class="text-sm text-white font-medium">{c.canonical_name}</div>
+            <div class="text-xs text-muted mt-0.5">{c.total} post{c.total !== 1 ? 's' : ''}</div>
+          </div>
+          <div class="flex-shrink-0 w-32">
+            <div class="flex justify-between text-[11px] mb-1">
               <span class="text-green-400">{c.posted} posted</span>
               {#if c.failed > 0}<span class="text-red-400">{c.failed} failed</span>{/if}
-              <!-- Progress bar -->
-              <div class="w-16 h-1.5 bg-surface rounded-full overflow-hidden">
-                <div
-                  class="h-full bg-green-500 rounded-full"
-                  style="width:{pct(c.posted, c.total)}%"
-                ></div>
-              </div>
-              <span class="text-muted w-8 text-right">{pct(c.posted, c.total)}%</span>
             </div>
-          </a>
+            <div class="h-1.5 bg-border rounded-full overflow-hidden">
+              <div class="h-full bg-green-500 rounded-full" style="width:{cp}%"></div>
+            </div>
+          </div>
+          <span class="text-sm font-medium {cp >= 80 ? 'text-green-400' : cp >= 50 ? 'text-yellow-400' : 'text-muted'} w-10 text-right flex-shrink-0">{cp}%</span>
+        </a>
         {/each}
       </div>
+      {/if}
     </div>
   </div>
+
+  <!-- Status breakdown (detail) -->
+  {#if stats.by_status.length > 0}
+  <div class="card mt-6">
+    <div class="px-5 py-4 border-b border-border">
+      <h2 class="font-medium text-white text-sm">All Statuses</h2>
+    </div>
+    <div class="px-5 py-4 flex flex-wrap gap-4">
+      {#each stats.by_status as s}
+      <div class="flex items-center gap-2">
+        <Badge status={s.status} />
+        <span class="text-sm font-bold text-white">{s.count}</span>
+      </div>
+      {/each}
+    </div>
+  </div>
+  {/if}
+
 {/if}

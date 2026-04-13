@@ -216,21 +216,29 @@
     } finally { loadingScheduled = false; }
   }
 
+  // Nicaragua time helpers (CST = UTC-6, no DST)
+  function nicNow(): string {
+    return new Date(Date.now() - 6 * 3600000).toISOString().slice(0, 16).replace('T', ' ');
+  }
+  function nicToday(): string { return nicNow().slice(0, 10); }
+  function nicTomorrow(): string {
+    return new Date(Date.now() - 6 * 3600000 + 86400000).toISOString().slice(0, 10);
+  }
+
   function formatScheduledTime(dt: string | null): string {
     if (!dt) return 'No time set';
-    // dt is 'YYYY-MM-DDTHH:MM' (UTC) — display as-is, append UTC label
+    // dt is stored as NIC local time 'YYYY-MM-DDTHH:MM'
     const [date, time] = dt.split('T');
-    return `${date}  ${time ?? ''} UTC`.trim();
+    return `${date}  ${time ?? ''} NIC`.trim();
   }
 
   function scheduledLabel(dt: string | null): { label: string; cls: string } {
     if (!dt) return { label: 'Unscheduled', cls: 'text-muted' };
-    const now = new Date().toISOString().slice(0, 16);
-    if (dt < now) return { label: 'Due now', cls: 'text-green-400' };
-    const today = new Date().toISOString().slice(0, 10);
-    const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
-    if (dt.startsWith(today)) return { label: 'Today', cls: 'text-accent' };
-    if (dt.startsWith(tomorrow)) return { label: 'Tomorrow', cls: 'text-yellow-400' };
+    const nicNowStr = nicNow().replace(' ', 'T');
+    const dtNorm = dt.replace(' ', 'T');
+    if (dtNorm <= nicNowStr) return { label: 'Due now', cls: 'text-green-400' };
+    if (dtNorm.startsWith(nicToday())) return { label: 'Today', cls: 'text-accent' };
+    if (dtNorm.startsWith(nicTomorrow())) return { label: 'Tomorrow', cls: 'text-yellow-400' };
     return { label: 'Upcoming', cls: 'text-muted' };
   }
 

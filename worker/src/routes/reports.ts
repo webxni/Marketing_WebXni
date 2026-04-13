@@ -57,8 +57,9 @@ reportRoutes.get('/posting-stats', async (c) => {
   const binds: unknown[] = [];
   const conditions: string[] = [];
 
-  if (from) { conditions.push('p.publish_date >= ?'); binds.push(from); }
-  if (to)   { conditions.push('p.publish_date <= ?'); binds.push(to); }
+  // publish_date may be stored as 'YYYY-MM-DDTHH:MM' — use substr(10) to compare date only
+  if (from) { conditions.push("substr(p.publish_date,1,10) >= ?"); binds.push(from); }
+  if (to)   { conditions.push("substr(p.publish_date,1,10) <= ?"); binds.push(to); }
 
   let clientId: string | null = null;
   if (client) {
@@ -155,7 +156,7 @@ reportRoutes.get('/monthly/:clientId', async (c) => {
         SELECT p.id, p.title, p.status, p.content_type, p.platforms, p.publish_date,
                p.master_caption, p.wp_post_url
         FROM posts p
-        WHERE p.client_id = ? AND p.publish_date >= ? AND p.publish_date <= ?
+        WHERE p.client_id = ? AND substr(p.publish_date,1,10) >= ? AND substr(p.publish_date,1,10) <= ?
         ORDER BY p.publish_date ASC
       `)
       .bind(client.id, from, to)
@@ -163,10 +164,10 @@ reportRoutes.get('/monthly/:clientId', async (c) => {
     c.env.DB
       .prepare(`
         SELECT pp.platform, pp.status, pp.real_url, pp.tracking_id, pp.error_message,
-               p.title, p.publish_date
+               p.id as post_id, p.title, p.publish_date
         FROM post_platforms pp
         JOIN posts p ON p.id = pp.post_id
-        WHERE p.client_id = ? AND p.publish_date >= ? AND p.publish_date <= ?
+        WHERE p.client_id = ? AND substr(p.publish_date,1,10) >= ? AND substr(p.publish_date,1,10) <= ?
         ORDER BY p.publish_date ASC, pp.platform ASC
       `)
       .bind(client.id, from, to)
@@ -176,7 +177,8 @@ reportRoutes.get('/monthly/:clientId', async (c) => {
         SELECT p.title, p.publish_date, pp.platform, pp.error_message
         FROM post_platforms pp
         JOIN posts p ON p.id = pp.post_id
-        WHERE p.client_id = ? AND pp.status = 'failed' AND p.publish_date >= ? AND p.publish_date <= ?
+        WHERE p.client_id = ? AND pp.status = 'failed'
+          AND substr(p.publish_date,1,10) >= ? AND substr(p.publish_date,1,10) <= ?
       `)
       .bind(client.id, from, to)
       .all(),

@@ -30,6 +30,52 @@
   function pct(n: number, d: number) { return d ? Math.round((n / d) * 100) : 0; }
 
   function printReport() { window.print(); }
+
+  interface PlatformRow { post_id?: string; platform: string; real_url: string | null; status: string; title: string; publish_date: string; }
+  interface PlatformStat { total: number; posted: number; failed: number; }
+
+  function getPlatRows(rep: MonthlyReport): PlatformRow[] {
+    return rep.platforms as unknown as PlatformRow[];
+  }
+
+  // Build a lookup: post_id (or title fallback) → platform rows
+  $: urlsByPost = report
+    ? getPlatRows(report).reduce<Record<string, PlatformRow[]>>((acc, r) => {
+        const key = r.post_id ?? r.title;
+        if (!acc[key]) acc[key] = [];
+        acc[key].push(r);
+        return acc;
+      }, {})
+    : {};
+
+  function getPostUrls(rep: MonthlyReport, postId: string, postTitle: string): PlatformRow[] {
+    return getPlatRows(rep).filter(r => r.post_id === postId || (!r.post_id && r.title === postTitle));
+  }
+
+  // Platform success summary
+  $: platformStats = report
+    ? getPlatRows(report).reduce<Record<string, PlatformStat>>((acc, r) => {
+        if (!acc[r.platform]) acc[r.platform] = { total: 0, posted: 0, failed: 0 };
+        acc[r.platform].total++;
+        if (r.status === 'sent' || r.status === 'posted') acc[r.platform].posted++;
+        if (r.status === 'failed') acc[r.platform].failed++;
+        return acc;
+      }, {})
+    : {};
+
+  $: platformStatEntries = Object.entries(platformStats).sort((a, b) => b[1].total - a[1].total);
+  $: maxPlatTotal = platformStatEntries.reduce((m, [, d]) => Math.max(m, d.total), 1);
+
+  const platformColors: Record<string, string> = {
+    facebook: '#1877F2', instagram: '#E1306C', linkedin: '#0A66C2',
+    x: '#E7E9EA', threads: '#AAAAAA', tiktok: '#EE1D52', pinterest: '#E60023',
+    bluesky: '#0085FF', youtube: '#FF0000', google_business: '#4285F4',
+  };
+
+  function platformLabel(p: string) {
+    return ({ google_business: 'Google Business', x: 'X / Twitter', website_blog: 'Blog' })[p]
+      ?? p.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  }
 </script>
 
 <svelte:head>
@@ -102,69 +148,87 @@
     </div>
   </div>
 
-  <!-- Posts table -->
-  <div class="card mb-6">
-    <div class="px-5 py-4 border-b border-border">
-      <h2 class="font-medium text-white text-sm">Published Posts</h2>
-    </div>
-    {#if report.posts.filter(p => p.status === 'posted').length === 0}
-      <p class="text-sm text-muted text-center py-6">No published posts this month.</p>
-    {:else}
-    <div class="table-wrapper">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>Post</th>
-            <th>Platforms</th>
-            <th>Publish Date</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each report.posts.filter(p => p.status === 'posted') as post}
-            <tr>
-              <td>
-                <div class="text-sm text-white">{post.title ?? '(untitled)'}</div>
-                <div class="text-xs text-muted capitalize">{post.content_type ?? '—'}</div>
-              </td>
-              <td>
-                <div class="flex flex-wrap gap-1">
-                  {#each (parsePlatforms(post.platforms)) as p}
-                    <PlatformBadge platform={p} size="sm" />
-                  {/each}
-                </div>
-              </td>
-              <td class="text-xs text-muted">{post.publish_date ? formatDate(post.publish_date) : '—'}</td>
-              <td><Badge status={post.status ?? 'draft'} /></td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
-    {/if}
-  </div>
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
 
-  <!-- Published URLs -->
-  {#if report.platforms.length > 0}
-  <div class="card mb-6">
-    <div class="px-5 py-4 border-b border-border">
-      <h2 class="font-medium text-white text-sm">Live URLs</h2>
-    </div>
-    <div class="divide-y divide-border">
-      {#each report.platforms.filter(p => p.real_url) as pt}
-        <div class="px-5 py-3 flex items-center justify-between">
-          <div class="flex items-center gap-3">
-            <PlatformBadge platform={pt.platform} size="sm" />
-            <span class="text-sm text-white">{pt.title ?? '(untitled)'}</span>
+    <!-- Platform performance chart -->
+    <div class="card p-5">
+      <h2 class="font-medium text-white text-sm mb-4">Platform Performance</h2>
+      {#if platformStatEntries.length === 0}
+        <p class="text-xs text-muted">No platform data yet.</p>
+      {:else}
+      <div class="space-y-3">
+        {#each platformStatEntries as [platform, data]}
+        {@const sp = pct(data.posted, data.total)}
+        {@const color = platformColors[platform] ?? '#666'}
+        <div>
+          <div class="flex items-center justify-between mb-1 text-xs">
+            <div class="flex items-center gap-1.5">
+              <span class="w-2 h-2 rounded-full" style="background:{color}"></span>
+              <span class="text-white">{platformLabel(platform)}</span>
+            </div>
+            <span class="text-muted">{data.posted}/{data.total} · <span class="text-white font-medium">{sp}%</span></span>
           </div>
-          <a href={pt.real_url ?? ''} target="_blank" class="text-xs text-accent hover:underline">
-            View post →
-          </a>
+          <div class="h-1.5 bg-surface rounded-full overflow-hidden">
+            <div class="h-full rounded-full" style="width:{(data.total/maxPlatTotal)*100}%; background:{color}; opacity:0.25"></div>
+            <div class="h-full rounded-full -mt-1.5" style="width:{(data.posted/maxPlatTotal)*100}%; background:{color}"></div>
+          </div>
         </div>
-      {/each}
+        {/each}
+      </div>
+      {/if}
     </div>
+
+    <!-- Posts this period -->
+    <div class="card lg:col-span-2">
+      <div class="px-5 py-4 border-b border-border flex items-center justify-between">
+        <h2 class="font-medium text-white text-sm">Posts This Period</h2>
+        <span class="text-xs text-muted">{report.posts.length} total</span>
+      </div>
+      {#if report.posts.length === 0}
+        <p class="text-sm text-muted text-center py-6">No posts this period.</p>
+      {:else}
+      <div class="divide-y divide-border">
+        {#each report.posts as post}
+        {@const postPlatforms = getPostUrls(report, post.id, post.title ?? '')}
+        {@const liveUrls = postPlatforms.filter(r => r.real_url)}
+        <div class="px-5 py-3">
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center gap-2 flex-wrap">
+                <a href="/posts/{post.id}" class="text-sm text-white hover:text-accent font-medium">{post.title ?? '(untitled)'}</a>
+                <Badge status={post.status ?? 'draft'} />
+              </div>
+              <div class="flex items-center gap-3 mt-1">
+                <span class="text-xs text-muted">{post.publish_date ? formatDate(post.publish_date) : '—'}</span>
+                <span class="text-xs text-muted capitalize">{post.content_type ?? ''}</span>
+              </div>
+            </div>
+            <div class="flex flex-wrap gap-1 flex-shrink-0">
+              {#each parsePlatforms(post.platforms) as p}
+                <PlatformBadge platform={p} size="sm" />
+              {/each}
+            </div>
+          </div>
+          <!-- Live URLs inline -->
+          {#if liveUrls.length > 0}
+          <div class="flex flex-wrap gap-2 mt-2">
+            {#each liveUrls as r}
+            {@const rurl = r.real_url ?? ''}
+            <a href={rurl} target="_blank"
+               class="inline-flex items-center gap-1 text-[11px] text-accent hover:underline bg-accent/10 px-2 py-0.5 rounded">
+              <PlatformBadge platform={r.platform} size="sm" />
+              View on {platformLabel(r.platform)} →
+            </a>
+            {/each}
+          </div>
+          {/if}
+        </div>
+        {/each}
+      </div>
+      {/if}
+    </div>
+
   </div>
-  {/if}
 
   <!-- Failed posts -->
   {#if report.failed_detail.length > 0}

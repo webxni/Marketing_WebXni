@@ -7,10 +7,12 @@ export const reportsApi = {
 
   postingStats: (params: { from?: string; to?: string; month?: string; client?: string } = {}) => {
     const q = new URLSearchParams();
-    // If month supplied, derive from/to
+    // If month supplied, derive from/to using actual last day of month
     if (params.month && !params.from) {
+      const [y, m] = params.month.split('-').map(Number);
+      const lastDay = new Date(y, m, 0).getDate();
       q.set('from', `${params.month}-01`);
-      q.set('to',   `${params.month}-31`);
+      q.set('to',   `${params.month}-${String(lastDay).padStart(2, '0')}`);
     }
     if (params.from)   q.set('from',   params.from);
     if (params.to)     q.set('to',     params.to);
