@@ -57,7 +57,7 @@
         systemSettings = r.settings ?? {};
         // Parse structured fields from flat KV
         cronEnabled  = systemSettings['cron_enabled']  !== 'false';
-        postingHours = systemSettings['posting_hours'] ?? '9,15';
+        postingHours = systemSettings['posting_hours'] ?? '0,6,12,18';
         aiProvider   = systemSettings['ai_provider']   ?? 'openai';
         aiModel      = systemSettings['ai_model']      ?? '';
         aiApiKey     = systemSettings['ai_api_key']    ?? '';
@@ -97,7 +97,7 @@
       const updated = {
         ...systemSettings,
         cron_enabled:  cronEnabled  ? 'true' : 'false',
-        posting_hours: postingHours.trim() || '9,15',
+        posting_hours: postingHours.trim() || '0,6,12,18',
       };
       await api.put('/api/settings', { settings: updated });
       systemSettings = updated;
@@ -223,13 +223,13 @@
           id="posting_hours"
           type="text"
           bind:value={postingHours}
-          placeholder="9,15"
+          placeholder="0,6,12,18"
           class="input w-full font-mono text-xs"
           disabled={!cronEnabled}
         />
         <p class="text-xs text-muted mt-1">
-          Hours when the cron job will attempt to post (24h UTC). E.g. "9,15" = 9 AM and 3 PM.
-          The cron fires every 6h — it only processes posts if the current hour is in this list.
+          UTC hours when posting runs. Cron fires at 0, 6, 12, 18 UTC — use those values.
+          NIC (UTC-6): 0 UTC = 6 PM · 6 UTC = midnight · 12 UTC = 6 AM · 18 UTC = noon.
         </p>
       </div>
       <div class="flex justify-end">

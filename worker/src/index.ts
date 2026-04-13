@@ -100,7 +100,7 @@ export default {
           }
 
           // Check if current UTC hour is in the allowed posting hours
-          const allowedHours = (settings['posting_hours'] ?? '9,15')
+          const allowedHours = (settings['posting_hours'] ?? '0,6,12,18')
             .split(',')
             .map(h => parseInt(h.trim(), 10))
             .filter(h => !isNaN(h));
