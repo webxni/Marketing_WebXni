@@ -76,22 +76,34 @@
     return x.toISOString().split('T')[0];
   }
 
+  /** Return the next weekday (Mon–Fri) on or after a given Date. */
+  function nextWeekday(d: Date): Date {
+    const day = d.getUTCDay();
+    if (day === 0) { const n = new Date(d); n.setUTCDate(d.getUTCDate() + 1); return n; } // Sun → Mon
+    if (day === 6) { const n = new Date(d); n.setUTCDate(d.getUTCDate() + 2); return n; } // Sat → Mon
+    return d;
+  }
+
   function applyPreset(preset: typeof activePreset) {
     activePreset = preset;
     dateMode = 'preset';
     const now = new Date();
-    const t = now.toISOString().split('T')[0];
     if (preset === 'this-week') {
       const day = now.getUTCDay();
       const mon = new Date(now);
       mon.setUTCDate(now.getUTCDate() - (day === 0 ? 6 : day - 1));
-      const sun = new Date(mon);
-      sun.setUTCDate(mon.getUTCDate() + 6);
+      const fri = new Date(mon);
+      fri.setUTCDate(mon.getUTCDate() + 4);
       customStart = mon.toISOString().split('T')[0];
-      customEnd   = sun.toISOString().split('T')[0];
-    } else if (preset === 'next7')  { customStart = t; customEnd = addDays(now, 6);  }
-    else if (preset === 'next14')   { customStart = t; customEnd = addDays(now, 13); }
-    else if (preset === 'next30')   { customStart = t; customEnd = addDays(now, 29); }
+      customEnd   = fri.toISOString().split('T')[0];
+    } else {
+      // For next7/14/30: start from next weekday, end N calendar days later
+      const start = nextWeekday(now);
+      const t = start.toISOString().split('T')[0];
+      if (preset === 'next7')  { customStart = t; customEnd = addDays(start, 6);  }
+      else if (preset === 'next14') { customStart = t; customEnd = addDays(start, 13); }
+      else if (preset === 'next30') { customStart = t; customEnd = addDays(start, 29); }
+    }
   }
 
   // Resolved period
@@ -491,6 +503,7 @@
             {fmtDate(periodStart)} → {fmtDate(periodEnd)}
             &nbsp;·&nbsp; <span class="text-white font-medium">{rangeDays} days</span>
           </p>
+          <p class="text-xs text-muted mt-1">Mon–Fri only · weekends excluded · posting days set per package</p>
         {/if}
       {/if}
     </div>

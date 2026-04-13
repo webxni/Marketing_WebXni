@@ -301,9 +301,18 @@ export async function runGeneration(env: Env, params: GenerationParams): Promise
           .all<FeedbackRow>();
 
         // ── 3. Generate one post per date ───────────────────────────────────
+        // Track 70/30 educational/sales balance per client
+        let intentEduc = 0;
+        let intentSales = 0;
+
         for (let di = 0; di < dates.length; di++) {
           const date        = dates[di];
           const contentType = sequence[di % sequence.length];
+
+          // Determine content intent: maintain ~70% educational / 30% sales ratio
+          const totalSoFar = intentEduc + intentSales;
+          const salesRatio = totalSoFar === 0 ? 0 : intentSales / totalSoFar;
+          const contentIntent: 'educational' | 'sales' = salesRatio < 0.30 ? 'sales' : 'educational';
 
           try {
             // Fresh recent titles each iteration to avoid generating the same topic again
@@ -337,6 +346,7 @@ export async function runGeneration(env: Env, params: GenerationParams): Promise
               publishDate:   date,
               contentType,
               platforms:     defaultPlatforms,
+              contentIntent,
             };
 
             const generated = await generatePostContent(openAiApiKey, ctx);
@@ -371,7 +381,8 @@ export async function runGeneration(env: Env, params: GenerationParams): Promise
             } as Parameters<typeof createPost>[1]);
 
             posts_created++;
-            console.log(`[gen] ✓ ${client.slug} / ${date} / ${contentType}`);
+            if (contentIntent === 'sales') intentSales++; else intentEduc++;
+            console.log(`[gen] ✓ ${client.slug} / ${date} / ${contentType} / ${contentIntent}`);
 
           } catch (err) {
             const msg = `${client.slug}/${date}: ${stringifyError(err)}`;

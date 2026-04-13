@@ -59,6 +59,7 @@ export interface GenerationContext {
   publishDate:   string;   // YYYY-MM-DD
   contentType:   string;   // image | video | reel | blog
   platforms:     string[];
+  contentIntent?: 'educational' | 'sales';  // 70/30 balance directive
   // GBP-specific context (optional — only set when generating GBP caption)
   gbpTopicType?: string | null;  // 'STANDARD'|'EVENT'|'OFFER'
   gbpCtaType?:   string | null;  // 'BOOK'|'ORDER'|'SHOP'|'LEARN_MORE'|'SIGN_UP'|'CALL'
@@ -81,15 +82,28 @@ const GBP_CTA_INTENT: Record<string, string> = {
 };
 
 function buildPrompt(ctx: GenerationContext): string {
-  const { client, intelligence: i, recentTitles, feedback, publishDate, contentType, platforms, gbpTopicType, gbpCtaType, gbpOfferTitle, gbpEventTitle } = ctx;
+  const { client, intelligence: i, recentTitles, feedback, publishDate, contentType, platforms, contentIntent, gbpTopicType, gbpCtaType, gbpOfferTitle, gbpEventTitle } = ctx;
   const isBlog    = contentType === 'blog';
   const isVideo   = contentType === 'video' || contentType === 'reel';
   const isYoutube = platforms.includes('youtube');
   const lang      = client.language && client.language !== 'en' ? client.language : 'en';
 
+  // 70/30 balance: default to educational, caller sets 'sales' when ratio allows
+  const intentIsEducational = !contentIntent || contentIntent === 'educational';
+  const intentInstruction = intentIsEducational
+    ? 'CONTENT INTENT: EDUCATIONAL (70% of content). Focus on tips, how-to, industry insights, problem-solving, or trust-building. Do NOT pitch services directly. Mention the brand naturally at most once.'
+    : 'CONTENT INTENT: SALES/PROMOTIONAL (30% of content). This is an opportunity to highlight a service or result. Focus on value delivered, outcomes, or a specific offer — not on price.';
+
   let p = `You are a professional social media content writer for ${client.canonical_name}.${line(client.industry, `Industry: ${client.industry}`)}${line(client.state, `Location: ${client.state}`)}${lang !== 'en' ? `\nWrite ALL content in ${lang}.` : ''}
 
-BUSINESS CONTEXT:${line(i?.service_priorities, `- Services/Products: ${i?.service_priorities}`)}${line(i?.brand_voice, `- Brand voice: ${i?.brand_voice}`)}${line(i?.tone_keywords, `- Tone: ${i?.tone_keywords}`)}${line(i?.audience_notes, `- Target audience: ${i?.audience_notes}`)}${line(i?.content_goals, `- Content goals: ${i?.content_goals}`)}${line(i?.content_angles, `- Content angles to use: ${i?.content_angles}`)}${line(i?.local_seo_themes, `- Local SEO themes: ${i?.local_seo_themes}`)}${line(i?.primary_keyword, `- Primary keyword: ${i?.primary_keyword}`)}${line(i?.secondary_keywords, `- Secondary keywords: ${i?.secondary_keywords}`)}${line(client.cta_text, `- Preferred CTA: ${client.cta_text}`)}${line(i?.approved_ctas, `- Approved CTAs: ${i?.approved_ctas}`)}${line(i?.prohibited_terms, `- NEVER USE these words/phrases: ${i?.prohibited_terms}`)}${line(i?.humanization_style, `- Writing style note: ${i?.humanization_style}`)}${line(i?.seasonal_notes, `- Seasonal note: ${i?.seasonal_notes}`)}${line(client.notes, `- Additional context: ${client.notes}`)}`;
+BUSINESS CONTEXT:${line(i?.service_priorities, `- Services/Products: ${i?.service_priorities}`)}${line(i?.brand_voice, `- Brand voice: ${i?.brand_voice}`)}${line(i?.tone_keywords, `- Tone: ${i?.tone_keywords}`)}${line(i?.audience_notes, `- Target audience: ${i?.audience_notes}`)}${line(i?.content_goals, `- Content goals: ${i?.content_goals}`)}${line(i?.content_angles, `- Content angles to use: ${i?.content_angles}`)}${line(i?.local_seo_themes, `- Local SEO themes: ${i?.local_seo_themes}`)}${line(i?.primary_keyword, `- Primary keyword: ${i?.primary_keyword}`)}${line(i?.secondary_keywords, `- Secondary keywords: ${i?.secondary_keywords}`)}${line(client.cta_text, `- Preferred CTA: ${client.cta_text}`)}${line(i?.approved_ctas, `- Approved CTAs: ${i?.approved_ctas}`)}${line(i?.prohibited_terms, `- NEVER USE these words/phrases: ${i?.prohibited_terms}`)}${line(i?.seasonal_notes, `- Seasonal note: ${i?.seasonal_notes}`)}${line(client.notes, `- Additional context: ${client.notes}`)}
+
+${intentInstruction}
+
+CONTENT SAFETY — ABSOLUTE RULES (never break these):
+- NEVER include exact prices, costs, dollar amounts, percentages, or specific numeric quotes (e.g. "$199", "50% off", "starting at $500"). Focus on value, process, expertise, or outcomes instead.
+- NEVER make up specific statistics, study citations, or made-up data. If you reference a trend, keep it general.
+- Write in a human, natural voice — avoid corporate buzzwords, filler phrases ("In today's world…", "In a fast-paced world…", "In this day and age…"), and generic openers.${line(i?.humanization_style, `- HUMANIZATION STYLE: ${i?.humanization_style}. Apply this style throughout all captions and copy.`)}`;
 
   if (recentTitles.length > 0) {
     p += `\n\nRECENT POSTS — do NOT repeat these topics or angles:\n${recentTitles.slice(0, 15).map(t => `- ${t}`).join('\n')}`;
@@ -140,7 +154,7 @@ Return a JSON object with the following fields (include only fields relevant to 
     } else if (platforms.includes('instagram') && !platforms.includes('facebook') && !platforms.includes('pinterest')) {
       assetSpec = 'Tipo de archivo: IMAGEN. Orientación: CUADRADA. Dimensiones: 1080 × 1080 px (relación 1:1). Optimizada para Instagram.';
     } else {
-      assetSpec = 'Tipo de archivo: IMAGEN. Orientación: HORIZONTAL. Dimensiones: 1200 × 628 px (relación 1.91:1). Válida para Facebook, LinkedIn, Google Business.';
+      assetSpec = 'Tipo de archivo: IMAGEN. Orientación: VERTICAL/CUADRADA. Dimensiones: 1080 × 1350 px (relación 4:5). Válida para Facebook, Instagram, LinkedIn. (Se puede recortar a 1:1 si es necesario.)';
     }
 
     const brandColors = client.brand_json
