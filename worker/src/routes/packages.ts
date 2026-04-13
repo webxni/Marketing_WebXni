@@ -15,7 +15,7 @@ const FIELDS = [
   'slug','name','posts_per_month','images_per_month','videos_per_month',
   'reels_per_month','blog_posts_per_month','platforms_included','includes_gbp',
   'includes_blog','includes_bilingual','includes_stories','posting_frequency',
-  'cadence_notes','price_cents','active','sort_order',
+  'posting_days','cadence_notes','price_cents','active','sort_order',
 ];
 
 /** GET /api/packages */

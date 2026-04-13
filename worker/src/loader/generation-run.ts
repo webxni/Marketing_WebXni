@@ -18,7 +18,7 @@ export interface GenerationParams {
 interface PackageRow {
   id:                   string;
   slug:                 string;
-  posts_per_month:      number;
+  posting_days:         string | null;  // JSON: ["monday","wednesday","friday"]
   images_per_month:     number;
   videos_per_month:     number;
   reels_per_month:      number;
@@ -64,52 +64,83 @@ function buildContentSequence(pkg: PackageRow): string[] {
   return positioned.map(p => p.type);
 }
 
-/** Generate publish dates for the period based on posting frequency and posts_per_month */
-function buildDates(periodStart: string, periodEnd: string, frequency: string, postsPerMonth: number): string[] {
-  const start  = new Date(periodStart + 'T12:00:00Z');
-  const end    = new Date(periodEnd   + 'T12:00:00Z');
+const DAY_NAME_TO_NUM: Record<string, number> = {
+  sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6,
+};
+
+/**
+ * Parse posting_days JSON string into sorted UTC day numbers.
+ * Falls back to [1, 3] (Mon + Wed) if empty or invalid.
+ */
+function parsePostingDays(raw: string | null): number[] {
+  if (!raw) return [1, 3];
+  try {
+    const names: string[] = JSON.parse(raw);
+    const nums = names
+      .map(n => DAY_NAME_TO_NUM[n.toLowerCase()])
+      .filter(n => n !== undefined)
+      .sort((a, b) => a - b);
+    return nums.length > 0 ? nums : [1, 3];
+  } catch {
+    return [1, 3];
+  }
+}
+
+/**
+ * Build posting dates for the period using posting_days + frequency.
+ *
+ * - daily:     every calendar day in the period (ignores posting_days)
+ * - weekly:    every occurrence of posting_days within the period
+ * - biweekly:  posting_days on alternating weeks (weeks 0, 2, 4… from period start)
+ */
+function buildDates(periodStart: string, periodEnd: string, frequency: string, postingDays: string | null): string[] {
+  const start = new Date(periodStart + 'T12:00:00Z');
+  const end   = new Date(periodEnd   + 'T12:00:00Z');
   const dates: string[] = [];
-
-  // Days between Mon-Sat (skip Sunday for most frequencies)
-  const postDays = new Set([1, 2, 3, 4, 5, 6]); // Mon-Sat
-
-  const addDate = (d: Date) => {
-    const iso = d.toISOString().split('T')[0];
-    if (!dates.includes(iso)) dates.push(iso);
-  };
 
   if (frequency === 'daily') {
     const d = new Date(start);
-    while (d <= end) { if (postDays.has(d.getUTCDay())) addDate(d); d.setUTCDate(d.getUTCDate() + 1); }
-  } else if (frequency === '3x_week') {
-    const days3 = new Set([1, 3, 5]); // Mon, Wed, Fri
-    const d = new Date(start);
-    while (d <= end) { if (days3.has(d.getUTCDay())) addDate(d); d.setUTCDate(d.getUTCDate() + 1); }
-  } else if (frequency === 'twice_weekly') {
-    const days2 = new Set([2, 4]); // Tue, Thu
-    const d = new Date(start);
-    while (d <= end) { if (days2.has(d.getUTCDay())) addDate(d); d.setUTCDate(d.getUTCDate() + 1); }
-  } else if (frequency === 'weekly') {
-    const d = new Date(start);
-    while (d.getUTCDay() !== 1) d.setUTCDate(d.getUTCDate() + 1); // advance to Monday
-    while (d <= end) { addDate(d); d.setUTCDate(d.getUTCDate() + 7); }
-  } else if (frequency === 'biweekly') {
-    const d = new Date(start);
-    while (d.getUTCDay() !== 1) d.setUTCDate(d.getUTCDate() + 1);
-    while (d <= end) { addDate(d); d.setUTCDate(d.getUTCDate() + 14); }
-  } else {
-    // monthly / fallback — one per week up to posts_per_month
-    const d = new Date(start);
-    while (d <= end && dates.length < postsPerMonth) {
-      if (postDays.has(d.getUTCDay())) addDate(d);
-      d.setUTCDate(d.getUTCDate() + 7);
+    while (d <= end) {
+      dates.push(d.toISOString().split('T')[0]);
+      d.setUTCDate(d.getUTCDate() + 1);
     }
+    return dates;
   }
 
-  // Cap at posts_per_month (proportional to period length vs 30 days)
-  const periodDays = Math.round((end.getTime() - start.getTime()) / 86400000) + 1;
-  const cap = Math.ceil(postsPerMonth * (periodDays / 30));
-  return dates.slice(0, Math.max(cap, 1));
+  const dayNums = new Set(parsePostingDays(postingDays));
+
+  if (frequency === 'weekly') {
+    const d = new Date(start);
+    while (d <= end) {
+      if (dayNums.has(d.getUTCDay())) dates.push(d.toISOString().split('T')[0]);
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+    return dates;
+  }
+
+  if (frequency === 'biweekly') {
+    // Find Monday on or before period_start to anchor week 0
+    const anchor = new Date(start);
+    while (anchor.getUTCDay() !== 1) anchor.setUTCDate(anchor.getUTCDate() - 1);
+
+    const d = new Date(start);
+    while (d <= end) {
+      if (dayNums.has(d.getUTCDay())) {
+        const weekIndex = Math.floor((d.getTime() - anchor.getTime()) / (7 * 86400000));
+        if (weekIndex % 2 === 0) dates.push(d.toISOString().split('T')[0]);
+      }
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+    return dates;
+  }
+
+  // Fallback (old frequency values: 3x_week, twice_weekly, monthly) — treat as weekly
+  const d = new Date(start);
+  while (d <= end) {
+    if (dayNums.has(d.getUTCDay())) dates.push(d.toISOString().split('T')[0]);
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  return dates;
 }
 
 interface IntelRow {
@@ -135,10 +166,11 @@ interface FeedbackRow {
 
 const DEFAULT_PACKAGE: PackageRow = {
   id: '', slug: 'default',
-  posts_per_month: 8, images_per_month: 6, videos_per_month: 1,
+  posting_days: '["monday","wednesday"]',
+  images_per_month: 6, videos_per_month: 1,
   reels_per_month: 1, blog_posts_per_month: 0,
   platforms_included: '["facebook","instagram"]',
-  posting_frequency: 'twice_weekly',
+  posting_frequency: 'weekly',
 };
 
 interface QueryContext {
@@ -228,7 +260,7 @@ export async function runGeneration(env: Env, params: GenerationParams): Promise
 
         // Build content-type sequence and dates from package
         const sequence = buildContentSequence(pkg);
-        const dates    = buildDates(params.period_start, params.period_end, pkg.posting_frequency, pkg.posts_per_month);
+        const dates    = buildDates(params.period_start, params.period_end, pkg.posting_frequency, pkg.posting_days ?? null);
 
         // Determine platforms from package (fall back to client's configured platforms)
         let defaultPlatforms: string[] = [];
