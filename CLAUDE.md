@@ -255,7 +255,41 @@ curl -b /tmp/wc.txt -X POST https://marketing.webxni.com/api/notion/import/clien
 ```
 Use `force_sub_tables: true` to re-import services/areas/offers for existing clients.
 
-Migration sequence is now at **0006** (next is 0007).
+Migration sequence is now at **0008** (next is 0009).
+
+---
+
+## Designer / Media workflow (implemented)
+
+**Diseño tab** (`frontend/src/routes/(app)/posts/[id]/+page.svelte`):
+- Asset upload section at top — designer can upload finished image/video directly from Diseño tab
+- `🌐 Traducir al Español` button in Contexto del Post — translates title + master_caption via GPT-4o-mini
+- Shows AI-generated image brief (`ai_image_prompt`) and video brief (`ai_video_prompt`) with dimensions/orientation
+
+**AI prompt rules by content type** (`worker/src/services/openai.ts`):
+| Content type | Asset type | Dimensions |
+|---|---|---|
+| `reel` | VIDEO VERTICAL | 1080 × 1920 (9:16) |
+| `video` | VIDEO HORIZONTAL | 1920 × 1080 (16:9) |
+| `image` (Instagram only) | IMAGE SQUARE | 1080 × 1080 (1:1) |
+| `image` (Pinterest only) | IMAGE VERTICAL | 1000 × 1500 (2:3) |
+| `image` (default) | IMAGE HORIZONTAL | 1200 × 628 (1.91:1) |
+| `blog` | No image prompt generated | — |
+
+**R2 asset cleanup** (`worker/src/loader/posting-run.ts`):
+After all platforms for a post are sent successfully (zero failures), the R2 asset is deleted from the MEDIA bucket and `asset_r2_key` is nulled in DB. If any platform fails, asset is preserved for retries.
+
+**Asset public URL**: `R2_MEDIA_PUBLIC_URL` env var must be set in wrangler.toml for asset preview URLs to work. Currently blank — upload works but preview returns null.
+
+---
+
+## Post caption generation (implemented)
+
+**Generate caption for a new platform** — `POST /api/posts/:id/generate-caption { platform }`  
+Available in the Captions tab of any post. Dropdown shows only platforms NOT already on the post. Generates via GPT-4o-mini, saves caption + adds platform to post's platform list.
+
+**Translate context for designer** — `POST /api/posts/:id/translate`  
+Translates `title` + `master_caption` to Spanish. Used by the 🌐 button in the Diseño tab.
 
 ---
 
@@ -267,6 +301,7 @@ Migration sequence is now at **0006** (next is 0007).
 - **PDF export** for monthly reports — data available, export not built
 - **Canva API integration** — links stored as reference-only
 - **Real-time posting status** — currently requires page refresh
+- **R2_MEDIA_PUBLIC_URL** — not configured yet; asset upload works but preview URLs are null
 
 ---
 

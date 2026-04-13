@@ -108,10 +108,35 @@ Return a JSON object with the following fields (include only fields relevant to 
 
   // Designer prompts — always in Spanish regardless of content language
   if (!isBlog) {
-    p += '\n- "ai_image_prompt": (ALWAYS IN SPANISH) Prompt detallado para diseñadora — describe la imagen/diseño: estilo visual, colores, composición, elementos, ambiente, texto sugerido. Formato estilo Midjourney/Canva. 2-4 oraciones.';
+    // Determine asset type, orientation, and dimensions by content type + platform context
+    let assetSpec = '';
+    if (contentType === 'reel') {
+      assetSpec = 'Tipo de archivo: VIDEO VERTICAL (Reel/TikTok). Orientación: VERTICAL. Dimensiones: 1080 × 1920 px (relación 9:16).';
+    } else if (contentType === 'video') {
+      assetSpec = 'Tipo de archivo: VIDEO HORIZONTAL. Orientación: HORIZONTAL. Dimensiones: 1920 × 1080 px (relación 16:9).';
+    } else if (platforms.includes('pinterest') && !platforms.includes('instagram') && !platforms.includes('facebook')) {
+      assetSpec = 'Tipo de archivo: IMAGEN. Orientación: VERTICAL. Dimensiones: 1000 × 1500 px (relación 2:3). Optimizada para Pinterest.';
+    } else if (platforms.includes('instagram') && !platforms.includes('facebook') && !platforms.includes('pinterest')) {
+      assetSpec = 'Tipo de archivo: IMAGEN. Orientación: CUADRADA. Dimensiones: 1080 × 1080 px (relación 1:1). Optimizada para Instagram.';
+    } else {
+      assetSpec = 'Tipo de archivo: IMAGEN. Orientación: HORIZONTAL. Dimensiones: 1200 × 628 px (relación 1.91:1). Válida para Facebook, LinkedIn, Google Business.';
+    }
+
+    const brandColors = client.brand_json
+      ? (() => { try { const b = JSON.parse(client.brand_json!); return b.colors ? `Colores de marca: ${Array.isArray(b.colors) ? b.colors.join(', ') : b.colors}.` : ''; } catch { return ''; } })()
+      : '';
+
+    const platformCtx = platforms.length > 0
+      ? `Plataformas destino: ${platforms.join(', ')}.`
+      : '';
+
+    p += `\n- "ai_image_prompt": (SIEMPRE EN ESPAÑOL — OBLIGATORIO) Brief visual completo para la diseñadora:\n  ${assetSpec}\n  ${platformCtx}${brandColors ? '\n  ' + brandColors : ''}\n  Incluye: estilo visual, paleta de colores, composición, elementos visuales clave, ambiente/mood, texto sugerido para overlay (headline corto), y herramienta recomendada (Canva / Adobe / Midjourney). 3-5 oraciones descriptivas.`;
   }
   if (isVideo) {
-    p += '\n- "ai_video_prompt": (ALWAYS IN SPANISH) Concepto de video para la diseñadora — describe la escena, movimiento, estilo cinematográfico, música sugerida, transiciones. 2-3 oraciones.';
+    const videoDims = contentType === 'reel'
+      ? 'Formato VERTICAL 9:16 (1080×1920). Para Reels / TikTok.'
+      : 'Formato HORIZONTAL 16:9 (1920×1080). Para YouTube / Facebook Video.';
+    p += `\n- "ai_video_prompt": (SIEMPRE EN ESPAÑOL — OBLIGATORIO) Concepto de video para la diseñadora:\n  ${videoDims}\n  Describe: escena principal, movimiento de cámara, estilo cinematográfico, paleta de colores, música o audio sugerido, transiciones clave, texto en pantalla (CTA). 3-4 oraciones.`;
   }
 
   p += '\n\nIMPORTANT: Return ONLY valid JSON. No markdown code blocks, no explanation outside the JSON.';

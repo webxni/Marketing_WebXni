@@ -51,6 +51,12 @@ export const postsApi = {
   getHistory: (id: string) =>
     api.get<{ versions: unknown[] }>(`/api/posts/${id}/history`),
 
+  translateContext: (id: string) =>
+    api.post<{ translations: Record<string, string> }>(`/api/posts/${id}/translate`),
+
+  generateCaption: (id: string, platform: string) =>
+    api.post<{ ok: boolean; platform: string; caption: string; field: string }>(`/api/posts/${id}/generate-caption`, { platform }),
+
   delete: (id: string) =>
     api.delete(`/api/posts/${id}`),
 };

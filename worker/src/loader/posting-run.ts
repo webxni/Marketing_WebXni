@@ -303,6 +303,21 @@ async function processPost(
   if (!dryRun) {
     if (stats.posted > 0) {
       await setPostStatus(env.DB, post.id, 'scheduled', 'Posted');
+
+      // Clean up R2 asset only when all platforms succeeded (none failed)
+      if (stats.failed === 0 && post.asset_r2_key) {
+        try {
+          const bucket = post.asset_r2_bucket === 'IMAGES' ? env.IMAGES : env.MEDIA;
+          await bucket.delete(post.asset_r2_key);
+          await env.DB
+            .prepare('UPDATE posts SET asset_r2_key = NULL, asset_r2_bucket = NULL WHERE id = ?')
+            .bind(post.id)
+            .run();
+        } catch {
+          // Non-fatal: log but don't fail the posting run
+          console.warn(`[posting-run] R2 cleanup failed for post ${post.id}`);
+        }
+      }
     } else if (stats.failed > 0) {
       await setPostStatus(env.DB, post.id, 'failed', 'Failed');
     }

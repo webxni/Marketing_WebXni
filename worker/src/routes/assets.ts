@@ -48,7 +48,12 @@ assetRoutes.post('/upload', async (c) => {
       .run();
   }
 
-  return c.json({ ok: true, asset_id: assetId, r2_key: r2Key, bucket }, 201);
+  const publicBase = (c.env as { R2_MEDIA_PUBLIC_URL?: string }).R2_MEDIA_PUBLIC_URL;
+  const url = publicBase && bucket !== 'IMAGES'
+    ? `${publicBase.replace(/\/$/, '')}/${r2Key}`
+    : null;
+
+  return c.json({ ok: true, asset_id: assetId, r2_key: r2Key, bucket, url }, 201);
 });
 
 /** DELETE /api/assets/:id */

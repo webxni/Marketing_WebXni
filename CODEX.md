@@ -178,8 +178,29 @@ frontend/src/lib/api/
 
 ### Post detail designer tab
 `frontend/src/routes/(app)/posts/[id]/+page.svelte`
-- Tab "🎨 Diseño" shows ai_image_prompt, ai_video_prompt, video_script in Spanish
+- Tab "🎨 Diseño" — asset upload section (designer uploads finished file here, auto-marks `asset_delivered = 1`)
+- Shows `ai_image_prompt` (image/design brief) and `ai_video_prompt` (video brief) in Spanish
+- **Translate button** in Contexto del Post — calls `POST /api/posts/:id/translate` to render Spanish translations of title + master_caption inline
 - Context card shows post metadata for the designer's reference
+
+### AI prompt rules by content type
+Prompts include asset type, orientation, exact dimensions, platform context, and brand colors:
+
+| Content type | Asset type | Dimensions |
+|---|---|---|
+| `reel` | VIDEO VERTICAL | 1080 × 1920 (9:16) |
+| `video` | VIDEO HORIZONTAL | 1920 × 1080 (16:9) |
+| `image` (Instagram only) | IMAGE SQUARE | 1080 × 1080 |
+| `image` (Pinterest only) | IMAGE VERTICAL | 1000 × 1500 (2:3) |
+| `image` (default) | IMAGE HORIZONTAL | 1200 × 628 |
+| `blog` | No prompt generated | — |
+
+### Caption generation for new platforms
+`POST /api/posts/:id/generate-caption { platform: string }`
+- Generates a platform-specific caption using GPT-4o-mini
+- Reads client brand voice + intelligence from DB
+- Saves caption to post + adds platform to `post.platforms` JSON array
+- UI: dropdown at bottom of Captions tab showing only platforms not yet on the post
 
 ---
 
@@ -296,6 +317,9 @@ These are explicitly unfinished — do not remove stubs:
 6. **Notion auto-sync on cron** — manual only via API for now.
 
 7. **Real-time posting status** — currently requires page refresh to see updates.
+
+8. **R2_MEDIA_PUBLIC_URL** — env var not configured in wrangler.toml; asset upload works
+   but `url` field in upload response is null so preview doesn't render in Create Post form.
 
 ---
 
@@ -418,10 +442,10 @@ Do NOT use `#000000` for any platform badge — invisible on dark background.
 
 ## Key things the owner cares about
 
-1. **The designer (Skarleth)** uploads media externally. The platform does NOT
-   need to manage asset delivery from her — she submits for approval manually.
-   The "Mark delivered / Ready for Automation" operational panel was intentionally
-   REMOVED from the post detail page.
+1. **The designer (Skarleth)** can upload finished assets directly from the Diseño tab
+   of any post. Uploading auto-sets `asset_delivered = 1`. The "Mark delivered / Ready
+   for Automation" operational panel was intentionally REMOVED from the overview tab —
+   the upload in Diseño tab replaces it. All designer instructions are in Spanish.
 
 2. **Content is approved by the owner (Marvin)** before being marked Ready.
    The workflow: draft → submit for review → approve → (Skarleth adds media) → ready → auto-posted by cron.

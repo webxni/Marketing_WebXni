@@ -88,6 +88,46 @@
 
   let uploadingAsset = false;
   let assetFile: FileList | null = null;
+  let translating = false;
+  let translations: Record<string, string> | null = null;
+
+  const allPlatforms = ['facebook','instagram','linkedin','x','threads','tiktok','pinterest','bluesky','google_business','youtube','website_blog'];
+  const platformLabels: Record<string, string> = {
+    facebook: 'Facebook', instagram: 'Instagram', linkedin: 'LinkedIn', x: 'X / Twitter',
+    threads: 'Threads', tiktok: 'TikTok', pinterest: 'Pinterest', bluesky: 'Bluesky',
+    google_business: 'Google Business', youtube: 'YouTube', website_blog: 'Website Blog',
+  };
+  let addPlatform = '';
+  let generatingCaption = false;
+
+  function getMissingPlatforms(p: typeof post): string[] {
+    if (!p) return allPlatforms;
+    const existing = JSON.parse(p.platforms ?? '[]') as string[];
+    return allPlatforms.filter(pl => !existing.includes(pl));
+  }
+
+  async function generateCaption() {
+    if (!post || !addPlatform) return;
+    generatingCaption = true;
+    try {
+      await postsApi.generateCaption(post.id, addPlatform);
+      toast.success(`${platformLabels[addPlatform] ?? addPlatform} caption generated`);
+      addPlatform = '';
+      load();
+    } catch { toast.error('Generation failed'); }
+    finally { generatingCaption = false; }
+  }
+
+  async function translateContext() {
+    if (!post) return;
+    translating = true;
+    try {
+      const r = await postsApi.translateContext(post.id);
+      translations = r.translations;
+    } catch { toast.error('Translation failed'); }
+    finally { translating = false; }
+  }
+
   async function uploadAsset() {
     if (!post || !assetFile || !assetFile[0]) return;
     uploadingAsset = true;
@@ -277,6 +317,28 @@
       {/if}
     </div>
     {/if}
+
+    <!-- Add caption for a new platform -->
+    {#if getMissingPlatforms(post).length > 0}
+    <div class="card p-4 border border-dashed border-border">
+      <h4 class="text-xs font-medium text-muted mb-2">Generate caption for another platform</h4>
+      <div class="flex gap-2">
+        <select bind:value={addPlatform} class="input flex-1 text-sm" disabled={generatingCaption}>
+          <option value="">Select platform…</option>
+          {#each getMissingPlatforms(post) as pl}
+          <option value={pl}>{platformLabels[pl] ?? pl}</option>
+          {/each}
+        </select>
+        <button
+          class="btn-primary btn-sm text-xs"
+          disabled={!addPlatform || generatingCaption}
+          on:click={generateCaption}
+        >
+          {generatingCaption ? 'Generating…' : '✦ Generate'}
+        </button>
+      </div>
+    </div>
+    {/if}
   </div>
   {/if}
 
@@ -336,11 +398,41 @@
       </div>
     </div>
 
+    <!-- Asset upload for designer -->
+    <div class="card p-5">
+      <div class="flex items-center gap-2 mb-3">
+        <span class="text-lg">📎</span>
+        <h3 class="text-sm font-semibold text-white">Subir Archivo de Diseño</h3>
+      </div>
+      {#if post.asset_r2_key}
+      <div class="flex items-center gap-3 p-3 bg-green-500/10 border border-green-500/30 rounded-lg mb-3">
+        <span class="text-green-400 text-lg">✓</span>
+        <div class="flex-1">
+          <p class="text-xs text-green-400 font-medium">Archivo entregado</p>
+          <p class="text-xs text-muted font-mono truncate">{post.asset_r2_key}</p>
+        </div>
+      </div>
+      {/if}
+      <label class="block">
+        <span class="text-xs text-muted block mb-2">Sube la imagen o video terminado (JPG, PNG, MP4, MOV)</span>
+        <input
+          type="file"
+          accept="image/*,video/*"
+          class="block w-full text-sm text-muted file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:font-medium file:bg-accent file:text-white hover:file:bg-blue-600 cursor-pointer"
+          disabled={uploadingAsset}
+          on:change={(e) => { assetFile = e.currentTarget.files; uploadAsset(); }}
+        />
+      </label>
+      {#if uploadingAsset}
+      <p class="text-xs text-accent mt-2">Subiendo archivo...</p>
+      {/if}
+    </div>
+
     {#if post.ai_image_prompt}
     <div class="card p-5">
       <div class="flex items-center gap-2 mb-3">
         <span class="text-lg">🖼️</span>
-        <h3 class="text-sm font-semibold text-white">Prompt para Imagen / Diseño</h3>
+        <h3 class="text-sm font-semibold text-white">Brief Visual — Imagen / Diseño</h3>
       </div>
       <p class="text-sm text-white/90 whitespace-pre-wrap leading-relaxed bg-white/5 rounded-lg p-4 border border-white/10">{post.ai_image_prompt}</p>
       <div class="mt-3 flex gap-2">
@@ -354,7 +446,7 @@
     <div class="card p-5">
       <div class="flex items-center gap-2 mb-3">
         <span class="text-lg">🎬</span>
-        <h3 class="text-sm font-semibold text-white">Concepto de Video</h3>
+        <h3 class="text-sm font-semibold text-white">Brief de Video</h3>
       </div>
       <p class="text-sm text-white/90 whitespace-pre-wrap leading-relaxed bg-white/5 rounded-lg p-4 border border-white/10">{post.ai_video_prompt}</p>
       <div class="mt-3 flex gap-2">
@@ -385,7 +477,21 @@
     <!-- Post context summary for the designer -->
     {#if post.master_caption || post.content_type}
     <div class="card p-5 bg-white/3">
-      <h3 class="text-xs font-medium text-muted mb-3 uppercase tracking-wide">Contexto del Post</h3>
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-xs font-medium text-muted uppercase tracking-wide">Contexto del Post</h3>
+        <button
+          class="btn-ghost btn-sm text-xs flex items-center gap-1.5"
+          disabled={translating}
+          on:click={translateContext}
+        >
+          {#if translating}
+          <span class="text-accent">Traduciendo...</span>
+          {:else}
+          <span>🌐</span>
+          <span>{translations ? 'Traducido ✓' : 'Traducir al Español'}</span>
+          {/if}
+        </button>
+      </div>
       <div class="grid grid-cols-2 gap-3 text-xs">
         {#if post.content_type}
         <div>
@@ -403,12 +509,18 @@
         <div class="col-span-2">
           <span class="text-muted">Título del post:</span>
           <span class="text-white ml-1">{post.title}</span>
+          {#if translations?.title}
+          <p class="text-accent/90 mt-0.5 ml-1 italic">→ {translations.title}</p>
+          {/if}
         </div>
         {/if}
         {#if post.master_caption}
         <div class="col-span-2">
           <span class="text-muted block mb-1">Caption principal:</span>
           <p class="text-white/80 italic bg-white/5 rounded p-2">{post.master_caption}</p>
+          {#if translations?.master_caption}
+          <p class="text-accent/90 italic bg-accent/5 border border-accent/20 rounded p-2 mt-1.5">→ {translations.master_caption}</p>
+          {/if}
         </div>
         {/if}
       </div>

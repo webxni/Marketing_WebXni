@@ -85,11 +85,14 @@
 
   async function uploadAsset() {
     if (!assetFile || !assetFile[0]) return;
+    if (!clientSlug) { toast.error('Select a client before uploading a file'); return; }
+    const clientRecord = clients.find(c => c.slug === clientSlug);
+    if (!clientRecord) { toast.error('Client not found'); return; }
     uploading = true;
     try {
-      const r = await assetsApi.upload(assetFile[0]);
+      const r = await assetsApi.upload(assetFile[0], clientRecord.id);
       assetR2Key = r.r2_key;
-      assetPreviewUrl = r.url;
+      assetPreviewUrl = r.url ?? '';
       toast.success('Asset uploaded');
     } catch { toast.error('Upload failed'); }
     finally { uploading = false; }
@@ -167,6 +170,20 @@
   });
 
   $: if (assetFile && assetFile[0]) uploadAsset();
+
+  // Auto-populate platforms when client changes
+  let prevClientSlug = '';
+  $: if (clientSlug && clientSlug !== prevClientSlug) {
+    prevClientSlug = clientSlug;
+    clientsApi.getPlatforms(clientSlug)
+      .then(r => {
+        const active = r.platforms.filter(p => !(p as unknown as { paused?: number }).paused);
+        if (active.length > 0) {
+          selectedPlatforms = active.map(p => p.platform);
+        }
+      })
+      .catch(() => { /* ignore — user can select manually */ });
+  }
 </script>
 
 <svelte:head><title>New Post — WebXni</title></svelte:head>

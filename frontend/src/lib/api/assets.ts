@@ -5,7 +5,7 @@ export interface UploadResult {
   asset_id: string;
   r2_key:   string;
   bucket:   string;
-  url:      string;  // public URL
+  url:      string | null;  // public URL (null if R2_MEDIA_PUBLIC_URL not configured)
 }
 
 export const assetsApi = {

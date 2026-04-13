@@ -11,6 +11,7 @@ import {
   setPostStatus,
   getPostPlatforms,
   writeAuditLog,
+  getClientWithConfig,
 } from '../db/queries';
 
 export const postRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
@@ -292,4 +293,152 @@ postRoutes.get('/:id/history', async (c) => {
     .bind(c.req.param('id'))
     .all();
   return c.json({ versions: versions.results });
+});
+
+/** POST /api/posts/:id/translate — translate post context to Spanish for designer */
+postRoutes.post('/:id/translate', async (c) => {
+  const post = await getPostById(c.env.DB, c.req.param('id'));
+  if (!post) return c.json({ error: 'Not found' }, 404);
+
+  const fields: Record<string, string> = {};
+  if (post.title)          fields.title = post.title;
+  if (post.master_caption) fields.master_caption = post.master_caption;
+
+  if (Object.keys(fields).length === 0) {
+    return c.json({ translations: {} });
+  }
+
+  const prompt = `Translate the following social media post fields to Spanish. Return a JSON object with the same keys. Keep brand names, hashtags, and emojis as-is. Only translate the text.\n\n${JSON.stringify(fields)}`;
+
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${c.env.OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: 'You are a translator. Always respond with valid JSON only.' },
+        { role: 'user', content: prompt },
+      ],
+      response_format: { type: 'json_object' },
+      temperature: 0.2,
+      max_tokens: 500,
+    }),
+  });
+
+  if (!res.ok) {
+    return c.json({ error: 'Translation service unavailable' }, 502);
+  }
+
+  const data = await res.json() as { choices: Array<{ message: { content: string } }> };
+  const raw  = data.choices?.[0]?.message?.content;
+  if (!raw) return c.json({ error: 'Empty translation response' }, 502);
+
+  try {
+    const translations = JSON.parse(raw) as Record<string, string>;
+    return c.json({ translations });
+  } catch {
+    return c.json({ error: 'Failed to parse translation response' }, 502);
+  }
+});
+
+/** POST /api/posts/:id/generate-caption — generate a caption for a new platform */
+postRoutes.post('/:id/generate-caption', async (c) => {
+  const post = await getPostById(c.env.DB, c.req.param('id'));
+  if (!post) return c.json({ error: 'Not found' }, 404);
+
+  const { platform } = await c.req.json<{ platform: string }>();
+  if (!platform) return c.json({ error: 'platform required' }, 400);
+
+  // Map platform to caption field
+  const capField = platform === 'google_business' ? 'cap_google_business' : `cap_${platform}`;
+
+  const client = await getClientWithConfig(c.env.DB, post.client_id);
+  if (!client) return c.json({ error: 'Client not found' }, 404);
+
+  const intel = await c.env.DB
+    .prepare('SELECT * FROM client_intelligence WHERE client_id = ?')
+    .bind(post.client_id)
+    .first<{ brand_voice?: string | null; prohibited_terms?: string | null }>();
+
+  // Build a focused prompt for one platform caption
+  const platformInstructions: Record<string, string> = {
+    facebook:        'engaging Facebook caption, can be longer, include a question or CTA (150-400 chars)',
+    instagram:       'Instagram caption with relevant emojis and 10-15 hashtags (150-300 chars + hashtags on new lines)',
+    linkedin:        'professional LinkedIn caption, insight-driven, no hashtag spam (200-500 chars, 3-5 hashtags max)',
+    x:               'X/Twitter post, punchy and direct, max 280 chars total',
+    threads:         'casual Threads post, conversational, 100-250 chars',
+    tiktok:          'TikTok caption with trending hashtags (150-250 chars + 5-10 hashtags)',
+    pinterest:       'Pinterest description, keyword-rich, 100-200 chars + 5-8 hashtags',
+    bluesky:         'Bluesky post, casual and direct, max 300 chars',
+    google_business: 'Google Business post, factual and local, 100-250 chars, NO hashtags',
+    youtube:         'YouTube description with CTA (200-400 chars)',
+    website_blog:    'blog teaser/excerpt, compelling lead paragraph (100-200 chars)',
+  };
+
+  const instrText = platformInstructions[platform] ?? 'concise social media caption (100-250 chars)';
+  const lang = client.language && client.language !== 'en' ? client.language : 'en';
+
+  const prompt = `You are a social media writer for ${client.canonical_name}.${client.industry ? ` Industry: ${client.industry}.` : ''}${lang !== 'en' ? ` Write in ${lang}.` : ''}
+${intel?.brand_voice ? `Brand voice: ${intel.brand_voice}.` : ''}${intel?.prohibited_terms ? ` NEVER USE: ${intel.prohibited_terms}.` : ''}${client.cta_text ? ` Preferred CTA: ${client.cta_text}.` : ''}
+
+Post title: ${post.title ?? ''}
+Master caption: ${post.master_caption ?? ''}
+
+Write a ${platform} caption: ${instrText}.
+
+Return JSON: { "caption": "..." }`;
+
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${c.env.OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: 'You are a social media content writer. Always respond with valid JSON only.' },
+        { role: 'user', content: prompt },
+      ],
+      response_format: { type: 'json_object' },
+      temperature: 0.75,
+      max_tokens: 400,
+    }),
+  });
+
+  if (!res.ok) return c.json({ error: 'Generation service unavailable' }, 502);
+
+  const data = await res.json() as { choices: Array<{ message: { content: string } }> };
+  const raw  = data.choices?.[0]?.message?.content;
+  if (!raw) return c.json({ error: 'Empty response' }, 502);
+
+  let caption: string;
+  try {
+    caption = (JSON.parse(raw) as { caption: string }).caption;
+  } catch {
+    return c.json({ error: 'Failed to parse response' }, 502);
+  }
+
+  // Save caption to post and add platform to platforms list
+  const existingPlatforms: string[] = JSON.parse(post.platforms ?? '[]');
+  const updatedPlatforms = existingPlatforms.includes(platform)
+    ? existingPlatforms
+    : [...existingPlatforms, platform];
+
+  await c.env.DB
+    .prepare(`UPDATE posts SET ${capField} = ?, platforms = ?, updated_at = ? WHERE id = ?`)
+    .bind(caption, JSON.stringify(updatedPlatforms), Math.floor(Date.now() / 1000), post.id)
+    .run();
+
+  await writeAuditLog(c.env.DB, {
+    user_id: c.get('user').userId,
+    action: 'generate_caption',
+    entity_type: 'post',
+    entity_id: post.id,
+  });
+
+  return c.json({ ok: true, platform, caption, field: capField });
 });
