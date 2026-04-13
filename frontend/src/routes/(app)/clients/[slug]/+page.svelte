@@ -7,7 +7,7 @@
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import { can } from '$lib/stores/auth';
   import { toast } from '$lib/stores/ui';
-  import type { Client, ClientPlatform, ClientIntelligence, ClientPlatformLinks } from '$lib/types';
+  import type { Client, ClientPlatform, ClientIntelligence } from '$lib/types';
 
   type Svc   = { id: string; name: string; category_name: string | null; active: number };
   type Area  = { id: string; city: string; state: string | null; zip: string | null; primary_area: number };
@@ -16,7 +16,7 @@
   let client:    Client | null = null;
   let platforms: ClientPlatform[] = [];
   let loading = true;
-  let activeTab: 'profile' | 'platforms' | 'services' | 'areas' | 'offers' | 'intelligence' | 'links' | 'feedback' = 'profile';
+  let activeTab: 'profile' | 'platforms' | 'services' | 'areas' | 'offers' | 'intelligence' | 'feedback' = 'profile';
 
   // Intelligence
   let intelligence: ClientIntelligence = { brand_voice: null, tone_keywords: null, prohibited_terms: null,
@@ -38,21 +38,6 @@
     finally { savingIntelligence = false; }
   }
 
-  // Platform links
-  let platformLinks: ClientPlatformLinks = {};
-  let linksLoaded = false;
-  let savingLinks = false;
-
-  async function loadPlatformLinks(slug: string) {
-    try { const r = await clientsApi.getPlatformLinks(slug); platformLinks = r.links as ClientPlatformLinks; linksLoaded = true; } catch {}
-  }
-  async function savePlatformLinks() {
-    if (!client) return;
-    savingLinks = true;
-    try { await clientsApi.savePlatformLinks(client.slug, platformLinks as Record<string, unknown>); toast.success('Links saved'); }
-    catch { toast.error('Failed to save'); }
-    finally { savingLinks = false; }
-  }
 
   async function deletePlatform(p: ClientPlatform) {
     if (!client) return;
@@ -240,15 +225,6 @@
     catch { toast.error('Failed to update'); }
   }
 
-  // Platform links helpers (avoid TypeScript cast in template)
-  function getLinkValue(key: string): string {
-    return (platformLinks as Record<string, string | null | undefined>)[key] ?? '';
-  }
-  function setLinkValue(key: string, value: string) {
-    (platformLinks as Record<string, string>)[key] = value;
-    platformLinks = platformLinks;
-  }
-
   $: brand = client?.brand_json ? JSON.parse(client.brand_json) : null;
 
   function switchTab(t: string) { activeTab = t as typeof activeTab; }
@@ -256,7 +232,6 @@
   $: if (client && activeTab === 'areas')        loadAreas(client.slug);
   $: if (client && activeTab === 'offers')       loadOffers(client.slug);
   $: if (client && activeTab === 'intelligence') loadIntelligence(client.slug);
-  $: if (client && activeTab === 'links')        loadPlatformLinks(client.slug);
   $: if (client && activeTab === 'feedback')     loadFeedback(client.slug);
 </script>
 
@@ -293,7 +268,6 @@
       { key: 'profile',      label: 'Profile'      },
       { key: 'platforms',    label: 'Platforms'    },
       { key: 'intelligence', label: 'Intelligence' },
-      { key: 'links',        label: 'Social Links' },
       { key: 'services',     label: 'Services'     },
       { key: 'areas',        label: 'Areas'        },
       { key: 'offers',       label: 'Offers'       },
@@ -622,47 +596,6 @@
   </div>
   {/if}
 
-  <!-- Platform Links tab -->
-  {#if activeTab === 'links'}
-  <div class="card p-5">
-    <div class="flex items-center justify-between mb-4">
-      <h3 class="section-label">Social Profile Links</h3>
-      {#if can('clients.edit')}
-        <button class="btn-primary btn-sm" on:click={savePlatformLinks} disabled={savingLinks}>
-          {savingLinks ? 'Saving…' : 'Save'}
-        </button>
-      {/if}
-    </div>
-    <p class="text-xs text-muted mb-4">Public profile URLs for each platform — used in reports and client portals.</p>
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-      {#each [
-        { key: 'facebook',        label: 'Facebook' },
-        { key: 'instagram',       label: 'Instagram' },
-        { key: 'tiktok',          label: 'TikTok' },
-        { key: 'youtube',         label: 'YouTube' },
-        { key: 'linkedin',        label: 'LinkedIn' },
-        { key: 'pinterest',       label: 'Pinterest' },
-        { key: 'x',               label: 'X / Twitter' },
-        { key: 'threads',         label: 'Threads' },
-        { key: 'bluesky',         label: 'Bluesky' },
-        { key: 'google_business', label: 'Google Business' },
-        { key: 'website',         label: 'Website' },
-      ] as link}
-        <div>
-          <label class="block text-xs text-muted mb-1">{link.label}</label>
-          <input
-            type="url"
-            value={getLinkValue(link.key)}
-            on:input={(e) => setLinkValue(link.key, e.currentTarget.value)}
-            class="input w-full text-sm"
-            placeholder="https://…"
-            readonly={!can('clients.edit')}
-          />
-        </div>
-      {/each}
-    </div>
-  </div>
-  {/if}
 
 {/if}
 
