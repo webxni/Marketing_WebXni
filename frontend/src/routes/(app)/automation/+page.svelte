@@ -232,11 +232,15 @@
     return `${date}  ${time ?? ''} NIC`.trim();
   }
 
-  function scheduledLabel(dt: string | null): { label: string; cls: string } {
-    if (!dt) return { label: 'Unscheduled', cls: 'text-muted' };
+  function scheduledLabel(dt: string | null): { label: string; cls: string; hint?: string } {
+    if (!dt) return { label: 'Unscheduled', cls: 'text-muted', hint: 'No publish time set — will not be sent automatically' };
     const nicNowStr = nicNow().replace(' ', 'T');
     const dtNorm = dt.replace(' ', 'T');
-    if (dtNorm <= nicNowStr) return { label: 'Due now', cls: 'text-green-400' };
+    if (dtNorm <= nicNowStr) return {
+      label: 'Eligible',
+      cls: 'text-green-400',
+      hint: 'Scheduled time has passed — will be sent on the next cron run (every 6h: midnight, 6am, noon, 6pm NIC)',
+    };
     if (dtNorm.startsWith(nicToday())) return { label: 'Today', cls: 'text-accent' };
     if (dtNorm.startsWith(nicTomorrow())) return { label: 'Tomorrow', cls: 'text-yellow-400' };
     return { label: 'Upcoming', cls: 'text-muted' };
@@ -578,23 +582,28 @@
       {#each scheduledPosts as post}
       {@const lbl = scheduledLabel(post.publish_date)}
       {@const platforms = JSON.parse(post.platforms ?? '[]')}
-      <div class="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-surface border border-border hover:border-border/80">
-        <div class="flex-1 min-w-0">
-          <a href="/posts/{post.id}" class="text-white hover:text-accent truncate block font-medium text-xs">{post.title}</a>
-          <p class="text-[11px] text-muted truncate">{post.client_name ?? post.client_slug}</p>
+      <div class="px-3 py-2.5 rounded-lg bg-surface border border-border hover:border-border/80">
+        <div class="flex items-center gap-3">
+          <div class="flex-1 min-w-0">
+            <a href="/posts/{post.id}" class="text-white hover:text-accent truncate block font-medium text-xs">{post.title}</a>
+            <p class="text-[11px] text-muted truncate">{post.client_name ?? post.client_slug}</p>
+          </div>
+          <div class="hidden sm:flex flex-wrap gap-1 flex-shrink-0">
+            {#each platforms.slice(0,3) as p}
+              <PlatformBadge platform={p} size="sm" />
+            {/each}
+            {#if platforms.length > 3}
+              <span class="text-[10px] text-muted">+{platforms.length - 3}</span>
+            {/if}
+          </div>
+          <div class="text-right flex-shrink-0">
+            <span class="text-[11px] {lbl.cls} font-medium block">{lbl.label}</span>
+            <span class="text-[11px] text-muted font-mono">{formatScheduledTime(post.publish_date)}</span>
+          </div>
         </div>
-        <div class="hidden sm:flex flex-wrap gap-1 flex-shrink-0">
-          {#each platforms.slice(0,3) as p}
-            <PlatformBadge platform={p} size="sm" />
-          {/each}
-          {#if platforms.length > 3}
-            <span class="text-[10px] text-muted">+{platforms.length - 3}</span>
-          {/if}
-        </div>
-        <div class="text-right flex-shrink-0">
-          <span class="text-[11px] {lbl.cls} font-medium block">{lbl.label}</span>
-          <span class="text-[11px] text-muted font-mono">{formatScheduledTime(post.publish_date)}</span>
-        </div>
+        {#if lbl.hint}
+        <p class="text-[11px] text-muted mt-1.5 leading-tight">{lbl.hint}</p>
+        {/if}
       </div>
       {/each}
     </div>

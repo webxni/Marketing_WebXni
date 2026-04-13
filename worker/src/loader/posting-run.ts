@@ -93,6 +93,11 @@ async function processPost(
 ): Promise<void> {
   stats.processed++;
 
+  // Per-post counters — status update must use these, NOT global stats
+  // (global stats accumulate across all posts and would produce wrong status)
+  let thisPosted = 0;
+  let thisFailed = 0;
+
   const client = await getClientWithConfig(env.DB, post.client_id);
   if (!client) {
     await writeError(env.DB, post.id, 'Client not found in DB');
@@ -272,6 +277,7 @@ async function processPost(
         });
       }
       stats.posted++;
+      thisPosted++;
     } catch (err) {
       if (err instanceof UploadPostError && err.isIdempotent) {
         // Already submitted — mark as sent
@@ -283,6 +289,7 @@ async function processPost(
           idempotency_key: idemKey,
         });
         stats.posted++;
+        thisPosted++;
       } else {
         const msg = err instanceof UploadPostError
           ? `HTTP ${err.status}: ${err.body.slice(0, 300)}`
@@ -295,17 +302,18 @@ async function processPost(
           idempotency_key: idemKey,
         });
         stats.failed++;
+        thisFailed++;
       }
     }
   }
 
-  // Post-loop: update post status
+  // Post-loop: update post status using per-post counters (not global stats)
   if (!dryRun) {
-    if (stats.posted > 0) {
+    if (thisPosted > 0) {
       await setPostStatus(env.DB, post.id, 'scheduled', 'Posted');
 
-      // Clean up R2 asset only when all platforms succeeded (none failed)
-      if (stats.failed === 0 && post.asset_r2_key) {
+      // Clean up R2 asset only when ALL platforms for this post succeeded
+      if (thisFailed === 0 && post.asset_r2_key) {
         try {
           const bucket = post.asset_r2_bucket === 'IMAGES' ? env.IMAGES : env.MEDIA;
           await bucket.delete(post.asset_r2_key);
@@ -314,12 +322,17 @@ async function processPost(
             .bind(post.id)
             .run();
         } catch {
-          // Non-fatal: log but don't fail the posting run
           console.warn(`[posting-run] R2 cleanup failed for post ${post.id}`);
         }
       }
-    } else if (stats.failed > 0) {
+    } else if (thisFailed > 0) {
       await setPostStatus(env.DB, post.id, 'failed', 'Failed');
+    } else {
+      // All platforms were skipped — write a diagnostic note so it's visible
+      console.warn(
+        `[posting-run] Post ${post.id} "${post.title}" — all platforms skipped (Upload-Post not configured or preflight blocked). ` +
+        `Check client '${client?.slug}' upload_post_profile and platform configs.`,
+      );
     }
   }
 }
