@@ -166,18 +166,24 @@ export async function listReadyPosts(
   limit = 50,
 ): Promise<PostRow[]> {
   // Only pick up posts whose scheduled time has arrived (or have no time set).
-  // publish_date is stored as 'YYYY-MM-DDTHH:MM' (datetime-local format, UTC).
+  // publish_date is stored as 'YYYY-MM-DDTHH:MM' (datetime-local, UTC).
   // strftime('%Y-%m-%dT%H:%M','now') produces the same format for comparison.
+  //
+  // Accept both 'ready' and 'approved' — after the approval=ready change,
+  // 'approved' is semantically equivalent to 'ready'. Posts approved under
+  // the old two-step flow land here via the 'approved' branch.
   const nowExpr = `strftime('%Y-%m-%dT%H:%M','now')`;
+  const statusClause = `(
+    (status = 'ready' AND ready_for_automation = 1 AND asset_delivered = 1)
+    OR status = 'approved'
+  )`;
   if (clientFilter) {
     const client = await getClientBySlug(db, clientFilter);
     if (!client) return [];
     const r = await db
       .prepare(
         `SELECT * FROM posts
-         WHERE status = 'ready'
-           AND ready_for_automation = 1
-           AND asset_delivered = 1
+         WHERE ${statusClause}
            AND client_id = ?
            AND (publish_date IS NULL OR publish_date <= ${nowExpr})
          ORDER BY publish_date ASC
@@ -190,9 +196,7 @@ export async function listReadyPosts(
   const r = await db
     .prepare(
       `SELECT * FROM posts
-       WHERE status = 'ready'
-         AND ready_for_automation = 1
-         AND asset_delivered = 1
+       WHERE ${statusClause}
          AND (publish_date IS NULL OR publish_date <= ${nowExpr})
        ORDER BY publish_date ASC
        LIMIT ?`,

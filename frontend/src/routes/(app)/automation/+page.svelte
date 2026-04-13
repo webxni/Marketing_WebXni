@@ -197,8 +197,18 @@
   async function loadScheduledPosts() {
     loadingScheduled = true;
     try {
-      const r = await postsApi.list({ status: 'ready', limit: 100 });
-      scheduledPosts = r.posts.sort((a, b) => {
+      const [readyR, approvedR] = await Promise.all([
+        postsApi.list({ status: 'ready',    limit: 100 }),
+        postsApi.list({ status: 'approved', limit: 100 }),
+      ]);
+      const combined = [...readyR.posts, ...approvedR.posts];
+      // deduplicate (shouldn't overlap, but be safe)
+      const seen = new Set<string>();
+      scheduledPosts = combined.filter(p => {
+        if (seen.has(p.id)) return false;
+        seen.add(p.id);
+        return true;
+      }).sort((a, b) => {
         if (!a.publish_date) return 1;
         if (!b.publish_date) return -1;
         return a.publish_date.localeCompare(b.publish_date);
@@ -559,17 +569,18 @@
     <div class="space-y-2">
       {#each scheduledPosts as post}
       {@const lbl = scheduledLabel(post.publish_date)}
-      <div class="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-surface border border-border hover:border-border/80 text-sm">
+      {@const platforms = JSON.parse(post.platforms ?? '[]')}
+      <div class="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-surface border border-border hover:border-border/80">
         <div class="flex-1 min-w-0">
           <a href="/posts/{post.id}" class="text-white hover:text-accent truncate block font-medium text-xs">{post.title}</a>
           <p class="text-[11px] text-muted truncate">{post.client_name ?? post.client_slug}</p>
         </div>
         <div class="hidden sm:flex flex-wrap gap-1 flex-shrink-0">
-          {#each JSON.parse(post.platforms ?? '[]').slice(0,3) as p}
+          {#each platforms.slice(0,3) as p}
             <PlatformBadge platform={p} size="sm" />
           {/each}
-          {#if JSON.parse(post.platforms ?? '[]').length > 3}
-            <span class="text-[10px] text-muted">+{JSON.parse(post.platforms ?? '[]').length - 3}</span>
+          {#if platforms.length > 3}
+            <span class="text-[10px] text-muted">+{platforms.length - 3}</span>
           {/if}
         </div>
         <div class="text-right flex-shrink-0">
