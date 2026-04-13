@@ -148,6 +148,9 @@
   let editingOffer: ClientOffer | null = null;
   let editingEvent: ClientEvent | null = null;
   let uploadingGbpId: string | null = null;
+  let gbpFormFile: File | null = null;         // file queued for upload after create
+  let editingOfferFile: File | null = null;    // file queued for upload after offer edit save
+  let editingEventFile: File | null = null;    // file queued for upload after event edit save
 
   // Unified creation form
   let gbpForm = {
@@ -169,14 +172,16 @@
       gbp_event_end_date: '', gbp_event_end_time: '',
       ai_image_prompt: '',
     };
+    gbpFormFile = null;
   }
 
   async function submitGbpForm() {
     if (!client || !gbpForm.title.trim()) return;
     submittingGbp = true;
     try {
+      let newId: string | null = null;
       if (gbpPostType === 'offer') {
-        await clientsApi.createOffer(client.slug, {
+        const r = await clientsApi.createOffer(client.slug, {
           title:            gbpForm.title.trim(),
           description:      gbpForm.description.trim()    || undefined,
           cta_text:         gbpForm.cta_text.trim()       || undefined,
@@ -192,8 +197,9 @@
           ai_image_prompt:  gbpForm.ai_image_prompt.trim()|| undefined,
           active:           true,
         });
+        newId = (r.offer as { id: string }).id;
       } else {
-        await clientsApi.createEvent(client.slug, {
+        const r = await clientsApi.createEvent(client.slug, {
           title:                gbpForm.title.trim(),
           description:          gbpForm.description.trim()      || undefined,
           gbp_event_title:      gbpForm.gbp_event_title.trim()  || undefined,
@@ -209,6 +215,13 @@
           ai_image_prompt:      gbpForm.ai_image_prompt.trim()  || undefined,
           active:               true,
         });
+        newId = (r.event as { id: string }).id;
+      }
+      // Upload image if one was selected
+      if (gbpFormFile && newId) {
+        const fd = new FormData();
+        fd.append('file', gbpFormFile);
+        await clientsApi.uploadGbpAsset(client.slug, gbpPostType === 'offer' ? 'offers' : 'events', newId, fd);
       }
       resetGbpForm();
       loadOffers(client.slug);
@@ -252,13 +265,19 @@
 
   function startEditOffer(offer: ClientOffer) { editingOffer = { ...offer }; editingEvent = null; }
   function startEditEvent(ev: ClientEvent)    { editingEvent = { ...ev };   editingOffer = null; }
-  function cancelGbpEdit() { editingOffer = null; editingEvent = null; }
+  function cancelGbpEdit() { editingOffer = null; editingEvent = null; editingOfferFile = null; editingEventFile = null; }
 
   async function saveEditOffer() {
     if (!client || !editingOffer) return;
     submittingGbp = true;
     try {
       await clientsApi.updateOffer(client.slug, editingOffer.id, editingOffer as unknown as Record<string, unknown>);
+      if (editingOfferFile) {
+        const fd = new FormData();
+        fd.append('file', editingOfferFile);
+        await clientsApi.uploadGbpAsset(client.slug, 'offers', editingOffer.id, fd);
+        editingOfferFile = null;
+      }
       toast.success('Offer saved');
       editingOffer = null;
       loadOffers(client.slug);
@@ -271,6 +290,12 @@
     submittingGbp = true;
     try {
       await clientsApi.updateEvent(client.slug, editingEvent.id, editingEvent as unknown as Record<string, unknown>);
+      if (editingEventFile) {
+        const fd = new FormData();
+        fd.append('file', editingEventFile);
+        await clientsApi.uploadGbpAsset(client.slug, 'events', editingEvent.id, fd);
+        editingEventFile = null;
+      }
       toast.success('Event saved');
       editingEvent = null;
       loadEvents(client.slug);
@@ -341,6 +366,15 @@
   function handleGbpImageUpload(itemType: 'offers' | 'events', itemId: string, e: Event) {
     const f = (e.currentTarget as HTMLInputElement).files?.[0];
     if (f) uploadGbpImage(itemType, itemId, f);
+  }
+  function handleGbpFormFileChange(e: Event) {
+    gbpFormFile = (e.currentTarget as HTMLInputElement).files?.[0] ?? null;
+  }
+  function handleEditingOfferFileChange(e: Event) {
+    editingOfferFile = (e.currentTarget as HTMLInputElement).files?.[0] ?? null;
+  }
+  function handleEditingEventFileChange(e: Event) {
+    editingEventFile = (e.currentTarget as HTMLInputElement).files?.[0] ?? null;
   }
 
   async function load() {
@@ -1034,11 +1068,22 @@
       <!-- Designer section -->
       <div class="border-t border-border pt-3">
         <p class="text-xs text-muted mb-2 font-medium">Diseño / AI Image Brief</p>
-        <div>
-          <label class="block text-xs text-muted mb-1">AI Image Prompt (Spanish) — 1080×1080px GBP square</label>
-          <textarea bind:value={gbpForm.ai_image_prompt} rows="2"
-            placeholder="Ej: Diseño cuadrado, fondo azul marino, texto blanco 'Ahorra 10%'…"
-            class="input w-full text-sm font-mono resize-none"></textarea>
+        <div class="space-y-2">
+          <div>
+            <label class="block text-xs text-muted mb-1">AI Image Prompt (Spanish) — 1080×1080px GBP square</label>
+            <textarea bind:value={gbpForm.ai_image_prompt} rows="2"
+              placeholder="Ej: Diseño cuadrado, fondo azul marino, texto blanco 'Ahorra 10%'…"
+              class="input w-full text-sm font-mono resize-none"></textarea>
+          </div>
+          <div>
+            <label class="block text-xs text-muted mb-1">Upload Image / Video (optional)</label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <span class="btn-secondary btn-sm text-xs">{gbpFormFile ? 'Change file' : 'Choose file'}</span>
+              {#if gbpFormFile}<span class="text-xs text-green-400 truncate max-w-[200px]">{gbpFormFile.name}</span>{:else}<span class="text-xs text-muted">No file selected</span>{/if}
+              <input type="file" accept="image/*,video/*" class="hidden"
+                on:change={handleGbpFormFileChange} />
+            </label>
+          </div>
         </div>
       </div>
 
@@ -1114,6 +1159,17 @@
         <label class="block text-xs text-muted mb-1">AI Image Brief (Spanish)</label>
         <textarea bind:value={editingOffer.ai_image_prompt} rows="2" class="input w-full text-sm font-mono resize-none"></textarea>
       </div>
+      <div class="sm:col-span-2">
+        <label class="block text-xs text-muted mb-1">Replace Image / Video</label>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <span class="btn-secondary btn-sm text-xs">{editingOfferFile ? 'Change file' : 'Choose file'}</span>
+          {#if editingOfferFile}<span class="text-xs text-green-400 truncate max-w-[200px]">{editingOfferFile.name}</span>
+          {:else if editingOffer.asset_r2_key}<span class="text-xs text-muted">Current image attached — choose to replace</span>
+          {:else}<span class="text-xs text-muted">No file selected</span>{/if}
+          <input type="file" accept="image/*,video/*" class="hidden"
+            on:change={handleEditingOfferFileChange} />
+        </label>
+      </div>
     </div>
     <div class="flex justify-end gap-2">
       <button class="btn-secondary btn-sm" on:click={cancelGbpEdit}>Cancel</button>
@@ -1182,6 +1238,17 @@
       <div class="sm:col-span-2">
         <label class="block text-xs text-muted mb-1">AI Image Brief (Spanish)</label>
         <textarea bind:value={editingEvent.ai_image_prompt} rows="2" class="input w-full text-sm font-mono resize-none"></textarea>
+      </div>
+      <div class="sm:col-span-2">
+        <label class="block text-xs text-muted mb-1">Replace Image / Video</label>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <span class="btn-secondary btn-sm text-xs">{editingEventFile ? 'Change file' : 'Choose file'}</span>
+          {#if editingEventFile}<span class="text-xs text-green-400 truncate max-w-[200px]">{editingEventFile.name}</span>
+          {:else if editingEvent.asset_r2_key}<span class="text-xs text-muted">Current image attached — choose to replace</span>
+          {:else}<span class="text-xs text-muted">No file selected</span>{/if}
+          <input type="file" accept="image/*,video/*" class="hidden"
+            on:change={handleEditingEventFileChange} />
+        </label>
       </div>
     </div>
     <div class="flex justify-end gap-2">
