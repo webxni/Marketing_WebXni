@@ -180,6 +180,8 @@ export interface ClientOfferRow {
   asset_r2_key:     string | null;
   asset_r2_bucket:  string | null;
   paused:           number;
+  // AI generation (migration 0014)
+  ai_image_prompt:  string | null;
   created_at:       number;
 }
 
@@ -203,6 +205,8 @@ export interface ClientEventRow {
   last_posted_at:      string | null;
   active:              number;
   paused:              number;
+  // AI generation (migration 0014)
+  ai_image_prompt:     string | null;
   created_at:          number;
   updated_at:          number;
 }

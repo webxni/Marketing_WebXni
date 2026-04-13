@@ -144,7 +144,10 @@ export interface ClientOffer {
   next_run_date:    string | null;
   last_posted_at:   string | null;
   asset_r2_key:     string | null;
+  asset_r2_bucket:  string | null;
   paused:           number;
+  // AI generation (migration 0014)
+  ai_image_prompt:  string | null;
   created_at:       number;
 }
 
@@ -161,11 +164,15 @@ export interface ClientEvent {
   gbp_cta_type:         string | null;
   gbp_cta_url:          string | null;
   gbp_location_id:      string | null;
+  asset_r2_key:         string | null;
+  asset_r2_bucket:      string | null;
   recurrence:           string;   // 'once'|'weekly'|'biweekly'|'monthly'
   next_run_date:        string | null;
   last_posted_at:       string | null;
   active:               number;
   paused:               number;
+  // AI generation (migration 0014)
+  ai_image_prompt:      string | null;
   created_at:           number;
   updated_at:           number;
 }

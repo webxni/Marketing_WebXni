@@ -163,21 +163,23 @@ serviceRoutes.get('/:slug/offers', requirePermission('clients.view'), async (c) 
 });
 
 const offerSchema = z.object({
-  title:           z.string().min(1),
-  description:     z.string().optional(),
-  cta_text:        z.string().optional(),
-  valid_until:     z.string().optional(),
-  active:          z.boolean().optional().default(true),
+  title:            z.string().min(1),
+  description:      z.string().optional(),
+  cta_text:         z.string().optional(),
+  valid_until:      z.string().optional(),
+  active:           z.boolean().optional().default(true),
   // GBP fields (migration 0009)
-  gbp_coupon_code: z.string().optional(),
-  gbp_redeem_url:  z.string().optional(),
-  gbp_terms:       z.string().optional(),
-  gbp_cta_type:    z.enum(['BOOK','ORDER','SHOP','LEARN_MORE','SIGN_UP','CALL']).optional(),
-  gbp_cta_url:     z.string().url().optional().or(z.literal('')),
-  gbp_location_id: z.string().optional(),
-  recurrence:      z.enum(['none','weekly','biweekly','monthly']).optional().default('none'),
-  next_run_date:   z.string().optional(),  // YYYY-MM-DD
-  paused:          z.boolean().optional(),
+  gbp_coupon_code:  z.string().optional(),
+  gbp_redeem_url:   z.string().optional(),
+  gbp_terms:        z.string().optional(),
+  gbp_cta_type:     z.enum(['BOOK','ORDER','SHOP','LEARN_MORE','SIGN_UP','CALL']).optional(),
+  gbp_cta_url:      z.string().url().optional().or(z.literal('')),
+  gbp_location_id:  z.string().optional(),
+  recurrence:       z.enum(['none','weekly','biweekly','monthly']).optional().default('none'),
+  next_run_date:    z.string().optional(),  // YYYY-MM-DD
+  paused:           z.boolean().optional(),
+  // AI generation (migration 0014)
+  ai_image_prompt:  z.string().optional(),
 });
 
 serviceRoutes.post('/:slug/offers', requirePermission('clients.edit'), async (c) => {
@@ -198,15 +200,16 @@ serviceRoutes.post('/:slug/offers', requirePermission('clients.edit'), async (c)
     .prepare(`INSERT INTO client_offers
       (id, client_id, title, description, cta_text, valid_until, active,
        gbp_coupon_code, gbp_redeem_url, gbp_terms, gbp_cta_type, gbp_cta_url,
-       gbp_location_id, recurrence, next_run_date, paused, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+       gbp_location_id, recurrence, next_run_date, paused, ai_image_prompt, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(
       id, client.id, d.title, d.description ?? null, d.cta_text ?? null,
       d.valid_until ?? null, d.active ? 1 : 0,
       d.gbp_coupon_code ?? null, d.gbp_redeem_url ?? null, d.gbp_terms ?? null,
       d.gbp_cta_type ?? null, d.gbp_cta_url ?? null,
       d.gbp_location_id ?? null, d.recurrence ?? 'none',
-      d.next_run_date ?? null, d.paused ? 1 : 0, now,
+      d.next_run_date ?? null, d.paused ? 1 : 0,
+      d.ai_image_prompt ?? null, now,
     )
     .run();
   return c.json({ offer: { id, client_id: client.id, ...d } }, 201);
@@ -217,6 +220,7 @@ const OFFER_WRITABLE = new Set([
   'title','description','cta_text','valid_until','active',
   'gbp_coupon_code','gbp_redeem_url','gbp_terms','gbp_cta_type','gbp_cta_url',
   'gbp_location_id','recurrence','next_run_date','last_posted_at','paused',
+  'ai_image_prompt','asset_r2_key','asset_r2_bucket',
 ]);
 
 serviceRoutes.put('/:slug/offers/:id', requirePermission('clients.edit'), async (c) => {
@@ -260,6 +264,8 @@ const eventSchema = z.object({
   next_run_date:        z.string().optional(),
   active:               z.boolean().optional().default(true),
   paused:               z.boolean().optional(),
+  // AI generation (migration 0014)
+  ai_image_prompt:      z.string().optional(),
 });
 
 serviceRoutes.get('/:slug/events', requirePermission('clients.view'), async (c) => {
@@ -294,15 +300,15 @@ serviceRoutes.post('/:slug/events', requirePermission('clients.edit'), async (c)
        gbp_event_title, gbp_event_start_date, gbp_event_start_time,
        gbp_event_end_date, gbp_event_end_time,
        gbp_cta_type, gbp_cta_url, gbp_location_id,
-       recurrence, next_run_date, active, paused, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+       recurrence, next_run_date, active, paused, ai_image_prompt, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(
       id, client.id, d.title, d.description ?? null,
       d.gbp_event_title ?? null, d.gbp_event_start_date ?? null, d.gbp_event_start_time ?? null,
       d.gbp_event_end_date ?? null, d.gbp_event_end_time ?? null,
       d.gbp_cta_type ?? null, d.gbp_cta_url ?? null, d.gbp_location_id ?? null,
       d.recurrence ?? 'once', d.next_run_date ?? null,
-      d.active ? 1 : 0, d.paused ? 1 : 0, now, now,
+      d.active ? 1 : 0, d.paused ? 1 : 0, d.ai_image_prompt ?? null, now, now,
     )
     .run();
   return c.json({ event: { id, client_id: client.id, ...d } }, 201);
@@ -313,6 +319,7 @@ const EVENT_WRITABLE = new Set([
   'gbp_event_start_date','gbp_event_start_time','gbp_event_end_date','gbp_event_end_time',
   'gbp_cta_type','gbp_cta_url','gbp_location_id',
   'recurrence','next_run_date','last_posted_at','active','paused',
+  'ai_image_prompt','asset_r2_key','asset_r2_bucket',
 ]);
 
 serviceRoutes.put('/:slug/events/:id', requirePermission('clients.edit'), async (c) => {

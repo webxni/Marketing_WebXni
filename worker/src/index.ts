@@ -25,6 +25,7 @@ import { wordpressRoutes }   from './routes/wordpress';
 import { notionRoutes }      from './routes/notion';
 import { portalRoutes }      from './routes/portal';
 import { blogRoutes }        from './routes/blog';
+import { gbpRoutes }         from './routes/gbp';
 
 const app = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -38,6 +39,7 @@ app.route('/api/clients',   clientRoutes);
 app.route('/api/clients',   serviceRoutes);      // /api/clients/:slug/services, /areas, etc.
 app.route('/api/clients',   intelligenceRoutes); // /api/clients/:slug/intelligence, /platform-links, /platforms/:p (DELETE)
 app.route('/api/clients',   wordpressRoutes);    // /api/clients/:slug/wordpress/*
+app.route('/api/clients',   gbpRoutes);          // /api/clients/:slug/gbp/*
 app.route('/api/posts',     postRoutes);
 app.route('/api/posts',     blogRoutes);    // /api/posts/:id/publish-blog, /unpublish-blog
 app.route('/api/assets',    assetRoutes);

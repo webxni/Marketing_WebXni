@@ -251,3 +251,149 @@ export async function generatePostContent(
 
   return parsed;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GBP offer / event variation generation
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface GbpOfferVariation {
+  title:            string;
+  description:      string;
+  cta_text:         string;
+  gbp_cta_type:     string;
+  gbp_coupon_code?: string;
+  gbp_terms?:       string;
+  ai_image_prompt:  string;  // Spanish designer brief
+}
+
+export interface GbpEventVariation {
+  title:           string;
+  gbp_event_title: string;
+  description:     string;
+  gbp_cta_type:    string;
+  ai_image_prompt: string;  // Spanish designer brief
+}
+
+export interface GbpGenerationContext {
+  client: {
+    canonical_name:       string;
+    industry?:            string | null;
+    state?:               string | null;
+    phone?:               string | null;
+    cta_text?:            string | null;
+    brand_primary_color?: string | null;
+    brand_json?:          string | null;
+    notes?:               string | null;
+    language?:            string | null;
+  };
+  intelligence: {
+    brand_voice?:        string | null;
+    tone_keywords?:      string | null;
+    prohibited_terms?:   string | null;
+    approved_ctas?:      string | null;
+    service_priorities?: string | null;
+    seasonal_notes?:     string | null;
+    audience_notes?:     string | null;
+    humanization_style?: string | null;
+  } | null;
+  services:      string[];   // service names for context
+  areas:         string[];   // city/area names
+  recentTitles:  string[];   // recent offer or event titles to avoid repeating
+}
+
+export async function generateGbpVariations(
+  apiKey: string,
+  type:   'offer' | 'event',
+  ctx:    GbpGenerationContext,
+): Promise<GbpOfferVariation[] | GbpEventVariation[]> {
+  const { client, intelligence: i, services, areas, recentTitles } = ctx;
+  const lang = client.language && client.language !== 'en' ? client.language : 'en';
+
+  const brandColor = client.brand_primary_color
+    ?? (() => { try { const b = JSON.parse(client.brand_json ?? '{}'); return b.primary_color ?? b.primaryColor ?? null; } catch { return null; } })()
+    ?? '#1a73e8';
+
+  let p = `You are a Google Business Profile marketing expert for ${client.canonical_name}.`;
+  if (client.industry) p += `\nIndustry: ${client.industry}`;
+  if (client.state)    p += `\nLocation: ${client.state}`;
+  if (lang !== 'en')   p += `\nWrite ALL captions and text content in ${lang}.`;
+
+  p += `\n\nBUSINESS CONTEXT:`;
+  if (i?.service_priorities) p += `\n- Services: ${i.service_priorities}`;
+  if (services.length > 0)   p += `\n- Service list: ${services.slice(0, 12).join(', ')}`;
+  if (areas.length > 0)      p += `\n- Service areas: ${areas.slice(0, 8).join(', ')}`;
+  if (i?.brand_voice)        p += `\n- Brand voice: ${i.brand_voice}`;
+  if (i?.tone_keywords)      p += `\n- Tone: ${i.tone_keywords}`;
+  if (i?.audience_notes)     p += `\n- Audience: ${i.audience_notes}`;
+  if (client.cta_text)       p += `\n- Preferred CTA: ${client.cta_text}`;
+  if (i?.approved_ctas)      p += `\n- Approved CTAs: ${i.approved_ctas}`;
+  if (i?.prohibited_terms)   p += `\n- NEVER USE: ${i.prohibited_terms}`;
+  if (i?.seasonal_notes)     p += `\n- Seasonal notes: ${i.seasonal_notes}`;
+  if (i?.humanization_style) p += `\n- Writing style: ${i.humanization_style}`;
+
+  p += `\n\nCONTENT RULES:
+- NEVER include exact prices, dollar amounts, percentages, or invented statistics
+- Write naturally — no corporate buzzwords, no generic filler openers
+- Keep descriptions concise and action-oriented (GBP has character limits)
+- Local focus where relevant`;
+
+  if (recentTitles.length > 0) {
+    p += `\n\nDO NOT REPEAT these recent ${type}s (use different angles):\n${recentTitles.slice(0, 12).map(t => `- ${t}`).join('\n')}`;
+  }
+
+  if (type === 'offer') {
+    p += `\n\nGenerate 3 distinct Google Business OFFER post variations for this business.
+Use 3 different angles — e.g. service-specific, seasonal, trust/authority.
+Return a JSON object with key "variations" containing an array of exactly 3 objects, each with:
+- "title": Compelling offer headline, 5-10 words${lang !== 'en' ? ` (in ${lang})` : ''}
+- "description": GBP offer caption, 100-200 chars, no prices${lang !== 'en' ? ` (in ${lang})` : ''}
+- "cta_text": Short CTA label, 2-4 words${lang !== 'en' ? ` (in ${lang})` : ''}
+- "gbp_cta_type": One of BOOK|ORDER|SHOP|LEARN_MORE|SIGN_UP|CALL — best match for this business type
+- "gbp_coupon_code": Optional short coupon code (e.g. "FREE-QUOTE"), null if not applicable
+- "gbp_terms": Optional 1-line terms (e.g. "New customers only. Limited availability."), null if not needed
+- "ai_image_prompt": MUST BE IN SPANISH — design brief for the designer. 1080×1080px square image for GBP. Brand color: ${brandColor}. Include: estilo visual, composición, elementos visuales principales, mood/ambiente, texto sugerido para overlay. 2-3 sentences in Spanish.
+
+IMPORTANT: Return only valid JSON. No markdown.`;
+  } else {
+    p += `\n\nGenerate 3 distinct Google Business EVENT post variations for this business.
+Use 3 different angles — e.g. promotional event, seasonal event, educational/workshop event.
+Return a JSON object with key "variations" containing an array of exactly 3 objects, each with:
+- "title": Internal event name, 5-10 words${lang !== 'en' ? ` (in ${lang})` : ''}
+- "gbp_event_title": Short GBP display title, 3-7 words, compelling${lang !== 'en' ? ` (in ${lang})` : ''}
+- "description": GBP event caption, 100-200 chars, action-oriented${lang !== 'en' ? ` (in ${lang})` : ''}
+- "gbp_cta_type": One of BOOK|ORDER|SHOP|LEARN_MORE|SIGN_UP|CALL
+- "ai_image_prompt": MUST BE IN SPANISH — design brief for the designer. 1080×1080px square image for GBP. Brand color: ${brandColor}. Include: estilo visual, composición, elementos visuales, mood, texto sugerido para overlay. 2-3 sentences in Spanish.
+
+IMPORTANT: Return only valid JSON. No markdown.`;
+  }
+
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model:           'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: 'You are a GBP marketing expert. Always respond with valid JSON only.' },
+        { role: 'user',   content: p },
+      ],
+      response_format: { type: 'json_object' },
+      temperature:     0.9,
+      max_tokens:      2000,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text().catch(() => res.statusText);
+    throw new Error(`OpenAI ${res.status}: ${err}`);
+  }
+
+  const data = await res.json() as { choices: Array<{ message: { content: string } }> };
+  const raw  = data.choices?.[0]?.message?.content;
+  if (!raw) throw new Error('Empty response from OpenAI');
+
+  const parsed = JSON.parse(raw) as { variations: GbpOfferVariation[] | GbpEventVariation[] };
+  if (!Array.isArray(parsed.variations) || parsed.variations.length === 0) {
+    throw new Error('No variations returned from OpenAI');
+  }
+  return parsed.variations;
+}

@@ -15,7 +15,7 @@
   let client:    Client | null = null;
   let platforms: ClientPlatform[] = [];
   let loading = true;
-  let activeTab: 'profile' | 'platforms' | 'intelligence' | 'services' | 'areas' | 'offers' | 'events' | 'feedback' = 'profile';
+  let activeTab: 'profile' | 'platforms' | 'intelligence' | 'services' | 'areas' | 'gbp' | 'feedback' = 'profile';
 
   // Intelligence
   let intelligence: ClientIntelligence = { brand_voice: null, tone_keywords: null, prohibited_terms: null,
@@ -124,171 +124,223 @@
     catch { toast.error('Failed to remove'); }
   }
 
-  // ── Offer form ────────────────────────────────────────────────────────────────
+  // ── Unified GBP section ───────────────────────────────────────────────────────
   const GBP_CTA_TYPES = ['BOOK','ORDER','SHOP','LEARN_MORE','SIGN_UP','CALL'] as const;
   const RECURRENCE_OPTS = [
-    { value: 'none',      label: 'One-time (no recurrence)' },
+    { value: 'none',      label: 'One-time (manual only)' },
+    { value: 'weekly',    label: 'Weekly' },
+    { value: 'biweekly',  label: 'Biweekly (quincenal)' },
+    { value: 'monthly',   label: 'Monthly' },
+  ];
+  const EVENT_RECURRENCE_OPTS = [
+    { value: 'once',      label: 'One-time (posts once)' },
     { value: 'weekly',    label: 'Weekly' },
     { value: 'biweekly',  label: 'Biweekly (quincenal)' },
     { value: 'monthly',   label: 'Monthly' },
   ];
 
-  let newOfferTitle     = '';
-  let newOfferDesc      = '';
-  let newOfferCta       = '';
-  let newOfferUntil     = '';
-  let newOfferCtaType   = '';
-  let newOfferCtaUrl    = '';
-  let newOfferCoupon    = '';
-  let newOfferRedeemUrl = '';
-  let newOfferTerms     = '';
-  let newOfferRecurrence= 'none';
-  let newOfferNextRun   = '';
-  let addingOffer       = false;
+  let gbpPostType: 'offer' | 'event' = 'offer';
+  let generatingGbp  = false;
+  let submittingGbp  = false;
+  let gbpVariations: Array<Record<string, string>> = [];
+  let expandedGbpIds = new Set<string>();
+  let showInactiveGbp = false;
   let editingOffer: ClientOffer | null = null;
+  let editingEvent: ClientEvent | null = null;
+  let uploadingGbpId: string | null = null;
 
-  function startEditOffer(offer: ClientOffer) {
-    editingOffer = { ...offer };
+  // Unified creation form
+  let gbpForm = {
+    title: '', description: '', cta_text: '', valid_until: '',
+    gbp_cta_type: '', gbp_cta_url: '', gbp_coupon_code: '', gbp_redeem_url: '',
+    gbp_terms: '', recurrence: 'none', next_run_date: '', gbp_location_id: '',
+    gbp_event_title: '', gbp_event_start_date: '', gbp_event_start_time: '',
+    gbp_event_end_date: '', gbp_event_end_time: '',
+    ai_image_prompt: '',
+  };
+
+  function resetGbpForm() {
+    gbpForm = {
+      title: '', description: '', cta_text: '', valid_until: '',
+      gbp_cta_type: '', gbp_cta_url: '', gbp_coupon_code: '', gbp_redeem_url: '',
+      gbp_terms: '', recurrence: gbpPostType === 'offer' ? 'none' : 'once',
+      next_run_date: '', gbp_location_id: '',
+      gbp_event_title: '', gbp_event_start_date: '', gbp_event_start_time: '',
+      gbp_event_end_date: '', gbp_event_end_time: '',
+      ai_image_prompt: '',
+    };
   }
-  function cancelEditOffer() { editingOffer = null; }
+
+  async function submitGbpForm() {
+    if (!client || !gbpForm.title.trim()) return;
+    submittingGbp = true;
+    try {
+      if (gbpPostType === 'offer') {
+        await clientsApi.createOffer(client.slug, {
+          title:            gbpForm.title.trim(),
+          description:      gbpForm.description.trim()    || undefined,
+          cta_text:         gbpForm.cta_text.trim()       || undefined,
+          valid_until:      gbpForm.valid_until            || undefined,
+          gbp_cta_type:     gbpForm.gbp_cta_type          || undefined,
+          gbp_cta_url:      gbpForm.gbp_cta_url.trim()    || undefined,
+          gbp_coupon_code:  gbpForm.gbp_coupon_code.trim()|| undefined,
+          gbp_redeem_url:   gbpForm.gbp_redeem_url.trim() || undefined,
+          gbp_terms:        gbpForm.gbp_terms.trim()      || undefined,
+          gbp_location_id:  gbpForm.gbp_location_id       || undefined,
+          recurrence:       gbpForm.recurrence,
+          next_run_date:    gbpForm.next_run_date          || undefined,
+          ai_image_prompt:  gbpForm.ai_image_prompt.trim()|| undefined,
+          active:           true,
+        });
+      } else {
+        await clientsApi.createEvent(client.slug, {
+          title:                gbpForm.title.trim(),
+          description:          gbpForm.description.trim()      || undefined,
+          gbp_event_title:      gbpForm.gbp_event_title.trim()  || undefined,
+          gbp_event_start_date: gbpForm.gbp_event_start_date    || undefined,
+          gbp_event_start_time: gbpForm.gbp_event_start_time    || undefined,
+          gbp_event_end_date:   gbpForm.gbp_event_end_date      || undefined,
+          gbp_event_end_time:   gbpForm.gbp_event_end_time      || undefined,
+          gbp_cta_type:         gbpForm.gbp_cta_type            || undefined,
+          gbp_cta_url:          gbpForm.gbp_cta_url.trim()      || undefined,
+          gbp_location_id:      gbpForm.gbp_location_id         || undefined,
+          recurrence:           gbpForm.recurrence,
+          next_run_date:        gbpForm.next_run_date            || undefined,
+          ai_image_prompt:      gbpForm.ai_image_prompt.trim()  || undefined,
+          active:               true,
+        });
+      }
+      resetGbpForm();
+      loadOffers(client.slug);
+      loadEvents(client.slug);
+      toast.success(`${gbpPostType === 'offer' ? 'Offer' : 'Event'} added`);
+    } catch (e) { toast.error(`Failed: ${e instanceof Error ? e.message : String(e)}`); }
+    finally { submittingGbp = false; }
+  }
+
+  async function generateGbpAi() {
+    if (!client) return;
+    generatingGbp = true;
+    gbpVariations = [];
+    try {
+      const r = await clientsApi.generateGbp(client.slug, gbpPostType);
+      gbpVariations = r.variations as Array<Record<string, string>>;
+    } catch (e) { toast.error(`AI generation failed: ${e instanceof Error ? e.message : String(e)}`); }
+    finally { generatingGbp = false; }
+  }
+
+  function applyGbpVariation(v: Record<string, string>) {
+    gbpForm = {
+      ...gbpForm,
+      title:            v['title']            ?? '',
+      description:      v['description']      ?? '',
+      cta_text:         v['cta_text']         ?? '',
+      gbp_cta_type:     v['gbp_cta_type']     ?? '',
+      gbp_coupon_code:  v['gbp_coupon_code']  ?? '',
+      gbp_terms:        v['gbp_terms']        ?? '',
+      gbp_event_title:  v['gbp_event_title']  ?? '',
+      ai_image_prompt:  v['ai_image_prompt']  ?? '',
+    };
+    gbpVariations = [];
+  }
+
+  function toggleGbpExpand(id: string) {
+    if (expandedGbpIds.has(id)) expandedGbpIds.delete(id);
+    else expandedGbpIds.add(id);
+    expandedGbpIds = expandedGbpIds;
+  }
+
+  function startEditOffer(offer: ClientOffer) { editingOffer = { ...offer }; editingEvent = null; }
+  function startEditEvent(ev: ClientEvent)    { editingEvent = { ...ev };   editingOffer = null; }
+  function cancelGbpEdit() { editingOffer = null; editingEvent = null; }
 
   async function saveEditOffer() {
     if (!client || !editingOffer) return;
-    addingOffer = true;
+    submittingGbp = true;
     try {
       await clientsApi.updateOffer(client.slug, editingOffer.id, editingOffer as unknown as Record<string, unknown>);
       toast.success('Offer saved');
       editingOffer = null;
       loadOffers(client.slug);
     } catch (e) { toast.error(`Failed: ${e instanceof Error ? e.message : String(e)}`); }
-    finally { addingOffer = false; }
+    finally { submittingGbp = false; }
   }
-
-  async function addOffer() {
-    if (!client || !newOfferTitle.trim()) return;
-    addingOffer = true;
-    try {
-      await clientsApi.createOffer(client.slug, {
-        title:           newOfferTitle.trim(),
-        description:     newOfferDesc.trim()      || undefined,
-        cta_text:        newOfferCta.trim()        || undefined,
-        valid_until:     newOfferUntil             || undefined,
-        gbp_cta_type:    newOfferCtaType           || undefined,
-        gbp_cta_url:     newOfferCtaUrl.trim()     || undefined,
-        gbp_coupon_code: newOfferCoupon.trim()     || undefined,
-        gbp_redeem_url:  newOfferRedeemUrl.trim()  || undefined,
-        gbp_terms:       newOfferTerms.trim()       || undefined,
-        recurrence:      newOfferRecurrence,
-        next_run_date:   newOfferNextRun            || undefined,
-        active:          true,
-      });
-      newOfferTitle = ''; newOfferDesc = ''; newOfferCta = ''; newOfferUntil = '';
-      newOfferCtaType = ''; newOfferCtaUrl = ''; newOfferCoupon = '';
-      newOfferRedeemUrl = ''; newOfferTerms = ''; newOfferRecurrence = 'none'; newOfferNextRun = '';
-      loadOffers(client.slug);
-    } catch (e) { toast.error(`Failed to add offer: ${e instanceof Error ? e.message : String(e)}`); }
-    finally { addingOffer = false; }
-  }
-  async function removeOffer(id: string) {
-    if (!client) return;
-    try { await clientsApi.deleteOffer(client.slug, id); loadOffers(client.slug); }
-    catch { toast.error('Failed to remove'); }
-  }
-  async function toggleOffer(offer: ClientOffer) {
-    if (!client) return;
-    try {
-      await clientsApi.updateOffer(client.slug, offer.id, { active: !offer.active });
-      loadOffers(client.slug);
-    } catch { toast.error('Failed to update'); }
-  }
-  async function togglePauseOffer(offer: ClientOffer) {
-    if (!client) return;
-    try {
-      await clientsApi.updateOffer(client.slug, offer.id, { paused: !offer.paused });
-      loadOffers(client.slug);
-    } catch { toast.error('Failed to update'); }
-  }
-
-  // ── Event form ────────────────────────────────────────────────────────────────
-  const EVENT_RECURRENCE_OPTS = [
-    { value: 'once',      label: 'One-time only' },
-    { value: 'weekly',    label: 'Weekly' },
-    { value: 'biweekly',  label: 'Biweekly (quincenal)' },
-    { value: 'monthly',   label: 'Monthly' },
-  ];
-
-  let newEventTitle      = '';
-  let newEventDesc       = '';
-  let newEventGbpTitle   = '';
-  let newEventStartDate  = '';
-  let newEventStartTime  = '';
-  let newEventEndDate    = '';
-  let newEventEndTime    = '';
-  let newEventCtaType    = '';
-  let newEventCtaUrl     = '';
-  let newEventRecurrence = 'once';
-  let newEventNextRun    = '';
-  let addingEvent        = false;
-  let editingEvent: ClientEvent | null = null;
-
-  function startEditEvent(ev: ClientEvent) { editingEvent = { ...ev }; }
-  function cancelEditEvent() { editingEvent = null; }
 
   async function saveEditEvent() {
     if (!client || !editingEvent) return;
-    addingEvent = true;
+    submittingGbp = true;
     try {
       await clientsApi.updateEvent(client.slug, editingEvent.id, editingEvent as unknown as Record<string, unknown>);
       toast.success('Event saved');
       editingEvent = null;
       loadEvents(client.slug);
     } catch (e) { toast.error(`Failed: ${e instanceof Error ? e.message : String(e)}`); }
-    finally { addingEvent = false; }
+    finally { submittingGbp = false; }
   }
 
-  async function addEvent() {
-    if (!client || !newEventTitle.trim()) return;
-    addingEvent = true;
-    try {
-      await clientsApi.createEvent(client.slug, {
-        title:                newEventTitle.trim(),
-        description:          newEventDesc.trim()      || undefined,
-        gbp_event_title:      newEventGbpTitle.trim()  || undefined,
-        gbp_event_start_date: newEventStartDate        || undefined,
-        gbp_event_start_time: newEventStartTime        || undefined,
-        gbp_event_end_date:   newEventEndDate          || undefined,
-        gbp_event_end_time:   newEventEndTime          || undefined,
-        gbp_cta_type:         newEventCtaType          || undefined,
-        gbp_cta_url:          newEventCtaUrl.trim()    || undefined,
-        recurrence:           newEventRecurrence,
-        next_run_date:        newEventNextRun           || undefined,
-        active:               true,
-      });
-      newEventTitle = ''; newEventDesc = ''; newEventGbpTitle = '';
-      newEventStartDate = ''; newEventStartTime = ''; newEventEndDate = ''; newEventEndTime = '';
-      newEventCtaType = ''; newEventCtaUrl = ''; newEventRecurrence = 'once'; newEventNextRun = '';
-      loadEvents(client.slug);
-    } catch (e) { toast.error(`Failed: ${e instanceof Error ? e.message : String(e)}`); }
-    finally { addingEvent = false; }
+  async function removeOffer(id: string) {
+    if (!client) return;
+    try { await clientsApi.deleteOffer(client.slug, id); loadOffers(client.slug); }
+    catch { toast.error('Failed to remove'); }
   }
   async function removeEvent(id: string) {
     if (!client) return;
     try { await clientsApi.deleteEvent(client.slug, id); loadEvents(client.slug); }
     catch { toast.error('Failed to remove'); }
   }
+
+  async function toggleOffer(offer: ClientOffer) {
+    if (!client) return;
+    try { await clientsApi.updateOffer(client.slug, offer.id, { active: !offer.active }); loadOffers(client.slug); }
+    catch { toast.error('Failed'); }
+  }
+  async function togglePauseOffer(offer: ClientOffer) {
+    if (!client) return;
+    try { await clientsApi.updateOffer(client.slug, offer.id, { paused: !offer.paused }); loadOffers(client.slug); }
+    catch { toast.error('Failed'); }
+  }
   async function toggleEvent(ev: ClientEvent) {
     if (!client) return;
-    try {
-      await clientsApi.updateEvent(client.slug, ev.id, { active: !ev.active });
-      loadEvents(client.slug);
-    } catch { toast.error('Failed to update'); }
+    try { await clientsApi.updateEvent(client.slug, ev.id, { active: !ev.active }); loadEvents(client.slug); }
+    catch { toast.error('Failed'); }
   }
   async function togglePauseEvent(ev: ClientEvent) {
     if (!client) return;
+    try { await clientsApi.updateEvent(client.slug, ev.id, { paused: !ev.paused }); loadEvents(client.slug); }
+    catch { toast.error('Failed'); }
+  }
+
+  async function uploadGbpImage(itemType: 'offers' | 'events', itemId: string, file: File) {
+    if (!client) return;
+    uploadingGbpId = itemId;
     try {
-      await clientsApi.updateEvent(client.slug, ev.id, { paused: !ev.paused });
-      loadEvents(client.slug);
-    } catch { toast.error('Failed to update'); }
+      const fd = new FormData();
+      fd.append('file', file);
+      await clientsApi.uploadGbpAsset(client.slug, itemType, itemId, fd);
+      toast.success('Image uploaded');
+      if (itemType === 'offers') loadOffers(client.slug); else loadEvents(client.slug);
+    } catch (e) { toast.error(`Upload failed: ${e instanceof Error ? e.message : String(e)}`); }
+    finally { uploadingGbpId = null; }
+  }
+
+  // Sorted combined list helpers
+  function gbpSortKey(item: { next_run_date: string | null }): string {
+    return item.next_run_date ?? '9999-99-99';
+  }
+
+  $: activeGbpItems = [
+    ...offers.filter(o => o.active).map(o => ({ ...o, _type: 'offer' as const })),
+    ...events.filter(e => e.active).map(e => ({ ...e, _type: 'event' as const })),
+  ].sort((a, b) => gbpSortKey(a).localeCompare(gbpSortKey(b)));
+
+  $: inactiveGbpItems = [
+    ...offers.filter(o => !o.active).map(o => ({ ...o, _type: 'offer' as const })),
+    ...events.filter(e => !e.active).map(e => ({ ...e, _type: 'event' as const })),
+  ];
+
+  function handleGbpImageUpload(itemType: 'offers' | 'events', itemId: string, e: Event) {
+    const f = (e.currentTarget as HTMLInputElement).files?.[0];
+    if (f) uploadGbpImage(itemType, itemId, f);
   }
 
   async function load() {
@@ -365,8 +417,7 @@
   function switchTab(t: string) { activeTab = t as typeof activeTab; }
   $: if (client && activeTab === 'services')     loadServices(client.slug);
   $: if (client && activeTab === 'areas')        loadAreas(client.slug);
-  $: if (client && activeTab === 'offers')       loadOffers(client.slug);
-  $: if (client && activeTab === 'events')       loadEvents(client.slug);
+  $: if (client && activeTab === 'gbp')          { loadOffers(client.slug); loadEvents(client.slug); }
   $: if (client && activeTab === 'intelligence') loadIntelligence(client.slug);
   $: if (client && activeTab === 'feedback')     loadFeedback(client.slug);
 </script>
@@ -406,8 +457,7 @@
       { key: 'intelligence', label: 'Intelligence' },
       { key: 'services',     label: 'Services'     },
       { key: 'areas',        label: 'Areas'        },
-      { key: 'offers',       label: 'Offers'       },
-      { key: 'events',       label: 'Events'       },
+      { key: 'gbp',          label: 'Google Business' },
       { key: 'feedback',     label: 'Feedback'     },
     ] as tab}
       <button
@@ -821,84 +871,188 @@
 </div>
 {/if}
 
-{#if activeTab === 'offers' && client}
+{#if activeTab === 'gbp' && client}
 <div class="space-y-4">
+
+  <!-- Type selector + Standard Post link -->
+  <div class="flex items-center justify-between flex-wrap gap-3">
+    <div class="flex items-center bg-surface border border-border rounded-lg overflow-hidden text-sm">
+      <button
+        class="px-4 py-2 transition-colors {gbpPostType === 'offer' ? 'bg-accent text-white' : 'text-muted hover:text-white'}"
+        on:click={() => { gbpPostType = 'offer'; resetGbpForm(); gbpVariations = []; }}
+      >Offer</button>
+      <button
+        class="px-4 py-2 transition-colors {gbpPostType === 'event' ? 'bg-accent text-white' : 'text-muted hover:text-white'}"
+        on:click={() => { gbpPostType = 'event'; resetGbpForm(); gbpVariations = []; }}
+      >Event</button>
+    </div>
+    <a href="/posts/new?client={client.slug}&platform=google_business" class="btn-secondary btn-sm text-xs">
+      + Standard GBP Post
+    </a>
+  </div>
+
   {#if can('clients.edit')}
+  <!-- AI Generation -->
   <div class="card p-4">
-    <h3 class="section-label mb-3">Add GBP Offer</h3>
+    <div class="flex items-center justify-between mb-2">
+      <h3 class="section-label">Generate {gbpPostType === 'offer' ? 'Offer' : 'Event'} with AI</h3>
+      <button class="btn-secondary btn-sm text-xs" on:click={generateGbpAi} disabled={generatingGbp}>
+        {generatingGbp ? 'Generating…' : 'Generate 3 Variations'}
+      </button>
+    </div>
+    {#if gbpVariations.length > 0}
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3">
+      {#each gbpVariations as v, i}
+      <button
+        class="text-left p-3 rounded-lg border border-border bg-surface hover:border-accent/60 hover:bg-accent/5 transition-all"
+        on:click={() => applyGbpVariation(v)}
+      >
+        <div class="text-[10px] text-accent font-medium mb-1 uppercase tracking-wide">Variation {i + 1}</div>
+        <div class="text-xs font-medium text-white mb-1">{v['title'] ?? ''}</div>
+        {#if v['description']}<div class="text-[11px] text-muted leading-relaxed line-clamp-3">{v['description']}</div>{/if}
+        {#if v['gbp_cta_type']}<div class="text-[10px] text-accent mt-2">CTA: {v['gbp_cta_type']}</div>{/if}
+        {#if v['ai_image_prompt']}<div class="text-[10px] text-muted mt-1 italic line-clamp-2">{v['ai_image_prompt']}</div>{/if}
+        <div class="text-[10px] text-accent/60 mt-2">Click to apply →</div>
+      </button>
+      {/each}
+    </div>
+    {:else if !generatingGbp}
+    <p class="text-xs text-muted">Generates 3 variations based on this client's services, brand voice, and intelligence profile.</p>
+    {/if}
+  </div>
+
+  <!-- Creation form -->
+  <div class="card p-4">
+    <h3 class="section-label mb-3">{gbpPostType === 'offer' ? 'Add Offer' : 'Add Event'}</h3>
     <div class="space-y-3">
+
+      <!-- Core fields -->
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
-          <label class="block text-xs text-muted mb-1">Title <span class="text-red-400">*</span></label>
-          <input type="text" bind:value={newOfferTitle} placeholder="e.g. 10% Off First Service" class="input w-full text-sm" />
+          <label class="block text-xs text-muted mb-1">Internal Title <span class="text-red-400">*</span></label>
+          <input type="text" bind:value={gbpForm.title} placeholder="e.g. Spring Sale" class="input w-full text-sm" />
         </div>
+        {#if gbpPostType === 'offer'}
         <div>
           <label class="block text-xs text-muted mb-1">CTA Button Text</label>
-          <input type="text" bind:value={newOfferCta} placeholder="e.g. Claim Offer" class="input w-full text-sm" />
+          <input type="text" bind:value={gbpForm.cta_text} placeholder="e.g. Claim Offer" class="input w-full text-sm" />
         </div>
+        {:else}
+        <div>
+          <label class="block text-xs text-muted mb-1">GBP Display Title</label>
+          <input type="text" bind:value={gbpForm.gbp_event_title} placeholder="Same as title if blank" class="input w-full text-sm" />
+        </div>
+        {/if}
         <div class="sm:col-span-2">
           <label class="block text-xs text-muted mb-1">Description</label>
-          <input type="text" bind:value={newOfferDesc} placeholder="Short description…" class="input w-full text-sm" />
+          <textarea bind:value={gbpForm.description} rows="2" placeholder="Brief description…" class="input w-full text-sm resize-none"></textarea>
         </div>
+        {#if gbpPostType === 'offer'}
         <div>
           <label class="block text-xs text-muted mb-1">Valid Until</label>
-          <input type="date" bind:value={newOfferUntil} class="input w-full text-sm" />
+          <input type="date" bind:value={gbpForm.valid_until} class="input w-full text-sm" />
+        </div>
+        {:else}
+        <div>
+          <label class="block text-xs text-muted mb-1">Start Date</label>
+          <input type="date" bind:value={gbpForm.gbp_event_start_date} class="input w-full text-sm" />
         </div>
         <div>
-          <label class="block text-xs text-muted mb-1">Recurrence</label>
-          <select bind:value={newOfferRecurrence} class="input w-full text-sm">
-            {#each RECURRENCE_OPTS as opt}<option value={opt.value}>{opt.label}</option>{/each}
-          </select>
+          <label class="block text-xs text-muted mb-1">Start Time</label>
+          <input type="time" bind:value={gbpForm.gbp_event_start_time} class="input w-full text-sm" />
         </div>
-        {#if newOfferRecurrence !== 'none'}
         <div>
-          <label class="block text-xs text-muted mb-1">First Run Date</label>
-          <input type="date" bind:value={newOfferNextRun} class="input w-full text-sm" />
+          <label class="block text-xs text-muted mb-1">End Date</label>
+          <input type="date" bind:value={gbpForm.gbp_event_end_date} class="input w-full text-sm" />
+        </div>
+        <div>
+          <label class="block text-xs text-muted mb-1">End Time</label>
+          <input type="time" bind:value={gbpForm.gbp_event_end_time} class="input w-full text-sm" />
         </div>
         {/if}
       </div>
 
+      <!-- GBP Settings -->
       <div class="border-t border-border pt-3">
-        <p class="text-xs text-muted mb-2 font-medium">Google Business Profile fields</p>
+        <p class="text-xs text-muted mb-2 font-medium">Google Business Profile Settings</p>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label class="block text-xs text-muted mb-1">GBP CTA Type</label>
-            <select bind:value={newOfferCtaType} class="input w-full text-sm">
+            <label class="block text-xs text-muted mb-1">CTA Type</label>
+            <select bind:value={gbpForm.gbp_cta_type} class="input w-full text-sm">
               <option value="">No CTA</option>
               {#each GBP_CTA_TYPES as t}<option value={t}>{t}</option>{/each}
             </select>
           </div>
-          {#if newOfferCtaType}
+          {#if gbpForm.gbp_cta_type}
           <div>
-            <label class="block text-xs text-muted mb-1">CTA URL {newOfferCtaType !== 'CALL' ? '(required)' : '(optional)'}</label>
-            <input type="url" bind:value={newOfferCtaUrl} placeholder="https://…" class="input w-full text-sm font-mono" />
+            <label class="block text-xs text-muted mb-1">CTA URL {gbpForm.gbp_cta_type !== 'CALL' ? '(required)' : '(optional)'}</label>
+            <input type="url" bind:value={gbpForm.gbp_cta_url} placeholder="https://…" class="input w-full text-sm font-mono" />
           </div>
           {/if}
+          {#if gbpPostType === 'offer'}
           <div>
             <label class="block text-xs text-muted mb-1">Coupon Code</label>
-            <input type="text" bind:value={newOfferCoupon} placeholder="SAVE10" class="input w-full text-sm font-mono" />
+            <input type="text" bind:value={gbpForm.gbp_coupon_code} placeholder="SAVE10" class="input w-full text-sm font-mono" />
           </div>
           <div>
             <label class="block text-xs text-muted mb-1">Redeem URL</label>
-            <input type="url" bind:value={newOfferRedeemUrl} placeholder="https://…" class="input w-full text-sm font-mono" />
+            <input type="url" bind:value={gbpForm.gbp_redeem_url} placeholder="https://…" class="input w-full text-sm font-mono" />
           </div>
           <div class="sm:col-span-2">
             <label class="block text-xs text-muted mb-1">Terms &amp; Conditions</label>
-            <input type="text" bind:value={newOfferTerms} placeholder="e.g. Valid for new customers only." class="input w-full text-sm" />
+            <input type="text" bind:value={gbpForm.gbp_terms} placeholder="Valid for new customers only." class="input w-full text-sm" />
           </div>
+          {/if}
+          <div>
+            <label class="block text-xs text-muted mb-1">Recurrence</label>
+            <select bind:value={gbpForm.recurrence} class="input w-full text-sm">
+              {#each (gbpPostType === 'offer' ? RECURRENCE_OPTS : EVENT_RECURRENCE_OPTS) as opt}
+                <option value={opt.value}>{opt.label}</option>
+              {/each}
+            </select>
+          </div>
+          {#if gbpForm.recurrence !== 'none' && gbpForm.recurrence !== 'once'}
+          <div>
+            <label class="block text-xs text-muted mb-1">First Run Date</label>
+            <input type="date" bind:value={gbpForm.next_run_date} class="input w-full text-sm" />
+          </div>
+          {/if}
+          {#if client.gbp_locations && client.gbp_locations.length > 1}
+          <div>
+            <label class="block text-xs text-muted mb-1">GBP Location</label>
+            <select bind:value={gbpForm.gbp_location_id} class="input w-full text-sm">
+              <option value="">All locations</option>
+              {#each client.gbp_locations as loc}
+                <option value={loc.location_id}>{loc.label}</option>
+              {/each}
+            </select>
+          </div>
+          {/if}
+        </div>
+      </div>
+
+      <!-- Designer section -->
+      <div class="border-t border-border pt-3">
+        <p class="text-xs text-muted mb-2 font-medium">Diseño / AI Image Brief</p>
+        <div>
+          <label class="block text-xs text-muted mb-1">AI Image Prompt (Spanish) — 1080×1080px GBP square</label>
+          <textarea bind:value={gbpForm.ai_image_prompt} rows="2"
+            placeholder="Ej: Diseño cuadrado, fondo azul marino, texto blanco 'Ahorra 10%'…"
+            class="input w-full text-sm font-mono resize-none"></textarea>
         </div>
       </div>
 
       <div class="flex justify-end">
-        <button class="btn-primary btn-sm" on:click={addOffer} disabled={addingOffer || !newOfferTitle.trim()}>
-          {addingOffer ? 'Adding…' : 'Add Offer'}
+        <button class="btn-primary btn-sm" on:click={submitGbpForm}
+          disabled={submittingGbp || !gbpForm.title.trim()}>
+          {submittingGbp ? 'Adding…' : gbpPostType === 'offer' ? 'Add Offer' : 'Add Event'}
         </button>
       </div>
     </div>
   </div>
   {/if}
 
-  <!-- Edit inline -->
+  <!-- Edit panels -->
   {#if editingOffer}
   <div class="card p-4 border border-accent/30">
     <h3 class="section-label mb-3">Edit Offer</h3>
@@ -956,138 +1110,18 @@
         <label class="block text-xs text-muted mb-1">Terms</label>
         <input type="text" bind:value={editingOffer.gbp_terms} class="input w-full text-sm" />
       </div>
+      <div class="sm:col-span-2">
+        <label class="block text-xs text-muted mb-1">AI Image Brief (Spanish)</label>
+        <textarea bind:value={editingOffer.ai_image_prompt} rows="2" class="input w-full text-sm font-mono resize-none"></textarea>
+      </div>
     </div>
     <div class="flex justify-end gap-2">
-      <button class="btn-secondary btn-sm" on:click={cancelEditOffer}>Cancel</button>
-      <button class="btn-primary btn-sm" on:click={saveEditOffer} disabled={addingOffer}>Save</button>
+      <button class="btn-secondary btn-sm" on:click={cancelGbpEdit}>Cancel</button>
+      <button class="btn-primary btn-sm" on:click={saveEditOffer} disabled={submittingGbp}>Save</button>
     </div>
   </div>
   {/if}
 
-  {#if offers.length === 0}
-    <p class="text-sm text-muted text-center py-8">No offers added yet.</p>
-  {:else}
-    {#each offers as offer}
-    <div class="card p-4">
-      <div class="flex items-start justify-between gap-3">
-        <div class="flex-1 min-w-0">
-          <div class="text-sm font-medium text-white">{offer.title}</div>
-          {#if offer.description}<div class="text-xs text-muted mt-0.5">{offer.description}</div>{/if}
-          <div class="flex flex-wrap gap-3 mt-2 text-xs text-muted">
-            {#if offer.recurrence && offer.recurrence !== 'none'}
-              <span class="text-accent">↺ {offer.recurrence}</span>
-            {:else}
-              <span>one-time</span>
-            {/if}
-            {#if offer.gbp_cta_type}<span>CTA: {offer.gbp_cta_type}</span>{/if}
-            {#if offer.gbp_coupon_code}<span>Coupon: {offer.gbp_coupon_code}</span>{/if}
-            {#if offer.next_run_date}<span>Next: {offer.next_run_date}</span>{/if}
-            {#if offer.last_posted_at}<span>Last posted: {offer.last_posted_at}</span>{/if}
-            {#if offer.valid_until}<span>Valid until {offer.valid_until}</span>{/if}
-          </div>
-        </div>
-        <div class="flex items-center gap-1.5 flex-shrink-0">
-          <button class="text-xs" on:click={() => toggleOffer(offer)} title="Toggle active">
-            <Badge status={offer.active ? 'active' : 'inactive'} />
-          </button>
-          {#if offer.active && offer.recurrence !== 'none'}
-          <button
-            class="text-xs px-2 py-0.5 rounded border {offer.paused ? 'border-yellow-500 text-yellow-500' : 'border-border text-muted'}"
-            on:click={() => togglePauseOffer(offer)}
-            title={offer.paused ? 'Resume automation' : 'Pause automation'}
-          >{offer.paused ? 'Paused' : 'Pause'}</button>
-          {/if}
-          {#if can('clients.edit')}
-            <button class="btn-ghost btn-sm text-xs" on:click={() => startEditOffer(offer)}>Edit</button>
-            <button class="btn-ghost btn-sm text-xs text-red-400" on:click={() => removeOffer(offer.id)}>Remove</button>
-          {/if}
-        </div>
-      </div>
-    </div>
-    {/each}
-  {/if}
-</div>
-{/if}
-
-<!-- Events tab -->
-{#if activeTab === 'events' && client}
-<div class="space-y-4">
-  {#if can('clients.edit')}
-  <div class="card p-4">
-    <h3 class="section-label mb-3">Add GBP Event</h3>
-    <div class="space-y-3">
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div>
-          <label class="block text-xs text-muted mb-1">Internal Title <span class="text-red-400">*</span></label>
-          <input type="text" bind:value={newEventTitle} placeholder="e.g. Spring Sale Event" class="input w-full text-sm" />
-        </div>
-        <div>
-          <label class="block text-xs text-muted mb-1">GBP Display Title</label>
-          <input type="text" bind:value={newEventGbpTitle} placeholder="Same as title if blank" class="input w-full text-sm" />
-        </div>
-        <div class="sm:col-span-2">
-          <label class="block text-xs text-muted mb-1">Description</label>
-          <input type="text" bind:value={newEventDesc} placeholder="Brief event description…" class="input w-full text-sm" />
-        </div>
-        <div>
-          <label class="block text-xs text-muted mb-1">Start Date</label>
-          <input type="date" bind:value={newEventStartDate} class="input w-full text-sm" />
-        </div>
-        <div>
-          <label class="block text-xs text-muted mb-1">Start Time</label>
-          <input type="time" bind:value={newEventStartTime} class="input w-full text-sm" />
-        </div>
-        <div>
-          <label class="block text-xs text-muted mb-1">End Date</label>
-          <input type="date" bind:value={newEventEndDate} class="input w-full text-sm" />
-        </div>
-        <div>
-          <label class="block text-xs text-muted mb-1">End Time</label>
-          <input type="time" bind:value={newEventEndTime} class="input w-full text-sm" />
-        </div>
-        <div>
-          <label class="block text-xs text-muted mb-1">Recurrence</label>
-          <select bind:value={newEventRecurrence} class="input w-full text-sm">
-            {#each EVENT_RECURRENCE_OPTS as opt}<option value={opt.value}>{opt.label}</option>{/each}
-          </select>
-        </div>
-        {#if newEventRecurrence !== 'once'}
-        <div>
-          <label class="block text-xs text-muted mb-1">First Post Date</label>
-          <input type="date" bind:value={newEventNextRun} class="input w-full text-sm" />
-        </div>
-        {/if}
-      </div>
-
-      <div class="border-t border-border pt-3">
-        <p class="text-xs text-muted mb-2 font-medium">Google Business Profile CTA</p>
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div>
-            <label class="block text-xs text-muted mb-1">CTA Type</label>
-            <select bind:value={newEventCtaType} class="input w-full text-sm">
-              <option value="">No CTA</option>
-              {#each GBP_CTA_TYPES as t}<option value={t}>{t}</option>{/each}
-            </select>
-          </div>
-          {#if newEventCtaType}
-          <div>
-            <label class="block text-xs text-muted mb-1">CTA URL</label>
-            <input type="url" bind:value={newEventCtaUrl} placeholder="https://…" class="input w-full text-sm font-mono" />
-          </div>
-          {/if}
-        </div>
-      </div>
-
-      <div class="flex justify-end">
-        <button class="btn-primary btn-sm" on:click={addEvent} disabled={addingEvent || !newEventTitle.trim()}>
-          {addingEvent ? 'Adding…' : 'Add Event'}
-        </button>
-      </div>
-    </div>
-  </div>
-  {/if}
-
-  <!-- Edit inline -->
   {#if editingEvent}
   <div class="card p-4 border border-accent/30">
     <h3 class="section-label mb-3">Edit Event</h3>
@@ -1145,60 +1179,176 @@
         <input type="date" bind:value={editingEvent.next_run_date} class="input w-full text-sm" />
       </div>
       {/if}
+      <div class="sm:col-span-2">
+        <label class="block text-xs text-muted mb-1">AI Image Brief (Spanish)</label>
+        <textarea bind:value={editingEvent.ai_image_prompt} rows="2" class="input w-full text-sm font-mono resize-none"></textarea>
+      </div>
     </div>
     <div class="flex justify-end gap-2">
-      <button class="btn-secondary btn-sm" on:click={cancelEditEvent}>Cancel</button>
-      <button class="btn-primary btn-sm" on:click={saveEditEvent} disabled={addingEvent}>Save</button>
+      <button class="btn-secondary btn-sm" on:click={cancelGbpEdit}>Cancel</button>
+      <button class="btn-primary btn-sm" on:click={saveEditEvent} disabled={submittingGbp}>Save</button>
     </div>
   </div>
   {/if}
 
-  {#if events.length === 0}
-    <p class="text-sm text-muted text-center py-8">No events added yet.</p>
+  <!-- Active items list -->
+  {#if activeGbpItems.length === 0}
+    <p class="text-sm text-muted text-center py-8">No active GBP items yet. Add an offer or event above.</p>
   {:else}
-    {#each events as ev}
-    <div class="card p-4">
-      <div class="flex items-start justify-between gap-3">
-        <div class="flex-1 min-w-0">
-          <div class="text-sm font-medium text-white">{ev.title}</div>
-          {#if ev.gbp_event_title && ev.gbp_event_title !== ev.title}
-            <div class="text-xs text-muted mt-0.5">GBP: {ev.gbp_event_title}</div>
-          {/if}
-          {#if ev.description}<div class="text-xs text-muted mt-0.5">{ev.description}</div>{/if}
-          <div class="flex flex-wrap gap-3 mt-2 text-xs text-muted">
-            {#if ev.gbp_event_start_date}
-              <span>📅 {ev.gbp_event_start_date}{ev.gbp_event_start_time ? ' ' + ev.gbp_event_start_time : ''}{ev.gbp_event_end_date ? ' → ' + ev.gbp_event_end_date : ''}</span>
-            {/if}
-            {#if ev.recurrence && ev.recurrence !== 'once'}
-              <span class="text-accent">↺ {ev.recurrence}</span>
-            {:else}
-              <span>one-time</span>
-            {/if}
-            {#if ev.gbp_cta_type}<span>CTA: {ev.gbp_cta_type}</span>{/if}
-            {#if ev.next_run_date}<span>Next post: {ev.next_run_date}</span>{/if}
-            {#if ev.last_posted_at}<span>Last posted: {ev.last_posted_at}</span>{/if}
+  <div>
+    <h3 class="section-label mb-2">Active Items ({activeGbpItems.length})</h3>
+    <div class="space-y-2">
+      {#each activeGbpItems as item (item.id)}
+      <div class="card overflow-hidden">
+        <!-- Summary row -->
+        <button
+          class="w-full px-4 py-3 flex items-start justify-between gap-3 text-left hover:bg-white/[0.02] transition-colors"
+          on:click={() => toggleGbpExpand(item.id)}
+        >
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="text-[10px] px-1.5 py-0.5 rounded border {item._type === 'offer' ? 'border-blue-500/40 text-blue-400' : 'border-purple-500/40 text-purple-400'} uppercase tracking-wide font-medium">{item._type}</span>
+              <span class="text-sm font-medium text-white">{item.title}</span>
+              {#if item.paused}
+                <span class="text-[10px] px-1.5 py-0.5 rounded border border-yellow-500/40 text-yellow-400">Paused</span>
+              {/if}
+            </div>
+            <div class="flex flex-wrap gap-3 mt-1 text-xs text-muted">
+              {#if item._type === 'offer'}
+                {#if item.recurrence !== 'none'}<span class="text-accent">↺ {item.recurrence}</span>{:else}<span>one-time (manual)</span>{/if}
+              {:else}
+                {#if item['recurrence'] !== 'once'}<span class="text-accent">↺ {item['recurrence']}</span>{:else}<span>one-time</span>{/if}
+              {/if}
+              {#if item.next_run_date}<span>Next: {item.next_run_date}</span>{/if}
+              {#if item.last_posted_at}<span>Last posted: {item.last_posted_at}</span>{/if}
+              {#if item.gbp_cta_type}<span>CTA: {item.gbp_cta_type}</span>{/if}
+              {#if item._type === 'offer' && item['gbp_coupon_code']}<span>Code: {item['gbp_coupon_code']}</span>{/if}
+              {#if item._type === 'event' && item['gbp_event_start_date']}<span>{item['gbp_event_start_date']}</span>{/if}
+            </div>
           </div>
-        </div>
-        <div class="flex items-center gap-1.5 flex-shrink-0">
-          <button class="text-xs" on:click={() => toggleEvent(ev)} title="Toggle active">
-            <Badge status={ev.active ? 'active' : 'inactive'} />
-          </button>
-          {#if ev.active && ev.recurrence !== 'once'}
-          <button
-            class="text-xs px-2 py-0.5 rounded border {ev.paused ? 'border-yellow-500 text-yellow-500' : 'border-border text-muted'}"
-            on:click={() => togglePauseEvent(ev)}
-            title={ev.paused ? 'Resume automation' : 'Pause automation'}
-          >{ev.paused ? 'Paused' : 'Pause'}</button>
+          <div class="flex items-center gap-1.5 flex-shrink-0 mt-0.5">
+            {#if can('clients.edit')}
+              {#if item._type === 'offer' && item.recurrence !== 'none'}
+                <button class="text-xs px-2 py-0.5 rounded border {item.paused ? 'border-yellow-500 text-yellow-400' : 'border-border text-muted hover:text-white'}"
+                  on:click|stopPropagation={() => togglePauseOffer(item)}
+                >{item.paused ? 'Resume' : 'Pause'}</button>
+              {:else if item._type === 'event' && item['recurrence'] !== 'once'}
+                <button class="text-xs px-2 py-0.5 rounded border {item.paused ? 'border-yellow-500 text-yellow-400' : 'border-border text-muted hover:text-white'}"
+                  on:click|stopPropagation={() => togglePauseEvent(item)}
+                >{item.paused ? 'Resume' : 'Pause'}</button>
+              {/if}
+            {/if}
+            <span class="text-muted text-xs select-none">{expandedGbpIds.has(item.id) ? '▲' : '▼'}</span>
+          </div>
+        </button>
+
+        <!-- Expanded details -->
+        {#if expandedGbpIds.has(item.id)}
+        <div class="border-t border-border px-4 py-3 space-y-3 bg-surface/30">
+          {#if item.description}
+            <p class="text-xs text-white/70">{item.description}</p>
           {/if}
+          <!-- Type-specific detail fields -->
+          <div class="flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted">
+            {#if item._type === 'offer'}
+              {#if item['valid_until']}<span>Valid until: <span class="text-white">{item['valid_until']}</span></span>{/if}
+              {#if item['gbp_coupon_code']}<span>Coupon: <span class="font-mono text-white">{item['gbp_coupon_code']}</span></span>{/if}
+              {#if item['gbp_redeem_url']}<span>Redeem: <a href={item['gbp_redeem_url']} target="_blank" rel="noreferrer" class="text-accent hover:underline">{item['gbp_redeem_url']}</a></span>{/if}
+              {#if item['gbp_terms']}<span>Terms: {item['gbp_terms']}</span>{/if}
+            {:else}
+              {#if item['gbp_event_title'] && item['gbp_event_title'] !== item.title}<span>GBP title: {item['gbp_event_title']}</span>{/if}
+              {#if item['gbp_event_start_date']}<span>Start: <span class="text-white">{item['gbp_event_start_date']}{item['gbp_event_start_time'] ? ' ' + item['gbp_event_start_time'] : ''}</span></span>{/if}
+              {#if item['gbp_event_end_date']}<span>End: <span class="text-white">{item['gbp_event_end_date']}{item['gbp_event_end_time'] ? ' ' + item['gbp_event_end_time'] : ''}</span></span>{/if}
+            {/if}
+            {#if item.gbp_cta_type && item['gbp_cta_url']}<span>CTA URL: <a href={item['gbp_cta_url']} target="_blank" rel="noreferrer" class="text-accent hover:underline truncate max-w-[200px] inline-block align-bottom">{item['gbp_cta_url']}</a></span>{/if}
+          </div>
+          <!-- AI image brief -->
+          {#if item['ai_image_prompt']}
+          <div class="bg-black/20 rounded p-2.5">
+            <div class="text-[10px] text-muted uppercase tracking-wide mb-1">AI Image Brief (Español)</div>
+            <p class="text-xs text-white/80 font-mono leading-relaxed">{item['ai_image_prompt']}</p>
+            <div class="text-[10px] text-muted mt-1">1080×1080px · GBP square</div>
+          </div>
+          {/if}
+          <!-- Asset -->
+          <div class="flex items-center gap-3 flex-wrap">
+            {#if item['asset_r2_key']}
+              <span class="text-xs text-green-400">✓ Image attached</span>
+            {:else}
+              <span class="text-xs text-muted">No image attached</span>
+            {/if}
+            {#if can('clients.edit')}
+              <label class="btn-secondary btn-sm text-xs cursor-pointer">
+                {uploadingGbpId === item.id ? 'Uploading…' : 'Upload Image'}
+                <input type="file" accept="image/*,video/*" class="hidden"
+                  on:change={(e) => handleGbpImageUpload(item._type === 'offer' ? 'offers' : 'events', item.id, e)}
+                  disabled={uploadingGbpId === item.id}
+                />
+              </label>
+            {/if}
+          </div>
+          <!-- Actions -->
           {#if can('clients.edit')}
-            <button class="btn-ghost btn-sm text-xs" on:click={() => startEditEvent(ev)}>Edit</button>
-            <button class="btn-ghost btn-sm text-xs text-red-400" on:click={() => removeEvent(ev.id)}>Remove</button>
+          <div class="flex gap-2 pt-1 border-t border-border">
+            <button class="btn-secondary btn-sm text-xs"
+              on:click={() => { if (item._type === 'offer') startEditOffer(item); else startEditEvent(item); }}>
+              Edit
+            </button>
+            <button class="text-xs text-muted hover:text-white px-2 py-1"
+              on:click={() => { if (item._type === 'offer') toggleOffer(item); else toggleEvent(item); }}>
+              Deactivate
+            </button>
+            <button class="btn-ghost btn-sm text-xs text-red-400"
+              on:click={() => { if (item._type === 'offer') removeOffer(item.id); else removeEvent(item.id); }}>
+              Remove
+            </button>
+          </div>
+          {/if}
+        </div>
+        {/if}
+      </div>
+      {/each}
+    </div>
+  </div>
+  {/if}
+
+  <!-- Inactive / archived items -->
+  {#if inactiveGbpItems.length > 0}
+  <div class="pt-1">
+    <button class="text-xs text-muted hover:text-white flex items-center gap-1.5"
+      on:click={() => showInactiveGbp = !showInactiveGbp}>
+      <span>{showInactiveGbp ? '▲' : '▼'}</span>
+      <span>{showInactiveGbp ? 'Hide' : 'Show'} inactive ({inactiveGbpItems.length})</span>
+    </button>
+    {#if showInactiveGbp}
+    <div class="mt-2 space-y-1.5">
+      {#each inactiveGbpItems as item (item.id)}
+      <div class="card px-4 py-2.5 opacity-50">
+        <div class="flex items-center justify-between gap-3">
+          <div class="flex items-center gap-2">
+            <span class="text-[10px] px-1.5 py-0.5 rounded border {item._type === 'offer' ? 'border-blue-500/30 text-blue-400' : 'border-purple-500/30 text-purple-400'} uppercase tracking-wide">{item._type}</span>
+            <span class="text-sm text-white">{item.title}</span>
+          </div>
+          {#if can('clients.edit')}
+          <div class="flex gap-2">
+            <button class="text-xs text-muted hover:text-white"
+              on:click={() => { if (item._type === 'offer') toggleOffer(item); else toggleEvent(item); }}>
+              Reactivate
+            </button>
+            <button class="text-xs text-red-400 hover:text-red-300"
+              on:click={() => { if (item._type === 'offer') removeOffer(item.id); else removeEvent(item.id); }}>
+              Remove
+            </button>
+          </div>
           {/if}
         </div>
       </div>
+      {/each}
     </div>
-    {/each}
+    {/if}
+  </div>
   {/if}
+
 </div>
 {/if}
 

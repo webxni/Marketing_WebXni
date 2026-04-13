@@ -110,6 +110,15 @@ export const clientsApi = {
   deleteEvent: (slug: string, id: string) =>
     api.delete(`/api/clients/${slug}/events/${id}`),
 
+  // GBP AI generation + asset upload
+  generateGbp: (slug: string, type: 'offer' | 'event') =>
+    api.post<{ variations: unknown[] }>(`/api/clients/${slug}/gbp/generate`, { type }),
+
+  uploadGbpAsset: (slug: string, itemType: 'offers' | 'events', itemId: string, formData: FormData) =>
+    api.upload<{ ok: boolean; r2_key: string; url: string | null }>(
+      `/api/clients/${slug}/gbp/${itemType}/${itemId}/upload`, formData,
+    ),
+
   // Intelligence
   getIntelligence: (slug: string) =>
     api.get<{ intelligence: unknown }>(`/api/clients/${slug}/intelligence`),
