@@ -18,6 +18,10 @@
         return;
       }
     }
+    if ($userStore?.role === 'client') {
+      goto('/portal');
+      return;
+    }
     ready = true;
   });
 </script>

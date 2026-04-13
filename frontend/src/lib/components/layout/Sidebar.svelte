@@ -1,9 +1,10 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import { sidebarOpen } from '$lib/stores/ui';
-  import { can } from '$lib/stores/auth';
+  import { can, hasRole } from '$lib/stores/auth';
 
-  const nav = [
+  // Admin sees everything; designer sees work items; client is redirected to /portal
+  const adminNav = [
     { href: '/dashboard',   icon: '◼', label: 'Dashboard',   perm: null },
     { href: '/posts',       icon: '✦', label: 'Posts',        perm: 'posts.view' },
     { href: '/approvals',   icon: '✓', label: 'Approvals',   perm: 'posts.approve' },
@@ -17,6 +18,15 @@
     { href: '/settings',    icon: '⚙', label: 'Settings',   perm: 'settings.view' },
   ];
 
+  const designerNav = [
+    { href: '/dashboard',   icon: '◼', label: 'Dashboard',   perm: null },
+    { href: '/posts',       icon: '✦', label: 'Posts',        perm: 'posts.view' },
+    { href: '/calendar',    icon: '▦', label: 'Calendar',    perm: 'posts.view' },
+    { href: '/clients',     icon: '◉', label: 'Clients',     perm: 'clients.view' },
+    { href: '/automation',  icon: '⚡', label: 'Generate',    perm: 'automation.generate' },
+  ];
+
+  $: nav = hasRole('admin') ? adminNav : designerNav;
   $: active = (href: string) => $page.url.pathname.startsWith(href);
 </script>
 
@@ -50,7 +60,7 @@
     </div>
   </nav>
 
-  <!-- New Post shortcut -->
+  <!-- New Post shortcut (admin + designer) -->
   {#if can('posts.create')}
   <div class="px-4 pb-3">
     <a href="/posts/new" class="btn-primary w-full justify-center text-xs py-2">

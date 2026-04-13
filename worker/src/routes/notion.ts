@@ -87,7 +87,7 @@ async function logSync(
  */
 notionRoutes.post('/import/clients', async (c) => {
   const user = c.get('user');
-  if (user.role !== 'admin' && user.role !== 'manager') {
+  if (user.role !== 'admin') {
     return c.json({ error: 'Forbidden' }, 403);
   }
 
@@ -360,7 +360,7 @@ function parseRestrictions(raw: string): string[] {
 
 notionRoutes.post('/import/clients/full', async (c) => {
   const user = c.get('user');
-  if (user.role !== 'admin' && user.role !== 'manager') {
+  if (user.role !== 'admin') {
     return c.json({ error: 'Forbidden' }, 403);
   }
 
@@ -768,7 +768,7 @@ notionRoutes.post('/import/clients/full', async (c) => {
  */
 notionRoutes.post('/import/posts', async (c) => {
   const user = c.get('user');
-  if (user.role !== 'admin' && user.role !== 'manager') {
+  if (user.role !== 'admin') {
     return c.json({ error: 'Forbidden' }, 403);
   }
 

@@ -52,7 +52,7 @@ clientRoutes.get('/', async (c) => {
 /** POST /api/clients — create a new client */
 clientRoutes.post('/', async (c) => {
   const user = c.get('user');
-  if (user.role !== 'admin' && user.role !== 'manager') {
+  if (user.role !== 'admin') {
     return c.json({ error: 'Forbidden — only admin/manager can create clients' }, 403);
   }
 

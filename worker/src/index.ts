@@ -23,6 +23,7 @@ import { settingsRoutes }    from './routes/settings';
 import { setupRoutes }       from './routes/setup';
 import { wordpressRoutes }   from './routes/wordpress';
 import { notionRoutes }      from './routes/notion';
+import { portalRoutes }      from './routes/portal';
 
 const app = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -45,6 +46,7 @@ app.route('/api/packages',  packageRoutes);
 app.route('/api/logs',      logRoutes);
 app.route('/api/settings',  settingsRoutes);
 app.route('/api/notion',    notionRoutes);
+app.route('/api/portal',    portalRoutes);
 
 app.get('/api/health', (c) =>
   c.json({ status: 'ok', ts: Date.now(), version: '2.0.0' }),

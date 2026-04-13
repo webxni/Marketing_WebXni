@@ -1,22 +1,26 @@
 /** Shared frontend types — mirror backend DB rows + API response shapes */
 
-export type Role = 'admin' | 'manager' | 'editor' | 'reviewer' | 'operator';
+export type Role = 'admin' | 'designer' | 'client';
 
 export interface User {
-  id:         string;
-  email:      string;
-  name:       string;
-  role:       Role;
-  is_active:  number;
-  last_login: number | null;
-  created_at: number;
+  id:           string;
+  email:        string;
+  name:         string;
+  role:         Role;
+  is_active:    number;
+  client_id:    string | null;
+  client_name:  string | null;
+  totp_enabled: number;
+  last_login:   number | null;
+  created_at:   number;
 }
 
 export interface SessionUser {
-  userId: string;
-  email:  string;
-  name:   string;
-  role:   Role;
+  userId:   string;
+  email:    string;
+  name:     string;
+  role:     Role;
+  clientId: string | null;
 }
 
 export interface Client {

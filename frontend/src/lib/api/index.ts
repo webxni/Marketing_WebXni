@@ -9,3 +9,4 @@ export * from './run';
 export * from './assets';
 export * from './packages';
 export * from './notion';
+export * from './portal';

@@ -29,23 +29,28 @@ export const userStore = {
 };
 
 export const isAuthenticated = derived(_user, ($u) => $u !== null);
+export const currentRole     = derived(_user, ($u): Role | null => $u?.role ?? null);
 
-export const currentRole = derived(_user, ($u): Role | null => $u?.role ?? null);
-
-/** Returns true if the current user has at least one of the given roles */
 export function hasRole(...roles: Role[]): boolean {
   let current: SessionUser | null = null;
   _user.subscribe((v) => { current = v; })();
   return current !== null && roles.includes((current as SessionUser).role);
 }
 
-/** Permission helper (mirrors backend RBAC) */
+// ─── Permission matrix mirrors worker/src/middleware/auth.ts ─────────────────
 const ROLE_PERMS: Record<Role, string[]> = {
-  admin:    ['*'],
-  manager:  ['posts.*','clients.*','users.view','reports.*','automation.*','assets.*','settings.view','logs.view'],
-  editor:   ['posts.view','posts.create','posts.edit','clients.view','reports.view','assets.upload','settings.view'],
-  reviewer: ['posts.view','posts.approve','clients.view','reports.view','reports.download','settings.view'],
-  operator: ['posts.view','clients.view','reports.view','reports.download','settings.view'],
+  admin: ['*'],
+  designer: [
+    'posts.view', 'posts.create', 'posts.edit',
+    'clients.view',
+    'reports.view',
+    'automation.generate',
+    'assets.upload', 'assets.delete',
+  ],
+  client: [
+    'portal.view',
+    'reports.view',
+  ],
 };
 
 export function can(permission: string): boolean {
@@ -55,7 +60,6 @@ export function can(permission: string): boolean {
   const perms = ROLE_PERMS[(current as SessionUser).role] ?? [];
   if (perms.includes('*')) return true;
   if (perms.includes(permission)) return true;
-  // Check wildcard: 'posts.*' covers 'posts.create'
   const [ns] = permission.split('.');
   return perms.includes(`${ns}.*`);
 }

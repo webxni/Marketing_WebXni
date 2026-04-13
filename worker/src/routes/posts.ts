@@ -259,7 +259,7 @@ postRoutes.get('/:id/platforms', async (c) => {
 /** DELETE /api/posts/:id */
 postRoutes.delete('/:id', async (c) => {
   const user = c.get('user');
-  if (user.role !== 'admin' && user.role !== 'manager') {
+  if (user.role !== 'admin') {
     return c.json({ error: 'Forbidden — only admin/manager can delete posts' }, 403);
   }
   const post = await getPostById(c.env.DB, c.req.param('id'));

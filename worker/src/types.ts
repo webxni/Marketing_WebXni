@@ -32,10 +32,11 @@ export interface LoaderEnv {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface SessionData {
-  userId: string;
-  email:  string;
-  name:   string;
-  role:   'admin' | 'manager' | 'editor' | 'reviewer' | 'operator';
+  userId:   string;
+  email:    string;
+  name:     string;
+  role:     'admin' | 'designer' | 'client';
+  clientId: string | null; // set for role=client, null otherwise
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

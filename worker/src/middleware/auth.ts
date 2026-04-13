@@ -1,9 +1,10 @@
 /**
- * Auth + RBAC middleware
+ * Auth + RBAC middleware — 3-role system: admin | designer | client
  *
  * Usage:
  *   app.use('/api/*', authMiddleware)          — require valid session
  *   route.post('/', requirePermission('posts.create'), handler)
+ *   route.get('/',  requireClientAccess(),     handler)  — client data isolation
  */
 import { getCookie } from 'hono/cookie';
 import type { Context, Next } from 'hono';
@@ -19,10 +20,11 @@ export type Permission =
   | 'clients.view' | 'clients.create' | 'clients.edit' | 'clients.delete'
   | 'users.view' | 'users.manage'
   | 'reports.view' | 'reports.download'
-  | 'automation.trigger'
+  | 'automation.trigger' | 'automation.generate'
   | 'assets.upload' | 'assets.delete'
   | 'settings.view' | 'settings.edit'
-  | 'logs.view';
+  | 'logs.view'
+  | 'portal.view';
 
 const ROLE_PERMISSIONS: Record<SessionData['role'], Permission[]> = {
   admin: [
@@ -30,39 +32,22 @@ const ROLE_PERMISSIONS: Record<SessionData['role'], Permission[]> = {
     'clients.view', 'clients.create', 'clients.edit', 'clients.delete',
     'users.view', 'users.manage',
     'reports.view', 'reports.download',
-    'automation.trigger',
+    'automation.trigger', 'automation.generate',
     'assets.upload', 'assets.delete',
     'settings.view', 'settings.edit',
     'logs.view',
+    'portal.view',
   ],
-  manager: [
-    'posts.view', 'posts.create', 'posts.edit', 'posts.approve', 'posts.publish', 'posts.delete',
-    'clients.view', 'clients.create', 'clients.edit',
-    'users.view',
-    'reports.view', 'reports.download',
-    'automation.trigger',
-    'assets.upload', 'assets.delete',
-    'settings.view',
-    'logs.view',
-  ],
-  editor: [
+  designer: [
     'posts.view', 'posts.create', 'posts.edit',
     'clients.view',
     'reports.view',
-    'assets.upload',
-    'settings.view',
+    'automation.generate',
+    'assets.upload', 'assets.delete',
   ],
-  reviewer: [
-    'posts.view', 'posts.approve',
-    'clients.view',
-    'reports.view', 'reports.download',
-    'settings.view',
-  ],
-  operator: [
-    'posts.view',
-    'clients.view',
-    'reports.view', 'reports.download',
-    'settings.view',
+  client: [
+    'portal.view',
+    'reports.view',
   ],
 };
 
@@ -78,7 +63,7 @@ export async function authMiddleware(
   next: Next,
 ): Promise<Response | void> {
   if (c.req.path.startsWith('/api/auth/')) return next();
-  if (c.req.path.startsWith('/api/setup')) return next();
+  if (c.req.path.startsWith('/api/setup'))  return next();
 
   const sessionId = getCookie(c, 'session');
   if (!sessionId) return c.json({ error: 'Unauthorized' }, 401);
@@ -110,6 +95,36 @@ export function requirePermission(permission: Permission) {
     if (!hasPermission(user.role, permission)) {
       return c.json({ error: 'Forbidden', required: permission }, 403);
     }
+    return next();
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Client isolation guard — enforces client users only see their own data.
+// Pass the clientId param name (e.g. 'clientId' from URL) or use user.clientId.
+// ─────────────────────────────────────────────────────────────────────────────
+export function requireClientAccess(clientIdParam?: string) {
+  return async (
+    c: Context<{ Bindings: Env; Variables: { user: SessionData } }>,
+    next: Next,
+  ): Promise<Response | void> => {
+    const user = c.get('user');
+    if (!user) return c.json({ error: 'Unauthorized' }, 401);
+
+    // Admin and designer see everything
+    if (user.role === 'admin' || user.role === 'designer') return next();
+
+    // Client role: must have clientId in session
+    if (!user.clientId) return c.json({ error: 'Client account not linked' }, 403);
+
+    // If a URL param identifies the target client, verify it matches
+    if (clientIdParam) {
+      const target = c.req.param(clientIdParam);
+      if (target && target !== user.clientId) {
+        return c.json({ error: 'Forbidden' }, 403);
+      }
+    }
+
     return next();
   };
 }
