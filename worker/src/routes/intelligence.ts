@@ -227,3 +227,117 @@ intelligenceRoutes.delete('/:slug/platforms/:platform', requirePermission('clien
     .run();
   return c.json({ ok: true });
 });
+
+// ─── Categories ───────────────────────────────────────────────────────────────
+
+/** GET /api/clients/:slug/categories */
+intelligenceRoutes.get('/:slug/categories', requirePermission('clients.view'), async (c) => {
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') ?? '');
+  if (!client) return c.json({ error: 'Not found' }, 404);
+  const rows = await c.env.DB
+    .prepare('SELECT * FROM client_categories WHERE client_id = ? ORDER BY sort_order, name')
+    .bind(client.id).all();
+  return c.json({ categories: rows.results });
+});
+
+/** POST /api/clients/:slug/categories */
+intelligenceRoutes.post('/:slug/categories', requirePermission('clients.edit'), async (c) => {
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') ?? '');
+  if (!client) return c.json({ error: 'Not found' }, 404);
+  let body: Record<string, unknown>;
+  try { body = (await c.req.json()) as Record<string, unknown>; }
+  catch { return c.json({ error: 'Invalid JSON' }, 400); }
+  const name = String(body.name ?? '').trim();
+  if (!name) return c.json({ error: 'name is required' }, 400);
+  const id  = crypto.randomUUID().replace(/-/g, '');
+  const now = Math.floor(Date.now() / 1000);
+  await c.env.DB
+    .prepare('INSERT INTO client_categories (id, client_id, name, sort_order, created_at, updated_at) VALUES (?,?,?,?,?,?)')
+    .bind(id, client.id, name, body.sort_order ?? 0, now, now).run();
+  const row = await c.env.DB.prepare('SELECT * FROM client_categories WHERE id = ?').bind(id).first();
+  return c.json({ category: row }, 201);
+});
+
+// ─── Services ─────────────────────────────────────────────────────────────────
+
+/** GET /api/clients/:slug/services */
+intelligenceRoutes.get('/:slug/services', requirePermission('clients.view'), async (c) => {
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') ?? '');
+  if (!client) return c.json({ error: 'Not found' }, 404);
+  const rows = await c.env.DB
+    .prepare(`SELECT s.*, cat.name as category_name
+              FROM client_services s
+              LEFT JOIN client_categories cat ON s.category_id = cat.id
+              WHERE s.client_id = ?
+              ORDER BY s.sort_order, s.name`)
+    .bind(client.id).all();
+  return c.json({ services: rows.results });
+});
+
+/** POST /api/clients/:slug/services */
+intelligenceRoutes.post('/:slug/services', requirePermission('clients.edit'), async (c) => {
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') ?? '');
+  if (!client) return c.json({ error: 'Not found' }, 404);
+  let body: Record<string, unknown>;
+  try { body = (await c.req.json()) as Record<string, unknown>; }
+  catch { return c.json({ error: 'Invalid JSON' }, 400); }
+  const name = String(body.name ?? '').trim();
+  if (!name) return c.json({ error: 'name is required' }, 400);
+  const id  = crypto.randomUUID().replace(/-/g, '');
+  const now = Math.floor(Date.now() / 1000);
+  await c.env.DB
+    .prepare('INSERT INTO client_services (id, client_id, category_id, name, description, active, sort_order, created_at, updated_at) VALUES (?,?,?,?,?,1,?,?,?)')
+    .bind(id, client.id, body.category_id ?? null, name, body.description ?? null, body.sort_order ?? 0, now, now).run();
+  const row = await c.env.DB.prepare('SELECT * FROM client_services WHERE id = ?').bind(id).first();
+  return c.json({ service: row }, 201);
+});
+
+/** DELETE /api/clients/:slug/services/:id */
+intelligenceRoutes.delete('/:slug/services/:serviceId', requirePermission('clients.edit'), async (c) => {
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') ?? '');
+  if (!client) return c.json({ error: 'Not found' }, 404);
+  await c.env.DB
+    .prepare('DELETE FROM client_services WHERE id = ? AND client_id = ?')
+    .bind(c.req.param('serviceId') ?? '', client.id).run();
+  return c.json({ ok: true });
+});
+
+// ─── Service Areas ────────────────────────────────────────────────────────────
+
+/** GET /api/clients/:slug/areas */
+intelligenceRoutes.get('/:slug/areas', requirePermission('clients.view'), async (c) => {
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') ?? '');
+  if (!client) return c.json({ error: 'Not found' }, 404);
+  const rows = await c.env.DB
+    .prepare('SELECT * FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order, city')
+    .bind(client.id).all();
+  return c.json({ areas: rows.results });
+});
+
+/** POST /api/clients/:slug/areas */
+intelligenceRoutes.post('/:slug/areas', requirePermission('clients.edit'), async (c) => {
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') ?? '');
+  if (!client) return c.json({ error: 'Not found' }, 404);
+  let body: Record<string, unknown>;
+  try { body = (await c.req.json()) as Record<string, unknown>; }
+  catch { return c.json({ error: 'Invalid JSON' }, 400); }
+  const city = String(body.city ?? '').trim();
+  if (!city) return c.json({ error: 'city is required' }, 400);
+  const id  = crypto.randomUUID().replace(/-/g, '');
+  const now = Math.floor(Date.now() / 1000);
+  await c.env.DB
+    .prepare('INSERT INTO client_service_areas (id, client_id, city, state, zip, primary_area, sort_order, created_at) VALUES (?,?,?,?,?,?,?,?)')
+    .bind(id, client.id, city, body.state ?? null, body.zip ?? null, body.primary_area ? 1 : 0, body.sort_order ?? 0, now).run();
+  const row = await c.env.DB.prepare('SELECT * FROM client_service_areas WHERE id = ?').bind(id).first();
+  return c.json({ area: row }, 201);
+});
+
+/** DELETE /api/clients/:slug/areas/:id */
+intelligenceRoutes.delete('/:slug/areas/:areaId', requirePermission('clients.edit'), async (c) => {
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') ?? '');
+  if (!client) return c.json({ error: 'Not found' }, 404);
+  await c.env.DB
+    .prepare('DELETE FROM client_service_areas WHERE id = ? AND client_id = ?')
+    .bind(c.req.param('areaId') ?? '', client.id).run();
+  return c.json({ ok: true });
+});

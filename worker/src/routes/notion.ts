@@ -244,24 +244,6 @@ notionRoutes.post('/import/clients', async (c) => {
 
 // ── parsing helpers ──────────────────────────────────────────────────────────
 
-const PLATFORM_MAP: Record<string, string> = {
-  'Facebook':       'facebook',
-  'Instagram':      'instagram',
-  'LinkedIn':       'linkedin',
-  'TikTok':         'tiktok',
-  'YouTube':        'youtube',
-  'Pinterest':      'pinterest',
-  'Google Business':'google_business',
-  'Bluesky':        'bluesky',
-  'Threads':        'threads',
-  'X / Twitter':    'x',
-  // skip: Website Blog, Blogger — not a client_platforms row
-};
-
-function normPlatform(name: string): string | null {
-  return PLATFORM_MAP[name] ?? null;
-}
-
 function normPackage(raw: string): string | null {
   const v = raw.toLowerCase().trim();
   if (v === 'premium') return 'premium';
@@ -282,7 +264,81 @@ function normFrequency(raw: string): string | null {
   return null;
 }
 
+/** Parse "City, ST" or "City ST" into {city, state}. State is optional. */
+function parseCity(raw: string, stateDefault: string | null): { city: string; state: string | null } {
+  const t = raw.trim().replace(/\.$/, '');
+  const m = t.match(/^(.+?),?\s+([A-Z]{2})$/);
+  if (m) return { city: m[1].trim(), state: m[2] };
+  return { city: t, state: stateDefault };
+}
 
+/** Parse service areas / target cities text into area rows. */
+function parseAreas(
+  serviceArea: string,
+  serviceAreas: string,
+  targetCities: string,
+  stateDefault: string | null,
+): Array<{ city: string; state: string | null; primary_area: number }> {
+  const seen = new Set<string>();
+  const out: Array<{ city: string; state: string | null; primary_area: number }> = [];
+
+  function add(raw: string, isPrimary: number) {
+    const t = raw.trim();
+    if (!t || t.length < 2) return;
+    if (/^[A-Z\s]+\s*\(\d+\s*cities?\)\s*:/i.test(t)) return;
+    if (/^\d{5}$/.test(t)) return;
+    const { city, state } = parseCity(t, stateDefault);
+    const key = city.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ city, state, primary_area: isPrimary });
+  }
+
+  if (serviceArea.trim()) {
+    const cleaned = serviceArea.replace(/[A-Z\s]+\(\d+\s*cities?\):/gi, '').trim();
+    for (const part of cleaned.split(',')) add(part, 1);
+  }
+  if (serviceAreas.trim()) {
+    const body = serviceAreas.replace(/[A-Z][A-Z\s]*\(\d+\s*cities?\):/gi, '');
+    for (const part of body.split(',')) add(part.trim(), 0);
+  }
+  if (targetCities.trim()) {
+    for (const part of targetCities.split(',')) add(part.trim(), 0);
+  }
+  return out.slice(0, 80);
+}
+
+/** Parse services text into rows (simple list or CATEGORY: items | format). */
+function parseServices(raw: string): Array<{ name: string; category: string | null }> {
+  if (!raw.trim()) return [];
+  const out: Array<{ name: string; category: string | null }> = [];
+  const seen = new Set<string>();
+
+  function addSvc(name: string, cat: string | null) {
+    const n = name.trim().replace(/^[-•*]\s*/, '');
+    if (!n || n.length < 2 || n.length > 120) return;
+    const key = n.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ name: n, category: cat });
+  }
+
+  const hasPipes  = raw.includes(' | ') || raw.includes('|');
+  const hasColons = /[A-Z]{4,}[^:]*:/.test(raw);
+  if (hasPipes && hasColons) {
+    for (const block of raw.split(/\s*\|\s*/)) {
+      const idx = block.indexOf(':');
+      if (idx === -1) { addSvc(block, null); continue; }
+      const cat   = block.slice(0, idx).trim();
+      const items = block.slice(idx + 1);
+      const displayCat = cat.length > 0 && cat.length < 80 ? cat : null;
+      for (const item of items.split(',')) addSvc(item, displayCat);
+    }
+  } else {
+    for (const item of raw.split(/[,\n;]+/)) addSvc(item, null);
+  }
+  return out.slice(0, 60);
+}
 
 /** Extract primary keyword (first comma-separated value) and secondary keywords (rest). */
 function parseKeywords(raw: string): { primary: string | null; secondary: string[] } {
@@ -316,10 +372,12 @@ notionRoutes.post('/import/clients/full', async (c) => {
     database_id,
     notion_id_to_app_slug = {},
     active_only = true,
+    force_sub_tables = false,
   } = body as {
     database_id: string;
     notion_id_to_app_slug?: Record<string, string>;
     active_only?: boolean;
+    force_sub_tables?: boolean;
   };
 
   if (!database_id) return c.json({ error: 'database_id is required' }, 400);
@@ -360,13 +418,16 @@ notionRoutes.post('/import/clients/full', async (c) => {
     const ownerName    = getText(p['Owner Name']);
     const industry     = getText(p['Industry']);
     const stateRaw     = getText(p['State']);          // "CA" | "CA / OR / WA"
+    const primaryState = stateRaw.split(/[/,]/)[0].trim() || null;
     const ctaPrimary   = getText(p['CTA Primary']);
     const contentTone  = getText(p['Content Tone']);   // "Professional" | "Urgent" | "Friendly"
     const brandKw      = getText(p['Brand Keywords']);
     const bizProfile   = getText(p['Business Profile']);
     const targetAud    = getText(p['Target Audience']);
     const primKwRaw    = getText(p['Primary Keywords']);
-    const servicesRaw  = getText(p['Services ']);      // still used for intelligence.service_priorities
+    const servicesRaw  = getText(p['Services ']);      // trailing space in Notion property name
+    const serviceArea  = getText(p['Service Area']);
+    const serviceAreas = getText(p['Service Areas']);
     const targetCities = getText(p['Target Cities']);
     const restrictions = getText(p['Content Restrictions']);
     const specialInstr = getText(p['Special Instructions']);
@@ -374,7 +435,6 @@ notionRoutes.post('/import/clients/full', async (c) => {
     const approvalReq  = getChecked(p['Approval Required']);
     const approverName = getText(p['Approver Name']);
     const freqRaw      = getText(p['Posting Frequency']);
-    const activePlats  = getMultiSelect(p['Active Platforms']);
 
     const slug = (notion_id_to_app_slug[page.id] as string | undefined)
       ?? slugFromName(name);
@@ -597,25 +657,7 @@ notionRoutes.post('/import/clients/full', async (c) => {
       tabsDone.push('social_links');
 
       // ──────────────────────────────────────────────────────────────────────
-      // 4. CLIENT_PLATFORMS (Platforms tab — seed active platform rows)
-      // ──────────────────────────────────────────────────────────────────────
-      let platformsAdded = 0;
-      for (const notionPlatName of activePlats) {
-        const platformSlug = normPlatform(notionPlatName);
-        if (!platformSlug) continue;
-        const pid = crypto.randomUUID().replace(/-/g, '');
-        await c.env.DB
-          .prepare(`INSERT OR IGNORE INTO client_platforms
-              (id, client_id, platform, paused)
-            VALUES (?,?,?,0)`)
-          .bind(pid, clientId, platformSlug)
-          .run();
-        platformsAdded++;
-      }
-      if (platformsAdded > 0) tabsDone.push('platforms');
-
-      // ──────────────────────────────────────────────────────────────────────
-      // 5. CLIENT_RESTRICTIONS (feeds into prohibited_terms display)
+      // 4. CLIENT_RESTRICTIONS (feeds into prohibited_terms display)
       // ──────────────────────────────────────────────────────────────────────
       if (restrictions.trim()) {
         const terms = parseRestrictions(restrictions);
@@ -626,6 +668,55 @@ notionRoutes.post('/import/clients/full', async (c) => {
             .run();
         }
         if (terms.length > 0) tabsDone.push('restrictions');
+      }
+
+      // ──────────────────────────────────────────────────────────────────────
+      // 5. CLIENT_SERVICES (Services tab)
+      // ──────────────────────────────────────────────────────────────────────
+      const existingSvcCount = await c.env.DB
+        .prepare('SELECT COUNT(*) as n FROM client_services WHERE client_id = ?')
+        .bind(clientId).first<{ n: number }>();
+
+      if (servicesRaw.trim() && (force_sub_tables || (existingSvcCount?.n ?? 0) === 0)) {
+        const svcs = parseServices(servicesRaw);
+
+        const catNames = [...new Set(svcs.map(s => s.category).filter(Boolean) as string[])];
+        const catIdMap: Record<string, string> = {};
+        for (let i = 0; i < catNames.length; i++) {
+          const catId = crypto.randomUUID().replace(/-/g, '');
+          catIdMap[catNames[i]] = catId;
+          await c.env.DB
+            .prepare('INSERT OR IGNORE INTO client_categories (id, client_id, name, sort_order, created_at, updated_at) VALUES (?,?,?,?,?,?)')
+            .bind(catId, clientId, catNames[i], i, now, now).run();
+        }
+        for (let i = 0; i < svcs.length; i++) {
+          const { name: svcName, category } = svcs[i];
+          const svcId = crypto.randomUUID().replace(/-/g, '');
+          const catId = category ? (catIdMap[category] ?? null) : null;
+          await c.env.DB
+            .prepare('INSERT INTO client_services (id, client_id, category_id, name, active, sort_order, created_at, updated_at) VALUES (?,?,?,?,1,?,?,?)')
+            .bind(svcId, clientId, catId, svcName, i, now, now).run();
+        }
+        if (svcs.length > 0) tabsDone.push('services');
+      }
+
+      // ──────────────────────────────────────────────────────────────────────
+      // 6. CLIENT_SERVICE_AREAS (Areas tab)
+      // ──────────────────────────────────────────────────────────────────────
+      const existingAreaCount = await c.env.DB
+        .prepare('SELECT COUNT(*) as n FROM client_service_areas WHERE client_id = ?')
+        .bind(clientId).first<{ n: number }>();
+
+      if (force_sub_tables || (existingAreaCount?.n ?? 0) === 0) {
+        const areas = parseAreas(serviceArea, serviceAreas, targetCities, primaryState);
+        for (let i = 0; i < areas.length; i++) {
+          const { city, state: aState, primary_area } = areas[i];
+          const areaId = crypto.randomUUID().replace(/-/g, '');
+          await c.env.DB
+            .prepare('INSERT INTO client_service_areas (id, client_id, city, state, primary_area, sort_order, created_at) VALUES (?,?,?,?,?,?,?)')
+            .bind(areaId, clientId, city, aState, primary_area, i, now).run();
+        }
+        if (areas.length > 0) tabsDone.push('areas');
       }
 
       await logSync(c.env.DB, {
