@@ -255,7 +255,7 @@ curl -b /tmp/wc.txt -X POST https://marketing.webxni.com/api/notion/import/clien
 ```
 Use `force_sub_tables: true` to re-import services/areas/offers for existing clients.
 
-Migration sequence is now at **0008** (next is 0009).
+Migration sequence is now at **0009** (next is 0010).
 
 ---
 
@@ -293,6 +293,31 @@ Translates `title` + `master_caption` to Spanish. Used by the 🌐 button in the
 
 ---
 
+## GBP Offers & Events automation (implemented — migration 0009)
+
+**Client > Offers tab**: full GBP offer config — `gbp_cta_type`, `gbp_cta_url`, `gbp_coupon_code`, `gbp_redeem_url`, `gbp_terms`, `gbp_location_id`, `recurrence` (none/weekly/biweekly/monthly), `next_run_date`, pause/resume.
+
+**Client > Events tab**: new — `gbp_event_title`, start/end date+time, CTA, recurrence, pause/resume.
+
+**Automation** (`worker/src/loader/recurring-gbp-run.ts`):
+- Runs as first step of the `0 */6 * * *` cron before the main posting loop
+- Detects active non-paused offers/events with `next_run_date <= today`
+- Creates `ready` posts (status=ready, ready_for_automation=1) with all GBP fields set
+- Advances `next_run_date` based on recurrence rule; deactivates one-time items after first post
+- Expires events automatically when `gbp_event_end_date` is in the past
+- Duplicate guard via `last_posted_at` — skips if already posted today
+
+**GBP CTA in post creation/editing**:
+- Create Post form: GBP section already existed — now sends all CTA/event/offer fields to API
+- Post detail > Captions tab: new "Google Business Profile Settings" card (view + edit all GBP fields inline)
+- `buildExtraParams` forwards all GBP fields to Upload-Post API
+- Caption generation is CTA-aware: CALL → include phone, LEARN_MORE → educational tone, etc.
+
+**New table**: `client_events` (migration 0009).  
+**Extended table**: `client_offers` + `posts.gbp_location_id` (migration 0009).
+
+---
+
 ## What's NOT implemented yet (future work)
 
 - **Sunday generation cron** — stub exists in index.ts, needs to call `runGeneration` for all clients
@@ -302,6 +327,7 @@ Translates `title` + `master_caption` to Spanish. Used by the 🌐 button in the
 - **Canva API integration** — links stored as reference-only
 - **Real-time posting status** — currently requires page refresh
 - **R2_MEDIA_PUBLIC_URL** — not configured yet; asset upload works but preview URLs are null
+- **Offer/Event image upload** — `asset_r2_key` column exists but upload UI not yet wired to offer/event forms
 
 ---
 
