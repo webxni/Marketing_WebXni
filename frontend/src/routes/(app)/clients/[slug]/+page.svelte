@@ -66,17 +66,20 @@
   let showPlatformForm = false;
   let editingPlatform: Partial<ClientPlatform> & { platform: string } = { platform: '' };
   let savingPlatform = false;
+  let platformFormEl: HTMLElement | null = null;
 
   function openAddPlatform() {
     editingPlatform = { platform: '', account_id: null, username: null, page_id: null,
       upload_post_board_id: null, upload_post_location_id: null, profile_url: null,
       profile_username: null, yt_channel_id: null, linkedin_urn: null, notes: null };
     showPlatformForm = true;
+    setTimeout(() => platformFormEl?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
   }
 
   function openEditPlatform(p: ClientPlatform) {
     editingPlatform = { ...p };
     showPlatformForm = true;
+    setTimeout(() => platformFormEl?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
   }
 
   async function savePlatform() {
@@ -88,7 +91,7 @@
       toast.success(`${platform} saved`);
       showPlatformForm = false;
       load();
-    } catch { toast.error('Failed to save platform'); }
+    } catch (e) { toast.error(`Failed to save: ${e instanceof Error ? e.message : String(e)}`); }
     finally { savingPlatform = false; }
   }
 
@@ -400,7 +403,7 @@
   <!-- Platforms tab -->
   {#if activeTab === 'platforms'}
   {#if showPlatformForm}
-  <div class="card p-5 mb-4">
+  <div class="card p-5 mb-4" bind:this={platformFormEl}>
     <h3 class="section-label mb-4">{editingPlatform.id ? 'Edit Platform' : 'Add Platform'}</h3>
     <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
       <div>
