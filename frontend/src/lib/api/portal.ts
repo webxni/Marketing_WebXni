@@ -1,11 +1,23 @@
 import { api } from './client';
 
+export interface PortalClient {
+  id: string; slug: string; canonical_name: string;
+  phone: string | null; email: string | null; industry: string | null; state: string | null;
+  brand_primary_color: string | null; brand_accent_color: string | null; logo_url: string | null;
+  package: string | null;
+}
+
 export interface PortalSummary {
-  client: { id: string; slug: string; canonical_name: string };
+  client: PortalClient;
   period: { month: string };
   summary: { total: number; published: number; scheduled: number; failed: number };
   by_platform: { platform: string; status: string; count: number }[];
   recent_posts: { id: string; title: string; status: string; content_type: string; platforms: string; publish_date: string }[];
+  active_platforms: string[];
+}
+
+export interface PortalFeedback {
+  id: string; category: string; sentiment: string; message: string; created_at: number;
 }
 
 export interface PortalPost {
@@ -41,5 +53,16 @@ export const portalApi = {
     if (params.to)        q.set('to',        params.to);
     if (params.client_id) q.set('client_id', params.client_id);
     return api.get<PortalReport>(`/api/portal/report?${q}`);
+  },
+
+  getFeedback: (client_id?: string) => {
+    const q = client_id ? `?client_id=${client_id}` : '';
+    return api.get<{ feedback: PortalFeedback[] }>(`/api/portal/feedback${q}`);
+  },
+
+  submitFeedback: (data: { category: string; sentiment: string; message: string; client_id?: string }) => {
+    const body: Record<string, string> = { category: data.category, sentiment: data.sentiment, message: data.message };
+    if (data.client_id) body.client_id = data.client_id;
+    return api.post<{ ok: boolean; id: string }>('/api/portal/feedback', body);
   },
 };

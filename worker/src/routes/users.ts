@@ -145,6 +145,15 @@ userRoutes.post('/:id/reactivate', requirePermission('users.manage'), async (c) 
   return c.json({ ok: true });
 });
 
+/** POST /api/users/:id/reset-2fa — admin clears another user's TOTP */
+userRoutes.post('/:id/reset-2fa', requirePermission('users.manage'), async (c) => {
+  const now = Math.floor(Date.now() / 1000);
+  await c.env.DB
+    .prepare('UPDATE users SET totp_secret = NULL, totp_enabled = 0, updated_at = ? WHERE id = ?')
+    .bind(now, c.req.param('id')).run();
+  return c.json({ ok: true });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PBKDF2 password hashing (WebCrypto — native to Workers runtime)
 // ─────────────────────────────────────────────────────────────────────────────

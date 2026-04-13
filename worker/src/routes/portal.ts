@@ -2,9 +2,11 @@
  * Client portal API — strictly isolated to user.clientId
  * All routes require role=client AND enforce client_id match.
  *
- * GET /api/portal/summary   — dashboard metrics
- * GET /api/portal/posts     — paginated posts list
- * GET /api/portal/report    — date-range report with platform breakdown
+ * GET  /api/portal/summary          — dashboard metrics + client info
+ * GET  /api/portal/posts            — paginated posts list
+ * GET  /api/portal/report           — date-range report with platform breakdown
+ * GET  /api/portal/feedback         — list client feedback
+ * POST /api/portal/feedback         — submit new feedback
  */
 import { Hono } from 'hono';
 import type { Env, SessionData } from '../types';
@@ -39,11 +41,18 @@ portalRoutes.get('/summary', async (c) => {
 
   const month   = `strftime('%Y-%m','now','-6 hours')`;
 
-  const [client, totals, platforms, recentPosts] = await Promise.all([
+  const [client, totals, platforms, recentPosts, activePlatforms] = await Promise.all([
     c.env.DB
-      .prepare('SELECT id, slug, canonical_name FROM clients WHERE id = ?')
+      .prepare(`SELECT id, slug, canonical_name, phone, email, industry, state,
+                       brand_primary_color, brand_accent_color, logo_url, package
+                FROM clients WHERE id = ?`)
       .bind(clientId)
-      .first<{ id: string; slug: string; canonical_name: string }>(),
+      .first<{
+        id: string; slug: string; canonical_name: string;
+        phone: string | null; email: string | null; industry: string | null; state: string | null;
+        brand_primary_color: string | null; brand_accent_color: string | null; logo_url: string | null;
+        package: string | null;
+      }>(),
 
     c.env.DB
       .prepare(`
@@ -77,12 +86,17 @@ portalRoutes.get('/summary', async (c) => {
         SELECT p.id, p.title, p.status, p.content_type, p.platforms, p.publish_date
         FROM posts p
         WHERE p.client_id = ?
-          AND p.status IN ('scheduled','posted')
+          AND p.status IN ('scheduled','posted','ready','approved')
         ORDER BY p.publish_date DESC
-        LIMIT 5
+        LIMIT 6
       `)
       .bind(clientId)
       .all<{ id: string; title: string; status: string; content_type: string; platforms: string; publish_date: string }>(),
+
+    c.env.DB
+      .prepare(`SELECT platform FROM client_platforms WHERE client_id = ? AND paused = 0 ORDER BY platform`)
+      .bind(clientId)
+      .all<{ platform: string }>(),
   ]);
 
   if (!client) return c.json({ error: 'Client not found' }, 404);
@@ -93,6 +107,7 @@ portalRoutes.get('/summary', async (c) => {
     summary: totals ?? { total: 0, published: 0, scheduled: 0, failed: 0 },
     by_platform: platforms.results,
     recent_posts: recentPosts.results,
+    active_platforms: activePlatforms.results.map(r => r.platform),
   });
 });
 
@@ -216,4 +231,54 @@ portalRoutes.get('/report', async (c) => {
     posts: posts.results,
     post_platforms: byPlatform.results,
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/portal/feedback
+// ─────────────────────────────────────────────────────────────────────────────
+portalRoutes.get('/feedback', async (c) => {
+  const clientId = getClientId(c);
+  if (!clientId) return c.json({ error: 'client_id required' }, 400);
+
+  const rows = await c.env.DB
+    .prepare(`SELECT id, category, sentiment, message, created_at
+              FROM client_feedback
+              WHERE client_id = ?
+              ORDER BY created_at DESC
+              LIMIT 20`)
+    .bind(clientId)
+    .all<{ id: string; category: string; sentiment: string; message: string; created_at: number }>();
+
+  return c.json({ feedback: rows.results });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/portal/feedback
+// ─────────────────────────────────────────────────────────────────────────────
+portalRoutes.post('/feedback', async (c) => {
+  const user     = c.get('user');
+  const clientId = getClientId(c);
+  if (!clientId) return c.json({ error: 'client_id required' }, 400);
+
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON' }, 400); }
+  const { category, sentiment, message } = body as { category?: string; sentiment?: string; message?: string };
+  if (!message?.trim()) return c.json({ error: 'message is required' }, 400);
+
+  const validCategories = ['content_quality', 'timing', 'platform_issue', 'design', 'other'];
+  const validSentiments = ['positive', 'neutral', 'negative'];
+  const cat = validCategories.includes(category ?? '') ? (category as string) : 'other';
+  const sen = validSentiments.includes(sentiment ?? '') ? (sentiment as string) : 'neutral';
+
+  const id  = crypto.randomUUID().replace(/-/g, '');
+  const now = Math.floor(Date.now() / 1000);
+  const month = new Date().toISOString().slice(0, 7);
+
+  await c.env.DB
+    .prepare(`INSERT INTO client_feedback (id, client_id, submitted_by, month, category, sentiment, message, admin_reviewed, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`)
+    .bind(id, clientId, user.userId, month, cat, sen, message.trim(), now, now)
+    .run();
+
+  return c.json({ ok: true, id }, 201);
 });
