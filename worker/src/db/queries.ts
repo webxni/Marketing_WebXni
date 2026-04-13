@@ -165,6 +165,10 @@ export async function listReadyPosts(
   clientFilter?: string,
   limit = 50,
 ): Promise<PostRow[]> {
+  // Only pick up posts whose scheduled time has arrived (or have no time set).
+  // publish_date is stored as 'YYYY-MM-DDTHH:MM' (datetime-local format, UTC).
+  // strftime('%Y-%m-%dT%H:%M','now') produces the same format for comparison.
+  const nowExpr = `strftime('%Y-%m-%dT%H:%M','now')`;
   if (clientFilter) {
     const client = await getClientBySlug(db, clientFilter);
     if (!client) return [];
@@ -175,6 +179,7 @@ export async function listReadyPosts(
            AND ready_for_automation = 1
            AND asset_delivered = 1
            AND client_id = ?
+           AND (publish_date IS NULL OR publish_date <= ${nowExpr})
          ORDER BY publish_date ASC
          LIMIT ?`,
       )
@@ -188,6 +193,7 @@ export async function listReadyPosts(
        WHERE status = 'ready'
          AND ready_for_automation = 1
          AND asset_delivered = 1
+         AND (publish_date IS NULL OR publish_date <= ${nowExpr})
        ORDER BY publish_date ASC
        LIMIT ?`,
     )

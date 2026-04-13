@@ -59,6 +59,8 @@
   $: isVideo      = post?.content_type === 'video' || post?.content_type === 'reel';
   $: isImage      = post?.content_type === 'image';
   $: isGbp        = post ? JSON.parse(post.platforms ?? '[]').includes('google_business') : false;
+  // Multi-location GBP overrides only for ETB — extend this check when adding future multi-location clients
+  $: isEtb        = post?.client_slug === 'elite-team-builders';
 
   onMount(async () => {
     try {
@@ -266,7 +268,7 @@
           <label for="cap_google_business" class="block text-xs text-muted mb-1.5">Google Business</label>
           <textarea id="cap_google_business" bind:value={cap_google_business} rows="3" placeholder="Leave blank to use master caption…" class="input w-full resize-none font-mono text-xs"></textarea>
         </div>
-        {#if isGbp}
+        {#if isGbp && isEtb}
         <div class="pt-3 border-t border-border">
           <p class="text-xs text-muted mb-3">GBP multi-location overrides (leave blank to use Google Business caption above)</p>
           <div class="space-y-3">

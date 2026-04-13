@@ -1,13 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { runApi, clientsApi, packagesApi } from '$lib/api';
+  import { runApi, clientsApi, packagesApi, postsApi } from '$lib/api';
   import Badge from '$lib/components/ui/Badge.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
+  import PlatformBadge from '$lib/components/ui/PlatformBadge.svelte';
   import { can } from '$lib/stores/auth';
   import { toast } from '$lib/stores/ui';
   import { timeAgo, parseStats } from '$lib/utils';
-  import type { PostingJob, GenerationRun, Client, Package } from '$lib/types';
+  import type { PostingJob, GenerationRun, Client, Package, Post } from '$lib/types';
 
   // ── Data ─────────────────────────────────────────────────────────────────────
   let clients:  Client[]  = [];
@@ -188,7 +189,42 @@
     finally { generating = false; }
   }
 
-  // ── Posting trigger ───────────────────────────────────────────────────────────
+  // ── Scheduled queue ───────────────────────────────────────────────────────────
+  let scheduledPosts:    Post[] = [];
+  let loadingScheduled = true;
+  let showAdvancedPosting = false;
+
+  async function loadScheduledPosts() {
+    loadingScheduled = true;
+    try {
+      const r = await postsApi.list({ status: 'ready', limit: 100 });
+      scheduledPosts = r.posts.sort((a, b) => {
+        if (!a.publish_date) return 1;
+        if (!b.publish_date) return -1;
+        return a.publish_date.localeCompare(b.publish_date);
+      });
+    } finally { loadingScheduled = false; }
+  }
+
+  function formatScheduledTime(dt: string | null): string {
+    if (!dt) return 'No time set';
+    // dt is 'YYYY-MM-DDTHH:MM' (UTC) — display as-is, append UTC label
+    const [date, time] = dt.split('T');
+    return `${date}  ${time ?? ''} UTC`.trim();
+  }
+
+  function scheduledLabel(dt: string | null): { label: string; cls: string } {
+    if (!dt) return { label: 'Unscheduled', cls: 'text-muted' };
+    const now = new Date().toISOString().slice(0, 16);
+    if (dt < now) return { label: 'Due now', cls: 'text-green-400' };
+    const today = new Date().toISOString().slice(0, 10);
+    const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+    if (dt.startsWith(today)) return { label: 'Today', cls: 'text-accent' };
+    if (dt.startsWith(tomorrow)) return { label: 'Tomorrow', cls: 'text-yellow-400' };
+    return { label: 'Upcoming', cls: 'text-muted' };
+  }
+
+  // ── Posting trigger (manual / emergency) ─────────────────────────────────────
   let dryRun = false;
   let postClientFilter   = '';
   let postPlatformFilter = '';
@@ -225,7 +261,7 @@
     const [cr, pkr] = await Promise.all([clientsApi.list('active'), packagesApi.listAll()]);
     clients  = cr.clients;
     packages = pkr.packages;
-    await Promise.all([loadGenRuns(), loadJobs()]);
+    await Promise.all([loadGenRuns(), loadJobs(), loadScheduledPosts()]);
   });
 
   // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -505,41 +541,90 @@
 </div>
 {/if}
 
-<!-- ═══ POSTING TRIGGER ════════════════════════════════════════════════════════ -->
-{#if can('automation.trigger')}
+<!-- ═══ SCHEDULED QUEUE ═══════════════════════════════════════════════════════ -->
 <div class="card p-4 mb-5">
-  <h3 class="section-label mb-3">Posting Controls</h3>
-  <div class="flex flex-wrap items-end gap-3">
-    <div>
-      <label class="block text-xs text-muted mb-1">Client</label>
-      <select bind:value={postClientFilter} class="input text-sm">
-        <option value="">All clients</option>
-        {#each clients as c}
-          <option value={c.slug}>{c.canonical_name}</option>
-        {/each}
-      </select>
-    </div>
-    <div>
-      <label class="block text-xs text-muted mb-1">Platform</label>
-      <select bind:value={postPlatformFilter} class="input text-sm">
-        <option value="">All platforms</option>
-        {#each allPlatforms as p}
-          <option value={p}>{p.replace(/_/g,' ')}</option>
-        {/each}
-      </select>
-    </div>
-    <label class="flex items-center gap-2 text-xs text-muted cursor-pointer pb-2">
-      <input type="checkbox" bind:checked={dryRun} class="rounded" /> Dry run
-    </label>
-    <div class="flex gap-2 pb-0.5">
-      <button class="btn-secondary btn-sm" disabled={triggering} on:click={triggerPosting}>
-        {dryRun ? 'Dry Run' : 'Run Posting'}
-      </button>
-      <button class="btn-ghost btn-sm" disabled={triggering} on:click={fetchUrls}>Fetch URLs</button>
-    </div>
+  <div class="flex items-center justify-between mb-3">
+    <h3 class="section-label">Scheduled Queue</h3>
+    <span class="text-xs text-muted">
+      {#if !loadingScheduled}{scheduledPosts.length} post{scheduledPosts.length !== 1 ? 's' : ''} ready{/if}
+    </span>
   </div>
+  <p class="text-xs text-muted mb-4">Posts are sent automatically by the cron (every 6h) when their scheduled time arrives. Set the publish date + time on each post to control when it goes out.</p>
+
+  {#if loadingScheduled}
+    <div class="flex justify-center py-6"><Spinner /></div>
+  {:else if scheduledPosts.length === 0}
+    <p class="text-xs text-muted italic py-4 text-center">No posts are currently scheduled.</p>
+  {:else}
+    <div class="space-y-2">
+      {#each scheduledPosts as post}
+      {@const lbl = scheduledLabel(post.publish_date)}
+      <div class="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-surface border border-border hover:border-border/80 text-sm">
+        <div class="flex-1 min-w-0">
+          <a href="/posts/{post.id}" class="text-white hover:text-accent truncate block font-medium text-xs">{post.title}</a>
+          <p class="text-[11px] text-muted truncate">{post.client_name ?? post.client_slug}</p>
+        </div>
+        <div class="hidden sm:flex flex-wrap gap-1 flex-shrink-0">
+          {#each JSON.parse(post.platforms ?? '[]').slice(0,3) as p}
+            <PlatformBadge platform={p} size="sm" />
+          {/each}
+          {#if JSON.parse(post.platforms ?? '[]').length > 3}
+            <span class="text-[10px] text-muted">+{JSON.parse(post.platforms ?? '[]').length - 3}</span>
+          {/if}
+        </div>
+        <div class="text-right flex-shrink-0">
+          <span class="text-[11px] {lbl.cls} font-medium block">{lbl.label}</span>
+          <span class="text-[11px] text-muted font-mono">{formatScheduledTime(post.publish_date)}</span>
+        </div>
+      </div>
+      {/each}
+    </div>
+  {/if}
+
+  <!-- Manual / emergency posting controls (collapsed by default) -->
+  {#if can('automation.trigger')}
+  <div class="mt-4 border-t border-border pt-3">
+    <button
+      class="text-xs text-muted hover:text-white flex items-center gap-1"
+      on:click={() => (showAdvancedPosting = !showAdvancedPosting)}
+    >
+      <span class="transition-transform {showAdvancedPosting ? 'rotate-90' : ''} inline-block">▶</span>
+      Manual / emergency run
+    </button>
+    {#if showAdvancedPosting}
+    <div class="flex flex-wrap items-end gap-3 mt-3">
+      <div>
+        <label class="block text-xs text-muted mb-1">Client</label>
+        <select bind:value={postClientFilter} class="input text-sm">
+          <option value="">All clients</option>
+          {#each clients as c}
+            <option value={c.slug}>{c.canonical_name}</option>
+          {/each}
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs text-muted mb-1">Platform</label>
+        <select bind:value={postPlatformFilter} class="input text-sm">
+          <option value="">All platforms</option>
+          {#each allPlatforms as p}
+            <option value={p}>{p.replace(/_/g,' ')}</option>
+          {/each}
+        </select>
+      </div>
+      <label class="flex items-center gap-2 text-xs text-muted cursor-pointer pb-2">
+        <input type="checkbox" bind:checked={dryRun} class="rounded" /> Dry run
+      </label>
+      <div class="flex gap-2 pb-0.5">
+        <button class="btn-secondary btn-sm" disabled={triggering} on:click={triggerPosting}>
+          {dryRun ? 'Dry Run' : 'Run Posting'}
+        </button>
+        <button class="btn-ghost btn-sm" disabled={triggering} on:click={fetchUrls}>Fetch URLs</button>
+      </div>
+    </div>
+    {/if}
+  </div>
+  {/if}
 </div>
-{/if}
 
 <!-- ═══ HISTORY ════════════════════════════════════════════════════════════════ -->
 <div class="flex border-b border-border mb-4">
