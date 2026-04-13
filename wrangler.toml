@@ -7,7 +7,8 @@ compatibility_flags = ["nodejs_compat"]
 crons = [
   "0 7 * * SUN",  # Weekly generation — Sunday 7AM
   "0 2 * * *",    # Fetch real URLs from Upload-Post history — daily 2AM
-  "0 */6 * * *",  # Posting check — every 6 hours
+  "0 * * * *",    # Recurring GBP offers/events — top of every hour
+  "*/1 * * * *",  # Exact-time posting — polls every minute for due posts
 ]
 
 [[d1_databases]]

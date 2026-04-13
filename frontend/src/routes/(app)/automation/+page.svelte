@@ -234,15 +234,23 @@
 
   function scheduledLabel(dt: string | null): { label: string; cls: string; hint?: string } {
     if (!dt) return { label: 'Unscheduled', cls: 'text-muted', hint: 'No publish time set — will not be sent automatically' };
-    const nicNowStr = nicNow().replace(' ', 'T');
-    const dtNorm = dt.replace(' ', 'T');
-    if (dtNorm <= nicNowStr) return {
-      label: 'Eligible',
-      cls: 'text-green-400',
-      hint: 'Scheduled time has passed — will be sent on the next cron run (every 6h: midnight, 6am, noon, 6pm NIC)',
+    const nowMs = Date.now() - 6 * 3600000; // NIC now in ms
+    const dtMs  = new Date(dt.replace(' ', 'T')).getTime();
+    const diffMin = (dtMs - nowMs) / 60000; // positive = future
+
+    if (diffMin < -10) return {
+      label: 'Overdue',
+      cls: 'text-red-400',
+      hint: 'More than 10 minutes overdue — use Manual Run below if it has not posted yet.',
     };
+    if (diffMin <= 2) return {
+      label: 'Sending…',
+      cls: 'text-green-400',
+    };
+    const dtNorm = dt.replace(' ', 'T');
+    if (diffMin <= 60) return { label: 'Due soon', cls: 'text-yellow-400' };
     if (dtNorm.startsWith(nicToday())) return { label: 'Today', cls: 'text-accent' };
-    if (dtNorm.startsWith(nicTomorrow())) return { label: 'Tomorrow', cls: 'text-yellow-400' };
+    if (dtNorm.startsWith(nicTomorrow())) return { label: 'Tomorrow', cls: 'text-muted' };
     return { label: 'Upcoming', cls: 'text-muted' };
   }
 
@@ -555,7 +563,7 @@
             {buttonLabel}
           {/if}
         </button>
-        <p class="text-[11px] text-muted text-center mt-2">Draft → Designer adds media → Approve → Ready → Cron posts</p>
+        <p class="text-[11px] text-muted text-center mt-2">Draft → Designer adds media → Approve → Posts at scheduled time</p>
       </div>
     </div>
 
@@ -568,10 +576,10 @@
   <div class="flex items-center justify-between mb-3">
     <h3 class="section-label">Scheduled Queue</h3>
     <span class="text-xs text-muted">
-      {#if !loadingScheduled}{scheduledPosts.length} post{scheduledPosts.length !== 1 ? 's' : ''} ready{/if}
+      {#if !loadingScheduled}{scheduledPosts.length} post{scheduledPosts.length !== 1 ? 's' : ''} queued{/if}
     </span>
   </div>
-  <p class="text-xs text-muted mb-4">Posts are sent automatically by the cron (every 6h) when their scheduled time arrives. Set the publish date + time on each post to control when it goes out.</p>
+  <p class="text-xs text-muted mb-4">Posts go out automatically at their exact scheduled time. Set publish date + time on each post to control when it sends.</p>
 
   {#if loadingScheduled}
     <div class="flex justify-center py-6"><Spinner /></div>
@@ -582,7 +590,7 @@
       {#each scheduledPosts as post}
       {@const lbl = scheduledLabel(post.publish_date)}
       {@const platforms = JSON.parse(post.platforms ?? '[]')}
-      <div class="px-3 py-2.5 rounded-lg bg-surface border border-border hover:border-border/80">
+      <div class="px-3 py-2.5 rounded-lg bg-surface border {lbl.label === 'Overdue' ? 'border-red-500/30' : lbl.label === 'Sending…' ? 'border-green-500/30' : 'border-border'} hover:border-border/80">
         <div class="flex items-center gap-3">
           <div class="flex-1 min-w-0">
             <a href="/posts/{post.id}" class="text-white hover:text-accent truncate block font-medium text-xs">{post.title}</a>

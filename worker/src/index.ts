@@ -86,40 +86,25 @@ export default {
           console.error('Fetch URLs cron error:', err);
         }
       })());
-    } else if (event.cron === '0 */6 * * *') {
-      // Every 6h — automated posting check (respects cron_enabled + posting_hours settings)
+    } else if (event.cron === '0 * * * *') {
+      // Top of every hour — recurring GBP offers/events only
+      ctx.waitUntil((async () => {
+        try {
+          const gbpStats = await runRecurringGbp(env as any);
+          if (gbpStats.offers_posted > 0 || gbpStats.events_posted > 0) console.log('Recurring GBP stats:', gbpStats);
+        } catch (err) {
+          console.error('Recurring GBP error:', err);
+        }
+      })());
+    } else if (event.cron === '*/1 * * * *') {
+      // Every minute — exact-time posting (only runs if cron_enabled=true in settings)
       ctx.waitUntil((async () => {
         try {
           const raw = await (env as unknown as { KV_BINDING: KVNamespace }).KV_BINDING.get('settings:system');
           const settings: Record<string, string> = raw ? JSON.parse(raw) : {};
 
-          // Check if automation is enabled
-          if (settings['cron_enabled'] === 'false') {
-            console.log('Cron posting skipped — cron_enabled=false');
-            return;
-          }
+          if (settings['cron_enabled'] === 'false') return;
 
-          // Check if current UTC hour is in the allowed posting hours
-          const allowedHours = (settings['posting_hours'] ?? '0,6,12,18')
-            .split(',')
-            .map(h => parseInt(h.trim(), 10))
-            .filter(h => !isNaN(h));
-
-          const currentHour = new Date().getUTCHours();
-          if (allowedHours.length > 0 && !allowedHours.includes(currentHour)) {
-            console.log(`Cron posting skipped — hour ${currentHour} not in allowed hours [${allowedHours.join(',')}]`);
-            return;
-          }
-
-          // Step 1: Generate posts for recurring offers/events
-          try {
-            const gbpStats = await runRecurringGbp(env as any);
-            console.log('Recurring GBP stats:', gbpStats);
-          } catch (gbpErr) {
-            console.error('Recurring GBP error:', gbpErr);
-          }
-
-          // Step 2: Run main posting loop (picks up newly generated posts too)
           await runPosting(env as any, { mode: 'real', triggered_by: 'cron', limit: 50 });
         } catch (err) {
           console.error('Cron posting error:', err);

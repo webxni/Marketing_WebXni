@@ -45,37 +45,48 @@ export async function runPosting(env: LoaderEnv, params: PostingRunParams): Prom
   const dryRun = params.mode === 'dry_run';
   const stats: PostingStats = { processed: 0, posted: 0, skipped: 0, blocked: 0, failed: 0 };
 
-  // Reuse a job_id created by the caller (run.ts already calls createPostingJob).
-  // Only create a new one when called directly without a job_id.
+  // job_id may be passed by a caller that already created the record (e.g. run.ts /api/run/post).
+  // For cron invocations we create it lazily after confirming there are posts to process,
+  // so the posting_jobs table stays clean when the per-minute cron finds nothing due.
   let jobId = params.job_id;
-  if (!jobId) {
-    const job = await createPostingJob(env.DB, {
-      triggered_by: params.triggered_by ?? 'api',
-      mode: params.mode,
-      client_filter: params.client_filter,
-      platform_filter: params.platform_filter,
-      limit_count: params.limit ?? 50,
-    });
-    jobId = job.id;
-  }
 
   const up = new UploadPostClient(env.UPLOAD_POST_API_KEY);
 
   try {
     const posts = await listReadyPosts(env.DB, params.client_filter, params.limit ?? 50);
 
+    // Skip job creation and early-return when there is nothing to post.
+    // This keeps posting_jobs clean when the per-minute cron fires with no due posts.
+    if (posts.length === 0 && !jobId && !dryRun) {
+      return stats;
+    }
+
+    // Lazily create the job record now that we know there's real work to do.
+    if (!jobId) {
+      const job = await createPostingJob(env.DB, {
+        triggered_by: params.triggered_by ?? 'api',
+        mode: params.mode,
+        client_filter: params.client_filter,
+        platform_filter: params.platform_filter,
+        limit_count: params.limit ?? 50,
+      });
+      jobId = job.id;
+    }
+
     for (const post of posts) {
       await processPost(env, up, post, params, stats, dryRun, jobId);
     }
 
-    await updatePostingJob(env.DB, jobId, 'completed', JSON.stringify(stats));
+    if (jobId) await updatePostingJob(env.DB, jobId, 'completed', JSON.stringify(stats));
   } catch (err) {
-    await updatePostingJob(
-      env.DB,
-      jobId,
-      'failed',
-      JSON.stringify({ ...stats, error: String(err) }),
-    );
+    if (jobId) {
+      await updatePostingJob(
+        env.DB,
+        jobId,
+        'failed',
+        JSON.stringify({ ...stats, error: String(err) }),
+      );
+    }
     throw err;
   }
 

@@ -24,7 +24,6 @@
 
   // ── Automation / Cron ─────────────────────────────────────────────────────
   let cronEnabled = true;
-  let postingHours = '9,15';
   let savingCron = false;
 
   // ── AI Provider ───────────────────────────────────────────────────────────
@@ -57,7 +56,6 @@
         systemSettings = r.settings ?? {};
         // Parse structured fields from flat KV
         cronEnabled  = systemSettings['cron_enabled']  !== 'false';
-        postingHours = systemSettings['posting_hours'] ?? '0,6,12,18';
         aiProvider   = systemSettings['ai_provider']   ?? 'openai';
         aiModel      = systemSettings['ai_model']      ?? '';
         aiApiKey     = systemSettings['ai_api_key']    ?? '';
@@ -96,12 +94,11 @@
     try {
       const updated = {
         ...systemSettings,
-        cron_enabled:  cronEnabled  ? 'true' : 'false',
-        posting_hours: postingHours.trim() || '0,6,12,18',
+        cron_enabled: cronEnabled ? 'true' : 'false',
       };
       await api.put('/api/settings', { settings: updated });
       systemSettings = updated;
-      toast.success('Schedule saved');
+      toast.success('Automation setting saved');
     } catch (e) { toast.error(String(e)); }
     finally { savingCron = false; }
   }
@@ -209,32 +206,21 @@
 
   {#if hasRole('admin')}
 
-  <!-- Automation Schedule -->
+  <!-- Automation -->
   <div class="card p-5">
-    <h3 class="section-label mb-4">Automation Schedule</h3>
+    <h3 class="section-label mb-4">Automation</h3>
     <div class="space-y-4">
       <div class="flex items-center gap-2">
         <input type="checkbox" id="cron_enabled" bind:checked={cronEnabled} class="rounded" />
-        <label for="cron_enabled" class="text-xs text-muted cursor-pointer">Enable automated posting (cron runs every 6 hours)</label>
+        <label for="cron_enabled" class="text-xs text-muted cursor-pointer">Enable automated posting</label>
       </div>
-      <div>
-        <label for="posting_hours" class="block text-xs text-muted mb-1.5">Active Posting Hours (UTC, comma-separated)</label>
-        <input
-          id="posting_hours"
-          type="text"
-          bind:value={postingHours}
-          placeholder="0,6,12,18"
-          class="input w-full font-mono text-xs"
-          disabled={!cronEnabled}
-        />
-        <p class="text-xs text-muted mt-1">
-          UTC hours when posting runs. Cron fires at 0, 6, 12, 18 UTC — use those values.
-          NIC (UTC-6): 0 UTC = 6 PM · 6 UTC = midnight · 12 UTC = 6 AM · 18 UTC = noon.
-        </p>
-      </div>
+      <p class="text-xs text-muted">
+        When enabled, posts are sent automatically at their exact scheduled time (checked every minute).
+        Disable this to pause all automated posting without affecting content.
+      </p>
       <div class="flex justify-end">
         <button class="btn-primary btn-sm" on:click={saveCron} disabled={savingCron}>
-          {savingCron ? 'Saving…' : 'Save Schedule'}
+          {savingCron ? 'Saving…' : 'Save'}
         </button>
       </div>
     </div>
