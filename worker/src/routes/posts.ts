@@ -182,20 +182,22 @@ postRoutes.put('/:id', async (c) => {
   return c.json({ post: updated });
 });
 
-/** POST /api/posts/:id/approve */
+/** POST /api/posts/:id/approve
+ * Approval immediately marks the post ready for automation — no separate "Mark Ready" step.
+ */
 postRoutes.post('/:id/approve', async (c) => {
   const post = await getPostById(c.env.DB, c.req.param('id'));
   if (!post) return c.json({ error: 'Not found' }, 404);
-  await setPostStatus(c.env.DB, post.id, 'approved');
+  await updatePost(c.env.DB, post.id, { status: 'ready', ready_for_automation: 1, asset_delivered: 1 });
   await writeAuditLog(c.env.DB, {
     user_id: c.get('user').userId,
     action: 'post.approve',
     entity_type: 'post',
     entity_id: post.id,
     old_value: { status: post.status },
-    new_value: { status: 'approved' },
+    new_value: { status: 'ready' },
   });
-  return c.json({ ok: true, status: 'approved' });
+  return c.json({ ok: true, status: 'ready' });
 });
 
 /** POST /api/posts/:id/reject */

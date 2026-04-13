@@ -18,7 +18,6 @@
   let activeTab: 'overview' | 'captions' | 'platforms' | 'blog' | 'diseno' = 'overview';
   let showApproveConfirm = false;
   let showRejectConfirm = false;
-  let showReadyConfirm = false;
   let showDeleteConfirm = false;
 
   function setTab(key: string) { activeTab = key as typeof activeTab; }
@@ -42,7 +41,7 @@
 
   async function approve() {
     if (!post) return;
-    try { await postsApi.approve(post.id); toast.success('Post approved'); load(); }
+    try { await postsApi.approve(post.id); toast.success('Approved — post is ready for automation'); load(); }
     catch { toast.error('Failed to approve'); }
   }
 
@@ -50,12 +49,6 @@
     if (!post) return;
     try { await postsApi.reject(post.id); toast.success('Post sent back to draft'); load(); }
     catch { toast.error('Failed to reject'); }
-  }
-
-  async function markReady() {
-    if (!post) return;
-    try { await postsApi.markReady(post.id); toast.success('Marked as Ready for Automation'); load(); }
-    catch { toast.error('Failed to update'); }
   }
 
   async function retryFailed() {
@@ -227,10 +220,16 @@
     { key: 'cap_pinterest',       label: 'Pinterest' },
     { key: 'cap_bluesky',         label: 'Bluesky' },
     { key: 'cap_google_business', label: 'Google Business' },
-    { key: 'cap_gbp_la',          label: 'GBP — Los Angeles' },
-    { key: 'cap_gbp_wa',          label: 'GBP — Washington' },
-    { key: 'cap_gbp_or',          label: 'GBP — Oregon' },
   ];
+
+  // Multi-location GBP caption overrides — currently only ETB.
+  // To enable for future clients: check if client has >1 entry in client_gbp_locations.
+  const gbpLocationFields: { key: string; label: string }[] = [
+    { key: 'cap_gbp_la', label: 'GBP — Los Angeles' },
+    { key: 'cap_gbp_wa', label: 'GBP — Washington' },
+    { key: 'cap_gbp_or', label: 'GBP — Oregon' },
+  ];
+  $: showGbpLocations = post?.client_slug === 'elite-team-builders';
 </script>
 
 <svelte:head><title>{post?.title ?? 'Post'} — WebXni</title></svelte:head>
@@ -264,9 +263,6 @@
       {#if post.status === 'pending_approval' && can('posts.approve')}
         <button class="btn-primary btn-sm" on:click={() => (showApproveConfirm = true)}>Approve</button>
         <button class="btn-danger btn-sm" on:click={() => (showRejectConfirm = true)}>Reject</button>
-      {/if}
-      {#if post.status === 'approved' && can('automation.trigger')}
-        <button class="btn-primary btn-sm" on:click={() => (showReadyConfirm = true)}>Mark Ready</button>
       {/if}
       {#if post.status === 'failed' && can('automation.trigger')}
         <button class="btn-secondary btn-sm" on:click={retryFailed}>Retry Failed</button>
@@ -490,6 +486,27 @@
       </div>
       {/if}
     {/each}
+
+    <!-- GBP multi-location overrides (Elite Team Builders only for now) -->
+    {#if showGbpLocations}
+    <div class="card p-4 border border-border/60">
+      <h4 class="text-xs font-medium text-white mb-1">GBP Multi-Location Overrides</h4>
+      <p class="text-xs text-muted mb-3">Leave blank to use the Google Business caption above.</p>
+      <div class="space-y-3">
+        {#each gbpLocationFields as field}
+        <div>
+          <p class="text-xs text-muted mb-1">{field.label}</p>
+          {#if postField(post, field.key)}
+            <p class="text-sm text-white whitespace-pre-wrap">{postField(post, field.key)}</p>
+          {:else}
+            <p class="text-xs text-muted italic">— using Google Business caption</p>
+          {/if}
+        </div>
+        {/each}
+      </div>
+    </div>
+    {/if}
+
     {#if post.youtube_title}
     <div class="card p-4">
       <h4 class="text-xs font-medium text-muted mb-2">YouTube Title</h4>
@@ -839,7 +856,7 @@
 <ConfirmDialog
   open={showApproveConfirm}
   title="Approve Post"
-  message="This will mark the post as Approved and send it to the review queue."
+  message="This will approve the post and mark it ready for automation. The next posting run will pick it up."
   confirmLabel="Approve"
   on:confirm={() => { showApproveConfirm = false; approve(); }}
   on:cancel={() => (showApproveConfirm = false)}
@@ -852,14 +869,6 @@
   confirmClass="btn-danger"
   on:confirm={() => { showRejectConfirm = false; reject(); }}
   on:cancel={() => (showRejectConfirm = false)}
-/>
-<ConfirmDialog
-  open={showReadyConfirm}
-  title="Mark Ready for Automation"
-  message="This will set the post as Ready for Automation. The next posting run will pick it up."
-  confirmLabel="Mark Ready"
-  on:confirm={() => { showReadyConfirm = false; markReady(); }}
-  on:cancel={() => (showReadyConfirm = false)}
 />
 <ConfirmDialog
   open={showDeleteConfirm}
