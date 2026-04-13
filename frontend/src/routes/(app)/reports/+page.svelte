@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { reportsApi, clientsApi } from '$lib/api';
   import Badge from '$lib/components/ui/Badge.svelte';
+  import PlatformBadge from '$lib/components/ui/PlatformBadge.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import { currentMonth, monthRange } from '$lib/utils';
   import type { PostingStats, Client } from '$lib/types';
@@ -9,16 +10,26 @@
   let stats: PostingStats | null = null;
   let clients: Client[] = [];
   let loading = true;
+
+  // Filtering — month picker OR custom date range
+  const months = monthRange(12, 3);
   let selectedMonth = currentMonth();
   let selectedClient = '';
-
-  const months = monthRange(12, 3);
+  let useCustomRange = false;
+  let customFrom = '';
+  let customTo = '';
 
   async function load() {
     loading = true;
     try {
-      const params: Record<string, string> = { month: selectedMonth };
+      const params: Record<string, string> = {};
       if (selectedClient) params.client = selectedClient;
+      if (useCustomRange && customFrom) {
+        params.from = customFrom;
+        if (customTo) params.to = customTo;
+      } else {
+        params.month = selectedMonth;
+      }
       const r = await reportsApi.postingStats(params);
       stats = r;
     } finally { loading = false; }
@@ -31,6 +42,11 @@
   });
 
   $: selectedMonth, selectedClient, load();
+  $: useCustomRange, load();
+
+  function applyCustomRange() { page = 0; load(); }
+
+  let page = 0; // unused but keeps reactive pattern consistent
 
   function pct(posted: number, total: number) {
     return total ? Math.round((posted / total) * 100) : 0;
@@ -53,13 +69,12 @@
   $: maxPlatformTotal = platformEntries.reduce((m, [, d]) => Math.max(m, d.total), 1);
 
   // Summary totals from by_status
-  $: totalPosted = stats?.by_status.find(s => s.status === 'posted')?.count ?? 0;
-  $: totalFailed = stats?.by_status.find(s => s.status === 'failed')?.count ?? 0;
-  $: totalDraft   = stats?.by_status.find(s => s.status === 'draft')?.count ?? 0;
-  $: totalReady   = (stats?.by_status.find(s => s.status === 'ready')?.count ?? 0)
-                  + (stats?.by_status.find(s => s.status === 'approved')?.count ?? 0);
-  $: totalAll     = stats?.by_status.reduce((s, r) => s + r.count, 0) ?? 0;
-  $: overallPct   = pct(totalPosted, totalAll);
+  $: totalPosted    = stats?.by_status.find(s => s.status === 'posted')?.count ?? 0;
+  $: totalScheduled = stats?.by_status.find(s => s.status === 'scheduled')?.count ?? 0;
+  $: totalFailed    = stats?.by_status.find(s => s.status === 'failed')?.count ?? 0;
+  $: totalDraft     = stats?.by_status.find(s => s.status === 'draft')?.count ?? 0;
+  $: totalAll       = stats?.by_status.reduce((s, r) => s + r.count, 0) ?? 0;
+  $: overallPct     = pct(totalPosted, totalAll);
 
   const platformColors: Record<string, string> = {
     facebook: '#1877F2', instagram: '#E1306C', linkedin: '#0A66C2',
@@ -69,8 +84,7 @@
 
   function platformLabel(p: string): string {
     const map: Record<string, string> = {
-      google_business: 'Google Business', x: 'X / Twitter',
-      website_blog: 'Blog',
+      google_business: 'Google Business', x: 'X / Twitter', website_blog: 'Blog',
     };
     return map[p] ?? p.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
   }
@@ -83,12 +97,30 @@
     <h1 class="page-title">Reports</h1>
     <p class="page-subtitle">Posting performance overview</p>
   </div>
-  <div class="flex items-center gap-3">
-    <select bind:value={selectedMonth} class="input text-sm w-40">
-      {#each months as m}
-        <option value={m.value}>{m.label}</option>
-      {/each}
-    </select>
+  <div class="flex items-center gap-3 flex-wrap">
+    <!-- Range mode toggle -->
+    <div class="flex rounded-lg border border-border overflow-hidden text-xs">
+      <button
+        class="px-3 py-1.5 transition-colors {!useCustomRange ? 'bg-accent/20 text-accent' : 'text-muted hover:text-white'}"
+        on:click={() => { useCustomRange = false; }}
+      >Monthly</button>
+      <button
+        class="px-3 py-1.5 transition-colors {useCustomRange ? 'bg-accent/20 text-accent' : 'text-muted hover:text-white'}"
+        on:click={() => { useCustomRange = true; }}
+      >Custom</button>
+    </div>
+
+    {#if !useCustomRange}
+      <select bind:value={selectedMonth} class="input text-sm w-40">
+        {#each months as m}
+          <option value={m.value}>{m.label}</option>
+        {/each}
+      </select>
+    {:else}
+      <input type="date" bind:value={customFrom} class="input text-sm" title="From" on:change={applyCustomRange} />
+      <input type="date" bind:value={customTo}   class="input text-sm" title="To"   on:change={applyCustomRange} />
+    {/if}
+
     <select bind:value={selectedClient} class="input text-sm w-48">
       <option value="">All clients</option>
       {#each clients as c}
@@ -113,8 +145,8 @@
       <div class="text-xs text-muted mt-1">Success Rate</div>
     </div>
     <div class="card p-4">
-      <div class="text-3xl font-bold text-yellow-400">{totalReady}</div>
-      <div class="text-xs text-muted mt-1">Queued / Ready</div>
+      <div class="text-3xl font-bold text-yellow-400">{totalScheduled}</div>
+      <div class="text-xs text-muted mt-1">Submitted / Pending</div>
     </div>
     <div class="card p-4">
       <div class="text-3xl font-bold {totalFailed > 0 ? 'text-red-400' : 'text-muted'}">{totalFailed}</div>
@@ -127,14 +159,18 @@
   <div class="card p-4 mb-6">
     <div class="flex items-center justify-between mb-2">
       <span class="text-xs text-muted">{totalAll} total posts this period</span>
-      <span class="text-xs text-white font-medium">{overallPct}% published</span>
+      <span class="text-xs text-white font-medium">{overallPct}% confirmed published</span>
     </div>
-    <div class="h-3 bg-surface rounded-full overflow-hidden">
-      <div class="h-full rounded-full transition-all" style="width:{overallPct}%; background:#22c55e"></div>
+    <div class="h-3 bg-surface rounded-full overflow-hidden flex">
+      <div class="h-full rounded-l-full transition-all" style="width:{(totalPosted/totalAll)*100}%; background:#22c55e"></div>
+      <div class="h-full transition-all" style="width:{(totalScheduled/totalAll)*100}%; background:#eab308; opacity:0.7"></div>
+      {#if totalFailed > 0}
+      <div class="h-full" style="width:{(totalFailed/totalAll)*100}%; background:#ef4444; opacity:0.7"></div>
+      {/if}
     </div>
     <div class="flex gap-4 mt-2 text-[11px] text-muted">
       <span class="text-green-400">{totalPosted} published</span>
-      <span class="text-yellow-400">{totalReady} queued</span>
+      {#if totalScheduled > 0}<span class="text-yellow-400">{totalScheduled} submitted (awaiting URL)</span>{/if}
       <span class="text-muted">{totalDraft} draft</span>
       {#if totalFailed > 0}<span class="text-red-400">{totalFailed} failed</span>{/if}
     </div>
@@ -167,7 +203,6 @@
               <span class="text-white font-medium w-8 text-right">{successPct}%</span>
             </div>
           </div>
-          <!-- Bar: green = posted, red = failed, grey = rest -->
           <div class="h-2 bg-surface rounded-full overflow-hidden flex">
             <div class="h-full rounded-l-full" style="width:{(data.posted/maxPlatformTotal)*100}%; background:{color}; opacity:0.85"></div>
             {#if data.failed > 0}
@@ -197,11 +232,14 @@
         >
           <div class="flex-1 min-w-0">
             <div class="text-sm text-white font-medium">{c.canonical_name}</div>
-            <div class="text-xs text-muted mt-0.5">{c.total} post{c.total !== 1 ? 's' : ''}</div>
+            <div class="text-xs text-muted mt-0.5 flex gap-2">
+              <span>{c.total} post{c.total !== 1 ? 's' : ''}</span>
+              {#if c.scheduled > 0}<span class="text-yellow-400">{c.scheduled} pending</span>{/if}
+            </div>
           </div>
           <div class="flex-shrink-0 w-32">
             <div class="flex justify-between text-[11px] mb-1">
-              <span class="text-green-400">{c.posted} posted</span>
+              <span class="text-green-400">{c.posted} published</span>
               {#if c.failed > 0}<span class="text-red-400">{c.failed} failed</span>{/if}
             </div>
             <div class="h-1.5 bg-border rounded-full overflow-hidden">

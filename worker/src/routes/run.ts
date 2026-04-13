@@ -14,9 +14,15 @@ import { UploadPostClient } from '../services/uploadpost';
 
 /**
  * Fetch published URLs from Upload-Post history.
- * Queries all post_platforms with status='sent', fetches their real URLs,
- * writes real_url back to post_platforms, and marks posts as 'posted'
- * when all their platforms are confirmed.
+ *
+ * Pass 1 — URL matching:
+ *   Queries all post_platforms with status='sent', looks up their tracking IDs
+ *   in Upload-Post history, writes real_url back and promotes platform status to 'posted'.
+ *
+ * Pass 2 — Fallback promotion:
+ *   Any post whose publish_date has already passed and whose platforms are all in a
+ *   terminal state (sent/posted/idempotent/skipped/blocked/failed) gets promoted to
+ *   'posted'. Handles the case where URL matching fails (history ID mismatch, aged out).
  */
 export async function runFetchUrls(env: Env, jobId: string): Promise<void> {
   console.log('[fetch-urls] starting job', jobId);
@@ -24,51 +30,122 @@ export async function runFetchUrls(env: Env, jobId: string): Promise<void> {
   const db = (env as unknown as { DB: D1Database }).DB;
 
   try {
-    // Fetch recent Upload-Post history (last 200 entries)
+    // ── Pass 1: URL matching ──────────────────────────────────────────────────
     const { history } = await up.getHistory(200);
-    // Build a lookup: job_id/request_id → post URL
+
+    // Build lookup: job_id or request_id → real post URL
     const urlMap = new Map<string, string>();
     for (const entry of history) {
-      const jid = (entry['job_id'] ?? entry['request_id']) as string | undefined;
-      const url = (entry['post_url'] ?? entry['url'] ?? entry['link']) as string | undefined;
-      if (jid && url) urlMap.set(jid, url);
+      // Try all known field name variants for the job identifier
+      const jid = (
+        entry['job_id'] ??
+        entry['request_id'] ??
+        entry['id']
+      ) as string | undefined;
+      // Try all known field name variants for the published URL
+      const url = (
+        entry['post_url'] ??
+        entry['url'] ??
+        entry['link'] ??
+        entry['post_link']
+      ) as string | undefined;
+      if (jid && url) urlMap.set(String(jid), url);
     }
 
     // Find all sent post_platforms that have a tracking_id
-    const rows = await db
+    const sentRows = await db
       .prepare(`SELECT pp.id, pp.post_id, pp.platform, pp.tracking_id
                 FROM post_platforms pp
                 WHERE pp.status = 'sent' AND pp.tracking_id IS NOT NULL`)
       .all<{ id: string; post_id: string; platform: string; tracking_id: string }>();
 
-    let updated = 0;
-    for (const row of rows.results) {
+    let urlsMatched = 0;
+    const promotionCandidates = new Set<string>(); // post_ids to check for full promotion
+
+    for (const row of sentRows.results) {
       const rawId = row.tracking_id.replace(/^UP:(IDEM:)?/, '');
       const realUrl = urlMap.get(rawId);
-      if (!realUrl) continue;
+      if (realUrl) {
+        await db
+          .prepare("UPDATE post_platforms SET real_url = ?, status = 'posted' WHERE id = ?")
+          .bind(realUrl, row.id)
+          .run();
+        urlsMatched++;
+      }
+      promotionCandidates.add(row.post_id);
+    }
 
-      await db
-        .prepare("UPDATE post_platforms SET real_url = ?, status = 'posted' WHERE id = ?")
-        .bind(realUrl, row.id)
-        .run();
-      updated++;
+    // Also include idempotent rows' posts as candidates
+    const idemRows = await db
+      .prepare(`SELECT DISTINCT post_id FROM post_platforms WHERE status = 'idempotent'`)
+      .all<{ post_id: string }>();
+    for (const r of idemRows.results) promotionCandidates.add(r.post_id);
 
-      // Check if ALL platforms for this post are now confirmed (posted or skipped/idempotent)
+    // Promote any post where no pending-state platforms remain
+    // Terminal states for this check: posted, sent (URL may not have been found yet),
+    // idempotent, skipped, blocked, failed — none of these need further action.
+    let promoted = 0;
+    for (const postId of promotionCandidates) {
       const remaining = await db
         .prepare(`SELECT COUNT(*) as n FROM post_platforms
-                  WHERE post_id = ? AND status NOT IN ('posted','skipped','blocked','idempotent')`)
-        .bind(row.post_id)
+                  WHERE post_id = ? AND status NOT IN ('posted','sent','idempotent','skipped','blocked','failed')`)
+        .bind(postId)
         .first<{ n: number }>();
-      if ((remaining?.n ?? 1) === 0) {
+      const hasSuccess = await db
+        .prepare(`SELECT COUNT(*) as n FROM post_platforms
+                  WHERE post_id = ? AND status IN ('posted','sent','idempotent')`)
+        .bind(postId)
+        .first<{ n: number }>();
+
+      if ((remaining?.n ?? 1) === 0 && (hasSuccess?.n ?? 0) > 0) {
         const now = Math.floor(Date.now() / 1000);
         await db
-          .prepare("UPDATE posts SET status = 'posted', automation_status = 'Posted', updated_at = ? WHERE id = ?")
-          .bind(now, row.post_id)
+          .prepare(`UPDATE posts SET status = 'posted', automation_status = 'Posted',
+                    posted_at = COALESCE(posted_at, ?), updated_at = ? WHERE id = ? AND status = 'scheduled'`)
+          .bind(now, now, postId)
           .run();
+        promoted++;
       }
     }
 
-    console.log(`[fetch-urls] done — updated ${updated} platform rows`);
+    // ── Pass 2: Fallback — stale scheduled posts ──────────────────────────────
+    // Posts that have been 'scheduled' with publish_date in the past and have at least
+    // one sent/idempotent platform but no active (non-terminal) rows. Catches cases
+    // where tracking_id lookup failed or entry aged out of Upload-Post history.
+    const nowExpr = `strftime('%Y-%m-%dT%H:%M','now','-6 hours')`; // NIC time
+    const staleSent = await db
+      .prepare(`SELECT DISTINCT pp.post_id
+                FROM post_platforms pp
+                JOIN posts p ON p.id = pp.post_id
+                WHERE p.status = 'scheduled'
+                  AND p.publish_date IS NOT NULL
+                  AND substr(p.publish_date,1,16) < ${nowExpr}
+                  AND pp.status IN ('sent','idempotent')`)
+      .all<{ post_id: string }>();
+
+    let fallbackPromoted = 0;
+    for (const { post_id } of staleSent.results) {
+      if (promotionCandidates.has(post_id)) continue; // already handled above
+      const stillActive = await db
+        .prepare(`SELECT COUNT(*) as n FROM post_platforms
+                  WHERE post_id = ? AND status NOT IN ('posted','sent','idempotent','skipped','blocked','failed')`)
+        .bind(post_id)
+        .first<{ n: number }>();
+      if ((stillActive?.n ?? 1) === 0) {
+        const now = Math.floor(Date.now() / 1000);
+        await db
+          .prepare(`UPDATE posts SET status = 'posted', automation_status = 'Posted',
+                    posted_at = COALESCE(posted_at, ?), updated_at = ? WHERE id = ?`)
+          .bind(now, now, post_id)
+          .run();
+        fallbackPromoted++;
+      }
+    }
+
+    console.log(
+      `[fetch-urls] done — URLs matched: ${urlsMatched}, ` +
+      `posts promoted: ${promoted}, fallback promoted: ${fallbackPromoted}`,
+    );
   } catch (err) {
     console.error('[fetch-urls] error:', err);
   }

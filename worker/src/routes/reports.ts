@@ -93,7 +93,8 @@ reportRoutes.get('/posting-stats', async (c) => {
     .prepare(`
       SELECT c.slug, c.canonical_name,
              COUNT(*) as total,
-             SUM(CASE WHEN p.status IN ('scheduled','posted') THEN 1 ELSE 0 END) as posted,
+             SUM(CASE WHEN p.status = 'posted' THEN 1 ELSE 0 END) as posted,
+             SUM(CASE WHEN p.status = 'scheduled' THEN 1 ELSE 0 END) as scheduled,
              SUM(CASE WHEN p.status = 'failed' THEN 1 ELSE 0 END) as failed
       FROM posts p
       JOIN clients c ON c.id = p.client_id
@@ -102,7 +103,7 @@ reportRoutes.get('/posting-stats', async (c) => {
       ORDER BY total DESC
     `)
     .bind(...binds)
-    .all<{ slug: string; canonical_name: string; total: number; posted: number; failed: number }>();
+    .all<{ slug: string; canonical_name: string; total: number; posted: number; scheduled: number; failed: number }>();
 
   return c.json({
     by_status:   byStatus.results,
@@ -186,13 +187,14 @@ reportRoutes.get('/monthly/:clientId', async (c) => {
 
   // Summary metrics
   const total = posts.results.length;
-  const posted = posts.results.filter((r: Record<string, unknown>) => r['status'] === 'scheduled' || r['status'] === 'posted').length;
+  const posted = posts.results.filter((r: Record<string, unknown>) => r['status'] === 'posted').length;
+  const scheduled = posts.results.filter((r: Record<string, unknown>) => r['status'] === 'scheduled').length;
   const failed = failedPosts.results.length;
 
   return c.json({
     client:     { ...client, brand: client.brand_json ? JSON.parse(client.brand_json) : null },
     period:     { month: monthParam, from, to },
-    summary:    { total, posted, failed, success_rate: total > 0 ? Math.round((posted / total) * 100) : 0 },
+    summary:    { total, posted, scheduled, failed, success_rate: total > 0 ? Math.round((posted / total) * 100) : 0 },
     posts:      posts.results,
     platforms:  byPlatform.results,
     failed_detail: failedPosts.results,

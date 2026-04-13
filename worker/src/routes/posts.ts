@@ -19,8 +19,7 @@ export const postRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionDa
 /** GET /api/posts */
 postRoutes.get('/', async (c) => {
   const q = c.req.query();
-  const { client, status, platform, limit, page } = q;
-  // Support both date_from/date_to and from/to
+  const { client, status, platform, limit, page, search, sort } = q;
   const dateFrom = q['date_from'] ?? q['from'];
   const dateTo   = q['date_to']   ?? q['to'];
 
@@ -37,34 +36,37 @@ postRoutes.get('/', async (c) => {
   const limitNum = limit ? Math.min(200, parseInt(limit)) : 50;
   const offset   = (pageNum - 1) * limitNum;
 
-  const [posts, countRow] = await Promise.all([
-    listPosts(c.env.DB, {
-      clientId,
-      status,
-      platform,
-      dateFrom,
-      dateTo,
-      limit: limitNum,
-      offset,
-    }),
-    c.env.DB
-      .prepare('SELECT COUNT(*) as n FROM posts' +
-        (clientId  ? ' WHERE client_id = ?' :
-         status    ? ' WHERE status = ?'    : ''))
-      .bind(...(clientId ? [clientId] : status ? [status] : []))
-      .first<{ n: number }>(),
-  ]);
+  const { rows: posts, total } = await listPosts(c.env.DB, {
+    clientId,
+    status,
+    platform,
+    dateFrom,
+    dateTo,
+    search,
+    sort: sort as 'asc' | 'desc' | undefined,
+    limit: limitNum,
+    offset,
+  });
 
-  // Join client name
-  const enriched = await Promise.all(posts.map(async (p) => {
+  // Batch-load client names
+  const clientIds = [...new Set(posts.map(p => p.client_id))];
+  const clientMap = new Map<string, { slug: string; canonical_name: string }>();
+  if (clientIds.length > 0) {
+    const placeholders = clientIds.map(() => '?').join(',');
     const cl = await c.env.DB
-      .prepare('SELECT slug, canonical_name FROM clients WHERE id = ?')
-      .bind(p.client_id)
-      .first<{ slug: string; canonical_name: string }>();
-    return { ...p, client_slug: cl?.slug, client_name: cl?.canonical_name };
+      .prepare(`SELECT id, slug, canonical_name FROM clients WHERE id IN (${placeholders})`)
+      .bind(...clientIds)
+      .all<{ id: string; slug: string; canonical_name: string }>();
+    for (const row of cl.results) clientMap.set(row.id, row);
+  }
+
+  const enriched = posts.map(p => ({
+    ...p,
+    client_slug: clientMap.get(p.client_id)?.slug,
+    client_name: clientMap.get(p.client_id)?.canonical_name,
   }));
 
-  return c.json({ posts: enriched, total: countRow?.n ?? posts.length });
+  return c.json({ posts: enriched, total });
 });
 
 /** GET /api/posts/:id */

@@ -120,6 +120,8 @@ export interface ListPostsParams {
   platform?: string;
   dateFrom?: string;
   dateTo?: string;
+  search?: string;
+  sort?: 'asc' | 'desc';
   limit?: number;
   offset?: number;
 }
@@ -127,7 +129,7 @@ export interface ListPostsParams {
 export async function listPosts(
   db: D1Database,
   params: ListPostsParams = {},
-): Promise<PostRow[]> {
+): Promise<{ rows: PostRow[]; total: number }> {
   const conditions: string[] = [];
   const binds: unknown[] = [];
 
@@ -139,24 +141,41 @@ export async function listPosts(
     conditions.push('status = ?');
     binds.push(params.status);
   }
+  if (params.platform) {
+    // platforms is stored as a JSON array — use LIKE for substring match
+    conditions.push("platforms LIKE ?");
+    binds.push(`%"${params.platform}"%`);
+  }
   if (params.dateFrom) {
-    conditions.push('publish_date >= ?');
+    conditions.push("substr(publish_date,1,10) >= ?");
     binds.push(params.dateFrom);
   }
   if (params.dateTo) {
-    conditions.push('publish_date <= ?');
+    conditions.push("substr(publish_date,1,10) <= ?");
     binds.push(params.dateTo);
+  }
+  if (params.search) {
+    conditions.push("(title LIKE ? OR master_caption LIKE ?)");
+    const term = `%${params.search}%`;
+    binds.push(term, term);
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const order = params.sort === 'asc' ? 'ASC' : 'DESC';
   const limit = params.limit ?? 50;
   const offset = params.offset ?? 0;
 
-  const r = await db
-    .prepare(`SELECT * FROM posts ${where} ORDER BY publish_date ASC LIMIT ? OFFSET ?`)
-    .bind(...binds, limit, offset)
-    .all<PostRow>();
-  return r.results;
+  const [data, countRow] = await Promise.all([
+    db
+      .prepare(`SELECT * FROM posts ${where} ORDER BY publish_date ${order} LIMIT ? OFFSET ?`)
+      .bind(...binds, limit, offset)
+      .all<PostRow>(),
+    db
+      .prepare(`SELECT COUNT(*) as n FROM posts ${where}`)
+      .bind(...binds)
+      .first<{ n: number }>(),
+  ]);
+  return { rows: data.results, total: countRow?.n ?? data.results.length };
 }
 
 /** Query posts ready for automation (the posting gate) */
@@ -290,17 +309,24 @@ export async function setPostStatus(
   automationStatus?: string,
 ): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
+  const setPostedAt = status === 'posted';
   if (automationStatus) {
     await db
       .prepare(
-        'UPDATE posts SET status = ?, automation_status = ?, updated_at = ? WHERE id = ?',
+        setPostedAt
+          ? 'UPDATE posts SET status = ?, automation_status = ?, posted_at = ?, updated_at = ? WHERE id = ?'
+          : 'UPDATE posts SET status = ?, automation_status = ?, updated_at = ? WHERE id = ?',
       )
-      .bind(status, automationStatus, now, id)
+      .bind(...(setPostedAt ? [status, automationStatus, now, now, id] : [status, automationStatus, now, id]))
       .run();
   } else {
     await db
-      .prepare('UPDATE posts SET status = ?, updated_at = ? WHERE id = ?')
-      .bind(status, now, id)
+      .prepare(
+        setPostedAt
+          ? 'UPDATE posts SET status = ?, posted_at = ?, updated_at = ? WHERE id = ?'
+          : 'UPDATE posts SET status = ?, updated_at = ? WHERE id = ?',
+      )
+      .bind(...(setPostedAt ? [status, now, now, id] : [status, now, id]))
       .run();
   }
 }

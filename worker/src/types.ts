@@ -276,6 +276,7 @@ export interface PostRow {
   scheduled_by_automation: number;
   generation_run_id:      string | null;
   created_by:             string | null;
+  posted_at:              number | null;
   created_at:             number;
   updated_at:             number;
 }

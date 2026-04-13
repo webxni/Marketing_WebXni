@@ -14,6 +14,9 @@
 
   const months = monthRange(12, 3);
   let selectedMonth = $page.url.searchParams.get('month') ?? currentMonth();
+  let useCustomRange = false;
+  let customFrom = '';
+  let customTo = '';
 
   async function load() {
     loading = true;
@@ -94,12 +97,27 @@
     <h1 class="page-title">{report?.client.canonical_name ?? '…'}</h1>
     <p class="page-subtitle">Monthly Report</p>
   </div>
-  <div class="flex items-center gap-3">
-    <select bind:value={selectedMonth} class="input text-sm w-36">
-      {#each months as m}
-        <option value={m.value}>{m.label}</option>
-      {/each}
-    </select>
+  <div class="flex items-center gap-3 flex-wrap">
+    <div class="flex rounded-lg border border-border overflow-hidden text-xs">
+      <button
+        class="px-3 py-1.5 transition-colors {!useCustomRange ? 'bg-accent/20 text-accent' : 'text-muted hover:text-white'}"
+        on:click={() => { useCustomRange = false; }}
+      >Monthly</button>
+      <button
+        class="px-3 py-1.5 transition-colors {useCustomRange ? 'bg-accent/20 text-accent' : 'text-muted hover:text-white'}"
+        on:click={() => { useCustomRange = true; }}
+      >Custom</button>
+    </div>
+    {#if !useCustomRange}
+      <select bind:value={selectedMonth} class="input text-sm w-36">
+        {#each months as m}
+          <option value={m.value}>{m.label}</option>
+        {/each}
+      </select>
+    {:else}
+      <input type="date" bind:value={customFrom} class="input text-sm" title="From" on:change={load} />
+      <input type="date" bind:value={customTo}   class="input text-sm" title="To"   on:change={load} />
+    {/if}
     <button class="btn-secondary btn-sm" on:click={printReport}>Print / PDF</button>
   </div>
 </div>
@@ -137,9 +155,12 @@
     <div class="card p-4 text-center">
       <div class="text-3xl font-bold text-green-400">{report.summary.posted}</div>
       <div class="text-xs text-muted mt-1">Published</div>
+      {#if report.summary.scheduled > 0}
+        <div class="text-[10px] text-yellow-400 mt-0.5">+{report.summary.scheduled} pending</div>
+      {/if}
     </div>
     <div class="card p-4 text-center">
-      <div class="text-3xl font-bold text-red-400">{report.summary.failed}</div>
+      <div class="text-3xl font-bold {report.summary.failed > 0 ? 'text-red-400' : 'text-muted'}">{report.summary.failed}</div>
       <div class="text-xs text-muted mt-1">Failed</div>
     </div>
     <div class="card p-4 text-center">

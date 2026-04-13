@@ -239,6 +239,7 @@ export interface Post {
   asset_delivered:      number;
   skarleth_status:      string | null;
   error_log:            string | null;
+  posted_at:            number | null;
   created_at:           number;
   updated_at:           number;
   // joined from client
@@ -363,13 +364,13 @@ export interface ClientPlatformLinks {
 export interface PostingStats {
   by_status:   { status: string; count: number }[];
   by_platform: { platform: string; status: string; count: number }[];
-  by_client:   { slug: string; canonical_name: string; total: number; posted: number; failed: number }[];
+  by_client:   { slug: string; canonical_name: string; total: number; posted: number; scheduled: number; failed: number }[];
 }
 
 export interface MonthlyReport {
   client:       Client & { brand: Record<string, string> | null };
   period:       { month: string; from: string; to: string };
-  summary:      { total: number; posted: number; failed: number; success_rate: number };
+  summary:      { total: number; posted: number; scheduled: number; failed: number; success_rate: number };
   posts:        Post[];
   platforms:    (PostPlatform & { title: string; publish_date: string })[];
   failed_detail: { title: string; publish_date: string; platform: string; error_message: string }[];

@@ -56,19 +56,22 @@
   let filterPlatform = '';
   let filterDateFrom = '';
   let filterDateTo = '';
+  let filterSort = 'desc';
   let page = 1;
-  const limit = 25;
+  const limit = 50;
   let total = 0;
+  let searchDebounce: ReturnType<typeof setTimeout>;
 
   async function load() {
     loading = true;
     try {
-      const params: Record<string, string | number> = { page, limit };
+      const params: Record<string, string | number> = { page, limit, sort: filterSort };
       if (filterStatus)   params.status   = filterStatus;
       if (filterClient)   params.client   = filterClient;
       if (filterPlatform) params.platform = filterPlatform;
       if (filterDateFrom) params.from     = filterDateFrom;
       if (filterDateTo)   params.to       = filterDateTo;
+      if (filterSearch.trim()) params.search = filterSearch.trim();
       const r = await postsApi.list(params);
       posts = r.posts;
       total = r.total ?? posts.length;
@@ -86,22 +89,28 @@
     filterSearch = '';
     filterStatus = ''; filterClient = ''; filterPlatform = '';
     filterDateFrom = ''; filterDateTo = '';
+    filterSort = 'desc';
     page = 1; load();
   }
 
-  // Client-side search filter on loaded results
-  $: displayedPosts = filterSearch.trim()
-    ? posts.filter(p =>
-        (p.title ?? '').toLowerCase().includes(filterSearch.toLowerCase()) ||
-        (p.master_caption ?? '').toLowerCase().includes(filterSearch.toLowerCase()) ||
-        (p.client_name ?? '').toLowerCase().includes(filterSearch.toLowerCase())
-      )
-    : posts;
+  function onSearchInput() {
+    clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(() => { page = 1; load(); }, 350);
+  }
 
-  const statuses = ['draft','pending_approval','approved','ready','scheduled','posted','failed','cancelled'];
+  // Status filter options — omit 'ready' (transient automation gate, not a useful end-state)
+  const statuses = ['draft','pending_approval','approved','scheduled','posted','failed','cancelled'];
   const platforms = ['facebook','instagram','linkedin','x','threads','tiktok','pinterest','bluesky','youtube','google_business','website_blog'];
 
   $: totalPages = Math.ceil(total / limit);
+
+  function postedAgo(ts: number | null): string {
+    if (!ts) return '';
+    const diff = Math.floor(Date.now() / 1000) - ts;
+    if (diff < 3600)  return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    return `${Math.floor(diff / 86400)}d ago`;
+  }
 </script>
 
 <svelte:head><title>Posts — WebXni</title></svelte:head>
@@ -137,11 +146,12 @@
     <input
       type="search"
       bind:value={filterSearch}
-      placeholder="Search by title, caption, or client…"
+      on:input={onSearchInput}
+      placeholder="Search by title or caption…"
       class="input w-full text-sm"
     />
   </div>
-  <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+  <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
     <select bind:value={filterStatus} class="input text-sm" on:change={applyFilters}>
       <option value="">All statuses</option>
       {#each statuses as s}
@@ -164,7 +174,12 @@
     </select>
 
     <input type="date" bind:value={filterDateFrom} class="input text-sm" title="From date" on:change={applyFilters} />
-    <input type="date" bind:value={filterDateTo}   class="input text-sm" title="To date"  on:change={applyFilters} />
+    <input type="date" bind:value={filterDateTo}   class="input text-sm" title="To date"   on:change={applyFilters} />
+
+    <select bind:value={filterSort} class="input text-sm" on:change={applyFilters}>
+      <option value="desc">Newest first</option>
+      <option value="asc">Oldest first</option>
+    </select>
   </div>
   <div class="flex gap-2 mt-3">
     <button class="btn-primary btn-sm" on:click={applyFilters}>Apply</button>
@@ -174,7 +189,7 @@
 
 {#if loading}
   <div class="flex justify-center py-20"><Spinner size="lg" /></div>
-{:else if displayedPosts.length === 0}
+{:else if posts.length === 0}
   <EmptyState title="No posts found" detail="Try adjusting your filters or search term." icon="✦">
     <svelte:fragment slot="action">
       {#if can('posts.create')}
@@ -200,7 +215,7 @@
           </tr>
         </thead>
         <tbody>
-          {#each displayedPosts as post}
+          {#each posts as post}
             <tr class="{selected.has(post.id) ? 'bg-accent/5' : ''}">
               <td>
                 <input type="checkbox" checked={selected.has(post.id)} on:change={() => toggleSelect(post.id)} class="rounded" />
@@ -209,7 +224,12 @@
                 <div class="font-medium text-white text-sm">{post.title ?? '(untitled)'}</div>
                 <div class="text-xs text-muted">{post.client_name ?? post.client_slug ?? '—'}</div>
               </td>
-              <td><Badge status={post.status ?? 'draft'} /></td>
+              <td>
+                <Badge status={post.status ?? 'draft'} />
+                {#if post.posted_at}
+                  <div class="text-[10px] text-muted mt-0.5">{postedAgo(post.posted_at)}</div>
+                {/if}
+              </td>
               <td>
                 <div class="flex flex-wrap gap-1">
                   {#each parsePlatforms(post.platforms) as p}
@@ -231,7 +251,7 @@
     <!-- Pagination -->
     {#if totalPages > 1}
     <div class="px-5 py-3 border-t border-border flex items-center justify-between">
-      <span class="text-xs text-muted">Page {page} of {totalPages}</span>
+      <span class="text-xs text-muted">Page {page} of {totalPages} ({total} total)</span>
       <div class="flex gap-2">
         <button
           class="btn-ghost btn-sm text-xs"
