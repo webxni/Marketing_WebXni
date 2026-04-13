@@ -164,6 +164,11 @@ runRoutes.post('/generate', async (c) => {
     client_filter: clientSlugs.length > 0 ? JSON.stringify(clientSlugs) : null,
   });
 
+  // Optional publish time override (HH:MM) — applied to all generated posts
+  const publishTime = typeof body.publish_time === 'string' && /^\d{2}:\d{2}$/.test(body.publish_time)
+    ? body.publish_time
+    : null;
+
   c.executionCtx.waitUntil(
     runGeneration(c.env, {
       run_id:       run.id,
@@ -171,6 +176,7 @@ runRoutes.post('/generate', async (c) => {
       period_start: periodStart,
       period_end:   periodEnd,
       triggered_by: c.get('user').userId,
+      publish_time: publishTime,
     }),
   );
 

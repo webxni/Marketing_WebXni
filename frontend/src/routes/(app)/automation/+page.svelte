@@ -66,6 +66,9 @@
   const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
   const years  = [today.getFullYear(), today.getFullYear() + 1];
 
+  // Publish time — applies to all generated posts
+  let publishTime = '10:00';  // default 10:00 AM
+
   // Custom
   let customStart = todayStr;
   let customEnd   = addDays(today, 13); // default: 14-day range
@@ -191,8 +194,9 @@
         client_slugs: clientMode === 'select' ? selectedSlugs
           : clientMode === 'by-package' && filterPackage ? activeClients.map(c => c.slug)
           : [],
-        date_from: periodStart,
-        date_to:   periodEnd,
+        date_from:    periodStart,
+        date_to:      periodEnd,
+        publish_time: publishTime || '10:00',
       });
       toast.success(`Generation started — ~${totalEstimated} drafts queued`);
       historyTab = 'generation';
@@ -506,6 +510,19 @@
           <p class="text-xs text-muted mt-1">Mon–Fri only · weekends excluded · posting days set per package</p>
         {/if}
       {/if}
+
+      <!-- ── Publish Time ──────────────────────────────────────────────────── -->
+      <div class="mt-4 pt-4 border-t border-border">
+        <p class="text-xs text-muted uppercase tracking-wider mb-2">Default Publish Time</p>
+        <div class="flex items-center gap-2">
+          <input
+            type="time"
+            bind:value={publishTime}
+            class="input text-sm w-32"
+          />
+          <span class="text-xs text-muted">Applied to all generated posts · editable per post after</span>
+        </div>
+      </div>
     </div>
 
     <!-- ── Col 3: Summary + Action ────────────────────────────────────────── -->

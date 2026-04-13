@@ -2,9 +2,10 @@ import { api } from './client';
 import type { PostingJob, GenerationRun } from '../types';
 
 export interface GenerateParams {
-  client_slugs?: string[];
-  date_from:     string;
-  date_to:       string;
+  client_slugs?:  string[];
+  date_from:      string;
+  date_to:        string;
+  publish_time?:  string;  // HH:MM — applied to all generated posts
 }
 
 export const runApi = {

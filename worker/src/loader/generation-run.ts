@@ -13,6 +13,7 @@ export interface GenerationParams {
   period_start:    string;     // YYYY-MM-DD first day of period
   period_end:      string;     // YYYY-MM-DD last day of period
   triggered_by:    string;
+  publish_time:    string | null;  // HH:MM override; null = use default (10:00)
 }
 
 interface PackageRow {
@@ -215,6 +216,8 @@ async function loadSystemSettings(env: Env): Promise<Record<string, string>> {
 export async function runGeneration(env: Env, params: GenerationParams): Promise<void> {
   const db  = env.DB;
   const now = () => Math.floor(Date.now() / 1000);
+  // Resolved publish time: caller override → system default 10:00
+  const postTime = params.publish_time ?? '10:00';
 
   console.log('[gen] starting run', params.run_id, '— period:', params.period_start, '→', params.period_end);
 
@@ -366,7 +369,7 @@ export async function runGeneration(env: Env, params: GenerationParams): Promise
               status:             'draft',
               content_type:       contentType,
               platforms:          JSON.stringify(defaultPlatforms),
-              publish_date:       `${date}T09:00`,
+              publish_date:       `${date}T${postTime}`,
               master_caption:     generated.master_caption ?? null,
               ...caps,
               youtube_title:       generated.youtube_title ?? null,
