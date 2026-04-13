@@ -295,31 +295,45 @@
   {#if activeTab === 'overview'}
   <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
 
-    <!-- Asset preview -->
-    {#if post.asset_r2_key}
-    <div class="card p-4 md:col-span-2">
+    <!-- Row 1: Media Asset + Master Caption side by side -->
+    <div class="card p-4 flex flex-col">
       <h3 class="section-label mb-3">Media Asset</h3>
-      {#if post.content_type === 'video' || post.content_type === 'reel' || post.asset_type === 'video'}
-        <video
-          src="/api/assets/preview?key={encodeURIComponent(post.asset_r2_key)}"
-          controls
-          class="w-full max-h-96 rounded-lg bg-black"
-          style="max-width: 640px;"
-        >
-          <track kind="captions" />
-        </video>
+      {#if post.asset_r2_key}
+        {#if post.content_type === 'video' || post.content_type === 'reel' || post.asset_type === 'video'}
+          <video
+            src="/api/assets/preview?key={encodeURIComponent(post.asset_r2_key)}"
+            controls
+            class="w-full rounded-lg bg-black"
+            style="max-height: 360px;"
+          >
+            <track kind="captions" />
+          </video>
+        {:else}
+          <img
+            src="/api/assets/preview?key={encodeURIComponent(post.asset_r2_key)}"
+            alt="Post asset"
+            class="w-full rounded-lg object-contain bg-surface"
+            style="max-height: 360px;"
+          />
+        {/if}
+        <p class="text-xs text-muted mt-2 font-mono truncate">{post.asset_r2_key}</p>
       {:else}
-        <img
-          src="/api/assets/preview?key={encodeURIComponent(post.asset_r2_key)}"
-          alt="Post asset"
-          class="max-h-96 max-w-full rounded-lg object-contain bg-surface"
-          style="max-width: 640px;"
-        />
+        <div class="flex-1 flex items-center justify-center rounded-lg bg-surface border border-border" style="min-height: 180px;">
+          <p class="text-xs text-muted">No asset uploaded</p>
+        </div>
       {/if}
-      <p class="text-xs text-muted mt-2 font-mono truncate">{post.asset_r2_key}</p>
     </div>
-    {/if}
 
+    <div class="card p-5 flex flex-col">
+      <h3 class="section-label mb-3">Master Caption</h3>
+      {#if post.master_caption}
+        <p class="text-sm text-white whitespace-pre-wrap flex-1">{post.master_caption}</p>
+      {:else}
+        <p class="text-xs text-muted italic">No master caption yet.</p>
+      {/if}
+    </div>
+
+    <!-- Row 2: Details -->
     <div class="card p-5">
       <h3 class="section-label mb-4">Details</h3>
       <dl class="space-y-3">
@@ -462,12 +476,6 @@
       {/if}
     </div>
 
-    {#if post.master_caption}
-    <div class="card p-5 md:col-span-2">
-      <h3 class="section-label mb-3">Master Caption</h3>
-      <p class="text-sm text-white whitespace-pre-wrap">{post.master_caption}</p>
-    </div>
-    {/if}
   </div>
   {/if}
 
