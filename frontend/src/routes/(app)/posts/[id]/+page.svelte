@@ -124,8 +124,10 @@
     try {
       const r = await postsApi.translateContext(post.id);
       translations = r.translations;
-    } catch { toast.error('Translation failed'); }
-    finally { translating = false; }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      toast.error(`Translation failed: ${msg}`);
+    } finally { translating = false; }
   }
 
   async function uploadAsset() {

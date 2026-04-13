@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/api/client';
-  import { notionApi } from '$lib/api/notion';
   import { userStore } from '$lib/stores/auth';
   import { toast } from '$lib/stores/ui';
   import { can, hasRole } from '$lib/stores/auth';
@@ -107,44 +106,6 @@
     finally { savingCron = false; }
   }
 
-  // ── Notion Integration ────────────────────────────────────────────────────
-  let syncingNotion  = false;
-  let forceSubTables = false;
-  let notionResult: import('$lib/api/notion').NotionImportResponse | null = null;
-
-  // Hardcoded WebXni Notion DB config — the DB ID and page→slug map never change
-  const NOTION_DB_ID = '87e495b2-350a-45eb-a343-f6441dafa6cb';
-  const NOTION_SLUG_MAP: Record<string, string> = {
-    '1503627b-21c7-80ea-bc2b-d225d3829a67': '724-locksmith-ca',
-    '1e43627b-21c7-80cf-a316-e10315125274': '247-lockout-pasadena',
-    '2363627b-21c7-809c-a659-e06f0a90bc4e': 'unlocked-pros',
-    '28d3627b-21c7-809f-a6d9-c3229a856a98': 'daniels-locksmith',
-    '2f33627b-21c7-80b6-87fa-f66a889e8112': 'elite-team-builders',
-    '2f33627b-21c7-80bb-8e98-d5333bb1bdfe': 'americas-professional-builders',
-    '3353627b-21c7-8154-b7af-f96b2faac314': 'caliview-builders',
-    'a1466972-fc09-4449-bb3e-cc5a7c49df26': 'golden-touch-roofing',
-    '9b4731c8-67ba-45e8-9311-3b94b4ce84e0': 'webxni',
-    '19943730-826e-4110-9753-ca29531c221d': 'ketty-s-robles-accounting',
-    '3273627b-21c7-80c8-bba6-dae846a35c57': 'jaz-makeup-artist',
-    '0533eada-a7f2-4798-8359-38a99cbbd53f': 'modern-vision-remodeling',
-  };
-
-  async function syncNotion() {
-    syncingNotion = true;
-    notionResult  = null;
-    try {
-      const r = await notionApi.importClientsFull({
-        database_id:           NOTION_DB_ID,
-        notion_id_to_app_slug: NOTION_SLUG_MAP,
-        active_only:           true,
-        force_sub_tables:      forceSubTables,
-      });
-      notionResult = r;
-      const { created = 0, updated = 0, skipped = 0, errors = 0 } = r.counts ?? {};
-      toast.success(`Notion sync done — ${created + updated} updated, ${skipped} skipped, ${errors} errors`);
-    } catch (e) { toast.error(String(e)); }
-    finally { syncingNotion = false; }
-  }
 
   async function saveAi() {
     if (!aiApiKey.trim() && aiProvider !== 'custom') {
@@ -330,50 +291,6 @@
         </button>
       </div>
     </div>
-  </div>
-
-  <!-- Notion Integration -->
-  <div class="card p-5 lg:col-span-2">
-    <h3 class="section-label mb-1">Notion Integration</h3>
-    <p class="text-xs text-muted mb-4">
-      Sync client profiles, intelligence, platforms, services, areas, and offers from the WebXni Notion database.
-      Existing local data is never overwritten with empty Notion values.
-    </p>
-    <div class="flex items-center gap-4 flex-wrap mb-4">
-      <label class="flex items-center gap-2 cursor-pointer">
-        <input type="checkbox" bind:checked={forceSubTables} class="rounded" />
-        <span class="text-xs text-muted">Force re-import services &amp; areas (even if already populated)</span>
-      </label>
-      <span class="text-xs text-muted">DB: <code class="font-mono text-white/60">87e495b2…</code> · {Object.keys(NOTION_SLUG_MAP).length} clients mapped</span>
-    </div>
-    <div class="flex items-center gap-3">
-      <button
-        class="btn-primary btn-sm"
-        on:click={syncNotion}
-        disabled={syncingNotion}
-      >
-        {syncingNotion ? 'Syncing…' : 'Sync from Notion'}
-      </button>
-      {#if notionResult}
-        <span class="text-xs text-muted">
-          <span class="text-green-400 font-medium">{(notionResult.counts?.created ?? 0) + (notionResult.counts?.updated ?? 0)} updated</span>
-          · {notionResult.counts?.skipped ?? 0} skipped
-          {#if (notionResult.counts?.errors ?? 0) > 0}· <span class="text-red-400">{notionResult.counts.errors} errors</span>{/if}
-        </span>
-      {/if}
-    </div>
-    {#if notionResult?.results && notionResult.results.length > 0}
-      <details class="mt-3">
-        <summary class="text-xs text-muted cursor-pointer">Show per-client details ({notionResult.results.length})</summary>
-        <ul class="mt-2 space-y-0.5 max-h-40 overflow-y-auto">
-          {#each notionResult.results as r}
-            <li class="text-[10px] font-mono {r.action === 'error' ? 'text-red-400' : 'text-muted'}">
-              {r.name ?? r.slug ?? r.notion_id} — {r.action}{r.tabs && r.tabs.length > 0 ? ' (' + r.tabs.join(', ') + ')' : ''}{r.error ? ': ' + r.error : ''}
-            </li>
-          {/each}
-        </ul>
-      </details>
-    {/if}
   </div>
 
   {/if}

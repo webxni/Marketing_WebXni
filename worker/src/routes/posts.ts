@@ -297,50 +297,56 @@ postRoutes.get('/:id/history', async (c) => {
 
 /** POST /api/posts/:id/translate — translate post context to Spanish for designer */
 postRoutes.post('/:id/translate', async (c) => {
-  const post = await getPostById(c.env.DB, c.req.param('id'));
-  if (!post) return c.json({ error: 'Not found' }, 404);
-
-  const fields: Record<string, string> = {};
-  if (post.title)          fields.title = post.title;
-  if (post.master_caption) fields.master_caption = post.master_caption;
-
-  if (Object.keys(fields).length === 0) {
-    return c.json({ translations: {} });
-  }
-
-  const prompt = `Translate the following social media post fields to Spanish. Return a JSON object with the same keys. Keep brand names, hashtags, and emojis as-is. Only translate the text.\n\n${JSON.stringify(fields)}`;
-
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${c.env.OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: 'You are a translator. Always respond with valid JSON only.' },
-        { role: 'user', content: prompt },
-      ],
-      response_format: { type: 'json_object' },
-      temperature: 0.2,
-      max_tokens: 500,
-    }),
-  });
-
-  if (!res.ok) {
-    return c.json({ error: 'Translation service unavailable' }, 502);
-  }
-
-  const data = await res.json() as { choices: Array<{ message: { content: string } }> };
-  const raw  = data.choices?.[0]?.message?.content;
-  if (!raw) return c.json({ error: 'Empty translation response' }, 502);
-
   try {
+    const post = await getPostById(c.env.DB, c.req.param('id'));
+    if (!post) return c.json({ error: 'Not found' }, 404);
+
+    const fields: Record<string, string> = {};
+    if (post.title)          fields.title = post.title;
+    if (post.master_caption) fields.master_caption = post.master_caption;
+
+    if (Object.keys(fields).length === 0) {
+      return c.json({ translations: {} });
+    }
+
+    if (!c.env.OPENAI_API_KEY) {
+      return c.json({ error: 'OPENAI_API_KEY not configured' }, 503);
+    }
+
+    const prompt = `Translate the following social media post fields to Spanish. Return a JSON object with the same keys. Keep brand names, hashtags, and emojis as-is. Only translate the text.\n\n${JSON.stringify(fields)}`;
+
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${c.env.OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: 'You are a translator. Always respond with valid JSON only.' },
+          { role: 'user', content: prompt },
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0.2,
+        max_tokens: 500,
+      }),
+    });
+
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '');
+      return c.json({ error: `OpenAI ${res.status}: ${errBody.slice(0, 300)}` }, 502);
+    }
+
+    const data = await res.json() as { choices: Array<{ message: { content: string } }> };
+    const raw  = data.choices?.[0]?.message?.content;
+    if (!raw) return c.json({ error: 'Empty response from OpenAI' }, 502);
+
     const translations = JSON.parse(raw) as Record<string, string>;
     return c.json({ translations });
-  } catch {
-    return c.json({ error: 'Failed to parse translation response' }, 502);
+  } catch (err) {
+    console.error('[translate]', err);
+    return c.json({ error: String(err) }, 500);
   }
 });
 
