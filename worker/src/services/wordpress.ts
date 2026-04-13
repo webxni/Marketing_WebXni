@@ -130,28 +130,24 @@ export class WordPressClient {
   }
 
   /**
-   * Upload a media file from a URL (fetch then reupload to WP media library).
-   * Used when featured_image_mode = 'upload'.
+   * Upload a Blob directly to the WP media library.
+   * Primary upload method — use this when you already have bytes (e.g. from R2).
    */
-  async uploadMediaFromUrl(
-    imageUrl: string,
+  async uploadMediaBlob(
+    blob: Blob,
     filename: string,
     altText = '',
+    title = '',
   ): Promise<WpMediaItem> {
-    // Fetch the image bytes first
-    const imgRes = await fetch(imageUrl);
-    if (!imgRes.ok) throw new WpError(imgRes.status, `Failed to fetch image: ${imageUrl}`);
-    const blob = await imgRes.blob();
-
     const form = new FormData();
     form.append('file', blob, filename);
     if (altText) form.append('alt_text', altText);
+    if (title)   form.append('title', title);
 
-    // Upload to WP — don't set Content-Type (let browser/fetch set multipart boundary)
     const res = await fetch(`${this.apiBase}/media`, {
-      method: 'POST',
+      method:  'POST',
       headers: { Authorization: this.authHeader },
-      body: form,
+      body:    form,
     });
     if (!res.ok) {
       let msg = `Media upload failed: HTTP ${res.status}`;
@@ -159,6 +155,20 @@ export class WordPressClient {
       throw new WpError(res.status, msg);
     }
     return res.json() as Promise<WpMediaItem>;
+  }
+
+  /**
+   * Upload a media file from a remote URL (fetch then re-upload to WP media library).
+   * Prefer uploadMediaBlob() when you have bytes from R2.
+   */
+  async uploadMediaFromUrl(
+    imageUrl: string,
+    filename: string,
+    altText = '',
+  ): Promise<WpMediaItem> {
+    const imgRes = await fetch(imageUrl);
+    if (!imgRes.ok) throw new WpError(imgRes.status, `Failed to fetch image: ${imageUrl}`);
+    return this.uploadMediaBlob(await imgRes.blob(), filename, altText);
   }
 }
 

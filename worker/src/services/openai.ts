@@ -18,9 +18,11 @@ export interface GeneratedPost {
   youtube_title?:      string;
   youtube_description?: string;
   blog_content?:       string;
+  blog_excerpt?:       string;  // plain-text 150-160 char excerpt for WordPress
   seo_title?:          string;
   meta_description?:   string;
   target_keyword?:     string;
+  slug?:               string;  // URL slug suggestion
   video_script?:       string;
   // Designer prompts (always generated in Spanish)
   ai_image_prompt?:    string;
@@ -29,15 +31,16 @@ export interface GeneratedPost {
 
 export interface GenerationContext {
   client: {
-    canonical_name: string;
-    notes?:         string | null;
-    brand_json?:    string | null;
-    language?:      string | null;
-    phone?:         string | null;
-    cta_text?:      string | null;
-    industry?:      string | null;
-    state?:         string | null;
-    owner_name?:    string | null;
+    canonical_name:      string;
+    notes?:              string | null;
+    brand_json?:         string | null;
+    brand_primary_color?: string | null;
+    language?:           string | null;
+    phone?:              string | null;
+    cta_text?:           string | null;
+    industry?:           string | null;
+    state?:              string | null;
+    owner_name?:         string | null;
   };
   intelligence: {
     brand_voice?:         string | null;
@@ -138,7 +141,38 @@ Return a JSON object with the following fields (include only fields relevant to 
     p += gbpInstruction;
   }
   if (isYoutube)  p += '\n- "youtube_title": SEO-optimized YouTube title (60-70 chars)\n- "youtube_description": YouTube description with timestamps placeholder, links placeholder, CTA (200-400 chars)';
-  if (isBlog)     p += '\n- "blog_content": complete HTML blog post body (600-900 words, use <h2>, <h3>, <p>, <ul> tags, keyword-rich)\n- "seo_title": SEO page title with primary keyword (55-60 chars)\n- "meta_description": compelling meta description (150-155 chars)\n- "target_keyword": primary SEO keyword phrase';
+  if (isBlog) {
+    const primaryColor = ctx.client.brand_primary_color
+      ?? (() => { try { const b = JSON.parse(ctx.client.brand_json ?? '{}'); return b.primary_color ?? b.primaryColor ?? null; } catch { return null; } })()
+      ?? '#1a73e8';
+    const ctaPhone    = ctx.client.phone  ? `tel:${ctx.client.phone}` : '#contact';
+    const ctaLabel    = ctx.client.cta_text ?? 'Contact Us Today';
+    p += `
+- "title": compelling blog post title with target keyword near the start (50-65 chars)
+- "blog_content": Complete, publication-ready HTML blog post. Requirements:
+  • 1200–1500 words of actual body content (not counting HTML tags)
+  • Opening paragraph must include the target keyword within the first 100 words
+  • Structure:
+    - Opening intro paragraph (no heading) — hook, establish problem/topic, include keyword
+    - 3–4 <h2> sections covering the topic thoroughly; include keyword or closely related phrase in at least 2 of the headings
+    - Use <ul> or <ol> inside sections where a list improves clarity
+    - One CTA block using EXACTLY this HTML (replace values but keep structure):
+      <div style="background:${primaryColor}18;border-left:4px solid ${primaryColor};padding:20px 24px;margin:32px 0;border-radius:0 8px 8px 0;">
+        <h3 style="color:${primaryColor};margin:0 0 8px 0;font-size:1.1rem;">Replace with a relevant heading</h3>
+        <p style="margin:0 0 14px 0;">Value proposition sentence — why contact this company. No prices.</p>
+        <a href="${ctaPhone}" style="display:inline-block;background:${primaryColor};color:#fff;padding:11px 22px;border-radius:6px;text-decoration:none;font-weight:600;font-size:0.95rem;">${ctaLabel}</a>
+      </div>
+    - FAQ section (<h2>Frequently Asked Questions</h2>) with 3–4 common questions as <h3> and answers as <p> — only if topic naturally has FAQs
+    - Closing conclusion paragraph that reinforces the main value without repeating the intro
+  • NO exact prices, dollar amounts, or invented statistics
+  • Keyword distributed naturally — approx 1–2% density, not stuffed
+  • All HTML must be clean and valid; no CSS classes needed (inline styles only where essential)
+- "blog_excerpt": Plain text excerpt for the WordPress excerpt field. 150–160 chars, no HTML, compelling summary of the post that includes the target keyword.
+- "slug": URL slug for this post — lowercase, hyphens only, keyword-focused, max 55 chars (e.g. "best-locksmith-services-pasadena-ca")
+- "seo_title": SEO page title — target keyword near front, include city/region if relevant, 50–60 chars (e.g. "Emergency Locksmith Pasadena CA | Fast 24/7 Service")
+- "meta_description": Compelling meta description — include keyword, CTA, 148–155 chars exactly
+- "target_keyword": Primary SEO keyword phrase the post targets`;
+  }
   if (isVideo)    p += '\n- "video_script": 30-60 second video script — hook line, 3 body points, strong CTA';
 
   // Designer prompts — always in Spanish regardless of content language

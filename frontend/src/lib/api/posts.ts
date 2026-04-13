@@ -57,6 +57,12 @@ export const postsApi = {
   generateCaption: (id: string, platform: string) =>
     api.post<{ ok: boolean; platform: string; caption: string; field: string }>(`/api/posts/${id}/generate-caption`, { platform }),
 
+  publishBlog: (id: string, opts: { status?: 'draft' | 'publish'; force_update?: boolean } = {}) =>
+    api.post<{ ok: boolean; wp_post_id: number; wp_post_url: string; status: string; warnings?: string[] }>(`/api/posts/${id}/publish-blog`, opts),
+
+  unpublishBlog: (id: string) =>
+    api.post<{ ok: boolean; status: string }>(`/api/posts/${id}/unpublish-blog`),
+
   delete: (id: string) =>
     api.delete(`/api/posts/${id}`),
 };

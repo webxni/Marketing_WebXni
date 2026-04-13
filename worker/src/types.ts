@@ -246,6 +246,8 @@ export interface PostRow {
   wp_post_url:            string | null;
   wp_post_id:             number | null;
   wp_post_status:         string | null;
+  blog_excerpt:           string | null;
+  wp_featured_media_id:   number | null;
   // GBP advanced fields (migration 0004 + 0009)
   gbp_location_id:        string | null;  // per-post location override (migration 0009)
   gbp_topic_type:         string | null;  // 'STANDARD'|'EVENT'|'OFFER'

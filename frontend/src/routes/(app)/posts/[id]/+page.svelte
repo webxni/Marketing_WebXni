@@ -230,6 +230,58 @@
     { key: 'cap_gbp_or', label: 'GBP — Oregon' },
   ];
   $: showGbpLocations = post?.client_slug === 'elite-team-builders';
+
+  // WordPress blog publishing
+  let publishingBlog = false;
+  let blogWarnings: string[] = [];
+
+  // Helpers for extra WP fields not yet in the Post type (avoid casts in template)
+  function wpPostId(p: typeof post): number | null   { return p ? (p as Post & { wp_post_id?: number }).wp_post_id ?? null : null; }
+  function wpPostUrl(p: typeof post): string | null  { return p ? (p as Post & { wp_post_url?: string }).wp_post_url ?? null : null; }
+  function wpPostStatus(p: typeof post): string | null { return p ? (p as Post & { wp_post_status?: string }).wp_post_status ?? null : null; }
+  function wpMediaId(p: typeof post): number | null  { return p ? (p as Post & { wp_featured_media_id?: number }).wp_featured_media_id ?? null : null; }
+  function blogExcerpt(p: typeof post): string | null { return p ? (p as Post & { blog_excerpt?: string }).blog_excerpt ?? null : null; }
+
+  async function publishBlog(status: 'draft' | 'publish') {
+    if (!post) return;
+    publishingBlog = true;
+    blogWarnings = [];
+    try {
+      const r = await postsApi.publishBlog(post.id, { status });
+      if (r.warnings?.length) blogWarnings = r.warnings;
+      toast.success(status === 'publish' ? 'Published to WordPress' : 'Saved as draft in WordPress');
+      load();
+    } catch (e) { toast.error(`WordPress error: ${e instanceof Error ? e.message : String(e)}`); }
+    finally { publishingBlog = false; }
+  }
+
+  async function updateBlog() {
+    if (!post) return;
+    publishingBlog = true;
+    blogWarnings = [];
+    try {
+      const currentStatus = (post as Post & { wp_post_status?: string }).wp_post_status ?? 'draft';
+      const r = await postsApi.publishBlog(post.id, {
+        status: (currentStatus === 'publish' ? 'publish' : 'draft') as 'draft' | 'publish',
+        force_update: true,
+      });
+      if (r.warnings?.length) blogWarnings = r.warnings;
+      toast.success('WordPress post updated');
+      load();
+    } catch (e) { toast.error(`WordPress error: ${e instanceof Error ? e.message : String(e)}`); }
+    finally { publishingBlog = false; }
+  }
+
+  async function unpublishBlog() {
+    if (!post) return;
+    publishingBlog = true;
+    try {
+      await postsApi.unpublishBlog(post.id);
+      toast.success('Reverted to draft in WordPress');
+      load();
+    } catch (e) { toast.error(`WordPress error: ${e instanceof Error ? e.message : String(e)}`); }
+    finally { publishingBlog = false; }
+  }
 </script>
 
 <svelte:head><title>{post?.title ?? 'Post'} — WebXni</title></svelte:head>
@@ -811,6 +863,82 @@
   <!-- Blog tab -->
   {#if activeTab === 'blog'}
   <div class="space-y-4">
+
+    <!-- WordPress publish card -->
+    {#if post.content_type === 'blog'}
+    <div class="card p-4">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="section-label">WordPress</h3>
+        {#if wpPostUrl(post)}
+          <a href={wpPostUrl(post) ?? ''} target="_blank" rel="noopener" class="text-xs text-accent hover:underline truncate max-w-xs">{wpPostUrl(post)}</a>
+        {/if}
+      </div>
+
+      <!-- Status row -->
+      <div class="flex items-center gap-3 mb-4">
+        {#if wpPostId(post)}
+          <span class="text-xs px-2 py-0.5 rounded font-medium
+            {wpPostStatus(post) === 'publish' ? 'bg-green-500/20 text-green-400' :
+             wpPostStatus(post) === 'pending' ? 'bg-yellow-500/20 text-yellow-400' :
+             'bg-surface text-muted'}">
+            WP: {wpPostStatus(post) ?? 'draft'}
+          </span>
+          <span class="text-xs text-muted">ID #{wpPostId(post)}</span>
+          {#if wpMediaId(post)}
+            <span class="text-xs text-green-400/70">Featured image ✓</span>
+          {:else}
+            <span class="text-xs text-muted">No featured image</span>
+          {/if}
+        {:else}
+          <span class="text-xs text-muted italic">Not yet published to WordPress</span>
+        {/if}
+      </div>
+
+      <!-- Blog excerpt preview -->
+      {#if blogExcerpt(post)}
+      <div class="mb-4 bg-surface/50 rounded p-3">
+        <p class="text-xs text-muted mb-1">Excerpt</p>
+        <p class="text-xs text-white/80">{blogExcerpt(post)}</p>
+      </div>
+      {/if}
+
+      <!-- Preflight warnings -->
+      {#if blogWarnings.length > 0}
+      <div class="mb-4 bg-yellow-500/10 border border-yellow-500/30 rounded p-3 space-y-1">
+        {#each blogWarnings as w}
+          <p class="text-xs text-yellow-400">⚠ {w}</p>
+        {/each}
+      </div>
+      {/if}
+
+      <!-- Action buttons -->
+      <div class="flex items-center gap-2 flex-wrap">
+        {#if !wpPostId(post)}
+          <button class="btn-primary btn-sm" on:click={() => publishBlog('draft')} disabled={publishingBlog}>
+            {publishingBlog ? 'Publishing…' : 'Push as Draft'}
+          </button>
+          <button class="btn-secondary btn-sm" on:click={() => publishBlog('publish')} disabled={publishingBlog}>
+            {publishingBlog ? 'Publishing…' : 'Publish Live'}
+          </button>
+        {:else}
+          <button class="btn-primary btn-sm" on:click={updateBlog} disabled={publishingBlog}>
+            {publishingBlog ? 'Updating…' : 'Update WordPress'}
+          </button>
+          {#if wpPostStatus(post) === 'publish'}
+            <button class="btn-ghost btn-sm text-yellow-400 hover:text-yellow-300" on:click={unpublishBlog} disabled={publishingBlog}>
+              Revert to Draft
+            </button>
+          {:else}
+            <button class="btn-secondary btn-sm" on:click={() => publishBlog('publish')} disabled={publishingBlog}>
+              {publishingBlog ? 'Publishing…' : 'Publish Live'}
+            </button>
+          {/if}
+        {/if}
+      </div>
+    </div>
+    {/if}
+
+    <!-- SEO card -->
     {#if post.seo_title || post.meta_description || post.target_keyword || post.slug}
     <div class="card p-4">
       <div class="flex items-center justify-between mb-3">
@@ -833,6 +961,8 @@
       </dl>
     </div>
     {/if}
+
+    <!-- Blog content -->
     {#if post.blog_content}
     <div class="card p-5">
       <div class="flex items-center justify-between mb-3">

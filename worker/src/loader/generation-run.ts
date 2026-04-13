@@ -331,17 +331,22 @@ export async function runGeneration(env: Env, params: GenerationParams): Promise
               .map(r => r.title ?? r.master_caption?.slice(0, 80) ?? '')
               .filter(Boolean) as string[];
 
+            const clientCast = client as unknown as {
+              phone?: string | null; cta_text?: string | null; industry?: string | null;
+              state?: string | null; owner_name?: string | null; brand_primary_color?: string | null;
+            };
             const ctx: GenerationContext = {
               client: {
-                canonical_name: client.canonical_name,
-                notes:          client.notes,
-                brand_json:     client.brand_json,
-                language:       client.language,
-                phone:          (client as unknown as { phone?: string | null }).phone ?? null,
-                cta_text:       (client as unknown as { cta_text?: string | null }).cta_text ?? null,
-                industry:       (client as unknown as { industry?: string | null }).industry ?? null,
-                state:          (client as unknown as { state?: string | null }).state ?? null,
-                owner_name:     (client as unknown as { owner_name?: string | null }).owner_name ?? null,
+                canonical_name:      client.canonical_name,
+                notes:               client.notes,
+                brand_json:          client.brand_json,
+                brand_primary_color: clientCast.brand_primary_color ?? null,
+                language:            client.language,
+                phone:               clientCast.phone ?? null,
+                cta_text:            clientCast.cta_text ?? null,
+                industry:            clientCast.industry ?? null,
+                state:               clientCast.state ?? null,
+                owner_name:          clientCast.owner_name ?? null,
               },
               intelligence:  intel,
               recentTitles,
@@ -375,6 +380,8 @@ export async function runGeneration(env: Env, params: GenerationParams): Promise
               youtube_title:       generated.youtube_title ?? null,
               youtube_description: generated.youtube_description ?? null,
               blog_content:        generated.blog_content ?? null,
+              blog_excerpt:        generated.blog_excerpt ?? null,
+              slug:                generated.slug ?? null,
               seo_title:           generated.seo_title ?? null,
               meta_description:    generated.meta_description ?? null,
               target_keyword:      generated.target_keyword ?? null,

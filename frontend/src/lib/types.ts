@@ -212,6 +212,8 @@ export interface Post {
   wp_post_url:          string | null;
   wp_post_id:           number | null;
   wp_post_status:       string | null;
+  blog_excerpt:         string | null;
+  wp_featured_media_id: number | null;
   // GBP advanced fields
   gbp_location_id:      string | null;  // per-post location override (migration 0009)
   gbp_topic_type:       string | null;
