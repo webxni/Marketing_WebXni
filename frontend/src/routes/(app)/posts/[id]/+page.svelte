@@ -294,12 +294,38 @@
   <!-- Overview tab -->
   {#if activeTab === 'overview'}
   <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+    <!-- Asset preview -->
+    {#if post.asset_r2_key}
+    <div class="card p-4 md:col-span-2">
+      <h3 class="section-label mb-3">Media Asset</h3>
+      {#if post.content_type === 'video' || post.content_type === 'reel' || post.asset_type === 'video'}
+        <video
+          src="/api/assets/preview?key={encodeURIComponent(post.asset_r2_key)}"
+          controls
+          class="w-full max-h-96 rounded-lg bg-black"
+          style="max-width: 640px;"
+        >
+          <track kind="captions" />
+        </video>
+      {:else}
+        <img
+          src="/api/assets/preview?key={encodeURIComponent(post.asset_r2_key)}"
+          alt="Post asset"
+          class="max-h-96 max-w-full rounded-lg object-contain bg-surface"
+          style="max-width: 640px;"
+        />
+      {/if}
+      <p class="text-xs text-muted mt-2 font-mono truncate">{post.asset_r2_key}</p>
+    </div>
+    {/if}
+
     <div class="card p-5">
       <h3 class="section-label mb-4">Details</h3>
       <dl class="space-y-3">
         <div class="flex justify-between">
           <dt class="text-xs text-muted">Post ID</dt>
-          <dd class="text-xs font-mono text-white">{post.id}</dd>
+          <dd class="text-xs font-mono text-white truncate ml-4">{post.id}</dd>
         </div>
         <div class="flex justify-between">
           <dt class="text-xs text-muted">Client</dt>
@@ -336,14 +362,100 @@
 
     <div class="card p-5">
       <h3 class="section-label mb-4">Platforms</h3>
-      <div class="flex flex-wrap gap-2">
+      <div class="flex flex-wrap gap-2 mb-4">
         {#each parsePlatforms(post.platforms) as p}
           <PlatformBadge platform={p} />
         {/each}
       </div>
 
+      <!-- GBP CTA inline when google_business is a platform -->
+      {#if gbpIsSelected}
+      <div class="border-t border-border pt-3">
+        <div class="flex items-center justify-between mb-2">
+          <h4 class="text-xs font-medium text-muted uppercase tracking-wide">GBP Settings</h4>
+          {#if !editingGbp && can('posts.edit')}
+            <button class="btn-ghost btn-sm text-xs" on:click={startEditGbp}>Edit</button>
+          {/if}
+        </div>
+
+        {#if editingGbp}
+        <div class="space-y-2">
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label class="block text-xs text-muted mb-1">Type</label>
+              <select bind:value={gbpTopicType} class="input w-full text-xs">
+                <option value="STANDARD">Standard</option>
+                <option value="EVENT">Event</option>
+                <option value="OFFER">Offer</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs text-muted mb-1">CTA</label>
+              <select bind:value={gbpCtaType} class="input w-full text-xs">
+                <option value="">None</option>
+                {#each GBP_CTA_TYPES_EDIT as t}<option value={t}>{t}</option>{/each}
+              </select>
+            </div>
+            {#if gbpCtaType && gbpCtaType !== 'CALL'}
+            <div class="col-span-2">
+              <label class="block text-xs text-muted mb-1">CTA URL</label>
+              <input type="url" bind:value={gbpCtaUrl} placeholder="https://…" class="input w-full text-xs font-mono" />
+            </div>
+            {/if}
+          </div>
+          {#if gbpTopicType === 'EVENT'}
+          <div class="border border-border rounded p-2 space-y-1.5">
+            <p class="text-xs text-accent">Event</p>
+            <input type="text" bind:value={gbpEventTitle} placeholder="Event title" class="input w-full text-xs" />
+            <div class="grid grid-cols-2 gap-1.5">
+              <input type="date" bind:value={gbpStartDate} class="input w-full text-xs" />
+              <input type="time" bind:value={gbpStartTime} class="input w-full text-xs" />
+              <input type="date" bind:value={gbpEndDate} class="input w-full text-xs" />
+              <input type="time" bind:value={gbpEndTime} class="input w-full text-xs" />
+            </div>
+          </div>
+          {/if}
+          {#if gbpTopicType === 'OFFER'}
+          <div class="border border-border rounded p-2 space-y-1.5">
+            <p class="text-xs text-accent">Offer</p>
+            <div class="grid grid-cols-2 gap-1.5">
+              <input type="text" bind:value={gbpCouponCode} placeholder="Coupon code" class="input w-full text-xs font-mono" />
+              <input type="url" bind:value={gbpRedeemUrl} placeholder="Redeem URL" class="input w-full text-xs font-mono" />
+            </div>
+            <input type="text" bind:value={gbpTerms} placeholder="Terms" class="input w-full text-xs" />
+          </div>
+          {/if}
+          <div class="flex justify-end gap-2">
+            <button class="btn-secondary btn-sm text-xs" on:click={() => (editingGbp = false)}>Cancel</button>
+            <button class="btn-primary btn-sm text-xs" on:click={saveGbp} disabled={savingGbp}>
+              {savingGbp ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </div>
+        {:else}
+        <dl class="space-y-1 text-xs">
+          <div class="flex gap-2"><dt class="text-muted w-20 flex-shrink-0">Type</dt><dd class="text-white">{post.gbp_topic_type ?? 'STANDARD'}</dd></div>
+          {#if post.gbp_cta_type}
+          <div class="flex gap-2"><dt class="text-muted w-20 flex-shrink-0">CTA</dt>
+            <dd class="text-white flex items-center gap-1.5">
+              <span class="px-1.5 py-0.5 bg-accent/20 text-accent rounded text-xs font-medium">{post.gbp_cta_type}</span>
+              {#if post.gbp_cta_url}<a href={post.gbp_cta_url} target="_blank" class="text-accent hover:underline truncate max-w-xs">{post.gbp_cta_url}</a>{/if}
+            </dd>
+          </div>
+          {/if}
+          {#if post.gbp_event_title}<div class="flex gap-2"><dt class="text-muted w-20 flex-shrink-0">Event</dt><dd class="text-white">{post.gbp_event_title}</dd></div>{/if}
+          {#if post.gbp_event_start_date}<div class="flex gap-2"><dt class="text-muted w-20 flex-shrink-0">Dates</dt><dd class="text-white">{post.gbp_event_start_date}{post.gbp_event_start_time ? ' ' + post.gbp_event_start_time : ''} → {post.gbp_event_end_date ?? '—'}</dd></div>{/if}
+          {#if post.gbp_coupon_code}<div class="flex gap-2"><dt class="text-muted w-20 flex-shrink-0">Coupon</dt><dd class="text-white font-mono">{post.gbp_coupon_code}</dd></div>{/if}
+          {#if post.gbp_redeem_url}<div class="flex gap-2"><dt class="text-muted w-20 flex-shrink-0">Redeem</dt><dd><a href={post.gbp_redeem_url} target="_blank" class="text-accent hover:underline text-xs truncate">{post.gbp_redeem_url}</a></dd></div>{/if}
+          {#if post.gbp_terms}<div class="flex gap-2"><dt class="text-muted w-20 flex-shrink-0">Terms</dt><dd class="text-muted">{post.gbp_terms}</dd></div>{/if}
+          {#if !gbpHasData}<p class="text-muted italic">No GBP settings — click Edit to configure.</p>{/if}
+        </dl>
+        {/if}
+      </div>
+      {/if}
+
       {#if post.error_log}
-      <div class="mt-4">
+      <div class="mt-4 border-t border-border pt-3">
         <h4 class="text-xs text-muted mb-2">Error Log</h4>
         <pre class="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded p-2 overflow-auto max-h-32">{post.error_log}</pre>
       </div>

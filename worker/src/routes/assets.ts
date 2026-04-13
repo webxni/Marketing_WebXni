@@ -56,6 +56,27 @@ assetRoutes.post('/upload', async (c) => {
   return c.json({ ok: true, asset_id: assetId, r2_key: r2Key, bucket, url }, 201);
 });
 
+/**
+ * GET /api/assets/preview — stream an R2 object by key (auth-protected proxy)
+ * Usage: /api/assets/preview?key=clientId/postId/filename.png
+ * This lets the frontend display uploaded assets without needing R2 public access.
+ */
+assetRoutes.get('/preview', async (c) => {
+  const key = c.req.query('key');
+  if (!key) return c.json({ error: 'key required' }, 400);
+
+  const obj = await c.env.MEDIA.get(key);
+  if (!obj) return c.json({ error: 'Asset not found' }, 404);
+
+  const contentType = obj.httpMetadata?.contentType ?? 'application/octet-stream';
+  return new Response(obj.body, {
+    headers: {
+      'Content-Type': contentType,
+      'Cache-Control': 'private, max-age=3600',
+    },
+  });
+});
+
 /** DELETE /api/assets/:id */
 assetRoutes.delete('/:id', async (c) => {
   const asset = await c.env.DB
