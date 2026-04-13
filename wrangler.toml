@@ -32,6 +32,12 @@ id = "fd77c3e7e1c247758cc440561c78a302"
 pattern = "marketing.webxni.com"
 custom_domain = true
 
+# Self service binding — lets the Worker call itself without going through
+# the public network (avoids 522 errors on custom-domain self-calls).
+[[services]]
+binding = "SELF"
+service = "marketing-webxni"
+
 [assets]
 directory = "./frontend/build"
 binding = "ASSETS"

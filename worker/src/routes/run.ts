@@ -7,9 +7,10 @@ import type { Env, SessionData } from '../types';
 import {
   createPostingJob, listPostingJobs, getPostingJobById,
   createGenerationRun, listGenerationRuns, getGenerationRunById,
+  healStuckGenerationRuns,
 } from '../db/queries';
 import { runPosting } from '../loader/posting-run';
-import { runGeneration } from '../loader/generation-run';
+import { planGeneration } from '../loader/generation-run';
 import { UploadPostClient } from '../services/uploadpost';
 
 /**
@@ -246,28 +247,55 @@ runRoutes.post('/generate', async (c) => {
     ? body.publish_time
     : null;
 
-  c.executionCtx.waitUntil(
-    runGeneration(c.env, {
-      run_id:       run.id,
-      client_slugs: clientSlugs,
-      period_start: periodStart,
-      period_end:   periodEnd,
-      triggered_by: c.get('user').userId,
-      publish_time: publishTime,
-    }),
-  );
+  const baseUrl = new URL(c.req.url).origin;
+  await planGeneration(c.env, {
+    run_id:       run.id,
+    client_slugs: clientSlugs,
+    period_start: periodStart,
+    period_end:   periodEnd,
+    triggered_by: c.get('user').userId,
+    publish_time: publishTime,
+  }, baseUrl);
 
   return c.json({ ok: true, job_id: run.id }, 202);
 });
 
 /** GET /api/run/generate/runs — list recent generation runs */
 runRoutes.get('/generate/runs', async (c) => {
+  // Auto-heal any runs stuck > 10 minutes with no activity before returning
+  try { await healStuckGenerationRuns(c.env.DB, 600); } catch { /* non-fatal */ }
   const runs = await listGenerationRuns(c.env.DB, 30);
   return c.json({ runs });
 });
 
+/** PATCH /api/run/generate/runs/:id/cancel — cancel or force-fail a stuck run */
+runRoutes.patch('/generate/runs/:id/cancel', async (c) => {
+  const run = await getGenerationRunById(c.env.DB, c.req.param('id'));
+  if (!run) return c.json({ error: 'Not found' }, 404);
+  if (run.status !== 'running' && run.status !== 'timed_out') {
+    return c.json({ error: `Run is already ${run.status} — cannot cancel` }, 409);
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const user = c.get('user');
+  await c.env.DB
+    .prepare(`UPDATE generation_runs
+              SET status = 'cancelled', completed_at = ?, last_activity_at = ?,
+                  error_log = COALESCE(error_log || char(10), '') || ?,
+                  execution_log = COALESCE(execution_log || char(10), '') || ?
+              WHERE id = ?`)
+    .bind(
+      now, now,
+      `Manually cancelled by ${user.email}`,
+      `${new Date(now * 1000).toISOString().slice(0, 19)}Z [WARN] Manually cancelled by ${user.email}`,
+      run.id,
+    )
+    .run();
+  return c.json({ ok: true });
+});
+
 /** GET /api/run/generate/runs/:id — single generation run */
 runRoutes.get('/generate/runs/:id', async (c) => {
+  try { await healStuckGenerationRuns(c.env.DB, 600); } catch { /* non-fatal */ }
   const run = await getGenerationRunById(c.env.DB, c.req.param('id'));
   if (!run) return c.json({ error: 'Not found' }, 404);
   return c.json({ run });

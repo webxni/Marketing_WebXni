@@ -156,6 +156,8 @@ postRoutes.post('/', async (c) => {
     action: 'post.create',
     entity_type: 'post',
     entity_id: post.id,
+    new_value: { title: post.title, status: post.status, client_id: post.client_id },
+    ip: c.req.header('CF-Connecting-IP') ?? c.req.header('X-Forwarded-For') ?? undefined,
   });
   return c.json({ post }, 201);
 });
@@ -197,7 +199,8 @@ postRoutes.post('/:id/approve', async (c) => {
     entity_type: 'post',
     entity_id: post.id,
     old_value: { status: post.status },
-    new_value: { status: 'ready' },
+    new_value: { status: 'ready', title: post.title },
+    ip: c.req.header('CF-Connecting-IP') ?? c.req.header('X-Forwarded-For') ?? undefined,
   });
   return c.json({ ok: true, status: 'ready' });
 });
@@ -267,18 +270,19 @@ postRoutes.delete('/:id', async (c) => {
   const post = await getPostById(c.env.DB, c.req.param('id'));
   if (!post) return c.json({ error: 'Not found' }, 404);
 
-  await c.env.DB
-    .prepare('DELETE FROM post_platforms WHERE post_id = ?')
-    .bind(post.id)
-    .run();
-  await c.env.DB
-    .prepare('DELETE FROM post_versions WHERE post_id = ?')
-    .bind(post.id)
-    .run();
-  await c.env.DB
-    .prepare('DELETE FROM posts WHERE id = ?')
-    .bind(post.id)
-    .run();
+  try {
+    // Delete all child rows before the post — posting_attempts and content_memory have
+    // FK references to posts(id) without CASCADE, so D1 would reject the parent delete.
+    const db = c.env.DB;
+    await db.prepare('DELETE FROM posting_attempts WHERE post_id = ?').bind(post.id).run();
+    await db.prepare('DELETE FROM content_memory   WHERE post_id = ?').bind(post.id).run();
+    await db.prepare('DELETE FROM post_platforms   WHERE post_id = ?').bind(post.id).run();
+    await db.prepare('DELETE FROM post_versions    WHERE post_id = ?').bind(post.id).run();
+    await db.prepare('DELETE FROM posts            WHERE id      = ?').bind(post.id).run();
+  } catch (err) {
+    console.error('[post.delete] DB error:', err);
+    return c.json({ error: `Failed to delete post: ${String(err)}` }, 500);
+  }
 
   await writeAuditLog(c.env.DB, {
     user_id: user.userId,
@@ -286,6 +290,7 @@ postRoutes.delete('/:id', async (c) => {
     entity_type: 'post',
     entity_id: post.id,
     old_value: { title: post.title, status: post.status },
+    ip: c.req.header('CF-Connecting-IP') ?? c.req.header('X-Forwarded-For') ?? undefined,
   });
   return c.json({ ok: true });
 });

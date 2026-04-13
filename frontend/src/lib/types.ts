@@ -282,8 +282,21 @@ export interface GenerationRun {
   posts_created:     number;
   posts_updated:     number;
   error_log:         string | null;
+  progress_json:     string | null;
+  execution_log:     string | null;
+  last_activity_at:  number | null;
   created_at:        number;
   completed_at:      number | null;
+}
+
+export interface GenerationProgress {
+  current_client:   string;
+  current_post:     string;
+  completed:        number;
+  total_estimated:  number;
+  errors:           number;
+  clients_done:     number;
+  clients_total:    number;
 }
 
 export interface OverviewStats {

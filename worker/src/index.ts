@@ -26,8 +26,12 @@ import { notionRoutes }      from './routes/notion';
 import { portalRoutes }      from './routes/portal';
 import { blogRoutes }        from './routes/blog';
 import { gbpRoutes }         from './routes/gbp';
+import { internalRoutes }    from './routes/internal';
 
 const app = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
+
+// ─── Internal routes (no auth — Worker-to-Worker only) ───────────────────────
+app.route('/internal', internalRoutes);
 
 // ─── Global middleware ────────────────────────────────────────────────────────
 app.use('/api/*', rateLimitMiddleware);

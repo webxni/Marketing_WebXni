@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { runApi, clientsApi, packagesApi, postsApi } from '$lib/api';
   import Badge from '$lib/components/ui/Badge.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
@@ -8,7 +8,7 @@
   import { can } from '$lib/stores/auth';
   import { toast } from '$lib/stores/ui';
   import { timeAgo, parseStats } from '$lib/utils';
-  import type { PostingJob, GenerationRun, Client, Package, Post } from '$lib/types';
+  import type { PostingJob, GenerationRun, GenerationProgress, Client, Package, Post } from '$lib/types';
 
   // ── Data ─────────────────────────────────────────────────────────────────────
   let clients:  Client[]  = [];
@@ -182,6 +182,41 @@
     return null;
   })();
 
+  // ── Progress tracking ─────────────────────────────────────────────────────────
+  let activeProgress: GenerationProgress | null = null;
+  let progressRunId: string | null = null;
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+  function parseProgress(run: GenerationRun): GenerationProgress | null {
+    if (!run.progress_json) return null;
+    try { return JSON.parse(run.progress_json) as GenerationProgress; } catch { return null; }
+  }
+
+  function startProgressPolling() {
+    if (pollTimer) return;
+    pollTimer = setInterval(async () => {
+      try {
+        const { runs } = await runApi.listGenerationRuns();
+        genRuns = runs;
+        const running = runs.find(r => r.status === 'running');
+        if (running) {
+          progressRunId = running.id;
+          activeProgress = parseProgress(running);
+        } else {
+          // Run finished
+          activeProgress = null;
+          progressRunId = null;
+          generating = false;
+          stopProgressPolling();
+        }
+      } catch { /* non-fatal */ }
+    }, 3000);
+  }
+
+  function stopProgressPolling() {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  }
+
   // ── Generate ─────────────────────────────────────────────────────────────────
   async function generate() {
     if (clientMode === 'select' && selectedSlugs.length === 0) {
@@ -189,6 +224,7 @@
     }
     if (dateError) { toast.error(dateError); return; }
     generating = true;
+    activeProgress = null;
     try {
       await runApi.triggerGenerate({
         client_slugs: clientMode === 'select' ? selectedSlugs
@@ -200,9 +236,8 @@
       });
       toast.success(`Generation started — ~${totalEstimated} drafts queued`);
       historyTab = 'generation';
-      setTimeout(loadGenRuns, 3000);
-    } catch (e) { toast.error(String(e)); }
-    finally { generating = false; }
+      startProgressPolling();
+    } catch (e) { toast.error(String(e)); generating = false; }
   }
 
   // ── Scheduled queue ───────────────────────────────────────────────────────────
@@ -303,12 +338,33 @@
   async function loadGenRuns() { loadingGen  = true; try { genRuns = (await runApi.listGenerationRuns()).runs; } finally { loadingGen  = false; } }
   async function loadJobs()    { loadingJobs = true; try { jobs    = (await runApi.listJobs()).jobs;           } finally { loadingJobs = false; } }
 
+  // ── Execution log expand/collapse ─────────────────────────────────────────────
+  let expandedLogs = new Set<string>();
+  function toggleLog(id: string) {
+    if (expandedLogs.has(id)) expandedLogs.delete(id); else expandedLogs.add(id);
+    expandedLogs = expandedLogs;
+  }
+
+  // ── Cancel stuck run ─────────────────────────────────────────────────────────
+  async function cancelRun(id: string) {
+    if (!confirm('Stop this run? It will be marked cancelled.')) return;
+    try {
+      await runApi.cancelRun(id);
+      toast.success('Run cancelled');
+      await loadGenRuns();
+    } catch (e) { toast.error(String(e)); }
+  }
+
   onMount(async () => {
     const [cr, pkr] = await Promise.all([clientsApi.list('active'), packagesApi.listAll()]);
     clients  = cr.clients;
     packages = pkr.packages;
     await Promise.all([loadGenRuns(), loadJobs(), loadScheduledPosts()]);
+    // Resume polling if a run is already in progress (e.g. page reload during generation)
+    if (genRuns.some(r => r.status === 'running')) { generating = true; startProgressPolling(); }
   });
+
+  onDestroy(() => stopProgressPolling());
 
   // ── Helpers ───────────────────────────────────────────────────────────────────
   function jobStats(job: PostingJob) {
@@ -599,6 +655,40 @@
 
   </div>
 </div>
+
+<!-- ═══ GENERATION PROGRESS ════════════════════════════════════════════════════ -->
+{#if generating}
+<div class="card p-4 mb-5 border border-accent/30">
+  <div class="flex items-center gap-3 mb-3">
+    <span class="w-2 h-2 rounded-full bg-accent animate-pulse flex-shrink-0"></span>
+    <span class="text-sm font-medium text-white">Generation in progress</span>
+    {#if activeProgress && activeProgress.clients_total > 0}
+      <span class="text-xs text-muted ml-auto">{activeProgress.clients_done}/{activeProgress.clients_total} clients</span>
+    {/if}
+  </div>
+
+  {#if activeProgress}
+    {@const pct = activeProgress.total_estimated > 0 ? Math.round((activeProgress.completed / activeProgress.total_estimated) * 100) : 0}
+    <div class="mb-3">
+      <div class="flex justify-between text-xs mb-1.5">
+        <span class="text-white">{activeProgress.current_client || 'Starting…'}</span>
+        <span class="text-muted">{activeProgress.completed}/{activeProgress.total_estimated} posts · {pct}%</span>
+      </div>
+      <div class="h-2 bg-surface rounded-full overflow-hidden">
+        <div class="h-full bg-accent rounded-full transition-all duration-500" style="width:{pct}%"></div>
+      </div>
+    </div>
+    {#if activeProgress.current_post}
+      <p class="text-xs text-muted">Current: <span class="text-white">{activeProgress.current_post}</span></p>
+    {/if}
+    {#if activeProgress.errors > 0}
+      <p class="text-xs text-red-400 mt-1">{activeProgress.errors} error{activeProgress.errors !== 1 ? 's' : ''} so far</p>
+    {/if}
+  {:else}
+    <p class="text-xs text-muted animate-pulse">Initializing…</p>
+  {/if}
+</div>
+{/if}
 {/if}
 
 <!-- ═══ SCHEDULED QUEUE ═══════════════════════════════════════════════════════ -->
@@ -708,42 +798,87 @@
   {:else if genRuns.length === 0}
     <EmptyState title="No generation runs yet" detail="Trigger content generation above." icon="✦" />
   {:else}
-    <div class="card">
-      <div class="table-wrapper">
-        <table class="data-table">
-          <thead>
-            <tr><th>ID</th><th>Clients</th><th>Period</th><th>Status</th><th>Posts</th><th>Started</th><th>Duration</th></tr>
-          </thead>
-          <tbody>
-            {#each genRuns as run}
-              <tr>
-                <td class="font-mono text-xs text-muted">{run.id.slice(0,10)}…</td>
-                <td class="text-xs text-white max-w-xs truncate">{genRunClients(run)}</td>
-                <td class="text-xs text-muted">{run.week_start}</td>
-                <td>
-                  <span class="badge {run.status === 'completed' ? 'badge-posted' : run.status === 'running' ? 'badge-running' : run.status === 'completed_with_errors' ? 'badge-blocked' : 'badge-failed'}">
-                    {run.status === 'completed_with_errors' ? 'partial' : run.status}
-                  </span>
-                </td>
-                <td class="text-xs {run.posts_created > 0 ? 'text-green-400 font-medium' : 'text-muted'}">{run.posts_created}</td>
-                <td class="text-xs text-muted">{timeAgo(run.created_at)}</td>
-                <td class="text-xs text-muted">
-                  {#if run.completed_at}{run.completed_at - run.created_at}s
-                  {:else if run.status === 'running'}<span class="text-yellow-400 animate-pulse">running…</span>
-                  {:else}—{/if}
-                </td>
-              </tr>
-              {#if run.error_log}
-                <tr>
-                  <td colspan="7" class="pb-3 pt-0 px-4">
-                    <pre class="text-[10px] text-red-400 bg-red-500/10 border border-red-500/20 rounded p-2 overflow-auto max-h-20 whitespace-pre-wrap">{run.error_log}</pre>
-                  </td>
-                </tr>
+    <div class="space-y-3">
+      {#each genRuns as run}
+        {@const prog = parseProgress(run)}
+        {@const isStuck = run.status === 'running' && run.last_activity_at !== null && run.last_activity_at !== undefined && (Math.floor(Date.now()/1000) - run.last_activity_at) > 300}
+        {@const isRunning = run.status === 'running'}
+        {@const canCancel = run.status === 'running' || run.status === 'timed_out'}
+        {@const duration = run.completed_at ? run.completed_at - run.created_at : Math.floor(Date.now()/1000) - run.created_at}
+        {@const statusCls = run.status === 'completed' ? 'badge-posted' : run.status === 'running' ? 'badge-running' : run.status === 'completed_with_errors' ? 'badge-blocked' : run.status === 'cancelled' ? 'badge-draft' : 'badge-failed'}
+        <div class="card p-4 {isStuck ? 'border border-red-500/40' : ''}">
+          <!-- Run header row -->
+          <div class="flex items-start justify-between gap-4 mb-2">
+            <div class="flex items-center gap-3 flex-wrap min-w-0">
+              <span class="font-mono text-xs text-muted flex-shrink-0">{run.id.slice(0,10)}…</span>
+              <span class="badge {statusCls}">
+                {run.status === 'completed_with_errors' ? 'partial' : run.status === 'timed_out' ? 'timed out' : run.status}
+              </span>
+              {#if isStuck}
+                <span class="text-xs text-red-400 font-medium">⚠ No activity for {Math.round((Math.floor(Date.now()/1000) - (run.last_activity_at ?? run.created_at)) / 60)}m — possibly stuck</span>
               {/if}
-            {/each}
-          </tbody>
-        </table>
-      </div>
+            </div>
+            <div class="flex items-center gap-2 flex-shrink-0">
+              {#if run.posts_created > 0}
+                <span class="text-xs text-green-400 font-medium">{run.posts_created} posts</span>
+              {/if}
+              <span class="text-xs text-muted">{timeAgo(run.created_at)}</span>
+              <span class="text-xs text-muted">{Math.round(duration / 60)}m {duration % 60}s</span>
+              {#if canCancel}
+                <button
+                  class="btn-ghost btn-sm text-xs text-red-400 border border-red-500/30 hover:bg-red-500/10"
+                  on:click={() => cancelRun(run.id)}
+                >Stop</button>
+              {/if}
+            </div>
+          </div>
+
+          <!-- Meta row -->
+          <div class="flex gap-4 text-xs text-muted mb-2">
+            <span>Period: <span class="text-white">{run.week_start}</span></span>
+            <span>Clients: <span class="text-white">{genRunClients(run)}</span></span>
+            {#if prog}
+              <span>Progress: <span class="text-white">{prog.completed}/{prog.total_estimated}</span> ({prog.clients_done}/{prog.clients_total} clients)</span>
+            {/if}
+          </div>
+
+          <!-- Progress bar (running only) -->
+          {#if isRunning && prog && prog.total_estimated > 0}
+            {@const pct = Math.round((prog.completed / prog.total_estimated) * 100)}
+            <div class="mb-2">
+              <div class="h-1.5 bg-surface rounded-full overflow-hidden">
+                <div class="h-full bg-accent rounded-full transition-all" style="width:{pct}%"></div>
+              </div>
+              {#if prog.current_post}
+                <p class="text-[11px] text-muted mt-1">Current: <span class="text-white">{prog.current_post}</span></p>
+              {/if}
+            </div>
+          {/if}
+
+          <!-- Execution log (expandable) -->
+          {#if run.execution_log}
+            {@const logLines = run.execution_log.trim().split('\n')}
+            {@const showAll = expandedLogs.has(run.id)}
+            {@const visibleLines = showAll ? logLines : logLines.slice(-8)}
+            <div class="mt-2 border-t border-border pt-2">
+              <button
+                class="text-[11px] text-muted hover:text-white mb-1.5"
+                on:click={() => toggleLog(run.id)}
+              >{showAll ? '▲ Show less' : `▼ Show log (${logLines.length} lines)`}</button>
+              <div class="font-mono text-[10px] bg-surface rounded p-2 max-h-48 overflow-y-auto space-y-0.5">
+                {#if !showAll && logLines.length > 8}
+                  <div class="text-muted italic">… {logLines.length - 8} earlier lines hidden …</div>
+                {/if}
+                {#each visibleLines as line}
+                  <div class="{line.includes('[ERROR]') ? 'text-red-400' : line.includes('[WARN]') ? 'text-yellow-400' : line.includes('[AI]') ? 'text-accent' : line.includes('[SAVED]') ? 'text-green-400' : line.includes('[DONE]') ? 'text-green-300 font-medium' : line.includes('[START]') ? 'text-white' : 'text-muted'}">{line}</div>
+                {/each}
+              </div>
+            </div>
+          {:else if run.error_log}
+            <pre class="text-[10px] text-red-400 bg-red-500/10 border border-red-500/20 rounded p-2 overflow-auto max-h-20 whitespace-pre-wrap mt-2">{run.error_log}</pre>
+          {/if}
+        </div>
+      {/each}
     </div>
   {/if}
 {/if}

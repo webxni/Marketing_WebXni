@@ -100,6 +100,7 @@ clientRoutes.post('/', async (c) => {
     entity_type: 'client',
     entity_id: id,
     new_value: { slug, canonical_name: name },
+    ip: c.req.header('CF-Connecting-IP') ?? c.req.header('X-Forwarded-For') ?? undefined,
   });
 
   return c.json({ client }, 201);
@@ -154,6 +155,7 @@ clientRoutes.put('/:slug', async (c) => {
     entity_type: 'client',
     entity_id: client.id,
     new_value: body,
+    ip: c.req.header('CF-Connecting-IP') ?? c.req.header('X-Forwarded-For') ?? undefined,
   });
 
   return c.json({ client: updated });

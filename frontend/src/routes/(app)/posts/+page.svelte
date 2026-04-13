@@ -21,32 +21,25 @@
   function toggleSelect(id: string) { if (selected.has(id)) selected.delete(id); else selected.add(id); selected = selected; }
   function toggleAll() { selected = allSelected ? new Set() : new Set(posts.map(p => p.id)); }
 
-  async function bulkMarkReady() {
-    if (selected.size === 0) return;
-    bulkProcessing = true;
-    const ids = [...selected];
-    let done = 0;
-    for (const id of ids) {
-      try { await postsApi.markReady(id); done++; } catch { /* continue */ }
-    }
-    toast.success(`${done}/${ids.length} posts marked ready`);
-    selected = new Set();
-    load();
-    bulkProcessing = false;
-  }
-
   async function bulkDelete() {
     if (selected.size === 0) return;
-    if (!confirm(`Delete ${selected.size} posts? This cannot be undone.`)) return;
+    if (!confirm(`Delete ${selected.size} post${selected.size === 1 ? '' : 's'}? This cannot be undone.`)) return;
     bulkProcessing = true;
     const ids = [...selected];
     let done = 0;
+    const failed: string[] = [];
     for (const id of ids) {
-      try { await postsApi.delete(id); done++; } catch { /* continue */ }
+      try {
+        await postsApi.delete(id);
+        done++;
+      } catch (e) {
+        failed.push(String(e));
+      }
     }
-    toast.success(`${done}/${ids.length} posts deleted`);
     selected = new Set();
-    load();
+    if (done > 0) toast.success(`${done} post${done === 1 ? '' : 's'} deleted`);
+    if (failed.length > 0) toast.error(`${failed.length} delete${failed.length === 1 ? '' : 's'} failed: ${failed[0]}`);
+    await load();
     bulkProcessing = false;
   }
 
@@ -123,14 +116,9 @@
   <div class="flex items-center gap-2">
     {#if selected.size > 0}
       <span class="text-xs text-muted">{selected.size} selected</span>
-      {#if can('automation.trigger')}
-        <button class="btn-secondary btn-sm text-xs" disabled={bulkProcessing} on:click={bulkMarkReady}>
-          {bulkProcessing ? '…' : `Mark ${selected.size} Ready`}
-        </button>
-      {/if}
       {#if can('posts.delete')}
         <button class="btn-ghost btn-sm text-xs text-red-400" disabled={bulkProcessing} on:click={bulkDelete}>
-          Delete {selected.size}
+          {bulkProcessing ? 'Deleting…' : `Delete ${selected.size}`}
         </button>
       {/if}
     {/if}

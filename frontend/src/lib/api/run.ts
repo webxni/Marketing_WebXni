@@ -30,6 +30,9 @@ export const runApi = {
   getGenerationRun: (id: string) =>
     api.get<{ run: GenerationRun }>(`/api/run/generate/runs/${id}`),
 
+  cancelRun: (id: string) =>
+    api.patch<{ ok: boolean }>(`/api/run/generate/runs/${id}/cancel`),
+
   getStatus: (trackingId: string) =>
     api.get<{ status: unknown }>(`/api/run/status/${trackingId}`),
 };

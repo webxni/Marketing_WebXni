@@ -251,7 +251,7 @@ export async function createPost(
         ready_for_automation, asset_delivered, skarleth_notes, error_log,
         created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id, data.client_id, data.title, data.status ?? 'draft',
@@ -471,8 +471,26 @@ export interface GenerationRunRow {
   posts_created:     number;
   posts_updated:     number;
   error_log:         string | null;
+  progress_json:     string | null;
+  execution_log:     string | null;   // timestamped append-only log lines
+  last_activity_at:  number | null;   // unix timestamp — updated after every action
   created_at:        number;
   completed_at:      number | null;
+  // Added in migration 0010 — slot-based generation
+  post_slots:        string | null;   // JSON: PostSlot[]
+  total_slots:       number | null;
+  current_slot_idx:  number | null;
+  publish_time:      string | null;   // HH:MM
+}
+
+export interface GenerationProgress {
+  current_client:   string;
+  current_post:     string;    // e.g. "2026-05-12 / image"
+  completed:        number;
+  total_estimated:  number;
+  errors:           number;
+  clients_done:     number;
+  clients_total:    number;
 }
 
 export async function createGenerationRun(
@@ -484,10 +502,10 @@ export async function createGenerationRun(
   await db
     .prepare(
       `INSERT INTO generation_runs
-         (id, phase, triggered_by, week_start, client_filter, status, posts_created, posts_updated, created_at)
-       VALUES (?, 1, ?, ?, ?, 'running', 0, 0, ?)`,
+         (id, phase, triggered_by, week_start, client_filter, status, posts_created, posts_updated, created_at, last_activity_at)
+       VALUES (?, 1, ?, ?, ?, 'running', 0, 0, ?, ?)`,
     )
-    .bind(id, data.triggered_by, data.date_range, data.client_filter, now)
+    .bind(id, data.triggered_by, data.date_range, data.client_filter, now, now)
     .run();
   return (await getGenerationRunById(db, id))!;
 }
@@ -512,6 +530,111 @@ export async function listGenerationRuns(
     .bind(limit)
     .all<GenerationRunRow>();
   return r.results;
+}
+
+export async function updateGenerationProgress(
+  db: D1Database,
+  id: string,
+  progress: GenerationProgress,
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await db
+    .prepare('UPDATE generation_runs SET progress_json = ?, last_activity_at = ? WHERE id = ?')
+    .bind(JSON.stringify(progress), now, id)
+    .run();
+}
+
+/** Store computed slot plan into the run record (migration 0010). */
+export async function storeGenerationPlan(
+  db: D1Database,
+  id: string,
+  slots: unknown[],
+  publishTime: string | null,
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await db
+    .prepare(`UPDATE generation_runs
+              SET post_slots = ?, total_slots = ?, current_slot_idx = 0,
+                  publish_time = ?, last_activity_at = ?
+              WHERE id = ?`)
+    .bind(JSON.stringify(slots), slots.length, publishTime ?? '10:00', now, id)
+    .run();
+}
+
+/** Advance current_slot_idx and update posts_created counter after one step completes. */
+export async function advanceGenerationSlot(
+  db: D1Database,
+  id: string,
+  newIdx: number,
+  postsCreated: number,
+  progressJson: string,
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await db
+    .prepare(`UPDATE generation_runs
+              SET current_slot_idx = ?, posts_created = ?,
+                  progress_json = ?, last_activity_at = ?
+              WHERE id = ?`)
+    .bind(newIdx, postsCreated, progressJson, now, id)
+    .run();
+}
+
+/** Mark a generation run as completed or failed. */
+export async function finalizeGenerationRun(
+  db: D1Database,
+  id: string,
+  status: 'completed' | 'completed_with_errors' | 'failed',
+  postsCreated: number,
+  errorLog: string | null,
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await db
+    .prepare(`UPDATE generation_runs
+              SET status = ?, posts_created = ?, error_log = ?, completed_at = ?, last_activity_at = ?
+              WHERE id = ?`)
+    .bind(status, postsCreated, errorLog, now, now, id)
+    .run();
+}
+
+/**
+ * Append a single timestamped line to execution_log and bump last_activity_at.
+ * Uses SQL string concatenation — no read needed, single write.
+ */
+export async function appendGenerationLog(
+  db: D1Database,
+  id: string,
+  level: 'INFO' | 'AI' | 'SAVED' | 'WARN' | 'ERROR' | 'START' | 'DONE',
+  message: string,
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  const ts  = new Date(now * 1000).toISOString().slice(0, 19) + 'Z';
+  const line = `${ts} [${level}] ${message}`;
+  await db
+    .prepare(`UPDATE generation_runs
+              SET execution_log = substr(COALESCE(execution_log || char(10), '') || ?, -40000),
+                  last_activity_at = ?
+              WHERE id = ?`)
+    .bind(line, now, id)
+    .run();
+}
+
+/**
+ * Auto-heal stuck runs — mark any run that has been 'running' for > thresholdSeconds
+ * with no last_activity_at update as 'timed_out'.  Safe to call on every list request.
+ */
+export async function healStuckGenerationRuns(db: D1Database, thresholdSeconds = 600): Promise<void> {
+  const cutoff = Math.floor(Date.now() / 1000) - thresholdSeconds;
+  const now    = Math.floor(Date.now() / 1000);
+  await db
+    .prepare(`UPDATE generation_runs
+              SET status = 'timed_out',
+                  completed_at = ?,
+                  error_log = COALESCE(error_log || char(10), '') || 'Auto-marked timed_out: no activity for ${thresholdSeconds}s',
+                  execution_log = COALESCE(execution_log || char(10), '') || ?
+              WHERE status = 'running'
+                AND ((last_activity_at IS NULL AND created_at < ?) OR last_activity_at < ?)`)
+    .bind(now, `${new Date(now * 1000).toISOString().slice(0, 19)}Z [ERROR] Worker timed out — run auto-cancelled after ${thresholdSeconds}s of inactivity`, cutoff, cutoff)
+    .run();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
