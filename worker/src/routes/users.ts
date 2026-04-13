@@ -145,12 +145,81 @@ userRoutes.post('/:id/reactivate', requirePermission('users.manage'), async (c) 
   return c.json({ ok: true });
 });
 
+/** DELETE /api/users/:id — hard delete (admin only) */
+userRoutes.delete('/:id', requirePermission('users.manage'), async (c) => {
+  const targetId = c.req.param('id');
+  const self     = c.get('user');
+
+  if (self.userId === targetId) return c.json({ error: 'Cannot delete yourself' }, 400);
+
+  // Prevent deleting the last admin
+  const adminCount = await c.env.DB
+    .prepare("SELECT COUNT(*) as n FROM users WHERE role = 'admin' AND is_active = 1")
+    .first<{ n: number }>();
+  const target = await c.env.DB
+    .prepare("SELECT role FROM users WHERE id = ?")
+    .bind(targetId).first<{ role: string }>();
+  if (!target) return c.json({ error: 'User not found' }, 404);
+  if (target.role === 'admin' && (adminCount?.n ?? 0) <= 1) {
+    return c.json({ error: 'Cannot delete the last admin account' }, 400);
+  }
+
+  await c.env.DB.prepare('DELETE FROM users WHERE id = ?').bind(targetId).run();
+  return c.json({ ok: true });
+});
+
 /** POST /api/users/:id/reset-2fa — admin clears another user's TOTP */
 userRoutes.post('/:id/reset-2fa', requirePermission('users.manage'), async (c) => {
-  const now = Math.floor(Date.now() / 1000);
+  const targetId = c.req.param('id');
+  const self     = c.get('user');
+  const now      = Math.floor(Date.now() / 1000);
   await c.env.DB
     .prepare('UPDATE users SET totp_secret = NULL, totp_enabled = 0, updated_at = ? WHERE id = ?')
-    .bind(now, c.req.param('id')).run();
+    .bind(now, targetId).run();
+  // Audit
+  try {
+    await c.env.DB.prepare('INSERT INTO login_audit (id, user_id, email, ip, user_agent, success, fail_reason, created_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)')
+      .bind(crypto.randomUUID().replace(/-/g,''), self.userId, self.email, c.req.header('CF-Connecting-IP') ?? 'unknown', 'admin-reset-2fa', `admin reset 2FA for user ${targetId}`, now).run();
+  } catch { /* best-effort */ }
+  return c.json({ ok: true });
+});
+
+/** POST /api/users/:id/2fa/setup — admin generates TOTP setup for any user */
+userRoutes.post('/:id/2fa/setup', requirePermission('users.manage'), async (c) => {
+  const { generateTotpSecret, totpUri } = await import('../modules/totp');
+  const targetId = c.req.param('id');
+  const row = await c.env.DB.prepare('SELECT email FROM users WHERE id = ?').bind(targetId).first<{ email: string }>();
+  if (!row) return c.json({ error: 'User not found' }, 404);
+  const secret = generateTotpSecret();
+  // Store under the same key the user's own setup flow uses, so either party can enable
+  await c.env.KV_BINDING.put(`2fa_setup:${targetId}`, secret, { expirationTtl: 600 });
+  return c.json({ secret, uri: totpUri(row.email, secret) });
+});
+
+/** POST /api/users/:id/2fa/enable — admin verifies code and enables 2FA for a user */
+userRoutes.post('/:id/2fa/enable', requirePermission('users.manage'), async (c) => {
+  const { verifyTotp } = await import('../modules/totp');
+  const targetId = c.req.param('id');
+  const self     = c.get('user');
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON' }, 400); }
+  const { code } = body as { code?: string };
+  if (!code) return c.json({ error: 'code required' }, 400);
+
+  const secret = await c.env.KV_BINDING.get(`2fa_setup:${targetId}`);
+  if (!secret) return c.json({ error: 'Setup session expired — restart setup' }, 400);
+  if (!await verifyTotp(secret, code.trim())) return c.json({ error: 'Invalid code' }, 400);
+
+  const now = Math.floor(Date.now() / 1000);
+  await c.env.KV_BINDING.delete(`2fa_setup:${targetId}`);
+  await c.env.DB.prepare('UPDATE users SET totp_secret = ?, totp_enabled = 1, updated_at = ? WHERE id = ?')
+    .bind(secret, now, targetId).run();
+
+  // Audit
+  try {
+    await c.env.DB.prepare('INSERT INTO login_audit (id, user_id, email, ip, user_agent, success, fail_reason, created_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)')
+      .bind(crypto.randomUUID().replace(/-/g,''), self.userId, self.email, c.req.header('CF-Connecting-IP') ?? 'unknown', 'admin-enable-2fa', `admin enabled 2FA for user ${targetId}`, now).run();
+  } catch { /* best-effort */ }
   return c.json({ ok: true });
 });
 

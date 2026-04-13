@@ -178,9 +178,11 @@ authRoutes.post('/2fa/enable', async (c) => {
   const secret = await c.env.KV_BINDING.get(`2fa_setup:${user.userId}`);
   if (!secret) return c.json({ error: 'Setup session expired — restart setup' }, 400);
   if (!await verifyTotp(secret, code.trim())) return c.json({ error: 'Invalid code' }, 400);
+  const now = Math.floor(Date.now() / 1000);
   await c.env.KV_BINDING.delete(`2fa_setup:${user.userId}`);
   await c.env.DB.prepare('UPDATE users SET totp_secret = ?, totp_enabled = 1, updated_at = ? WHERE id = ?')
-    .bind(secret, Math.floor(Date.now() / 1000), user.userId).run();
+    .bind(secret, now, user.userId).run();
+  await writeAudit(c.env.DB, { user_id: user.userId, email: user.email, ip: clientIp(c), ua: 'self-enable-2fa', success: true, fail_reason: '2FA enabled by user' });
   return c.json({ ok: true });
 });
 
@@ -196,8 +198,10 @@ authRoutes.post('/2fa/disable', async (c) => {
     .bind(user.userId).first<{ totp_secret: string | null }>();
   if (!row?.totp_secret) return c.json({ error: '2FA is not enabled' }, 400);
   if (!await verifyTotp(row.totp_secret, code.trim())) return c.json({ error: 'Invalid code' }, 400);
+  const now2 = Math.floor(Date.now() / 1000);
   await c.env.DB.prepare('UPDATE users SET totp_secret = NULL, totp_enabled = 0, updated_at = ? WHERE id = ?')
-    .bind(Math.floor(Date.now() / 1000), user.userId).run();
+    .bind(now2, user.userId).run();
+  await writeAudit(c.env.DB, { user_id: user.userId, email: user.email, ip: clientIp(c), ua: 'self-disable-2fa', success: true, fail_reason: '2FA disabled by user' });
   return c.json({ ok: true });
 });
 

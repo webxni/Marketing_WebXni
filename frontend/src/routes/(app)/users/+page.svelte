@@ -13,28 +13,44 @@
   let users: User[]     = [];
   let clients: Client[] = [];
   let loading           = true;
-  let showCreate        = false;
-  let confirmDeactivate: User | null = null;
-  let confirmReactivate: User | null = null;
-  let confirmReset2fa:   User | null = null;
 
-  // Create form
+  // ── Create ───────────────────────────────────────────────────────────────────
+  let showCreate  = false;
   let newEmail    = '';
   let newName     = '';
   let newRole: Role = 'designer';
   let newPassword = '';
   let newClientId = '';
   let creating    = false;
+  // After create: offer immediate 2FA setup
+  let createdUser: User | null = null;
 
-  // 2FA setup modal
-  let show2faModal  = false;
-  let totpUri       = '';
-  let totpSecret    = '';
-  let totpCode      = '';
-  let totp2faEnabled = false;
-  let totpLoading   = false;
+  // ── Edit ─────────────────────────────────────────────────────────────────────
+  let editUser:     User | null = null;
+  let editName     = '';
+  let editRole: Role = 'designer';
+  let editClientId = '';
+  let editPassword = '';
+  let saving       = false;
+
+  // ── Delete / deactivate ──────────────────────────────────────────────────────
+  let confirmDeactivate: User | null = null;
+  let confirmReactivate: User | null = null;
+  let confirmDelete:     User | null = null;
+
+  // ── 2FA modal ────────────────────────────────────────────────────────────────
+  // Works for self (via authApi) and for other users (via usersApi admin endpoints)
+  let twoFaUser:      User | null = null;   // which user is being managed
+  let totpUri         = '';
+  let totpSecret      = '';
+  let totpCode        = '';
+  let totp2faEnabled  = false;
+  let totpLoading     = false;
   let totpStep: 'status' | 'setup' | 'disable' = 'status';
-  let disableCode   = '';
+  let disableCode     = '';
+
+  // ── Confirm reset 2FA (for admin resetting others) ───────────────────────────
+  let confirmReset2fa: User | null = null;
 
   const roles: Role[] = ['admin', 'designer', 'client'];
 
@@ -49,6 +65,11 @@
     designer: 'text-blue-400',
     client:   'text-green-400',
   };
+
+  $: selfId = $userStore?.userId ?? '';
+
+  // Whether the 2FA modal is targeting the current logged-in user
+  $: twoFaIsSelf = twoFaUser?.id === selfId;
 
   async function load() {
     loading = true;
@@ -66,68 +87,123 @@
 
   onMount(load);
 
+  // ── Create ───────────────────────────────────────────────────────────────────
   async function createUser() {
     if (!newEmail || !newName || !newPassword) { toast.error('All fields required'); return; }
     if (newRole === 'client' && !newClientId)  { toast.error('Select a client account for this user'); return; }
     creating = true;
     try {
-      await usersApi.create({
+      const res = await usersApi.create({
         email: newEmail, name: newName, role: newRole, password: newPassword,
         client_id: newRole === 'client' ? newClientId : undefined,
       });
-      toast.success(`User ${newName} created`);
       showCreate = false;
       newEmail = ''; newName = ''; newPassword = ''; newRole = 'designer'; newClientId = '';
-      load();
+      await load();
+      // After create: offer immediate 2FA setup for the new user
+      createdUser = users.find(u => u.id === res.user.id) ?? res.user;
+      toast.success(`${res.user.name} created`);
     } catch (e) { toast.error(String(e)); }
     finally { creating = false; }
   }
 
+  // ── Edit ─────────────────────────────────────────────────────────────────────
+  function openEdit(user: User) {
+    editUser     = user;
+    editName     = user.name;
+    editRole     = user.role as Role;
+    editClientId = user.client_id ?? '';
+    editPassword = '';
+  }
+
+  async function saveEdit() {
+    if (!editUser) return;
+    if (!editName.trim()) { toast.error('Name is required'); return; }
+    if (editRole === 'client' && !editClientId) { toast.error('Select a client account'); return; }
+    saving = true;
+    try {
+      const payload: { name: string; role: Role; client_id?: string | null; password?: string } = {
+        name: editName.trim(),
+        role: editRole,
+        client_id: editRole === 'client' ? editClientId : null,
+      };
+      if (editPassword.trim()) payload.password = editPassword.trim();
+      await usersApi.update(editUser.id, payload);
+      toast.success('User updated');
+      editUser = null;
+      load();
+    } catch (e) { toast.error(String(e)); }
+    finally { saving = false; }
+  }
+
+  // ── Deactivate / reactivate ───────────────────────────────────────────────────
   async function deactivate(user: User) {
     try { await usersApi.deactivate(user.id); toast.success(`${user.name} deactivated`); load(); }
-    catch { toast.error('Failed'); }
+    catch (e) { toast.error(String(e)); }
     finally { confirmDeactivate = null; }
   }
 
   async function reactivate(user: User) {
     try { await usersApi.reactivate(user.id); toast.success(`${user.name} reactivated`); load(); }
-    catch { toast.error('Failed'); }
+    catch (e) { toast.error(String(e)); }
     finally { confirmReactivate = null; }
   }
 
-  async function reset2fa(user: User) {
-    try { await usersApi.reset2fa(user.id); toast.success(`2FA reset for ${user.name}`); load(); }
-    catch { toast.error('Failed to reset 2FA'); }
-    finally { confirmReset2fa = null; }
+  // ── Delete ────────────────────────────────────────────────────────────────────
+  async function deleteUser(user: User) {
+    try { await usersApi.remove(user.id); toast.success(`${user.name} deleted`); load(); }
+    catch (e) { toast.error(String(e)); }
+    finally { confirmDelete = null; }
   }
 
-  // ─── 2FA self-management ─────────────────────────────────────────
-  async function open2faModal() {
-    show2faModal = true; totpStep = 'status'; totpCode = ''; disableCode = '';
+  // ── 2FA management ────────────────────────────────────────────────────────────
+  async function open2faModal(user: User) {
+    twoFaUser = user;
+    totpStep  = 'status';
+    totpCode  = '';
+    disableCode = '';
+    totpUri   = '';
+    totpSecret = '';
     totpLoading = true;
     try {
-      const r = await authApi.totpStatus();
-      totp2faEnabled = r.enabled;
-    } catch { toast.error('Failed to load 2FA status'); show2faModal = false; }
+      if (user.id === selfId) {
+        const r  = await authApi.totpStatus();
+        totp2faEnabled = r.enabled;
+      } else {
+        // For others: enabled state is already in the user object from the list
+        totp2faEnabled = !!user.totp_enabled;
+      }
+    } catch { toast.error('Failed to load 2FA status'); twoFaUser = null; }
     finally { totpLoading = false; }
   }
 
   async function start2faSetup() {
+    if (!twoFaUser) return;
     totpLoading = true; totpCode = '';
     try {
-      const r = await authApi.totpSetup();
+      let r: { uri: string; secret: string };
+      if (twoFaIsSelf) {
+        r = await authApi.totpSetup();
+      } else {
+        r = await usersApi.adminSetup2fa(twoFaUser.id);
+      }
       totpUri    = r.uri;
       totpSecret = r.secret;
       totpStep   = 'setup';
-    } catch { toast.error('Failed to generate QR code'); }
+    } catch (e) { toast.error(String(e)); }
     finally { totpLoading = false; }
   }
 
   async function enable2fa() {
+    if (!twoFaUser) return;
     if (!totpCode || totpCode.length !== 6) { toast.error('Enter the 6-digit code'); return; }
     totpLoading = true;
     try {
-      await authApi.totpEnable(totpSecret, totpCode);
+      if (twoFaIsSelf) {
+        await authApi.totpEnable(totpSecret, totpCode);
+      } else {
+        await usersApi.adminEnable2fa(twoFaUser.id, totpCode);
+      }
       toast.success('Two-factor authentication enabled');
       totp2faEnabled = true; totpStep = 'status'; totpCode = '';
       load();
@@ -136,9 +212,11 @@
   }
 
   async function disable2fa() {
+    if (!twoFaUser) return;
     if (!disableCode || disableCode.length !== 6) { toast.error('Enter your current 6-digit code'); return; }
     totpLoading = true;
     try {
+      // Only self can disable — admin should use "Reset 2FA" for others
       await authApi.totpDisable(disableCode);
       toast.success('Two-factor authentication disabled');
       totp2faEnabled = false; totpStep = 'status'; disableCode = '';
@@ -147,7 +225,22 @@
     finally { totpLoading = false; }
   }
 
-  $: selfId = $userStore?.userId ?? '';
+  async function reset2fa(user: User) {
+    try { await usersApi.reset2fa(user.id); toast.success(`2FA reset for ${user.name}`); load(); }
+    catch (e) { toast.error(String(e)); }
+    finally { confirmReset2fa = null; }
+  }
+
+  // Close 2FA modal
+  function close2faModal() { twoFaUser = null; totpStep = 'status'; }
+
+  // Post-create 2FA setup
+  function openPostCreate2fa() {
+    if (!createdUser) return;
+    const u = createdUser;
+    createdUser = null;
+    open2faModal(u);
+  }
 </script>
 
 <svelte:head><title>Team — WebXni</title></svelte:head>
@@ -161,6 +254,20 @@
     <button class="btn-primary btn-sm" on:click={() => (showCreate = true)}>+ Add User</button>
   {/if}
 </div>
+
+<!-- Post-create 2FA prompt -->
+{#if createdUser}
+  <div class="mb-4 flex items-center justify-between bg-accent/10 border border-accent/20 rounded-lg px-4 py-3">
+    <div>
+      <p class="text-sm text-white font-medium">{createdUser.name} was created</p>
+      <p class="text-xs text-muted mt-0.5">Set up Google Authenticator now to secure this account.</p>
+    </div>
+    <div class="flex items-center gap-2">
+      <button class="btn-primary btn-sm" on:click={openPostCreate2fa}>Set Up 2FA</button>
+      <button class="btn-ghost btn-sm text-xs text-muted" on:click={() => (createdUser = null)}>Skip</button>
+    </div>
+  </div>
+{/if}
 
 {#if loading}
   <div class="flex justify-center py-20"><Spinner size="lg" /></div>
@@ -207,13 +314,24 @@
                   {/if}
                 </div>
               </td>
+              <!-- 2FA status — clickable to open setup/manage modal -->
               <td>
                 {#if user.totp_enabled}
-                  <span class="inline-flex items-center gap-1 text-xs text-green-400 bg-green-500/10 px-2 py-0.5 rounded-full">
+                  <button
+                    class="inline-flex items-center gap-1 text-xs text-green-400 bg-green-500/10 px-2 py-0.5 rounded-full hover:bg-green-500/20 transition-colors"
+                    on:click={() => open2faModal(user)}
+                    title="Manage 2FA"
+                  >
                     <span>✓</span> On
-                  </span>
+                  </button>
                 {:else}
-                  <span class="text-xs text-muted">Off</span>
+                  <button
+                    class="text-xs text-muted hover:text-white transition-colors underline decoration-dotted underline-offset-2"
+                    on:click={() => open2faModal(user)}
+                    title="Set up 2FA"
+                  >
+                    Off
+                  </button>
                 {/if}
               </td>
               <td>
@@ -225,27 +343,32 @@
               <td class="text-xs text-muted">{formatDateTime(user.created_at)}</td>
               {#if can('users.manage')}
               <td>
-                <div class="flex items-center gap-1">
-                  {#if user.id === selfId}
-                    <button class="btn-ghost btn-sm text-xs" on:click={open2faModal}>
-                      2FA
-                    </button>
-                  {:else if user.totp_enabled}
-                    <button
-                      class="btn-ghost btn-sm text-xs text-orange-400"
-                      on:click={() => (confirmReset2fa = user)}
-                    >Reset 2FA</button>
-                  {/if}
-                  {#if user.is_active}
+                <div class="flex items-center gap-1 flex-wrap">
+                  <!-- Edit -->
+                  <button
+                    class="btn-ghost btn-sm text-xs"
+                    on:click={() => openEdit(user)}
+                  >Edit</button>
+
+                  <!-- Deactivate / Reactivate — not for self -->
+                  {#if user.id !== selfId}
+                    {#if user.is_active}
+                      <button
+                        class="btn-ghost btn-sm text-xs text-orange-400"
+                        on:click={() => (confirmDeactivate = user)}
+                      >Disable</button>
+                    {:else}
+                      <button
+                        class="btn-ghost btn-sm text-xs text-green-400"
+                        on:click={() => (confirmReactivate = user)}
+                      >Enable</button>
+                    {/if}
+
+                    <!-- Delete -->
                     <button
                       class="btn-ghost btn-sm text-xs text-red-400"
-                      on:click={() => (confirmDeactivate = user)}
-                    >Deactivate</button>
-                  {:else}
-                    <button
-                      class="btn-ghost btn-sm text-xs text-green-400"
-                      on:click={() => (confirmReactivate = user)}
-                    >Reactivate</button>
+                      on:click={() => (confirmDelete = user)}
+                    >Delete</button>
                   {/if}
                 </div>
               </td>
@@ -258,7 +381,7 @@
   </div>
 {/if}
 
-<!-- Create user modal -->
+<!-- ── Create user modal ────────────────────────────────────────────────────── -->
 <Modal open={showCreate} title="Add User" on:close={() => (showCreate = false)}>
   <div class="space-y-4" slot="body">
     <div>
@@ -309,106 +432,185 @@
   </div>
 </Modal>
 
-<!-- 2FA management modal -->
-<Modal open={show2faModal} title="Two-Factor Authentication" on:close={() => (show2faModal = false)}>
+<!-- ── Edit user modal ──────────────────────────────────────────────────────── -->
+<Modal open={!!editUser} title="Edit User" on:close={() => (editUser = null)}>
+  <div class="space-y-4" slot="body">
+    <div>
+      <label for="editName" class="block text-xs text-muted mb-1.5">Full Name</label>
+      <input id="editName" type="text" bind:value={editName} class="input w-full" />
+    </div>
+    <div>
+      <label for="editRole" class="block text-xs text-muted mb-1.5">Role</label>
+      <select id="editRole" bind:value={editRole} class="input w-full"
+        disabled={editUser?.id === selfId}>
+        {#each roles as r}
+          <option value={r}>{r.charAt(0).toUpperCase() + r.slice(1)}</option>
+        {/each}
+      </select>
+      {#if editUser?.id === selfId}
+        <p class="text-xs text-muted mt-1">You cannot change your own role.</p>
+      {:else if editRole && roleDescriptions[editRole]}
+        <p class="text-xs text-muted mt-1">{roleDescriptions[editRole]}</p>
+      {/if}
+    </div>
+    {#if editRole === 'client'}
+    <div>
+      <label for="editClientId" class="block text-xs text-muted mb-1.5">Client Account</label>
+      {#if clients.length === 0}
+        <p class="text-xs text-orange-400 bg-orange-500/10 px-3 py-2 rounded-md">No clients found.</p>
+      {:else}
+        <select id="editClientId" bind:value={editClientId} class="input w-full">
+          <option value="">— Select client —</option>
+          {#each clients as cl}
+            <option value={cl.id}>{cl.canonical_name}</option>
+          {/each}
+        </select>
+      {/if}
+    </div>
+    {/if}
+    <div>
+      <label for="editPassword" class="block text-xs text-muted mb-1.5">New Password <span class="text-muted">(leave blank to keep current)</span></label>
+      <input id="editPassword" type="password" bind:value={editPassword} placeholder="••••••••" class="input w-full" autocomplete="new-password" />
+    </div>
+  </div>
+  <div class="flex justify-end gap-2" slot="footer">
+    <button class="btn-ghost btn-sm" on:click={() => (editUser = null)}>Cancel</button>
+    <button class="btn-primary btn-sm" on:click={saveEdit} disabled={saving}>
+      {saving ? 'Saving…' : 'Save Changes'}
+    </button>
+  </div>
+</Modal>
+
+<!-- ── 2FA management modal ──────────────────────────────────────────────────── -->
+<Modal open={!!twoFaUser} title="Two-Factor Authentication" on:close={close2faModal}>
   <div slot="body">
-    {#if totpLoading}
-      <div class="flex justify-center py-8"><Spinner /></div>
-    {:else if totpStep === 'status'}
-      <div class="space-y-4">
-        <div class="flex items-center justify-between p-4 bg-card rounded-lg">
-          <div>
-            <p class="text-sm font-medium text-white">Authenticator App</p>
-            <p class="text-xs text-muted mt-0.5">
-              {totp2faEnabled ? 'Your account is protected with 2FA.' : 'Add an extra layer of security to your account.'}
-            </p>
+    {#if twoFaUser}
+      {#if !twoFaIsSelf}
+        <div class="flex items-center gap-2 mb-4 p-3 bg-card rounded-lg border border-border">
+          <div class="w-7 h-7 rounded-full bg-accent/10 flex items-center justify-center text-accent text-xs font-semibold">
+            {twoFaUser.name[0]}
           </div>
+          <div>
+            <p class="text-sm font-medium text-white">{twoFaUser.name}</p>
+            <p class="text-xs text-muted">{twoFaUser.email}</p>
+          </div>
+        </div>
+      {/if}
+
+      {#if totpLoading}
+        <div class="flex justify-center py-8"><Spinner /></div>
+      {:else if totpStep === 'status'}
+        <div class="space-y-4">
+          <div class="flex items-center justify-between p-4 bg-card rounded-lg">
+            <div>
+              <p class="text-sm font-medium text-white">Authenticator App</p>
+              <p class="text-xs text-muted mt-0.5">
+                {totp2faEnabled ? 'Account is protected with 2FA.' : 'Add an extra layer of security.'}
+              </p>
+            </div>
+            {#if totp2faEnabled}
+              <span class="text-xs text-green-400 bg-green-500/10 px-2 py-1 rounded-full">Enabled</span>
+            {:else}
+              <span class="text-xs text-muted bg-card border border-border px-2 py-1 rounded-full">Disabled</span>
+            {/if}
+          </div>
+
           {#if totp2faEnabled}
-            <span class="text-xs text-green-400 bg-green-500/10 px-2 py-1 rounded-full">Enabled</span>
+            {#if twoFaIsSelf}
+              <p class="text-xs text-muted">To disable 2FA enter a code from your authenticator app.</p>
+              <button class="btn-ghost btn-sm text-red-400 border border-red-500/20 w-full justify-center"
+                on:click={() => { totpStep = 'disable'; disableCode = ''; }}>
+                Disable 2FA
+              </button>
+            {:else}
+              <p class="text-xs text-muted">Only the user can disable their own 2FA. You can reset (clear) it below.</p>
+              <button class="btn-ghost btn-sm text-orange-400 border border-orange-500/20 w-full justify-center"
+                on:click={() => { close2faModal(); confirmReset2fa = twoFaUser; }}>
+                Reset 2FA for {twoFaUser.name}
+              </button>
+            {/if}
           {:else}
-            <span class="text-xs text-muted bg-card border border-border px-2 py-1 rounded-full">Disabled</span>
+            {#if twoFaIsSelf}
+              <p class="text-xs text-muted">Use Google Authenticator, Authy, or any TOTP app to scan a QR code.</p>
+            {:else}
+              <p class="text-xs text-muted">Generate a QR code for {twoFaUser.name} to scan with Google Authenticator or Authy.</p>
+            {/if}
+            <button class="btn-primary w-full justify-center" on:click={start2faSetup}>
+              {twoFaIsSelf ? 'Set Up 2FA' : 'Generate QR Code'}
+            </button>
           {/if}
         </div>
-        {#if totp2faEnabled}
-          <p class="text-xs text-muted">To disable 2FA you'll need to enter a code from your authenticator app.</p>
-          <button class="btn-ghost btn-sm text-red-400 border border-red-500/20 w-full justify-center"
-            on:click={() => { totpStep = 'disable'; disableCode = ''; }}>
-            Disable 2FA
-          </button>
-        {:else}
-          <p class="text-xs text-muted">Use Google Authenticator, Authy, or any TOTP app to scan a QR code.</p>
-          <button class="btn-primary w-full justify-center" on:click={start2faSetup}>
-            Set Up 2FA
-          </button>
-        {/if}
-      </div>
 
-    {:else if totpStep === 'setup'}
-      <div class="space-y-4">
-        <p class="text-xs text-muted">
-          1. Open your authenticator app and scan the QR code, or enter the key manually.
-        </p>
-        <!-- QR code via Google Charts API -->
-        <div class="flex justify-center bg-white p-3 rounded-lg">
-          <img
-            src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data={encodeURIComponent(totpUri)}"
-            alt="QR Code"
-            width="180"
-            height="180"
-            class="rounded"
-          />
+      {:else if totpStep === 'setup'}
+        <div class="space-y-4">
+          <p class="text-xs text-muted">
+            {twoFaIsSelf
+              ? '1. Open your authenticator app and scan the QR code, or enter the key manually.'
+              : `Have ${twoFaUser.name} scan this QR code with Google Authenticator or Authy.`}
+          </p>
+          <div class="flex justify-center bg-white p-3 rounded-lg">
+            <img
+              src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data={encodeURIComponent(totpUri)}"
+              alt="QR Code"
+              width="180"
+              height="180"
+              class="rounded"
+            />
+          </div>
+          <div class="bg-card rounded-lg p-3">
+            <p class="text-xs text-muted mb-1">Or enter this key manually in the app:</p>
+            <p class="font-mono text-xs text-white tracking-widest break-all select-all">{totpSecret}</p>
+          </div>
+          <div>
+            <label for="totpCode" class="block text-xs text-muted mb-1.5">
+              {twoFaIsSelf
+                ? '2. Enter the 6-digit code from your app to confirm'
+                : `Enter the 6-digit code ${twoFaUser.name} sees in their app`}
+            </label>
+            <input
+              id="totpCode"
+              type="text"
+              inputmode="numeric"
+              pattern="[0-9]*"
+              maxlength="6"
+              bind:value={totpCode}
+              placeholder="000000"
+              class="input w-full text-center text-lg tracking-widest font-mono"
+              autocomplete="one-time-code"
+            />
+          </div>
         </div>
-        <div class="bg-card rounded-lg p-3">
-          <p class="text-xs text-muted mb-1">Or enter this key manually:</p>
-          <p class="font-mono text-xs text-white tracking-widest break-all">{totpSecret}</p>
-        </div>
-        <div>
-          <label for="totpCode" class="block text-xs text-muted mb-1.5">
-            2. Enter the 6-digit code from your app to confirm
-          </label>
-          <input
-            id="totpCode"
-            type="text"
-            inputmode="numeric"
-            pattern="[0-9]*"
-            maxlength="6"
-            bind:value={totpCode}
-            placeholder="000000"
-            class="input w-full text-center text-lg tracking-widest font-mono"
-            autocomplete="one-time-code"
-          />
-        </div>
-      </div>
 
-    {:else if totpStep === 'disable'}
-      <div class="space-y-4">
-        <div class="bg-orange-500/10 border border-orange-500/20 rounded-lg p-3">
-          <p class="text-xs text-orange-300">Disabling 2FA will make your account less secure.</p>
+      {:else if totpStep === 'disable'}
+        <div class="space-y-4">
+          <div class="bg-orange-500/10 border border-orange-500/20 rounded-lg p-3">
+            <p class="text-xs text-orange-300">Disabling 2FA will make your account less secure.</p>
+          </div>
+          <div>
+            <label for="disableCode" class="block text-xs text-muted mb-1.5">
+              Enter your current authenticator code to confirm
+            </label>
+            <input
+              id="disableCode"
+              type="text"
+              inputmode="numeric"
+              pattern="[0-9]*"
+              maxlength="6"
+              bind:value={disableCode}
+              placeholder="000000"
+              class="input w-full text-center text-lg tracking-widest font-mono"
+              autocomplete="one-time-code"
+            />
+          </div>
         </div>
-        <div>
-          <label for="disableCode" class="block text-xs text-muted mb-1.5">
-            Enter your current authenticator code to confirm
-          </label>
-          <input
-            id="disableCode"
-            type="text"
-            inputmode="numeric"
-            pattern="[0-9]*"
-            maxlength="6"
-            bind:value={disableCode}
-            placeholder="000000"
-            class="input w-full text-center text-lg tracking-widest font-mono"
-            autocomplete="one-time-code"
-          />
-        </div>
-      </div>
+      {/if}
     {/if}
   </div>
 
   <div class="flex justify-between gap-2" slot="footer">
     <button class="btn-ghost btn-sm" on:click={() => {
       if (totpStep !== 'status') { totpStep = 'status'; }
-      else { show2faModal = false; }
+      else { close2faModal(); }
     }}>
       {totpStep !== 'status' ? '← Back' : 'Close'}
     </button>
@@ -425,27 +627,37 @@
   </div>
 </Modal>
 
+<!-- ── Confirm dialogs ───────────────────────────────────────────────────────── -->
 <ConfirmDialog
   open={!!confirmDeactivate}
-  title="Deactivate User"
-  message="This will prevent {confirmDeactivate?.name} from logging in."
-  confirmLabel="Deactivate"
+  title="Disable User"
+  message="This will prevent {confirmDeactivate?.name} from logging in. You can re-enable them later."
+  confirmLabel="Disable"
   confirmClass="btn-danger"
   on:confirm={() => { const u = confirmDeactivate; if (u) deactivate(u); }}
   on:cancel={() => (confirmDeactivate = null)}
 />
 <ConfirmDialog
   open={!!confirmReactivate}
-  title="Reactivate User"
+  title="Enable User"
   message="This will allow {confirmReactivate?.name} to log in again."
-  confirmLabel="Reactivate"
+  confirmLabel="Enable"
   on:confirm={() => { const u = confirmReactivate; if (u) reactivate(u); }}
   on:cancel={() => (confirmReactivate = null)}
 />
 <ConfirmDialog
+  open={!!confirmDelete}
+  title="Delete User"
+  message="Permanently delete {confirmDelete?.name}? This cannot be undone. All their session data will be removed."
+  confirmLabel="Delete Permanently"
+  confirmClass="btn-danger"
+  on:confirm={() => { const u = confirmDelete; if (u) deleteUser(u); }}
+  on:cancel={() => (confirmDelete = null)}
+/>
+<ConfirmDialog
   open={!!confirmReset2fa}
   title="Reset 2FA"
-  message="This will disable two-factor authentication for {confirmReset2fa?.name}. They will be able to log in with password only."
+  message="This will disable two-factor authentication for {confirmReset2fa?.name}. They will be able to log in with password only until 2FA is set up again."
   confirmLabel="Reset 2FA"
   confirmClass="btn-danger"
   on:confirm={() => { const u = confirmReset2fa; if (u) reset2fa(u); }}

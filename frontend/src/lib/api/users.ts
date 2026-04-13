@@ -17,6 +17,17 @@ export const usersApi = {
   reactivate: (id: string) =>
     api.post<{ ok: boolean }>(`/api/users/${id}/reactivate`),
 
+  remove: (id: string) =>
+    api.delete<{ ok: boolean }>(`/api/users/${id}`),
+
   reset2fa: (id: string) =>
     api.post<{ ok: boolean }>(`/api/users/${id}/reset-2fa`),
+
+  /** Admin: generate TOTP setup (QR code) for any user */
+  adminSetup2fa: (id: string) =>
+    api.post<{ secret: string; uri: string }>(`/api/users/${id}/2fa/setup`),
+
+  /** Admin: verify code and enable 2FA for a user */
+  adminEnable2fa: (id: string, code: string) =>
+    api.post<{ ok: boolean }>(`/api/users/${id}/2fa/enable`, { code }),
 };
