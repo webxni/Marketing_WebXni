@@ -314,6 +314,7 @@ export interface Package {
   includes_stories:     number;
   posting_frequency:    string;
   posting_days:         string | null;  // JSON: ["monday","wednesday","friday"]
+  weekly_schedule:      string | null;  // JSON: {"monday":["image"],"wednesday":["video","blog"]}
   cadence_notes:        string | null;
   price_cents:          number | null;
   active:               number;

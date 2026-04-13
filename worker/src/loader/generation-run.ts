@@ -20,6 +20,7 @@ interface PackageRow {
   id:                   string;
   slug:                 string;
   posting_days:         string | null;  // JSON: ["monday","wednesday","friday"]
+  weekly_schedule:      string | null;  // JSON: {"monday":["video"],"wednesday":["image","blog"]}
   images_per_month:     number;
   videos_per_month:     number;
   reels_per_month:      number;
@@ -68,6 +69,25 @@ function buildContentSequence(pkg: PackageRow): string[] {
 const DAY_NAME_TO_NUM: Record<string, number> = {
   sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6,
 };
+const DAY_NUM_TO_NAME: string[] = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+
+function getDayName(dateStr: string): string {
+  return DAY_NUM_TO_NAME[new Date(dateStr + 'T12:00:00Z').getUTCDay()];
+}
+
+/**
+ * Parse weekly_schedule JSON into a day→types map.
+ * Returns null if absent or invalid.
+ */
+function parseWeeklySchedule(raw: string | null): Record<string, string[]> | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed))
+      return parsed as Record<string, string[]>;
+  } catch { /* */ }
+  return null;
+}
 
 /**
  * Parse posting_days JSON string into sorted UTC day numbers.
@@ -88,13 +108,34 @@ function parsePostingDays(raw: string | null): number[] {
 }
 
 /**
- * Build posting dates for the period using posting_days + frequency.
+ * Build posting dates for the period.
  *
- * - daily:     every calendar day in the period (ignores posting_days)
- * - weekly:    every occurrence of posting_days within the period
- * - biweekly:  posting_days on alternating weeks (weeks 0, 2, 4… from period start)
+ * If weekly_schedule is provided, its keys define the active weekdays (ignores posting_days).
+ * Frequency:
+ *   - weekly:   every occurrence of the active weekdays in the period
+ *   - biweekly: active weekdays on alternating weeks (weeks 0, 2, 4…)
+ *   - daily:    every calendar day (only when weekly_schedule is absent)
  */
-function buildDates(periodStart: string, periodEnd: string, frequency: string, postingDays: string | null): string[] {
+function buildDates(periodStart: string, periodEnd: string, frequency: string, postingDays: string | null, weeklySchedule?: string | null): string[] {
+  // Derive active days from weekly_schedule if present
+  if (weeklySchedule) {
+    const sched = parseWeeklySchedule(weeklySchedule);
+    if (sched && Object.keys(sched).length > 0) {
+      const activeDayNums = new Set(
+        Object.keys(sched)
+          .map(d => DAY_NAME_TO_NUM[d])
+          .filter(n => n !== undefined)
+      );
+      const eff = frequency === 'daily' ? 'weekly' : frequency;
+      return buildDatesRaw(periodStart, periodEnd, eff, activeDayNums);
+    }
+  }
+  // Legacy path: derive from posting_days string
+  const dayNums = new Set(parsePostingDays(postingDays));
+  return buildDatesRaw(periodStart, periodEnd, frequency, dayNums);
+}
+
+function buildDatesRaw(periodStart: string, periodEnd: string, frequency: string, dayNums: Set<number>): string[] {
   const start = new Date(periodStart + 'T12:00:00Z');
   const end   = new Date(periodEnd   + 'T12:00:00Z');
   const dates: string[] = [];
@@ -107,8 +148,6 @@ function buildDates(periodStart: string, periodEnd: string, frequency: string, p
     }
     return dates;
   }
-
-  const dayNums = new Set(parsePostingDays(postingDays));
 
   if (frequency === 'weekly') {
     const d = new Date(start);
@@ -167,7 +206,8 @@ interface FeedbackRow {
 
 const DEFAULT_PACKAGE: PackageRow = {
   id: '', slug: 'default',
-  posting_days: '["monday","wednesday"]',
+  posting_days: '["monday","wednesday","friday"]',
+  weekly_schedule: null,
   images_per_month: 6, videos_per_month: 1,
   reels_per_month: 1, blog_posts_per_month: 0,
   platforms_included: '["facebook","instagram"]',
@@ -261,9 +301,18 @@ export async function runGeneration(env: Env, params: GenerationParams): Promise
           if (p) pkg = p;
         }
 
-        // Build content-type sequence and dates from package
+        // Parse weekly schedule (new deterministic mode)
+        const weeklySchedule = parseWeeklySchedule(pkg.weekly_schedule ?? null);
+
+        // Build dates — schedule keys drive posting days when schedule is present
+        const dates = buildDates(
+          params.period_start, params.period_end,
+          pkg.posting_frequency, pkg.posting_days ?? null,
+          pkg.weekly_schedule ?? null,
+        );
+
+        // Legacy content-type sequence (used only when weekly_schedule is absent)
         const sequence = buildContentSequence(pkg);
-        const dates    = buildDates(params.period_start, params.period_end, pkg.posting_frequency, pkg.posting_days ?? null);
 
         // Determine platforms from package (fall back to client's configured platforms)
         let defaultPlatforms: string[] = [];
@@ -303,101 +352,108 @@ export async function runGeneration(env: Env, params: GenerationParams): Promise
           .bind(client.id)
           .all<FeedbackRow>();
 
-        // ── 3. Generate one post per date ───────────────────────────────────
+        // ── 3. Generate posts per date (one per assigned content type) ────────
         // Track 70/30 educational/sales balance per client
         let intentEduc = 0;
         let intentSales = 0;
+        let seqIdx = 0;
 
-        for (let di = 0; di < dates.length; di++) {
-          const date        = dates[di];
-          const contentType = sequence[di % sequence.length];
+        const clientCast = client as unknown as {
+          phone?: string | null; cta_text?: string | null; industry?: string | null;
+          state?: string | null; owner_name?: string | null; brand_primary_color?: string | null;
+        };
 
-          // Determine content intent: maintain ~70% educational / 30% sales ratio
-          const totalSoFar = intentEduc + intentSales;
-          const salesRatio = totalSoFar === 0 ? 0 : intentSales / totalSoFar;
-          const contentIntent: 'educational' | 'sales' = salesRatio < 0.30 ? 'sales' : 'educational';
+        for (const date of dates) {
+          // Determine content types for this date
+          const dayName = getDayName(date);
+          const contentTypes: string[] = weeklySchedule
+            ? (weeklySchedule[dayName] ?? ['image'])
+            : [sequence[seqIdx++ % sequence.length]];
 
-          try {
-            // Fresh recent titles each iteration to avoid generating the same topic again
-            const recentRows = await db
-              .prepare(
-                `SELECT title, master_caption FROM posts
-                 WHERE client_id = ? AND status NOT IN ('cancelled','failed')
-                 ORDER BY created_at DESC LIMIT 25`,
-              )
-              .bind(client.id)
-              .all<{ title: string | null; master_caption: string | null }>();
-            const recentTitles = recentRows.results
-              .map(r => r.title ?? r.master_caption?.slice(0, 80) ?? '')
-              .filter(Boolean) as string[];
+          for (const contentType of contentTypes) {
+            // Determine content intent: maintain ~70% educational / 30% sales ratio
+            const totalSoFar = intentEduc + intentSales;
+            const salesRatio = totalSoFar === 0 ? 0 : intentSales / totalSoFar;
+            const contentIntent: 'educational' | 'sales' = salesRatio < 0.30 ? 'sales' : 'educational';
 
-            const clientCast = client as unknown as {
-              phone?: string | null; cta_text?: string | null; industry?: string | null;
-              state?: string | null; owner_name?: string | null; brand_primary_color?: string | null;
-            };
-            const ctx: GenerationContext = {
-              client: {
-                canonical_name:      client.canonical_name,
-                notes:               client.notes,
-                brand_json:          client.brand_json,
-                brand_primary_color: clientCast.brand_primary_color ?? null,
-                language:            client.language,
-                phone:               clientCast.phone ?? null,
-                cta_text:            clientCast.cta_text ?? null,
-                industry:            clientCast.industry ?? null,
-                state:               clientCast.state ?? null,
-                owner_name:          clientCast.owner_name ?? null,
-              },
-              intelligence:  intel,
-              recentTitles,
-              feedback:      fbRows.results,
-              publishDate:   date,
-              contentType,
-              platforms:     defaultPlatforms,
-              contentIntent,
-            };
+            try {
+              // Fresh recent titles each iteration to avoid generating the same topic again
+              const recentRows = await db
+                .prepare(
+                  `SELECT title, master_caption FROM posts
+                   WHERE client_id = ? AND status NOT IN ('cancelled','failed')
+                   ORDER BY created_at DESC LIMIT 25`,
+                )
+                .bind(client.id)
+                .all<{ title: string | null; master_caption: string | null }>();
+              const recentTitles = recentRows.results
+                .map(r => r.title ?? r.master_caption?.slice(0, 80) ?? '')
+                .filter(Boolean) as string[];
 
-            const generated = await generatePostContent(openAiApiKey, ctx);
+              const ctx: GenerationContext = {
+                client: {
+                  canonical_name:      client.canonical_name,
+                  notes:               client.notes,
+                  brand_json:          client.brand_json,
+                  brand_primary_color: clientCast.brand_primary_color ?? null,
+                  language:            client.language,
+                  phone:               clientCast.phone ?? null,
+                  cta_text:            clientCast.cta_text ?? null,
+                  industry:            clientCast.industry ?? null,
+                  state:               clientCast.state ?? null,
+                  owner_name:          clientCast.owner_name ?? null,
+                },
+                intelligence:  intel,
+                recentTitles,
+                feedback:      fbRows.results,
+                publishDate:   date,
+                contentType,
+                platforms:     defaultPlatforms,
+                contentIntent,
+              };
 
-            const g = generated as unknown as Record<string, string | undefined>;
-            const caps: Record<string, string | null> = {};
-            for (const key of [
-              'cap_facebook','cap_instagram','cap_linkedin','cap_x',
-              'cap_threads','cap_tiktok','cap_pinterest','cap_bluesky','cap_google_business',
-            ]) {
-              caps[key] = g[key] ?? null;
+              const generated = await generatePostContent(openAiApiKey, ctx);
+
+              const g = generated as unknown as Record<string, string | undefined>;
+              const caps: Record<string, string | null> = {};
+              for (const key of [
+                'cap_facebook','cap_instagram','cap_linkedin','cap_x',
+                'cap_threads','cap_tiktok','cap_pinterest','cap_bluesky','cap_google_business',
+              ]) {
+                caps[key] = g[key] ?? null;
+              }
+
+              await createPost(db, {
+                client_id:          client.id,
+                title:              generated.title ?? `${client.canonical_name} — ${date}`,
+                status:             'draft',
+                content_type:       contentType,
+                platforms:          JSON.stringify(defaultPlatforms),
+                publish_date:       `${date}T${postTime}`,
+                master_caption:     generated.master_caption ?? null,
+                ...caps,
+                youtube_title:       generated.youtube_title ?? null,
+                youtube_description: generated.youtube_description ?? null,
+                blog_content:        generated.blog_content ?? null,
+                blog_excerpt:        generated.blog_excerpt ?? null,
+                slug:                generated.slug ?? null,
+                seo_title:           generated.seo_title ?? null,
+                meta_description:    generated.meta_description ?? null,
+                target_keyword:      generated.target_keyword ?? null,
+                video_script:        generated.video_script ?? null,
+                ai_image_prompt:     generated.ai_image_prompt ?? null,
+                ai_video_prompt:     generated.ai_video_prompt ?? null,
+              } as Parameters<typeof createPost>[1]);
+
+              posts_created++;
+              if (contentIntent === 'sales') intentSales++; else intentEduc++;
+              console.log(`[gen] ✓ ${client.slug} / ${date} / ${contentType} / ${contentIntent}`);
+
+            } catch (err) {
+              const msg = `${client.slug}/${date}/${contentType}: ${stringifyError(err)}`;
+              errors.push(msg);
+              console.error('[gen] ✗', msg);
             }
-
-            await createPost(db, {
-              client_id:          client.id,
-              title:              generated.title ?? `${client.canonical_name} — ${date}`,
-              status:             'draft',
-              content_type:       contentType,
-              platforms:          JSON.stringify(defaultPlatforms),
-              publish_date:       `${date}T${postTime}`,
-              master_caption:     generated.master_caption ?? null,
-              ...caps,
-              youtube_title:       generated.youtube_title ?? null,
-              youtube_description: generated.youtube_description ?? null,
-              blog_content:        generated.blog_content ?? null,
-              blog_excerpt:        generated.blog_excerpt ?? null,
-              slug:                generated.slug ?? null,
-              seo_title:           generated.seo_title ?? null,
-              meta_description:    generated.meta_description ?? null,
-              target_keyword:      generated.target_keyword ?? null,
-              video_script:        generated.video_script ?? null,
-              ai_image_prompt:     generated.ai_image_prompt ?? null,
-              ai_video_prompt:     generated.ai_video_prompt ?? null,
-            } as Parameters<typeof createPost>[1]);
-
-            posts_created++;
-            if (contentIntent === 'sales') intentSales++; else intentEduc++;
-            console.log(`[gen] ✓ ${client.slug} / ${date} / ${contentType} / ${contentIntent}`);
-
-          } catch (err) {
-            const msg = `${client.slug}/${date}: ${stringifyError(err)}`;
-            errors.push(msg);
-            console.error('[gen] ✗', msg);
           }
         }
       } catch (err) {

@@ -32,7 +32,7 @@
   async function saveIntelligence() {
     if (!client) return;
     savingIntelligence = true;
-    try { await clientsApi.saveIntelligence(client.slug, intelligence as Record<string, unknown>); toast.success('Intelligence saved'); }
+    try { await clientsApi.saveIntelligence(client.slug, intelligence as unknown as Record<string, unknown>); toast.success('Intelligence saved'); }
     catch { toast.error('Failed to save'); }
     finally { savingIntelligence = false; }
   }
