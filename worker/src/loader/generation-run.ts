@@ -1,22 +1,27 @@
 /**
- * AI content generation — chained-invocation architecture.
+ * AI content generation — trigger-first chained-invocation architecture.
  *
- * CF Workers waitUntil() freezes its event loop after ~2 outbound connections:
- * fetch(), Promise.race(), and setTimeout() all stop resolving.
+ * Root problem: after a long-running outbound fetch (OpenAI ~20s) inside a
+ * CF Workers waitUntil() context, the V8 event loop freezes.  Any subsequent
+ * await — including SELF service-binding calls — never resolves.
  *
- * Fix: each post gets its own fresh Worker invocation via a self-call to
- * POST /internal/gen-step.  Every invocation makes exactly one OpenAI request
- * (the first fetch in a fresh invocation is always reliable), then triggers
- * the next step before returning.
+ * Fix: each /internal/gen-step request handler triggers the NEXT step
+ * immediately (first and only outbound operation in the handler, always
+ * reliable), then runs the current step's OpenAI work in waitUntil().
+ * waitUntil() makes exactly ONE outbound connection (OpenAI) and then only
+ * does D1 writes — no second connection, so the freeze never matters.
  *
  * Flow:
  *   POST /api/run/generate
- *     → planGeneration()           [fast: DB reads only, computes all slots]
- *     → POST /internal/gen-step    [step 0 — fresh invocation]
- *         → executeGenerationStep()  [generates one post, DB writes]
- *         → POST /internal/gen-step  [step 1 — fresh invocation]
- *             → executeGenerationStep() ...
- *             → ... until all slots done
+ *     → planGeneration()              [DB reads + writes, computes slots]
+ *     → triggerStep(slot 0)           [SELF.fetch — first connection, reliable]
+ *         ↓ /internal/gen-step
+ *         handler: triggerStep(slot 1) [first connection in this invocation]
+ *         waitUntil: executeSlotWork(slot 0) [OpenAI + D1 writes only]
+ *             ↓ /internal/gen-step
+ *             handler: triggerStep(slot 2)
+ *             waitUntil: executeSlotWork(slot 1)
+ *                 ...
  */
 
 import type { Env } from '../types';
@@ -28,7 +33,6 @@ import {
   updateGenerationProgress,
   appendGenerationLog,
   storeGenerationPlan,
-  advanceGenerationSlot,
   finalizeGenerationRun,
   getGenerationRunById,
   type GenerationProgress,
@@ -222,27 +226,53 @@ function str(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-async function triggerNextStep(env: Env, baseUrl: string, run_id: string): Promise<void> {
-  // Use the SELF service binding when available — avoids outbound HTTP entirely,
-  // bypasses the 522 custom-domain self-call restriction, and doesn't count
-  // against the outbound connection limit.
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Trigger a specific slot via SELF service binding.
+ * Always called from a fresh request handler — never from waitUntil —
+ * so it is the first outbound operation in that handler (reliable).
+ */
+export async function triggerStep(env: Env, baseUrl: string, run_id: string, slot_idx: number): Promise<void> {
   const selfFetcher: { fetch: (req: Request) => Promise<Response> } | undefined =
     (env as unknown as { SELF?: { fetch: (req: Request) => Promise<Response> } }).SELF;
 
-  const req = new Request(`${baseUrl}/internal/gen-step`, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ run_id }),
-  });
+  const targetUrl = selfFetcher
+    ? 'https://self/internal/gen-step'
+    : `${baseUrl}/internal/gen-step`;
+  const isLocalFallback = !selfFetcher && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(baseUrl);
 
-  const res = selfFetcher
-    ? await selfFetcher.fetch(req)
-    : await fetch(req, { signal: AbortSignal.timeout(10_000) });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`gen-step returned ${res.status}: ${text.slice(0, 200)}`);
+  if (!selfFetcher && !isLocalFallback) {
+    throw new Error('SELF service binding is unavailable; refusing public self-fetch for gen-step in production');
   }
+
+  let lastError: Error | null = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const req = new Request(targetUrl, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ run_id, slot_idx }),
+      });
+
+      const res = selfFetcher
+        ? await selfFetcher.fetch(req)
+        : await fetch(req, { signal: AbortSignal.timeout(15_000) });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`gen-step returned ${res.status}: ${text.slice(0, 200)}`);
+      }
+      return;
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      if (attempt < 3) await sleep(attempt * 250);
+    }
+  }
+
+  throw lastError ?? new Error('Unknown gen-step dispatch error');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -322,7 +352,12 @@ export async function planGeneration(env: Env, params: GenerationParams, baseUrl
     await updateGenerationProgress(db, params.run_id, progress);
 
     await log('INFO', `Plan ready: ${slots.length} slots — firing step 0`);
-    await triggerNextStep(env, baseUrl, params.run_id);
+    await log('INFO', `Dispatch start: slot 0 / ${slots.length - 1}`);
+    // triggerStep is called from the request handler of /api/run/generate,
+    // which cascades: slot 0 handler triggers slot 1, slot 1 triggers slot 2, etc.
+    // All triggers resolve quickly; then all waitUntil tasks run in parallel.
+    await triggerStep(env, baseUrl, params.run_id, 0);
+    await log('INFO', 'Dispatch success: slot 0');
 
   } catch (err) {
     const msg = `Fatal (planning): ${str(err)}`;
@@ -333,50 +368,49 @@ export async function planGeneration(env: Env, params: GenerationParams, baseUrl
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Phase 2 — Execute one slot
-// Called from POST /internal/gen-step — always a fresh Worker invocation.
-// The first (and only) OpenAI fetch per invocation is always reliable.
+//
+// Called from POST /internal/gen-step waitUntil().
+// The trigger for the NEXT step was already fired from the handler (before
+// this function runs), so this function makes exactly ONE outbound connection
+// (OpenAI) and then only does D1 writes.  No second connection → no freeze.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function executeGenerationStep(env: Env, run_id: string, baseUrl: string): Promise<void> {
+export async function executeSlotWork(env: Env, run_id: string, slot_idx: number, baseUrl: string): Promise<void> {
   const db = env.DB;
 
   async function log(level: Parameters<typeof appendGenerationLog>[2], msg: string) {
-    console.log(`[gen:${run_id.slice(0, 8)}] [${level}] ${msg}`);
+    console.log(`[gen:${run_id.slice(0, 8)}] slot${slot_idx} [${level}] ${msg}`);
     try { await appendGenerationLog(db, run_id, level, msg); } catch { /* */ }
   }
 
-  // Top-level catch: ensures any unhandled crash is written to the DB log
-  // so it appears in the UI rather than being swallowed by waitUntil.
+  // Top-level catch: write any unhandled crash to the DB log.
   try {
 
-  // Heartbeat — first DB write, confirms this function was entered.
+  // Heartbeat — proves this function was entered.
   try {
-    const now = Math.floor(Date.now() / 1000);
     await db.prepare('UPDATE generation_runs SET last_activity_at = ? WHERE id = ?')
-      .bind(now, run_id).run();
+      .bind(Math.floor(Date.now() / 1000), run_id).run();
   } catch { /* ignore */ }
 
   const run = await getGenerationRunById(db, run_id);
   if (!run || run.status !== 'running') {
-    await log('WARN', `Skipped — status: ${run?.status ?? 'not found'}`);
+    await log('WARN', `Slot ${slot_idx}: skipped — status: ${run?.status ?? 'not found'}`);
     return;
   }
 
   const slots:    PostSlot[] = JSON.parse(run.post_slots ?? '[]');
-  const idx:      number     = run.current_slot_idx ?? 0;
   const postTime: string     = run.publish_time ?? '10:00';
 
-  if (idx >= slots.length) {
-    const finalStatus = (run.posts_created ?? 0) > 0 ? 'completed' : 'failed';
-    await finalizeGenerationRun(db, run_id, finalStatus, run.posts_created ?? 0, run.error_log);
-    await log('DONE', `All ${slots.length} slots processed — ${run.posts_created ?? 0} posts, status=${finalStatus}`);
+  if (slot_idx >= slots.length) {
+    await log('WARN', `Slot ${slot_idx} out of range (total ${slots.length}) — ignoring`);
     return;
   }
 
-  const slot    = slots[idx];
+  const slot    = slots[slot_idx];
   const postKey = `${slot.client_slug} / ${slot.date} / ${slot.content_type}`;
+  let clientName = slot.client_slug;
 
-  await log('INFO', `Step ${idx + 1}/${slots.length}: ${postKey}`);
+  await log('INFO', `Step ${slot_idx + 1}/${slots.length}: ${postKey}`);
 
   let postCreated = false;
   let errorMsg:   string | null = null;
@@ -388,6 +422,7 @@ export async function executeGenerationStep(env: Env, run_id: string, baseUrl: s
 
     const client = await db.prepare('SELECT * FROM clients WHERE id = ?').bind(slot.client_id).first<ClientRow>();
     if (!client) throw new Error(`Client not found: ${slot.client_slug}`);
+    clientName = client.canonical_name;
 
     // Package
     let pkg = DEFAULT_PACKAGE;
@@ -433,7 +468,7 @@ export async function executeGenerationStep(env: Env, run_id: string, baseUrl: s
       contentIntent: slot.content_intent,
     };
 
-    // OpenAI — single fetch, AbortSignal.timeout is reliable for first call in fresh invocation
+    // OpenAI — single outbound fetch per invocation (no second connection after this).
     await log('AI', `OpenAI start: ${postKey} (${slot.content_intent}) — ${platforms.length} platforms`);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(new Error('OpenAI 30s timeout')), 30_000);
@@ -443,9 +478,11 @@ export async function executeGenerationStep(env: Env, run_id: string, baseUrl: s
     } finally {
       clearTimeout(timer);
     }
-    await log('AI', `OpenAI done: ${postKey} (${genResult.meta.elapsedMs}ms)`);
+    await log('AI', `OpenAI done: ${postKey} (${genResult.meta.elapsedMs}ms, attempts=${genResult.meta.attempts}, model=${genResult.meta.model})`);
 
     // Save post
+    await log('INFO', `Save start: ${postKey}`);
+    const saveStarted = Date.now();
     const p = genResult.post as unknown as Record<string, string | undefined>;
     const caps: Record<string, string | null> = {};
     for (const key of ['cap_facebook','cap_instagram','cap_linkedin','cap_x','cap_threads','cap_tiktok','cap_pinterest','cap_bluesky','cap_google_business'])
@@ -472,52 +509,72 @@ export async function executeGenerationStep(env: Env, run_id: string, baseUrl: s
       ai_image_prompt:     genResult.post.ai_image_prompt     ?? null,
       ai_video_prompt:     genResult.post.ai_video_prompt     ?? null,
     } as Parameters<typeof createPost>[1]);
+    await log('INFO', `Save done: ${postKey} (${Date.now() - saveStarted}ms)`);
 
     postCreated = true;
-    await log('SAVED', `Post ${idx + 1}/${slots.length}: "${genResult.post.title?.slice(0, 55) ?? '(no title)'}" — ${slot.client_slug}`);
+    await log('SAVED', `Post ${slot_idx + 1}/${slots.length}: "${genResult.post.title?.slice(0, 55) ?? '(no title)'}" — ${slot.client_slug}`);
 
   } catch (err) {
     errorMsg = `${postKey}: ${str(err)}`;
     await log('ERROR', errorMsg);
   }
 
-  // Advance slot
-  const newIdx       = idx + 1;
-  const postsCreated = (run.posts_created ?? 0) + (postCreated ? 1 : 0);
-  const nextSlot     = slots[newIdx] ?? null;
+  // Advance sequential progress after the slot finishes.
+  const now = Math.floor(Date.now() / 1000);
+  await db
+    .prepare(`UPDATE generation_runs
+              SET current_slot_idx = ?,
+                  posts_created    = posts_created + ?,
+                  last_activity_at = ?
+              WHERE id = ?`)
+    .bind(slot_idx + 1, postCreated ? 1 : 0, now, run_id)
+    .run();
 
-  const progress: GenerationProgress = {
-    current_client:  nextSlot?.client_slug ?? '',
-    current_post:    nextSlot ? `${nextSlot.date} / ${nextSlot.content_type}` : '',
-    completed:       newIdx,
-    total_estimated: slots.length,
-    errors:          0,
-    clients_done:    0,
-    clients_total:   0,
-  };
+  // Re-read to check if this was the last slot and to decide the next one.
+  const updated = await db
+    .prepare('SELECT current_slot_idx, total_slots, posts_created, error_log FROM generation_runs WHERE id = ?')
+    .bind(run_id)
+    .first<{ current_slot_idx: number; total_slots: number; posts_created: number; error_log: string | null }>();
 
-  await advanceGenerationSlot(db, run_id, newIdx, postsCreated, JSON.stringify(progress));
+  if (updated) {
+    const progress: GenerationProgress = {
+      current_client: clientName,
+      current_post: updated.current_slot_idx < updated.total_slots
+        ? `${slots[updated.current_slot_idx]?.date ?? ''} / ${slots[updated.current_slot_idx]?.content_type ?? ''}`.trim()
+        : '',
+      completed: updated.current_slot_idx,
+      total_estimated: updated.total_slots,
+      errors: errorMsg ? 1 : 0,
+      clients_done: 0,
+      clients_total: 0,
+    };
+    try { await updateGenerationProgress(db, run_id, progress); } catch { /* ignore */ }
+  }
 
-  if (newIdx >= slots.length) {
-    const errLog     = errorMsg ? (run.error_log ? run.error_log + '\n' + errorMsg : errorMsg) : run.error_log;
-    const finalStatus = postsCreated > 0 ? (errLog ? 'completed_with_errors' : 'completed') : 'failed';
-    await finalizeGenerationRun(db, run_id, finalStatus, postsCreated, errLog ?? null);
-    await log('DONE', `Run complete: ${postsCreated}/${slots.length} posts, status=${finalStatus}`);
-  } else {
+  if (updated && updated.current_slot_idx >= updated.total_slots) {
+    const errLog     = errorMsg ? (updated.error_log ? updated.error_log + '\n' + errorMsg : errorMsg) : updated.error_log;
+    const finalStatus = updated.posts_created > 0 ? (errLog ? 'completed_with_errors' : 'completed') : 'failed';
+    await finalizeGenerationRun(db, run_id, finalStatus, updated.posts_created, errLog ?? null);
+    await log('DONE', `Run complete: ${updated.posts_created}/${updated.total_slots} posts, status=${finalStatus}`);
+  } else if (updated) {
+    const nextSlot = updated.current_slot_idx;
     try {
-      await triggerNextStep(env, baseUrl, run_id);
+      await log('INFO', `Next-step dispatch start: slot ${nextSlot + 1}/${updated.total_slots}`);
+      await triggerStep(env, baseUrl, run_id, nextSlot);
+      await log('INFO', `Next-step dispatch success: slot ${nextSlot + 1}/${updated.total_slots}`);
     } catch (err) {
-      const trigMsg = `Trigger failed for step ${newIdx}: ${str(err)}`;
+      const trigMsg = `Trigger failed for slot ${nextSlot}: ${str(err)}`;
       await log('ERROR', trigMsg);
-      const errLog = run.error_log ? run.error_log + '\n' + trigMsg : trigMsg;
-      await finalizeGenerationRun(db, run_id, 'failed', postsCreated, errLog);
+      const errLog = updated.error_log ? `${updated.error_log}\n${trigMsg}` : trigMsg;
+      const finalStatus = updated.posts_created > 0 ? 'completed_with_errors' : 'failed';
+      await finalizeGenerationRun(db, run_id, finalStatus, updated.posts_created, errLog);
     }
   }
 
   } catch (topErr) {
-    // Top-level unhandled error — write directly to DB so it's visible in the UI log.
+    // Unhandled crash — write directly to the DB log so it appears in the UI.
     const errMsg = topErr instanceof Error ? topErr.message : String(topErr);
-    console.error(`[gen:${run_id.slice(0, 8)}] UNHANDLED:`, topErr);
+    console.error(`[gen:${run_id.slice(0, 8)}] slot${slot_idx} UNHANDLED:`, topErr);
     try {
       const now = Math.floor(Date.now() / 1000);
       await db
@@ -527,7 +584,7 @@ export async function executeGenerationStep(env: Env, run_id: string, baseUrl: s
                       last_activity_at = ?
                   WHERE id = ?`)
         .bind(
-          `${new Date(now * 1000).toISOString().slice(0, 19)}Z [ERROR] UNHANDLED: ${errMsg}`,
+          `${new Date(now * 1000).toISOString().slice(0, 19)}Z [ERROR] slot${slot_idx} UNHANDLED: ${errMsg}`,
           errMsg,
           now,
           run_id,
