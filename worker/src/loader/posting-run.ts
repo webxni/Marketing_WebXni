@@ -16,6 +16,7 @@ import { UploadPostClient, UploadPostError } from '../services/uploadpost';
 import { preflight } from '../modules/preflight';
 import { makeIdempotencyKey } from '../modules/idempotency';
 import { getCaption, normalizePlatform, SKIP_PLATFORMS } from '../modules/captions';
+import { getGbpCaptionField, getGbpPostedKey } from '../modules/platform-compatibility';
 import {
   getScheduledTime,
   isVideoUrl,
@@ -375,7 +376,7 @@ async function postGbpMultiLocation(
     }
 
     // Get location-specific caption field (e.g. cap_gbp_la)
-    const captionField = loc.caption_field as keyof PostRow | null;
+    const captionField = getGbpCaptionField(loc);
     const caption =
       (captionField ? (post[captionField] as string | null) : null) ??
       post.cap_google_business;
@@ -396,7 +397,7 @@ async function postGbpMultiLocation(
     }
 
     // Anti-duplicate check
-    const postedField = loc.posted_field ?? `gbp_${loc.label.toLowerCase()}`;
+    const postedField = getGbpPostedKey(loc);
     const existing = await env.DB
       .prepare('SELECT tracking_id FROM post_platforms WHERE post_id = ? AND platform = ?')
       .bind(post.id, postedField)

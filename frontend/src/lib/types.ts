@@ -215,6 +215,7 @@ export interface Post {
   skarleth_notes:       string | null;
   asset_r2_key:         string | null;
   asset_r2_bucket:      string | null;
+  asset_type:           string | null;
   canva_link:           string | null;
   wp_post_url:          string | null;
   wp_post_id:           number | null;
@@ -240,6 +241,8 @@ export interface Post {
   skarleth_status:      string | null;
   error_log:            string | null;
   posted_at:            number | null;
+  platform_manual_override: number;
+  automation_slot_key:  string | null;
   created_at:           number;
   updated_at:           number;
   // joined from client
@@ -281,6 +284,7 @@ export interface GenerationRun {
   clients_processed: string | null;
   posts_created:     number;
   posts_updated:     number;
+  overwrite_existing: number;
   error_log:         string | null;
   progress_json:     string | null;
   execution_log:     string | null;

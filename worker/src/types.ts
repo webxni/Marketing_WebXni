@@ -275,6 +275,8 @@ export interface PostRow {
   error_log:              string | null;
   last_automation_run:    string | null;
   scheduled_by_automation: number;
+  platform_manual_override: number;
+  automation_slot_key:    string | null;
   generation_run_id:      string | null;
   created_by:             string | null;
   posted_at:              number | null;

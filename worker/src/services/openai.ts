@@ -15,6 +15,9 @@ export interface GeneratedPost {
   cap_pinterest?:      string;
   cap_bluesky?:        string;
   cap_google_business?: string;
+  cap_gbp_la?:         string;
+  cap_gbp_wa?:         string;
+  cap_gbp_or?:         string;
   youtube_title?:      string;
   youtube_description?: string;
   blog_content?:       string;
@@ -68,6 +71,7 @@ export interface GenerationContext {
   gbpCtaType?:   string | null;  // 'BOOK'|'ORDER'|'SHOP'|'LEARN_MORE'|'SIGN_UP'|'CALL'
   gbpOfferTitle?: string | null;
   gbpEventTitle?: string | null;
+  gbpLocations?: Array<{ label: string; captionField: string | null }>;
 }
 
 function line(condition: unknown, text: string): string {
@@ -208,6 +212,13 @@ Return ONLY JSON matching the requested schema. Keep captions concise and platfo
     if (gbpTopicType === 'EVENT' && gbpEventTitle) gbpInstruction += `. This is an event tied to "${gbpEventTitle}".`;
     if (gbpCtaType && GBP_CTA_INTENT[gbpCtaType]) gbpInstruction += ` ${GBP_CTA_INTENT[gbpCtaType]}`;
     prompt += gbpInstruction;
+    if ((ctx.gbpLocations ?? []).length > 1) {
+      prompt += '\nAlso return location-specific GBP variants that stay aligned with the shared GBP caption but mention the location naturally when relevant.';
+      for (const location of ctx.gbpLocations ?? []) {
+        if (!location.captionField) continue;
+        prompt += `\n- "${location.captionField}": Google Business caption variant for ${location.label}, 90-220 chars, factual, local, no hashtags`;
+      }
+    }
   }
   if (isYoutube) {
     prompt += '\n- "youtube_title": YouTube title, 60-70 chars';
@@ -289,6 +300,9 @@ function buildResponseSchema(ctx: GenerationContext): { name: string; schema: Js
     if (platforms.includes('pinterest')) properties.cap_pinterest = { type: 'string' };
     if (platforms.includes('bluesky')) properties.cap_bluesky = { type: 'string' };
     if (platforms.includes('google_business')) properties.cap_google_business = { type: 'string' };
+    for (const location of ctx.gbpLocations ?? []) {
+      if (location.captionField) properties[location.captionField] = { type: 'string' };
+    }
     if (platforms.includes('youtube')) {
       properties.youtube_title = { type: 'string' };
       properties.youtube_description = { type: 'string' };

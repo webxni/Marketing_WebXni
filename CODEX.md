@@ -165,8 +165,35 @@ frontend/src/lib/api/
 3. Builds publish dates based on `posting_frequency` (daily/3x_week/twice_weekly/weekly/biweekly/monthly)
 4. Stores a full slot plan in `generation_runs.post_slots`
 5. Dispatches slot `0` to `/internal/gen-step`
-6. Each `/internal/gen-step` request executes exactly one slot, saves the post, updates progress, then queues the next slot
+6. Each `/internal/gen-step` request executes exactly one slot, creates or updates the matching automation post, updates progress, then queues the next slot
 7. Creates post as `status = 'draft'` in DB
+
+### Platform compatibility rules
+Platform defaults are now **content-type-first**, not package-first.
+
+- `image` → `facebook`, `instagram`, `linkedin`, `x`, `threads`, `pinterest`, `bluesky`, `google_business`
+- `reel` → `instagram`, `facebook`, `tiktok`, `youtube`, `threads`
+- `video` → `facebook`, `instagram`, `youtube`, `linkedin`, optional `x`
+- `blog` → `website_blog` only
+- `google_business` → `google_business` only
+
+Package/client platforms are applied only if they are compatible with the slot's content type.
+Manual post editing can still keep incompatible platforms, but only with explicit override.
+
+### Rerun behavior
+Generation no longer blindly creates duplicates for the same planned slot.
+
+- Each automation slot gets a deterministic `automation_slot_key`
+- Rerun matches posts by `automation_slot_key` (fallback: client + date + content_type for older automation posts)
+- If existing generated post is complete and overwrite is off: skip
+- If existing generated post is incomplete and overwrite is off: fill missing fields only
+- If overwrite is on: refresh generated fields on the existing post
+
+Relevant post metadata:
+- `scheduled_by_automation`
+- `generation_run_id`
+- `automation_slot_key`
+- `platform_manual_override`
 
 ### Reliability notes
 - Do not dispatch the next generation step from inside slot work after the long OpenAI request completes
@@ -187,6 +214,7 @@ frontend/src/lib/api/
 `frontend/src/routes/(app)/automation/+page.svelte`
 - 3-column layout: Clients | Period (month+year) | Summary+Action
 - Shows generation run history below
+- Has `overwrite existing generated content` toggle for reruns
 
 ### Post detail designer tab
 `frontend/src/routes/(app)/posts/[id]/+page.svelte`
@@ -211,8 +239,9 @@ Prompts include asset type, orientation, exact dimensions, platform context, and
 `POST /api/posts/:id/generate-caption { platform: string }`
 - Generates a platform-specific caption using GPT-4o-mini
 - Reads client brand voice + intelligence from DB
+- Validates compatibility against the post's `content_type`
 - Saves caption to post + adds platform to `post.platforms` JSON array
-- UI: dropdown at bottom of Captions tab showing only platforms not yet on the post
+- UI: dropdown at bottom of Captions tab shows only compatible missing platforms by default; explicit override is required to add an incompatible one
 
 ---
 
@@ -233,7 +262,9 @@ Prompts include asset type, orientation, exact dimensions, platform context, and
 ### ETB multi-location GBP
 ETB has 3 Google Business locations: LA, WA, OR.
 - Caption fields: `cap_gbp_la`, `cap_gbp_wa`, `cap_gbp_or`
-- Each location has its own `upload_post_location_id` in `client_gbp_locations`
+- `client_gbp_locations.caption_field` should resolve to real post fields (`cap_gbp_la`, `cap_gbp_wa`, `cap_gbp_or`)
+- `client_gbp_locations.posted_field` should resolve to stable tracking keys (`gbp_la`, `gbp_wa`, `gbp_or`)
+- Generation creates shared GBP caption plus location-specific overrides when multi-location GBP is active
 - Posting loop handles these automatically via `client_gbp_locations` table
 
 ---
@@ -466,8 +497,8 @@ Do NOT use `#000000` for any platform badge — invisible on dark background.
 3. **Spanish design prompts** are for Skarleth the designer, not for the client.
    Always generate them in Spanish regardless of client language.
 
-4. **Generation is package-driven.** Never ask the user to pick content types
-   or frequencies manually — read from the client's package.
+4. **Generation is package-driven, but platform selection is content-type-first.**
+   Read content types/frequency from the client's package, then filter platforms by compatibility with that content type.
 
 5. **Google Blue accent** (`#1a73e8`), not purple. This was an explicit design choice.
 

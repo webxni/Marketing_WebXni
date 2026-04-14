@@ -10,6 +10,7 @@
   import { can } from '$lib/stores/auth';
   import { toast } from '$lib/stores/ui';
   import { formatDate, formatDateTime, parsePlatforms } from '$lib/utils';
+  import { getCompatiblePlatforms, getIncompatiblePlatforms, normalizeContentType } from '$lib/platforms';
   import type { Post, PostPlatform } from '$lib/types';
 
   let post: Post | null = null;
@@ -25,7 +26,9 @@
   async function load() {
     loading = true;
     try {
-      const r = await postsApi.get($page.params.id);
+      const postId = $page.params.id;
+      if (!postId) return;
+      const r = await postsApi.get(postId);
       post = r.post;
       platforms = r.platforms ?? [];
     } finally { loading = false; }
@@ -92,6 +95,7 @@
   };
   let addPlatform = '';
   let generatingCaption = false;
+  let allowAddPlatformOverride = false;
 
   // GBP settings edit state
   let editingGbp = false;
@@ -156,14 +160,20 @@
   function getMissingPlatforms(p: typeof post): string[] {
     if (!p) return allPlatforms;
     const existing = JSON.parse(p.platforms ?? '[]') as string[];
-    return allPlatforms.filter(pl => !existing.includes(pl));
+    const missing = allPlatforms.filter(pl => !existing.includes(pl));
+    return allowAddPlatformOverride ? missing : getCompatiblePlatforms(p.content_type, missing);
   }
 
   async function generateCaption() {
     if (!post || !addPlatform) return;
+    const incompatible = getIncompatiblePlatforms(post.content_type, [addPlatform]);
+    if (incompatible.length > 0 && !allowAddPlatformOverride) {
+      toast.error(`${addPlatform} is incompatible with ${normalizeContentType(post.content_type)}`);
+      return;
+    }
     generatingCaption = true;
     try {
-      await postsApi.generateCaption(post.id, addPlatform);
+      await postsApi.generateCaption(post.id, addPlatform, allowAddPlatformOverride);
       toast.success(`${platformLabels[addPlatform] ?? addPlatform} caption generated`);
       addPlatform = '';
       load();
@@ -653,6 +663,10 @@
     {#if getMissingPlatforms(post).length > 0}
     <div class="card p-4 border border-dashed border-border">
       <h4 class="text-xs font-medium text-muted mb-2">Generate caption for another platform</h4>
+      <label class="mb-2 flex items-center gap-2 text-xs text-muted cursor-pointer">
+        <input type="checkbox" bind:checked={allowAddPlatformOverride} class="rounded" />
+        Allow incompatible platform override
+      </label>
       <div class="flex gap-2">
         <select bind:value={addPlatform} class="input flex-1 text-sm" disabled={generatingCaption}>
           <option value="">Select platform…</option>

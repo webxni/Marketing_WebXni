@@ -64,7 +64,9 @@
 
   onMount(async () => {
     try {
-      const r = await postsApi.get($page.params.id);
+      const postId = $page.params.id;
+      if (!postId) return;
+      const r = await postsApi.get(postId);
       post = r.post;
       // Core
       title          = post.title ?? '';
@@ -108,9 +110,11 @@
   });
 
   async function save() {
+    const postId = $page.params.id;
+    if (!postId) return;
     saving = true;
     try {
-      await postsApi.update($page.params.id, {
+      await postsApi.update(postId, {
         title:               title || null,
         publish_date:        publishDate || null,
         master_caption:      masterCaption || null,
@@ -139,7 +143,7 @@
         canva_link:          canva_link || null,
       });
       toast.success('Post saved');
-      goto(`/posts/${$page.params.id}`);
+      goto(`/posts/${postId}`);
     } catch (e) { toast.error(String(e)); }
     finally { saving = false; }
   }

@@ -13,8 +13,15 @@ import {
   writeAuditLog,
   getClientWithConfig,
 } from '../db/queries';
+import { normalizeContentType, parsePlatforms, resolvePlatformSelection } from '../modules/platform-compatibility';
 
 export const postRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
+
+function parseRequestedPlatforms(body: Record<string, unknown>): string[] {
+  if (typeof body['platforms'] === 'string') return parsePlatforms(body['platforms'] as string);
+  if (Array.isArray(body['platforms'])) return parsePlatforms(body['platforms'] as string[]);
+  return [];
+}
 
 /** GET /api/posts */
 postRoutes.get('/', async (c) => {
@@ -99,16 +106,33 @@ postRoutes.post('/', async (c) => {
     clientId = row.id;
   }
   if (!clientId) return c.json({ error: 'client_id or client_slug required' }, 400);
+  const clientConfig = await getClientWithConfig(c.env.DB, clientId);
+  if (!clientConfig) return c.json({ error: 'Client not found' }, 404);
+
+  const requestedPlatforms = parseRequestedPlatforms(body);
+  const allowPlatformOverride = body['allow_platform_override'] === true;
+  const selection = resolvePlatformSelection({
+    contentType: (body['content_type'] as string) ?? 'image',
+    requestedPlatforms,
+    clientPlatforms: clientConfig.platforms,
+    assetType: (body['asset_type'] as string) ?? null,
+    allowIncompatibleOverride: allowPlatformOverride,
+  });
+  if (selection.incompatible.length > 0 && !allowPlatformOverride) {
+    return c.json({
+      error: `Selected platforms are incompatible with ${selection.contentType}`,
+      incompatible_platforms: selection.incompatible,
+      compatible_platforms: selection.compatible,
+    }, 409);
+  }
 
   const user = c.get('user');
   const post = await createPost(c.env.DB, {
     client_id:           clientId,
     title:               (body['title'] as string) ?? null,
     status:              (body['status'] as string) ?? 'draft',
-    content_type:        (body['content_type'] as string) ?? 'image',
-    platforms:           typeof body['platforms'] === 'string'
-                           ? body['platforms']
-                           : JSON.stringify(body['platforms'] ?? []),
+    content_type:        selection.contentType,
+    platforms:           JSON.stringify(selection.selected),
     publish_date:        (body['publish_date'] as string) ?? null,
     master_caption:      (body['master_caption'] as string) ?? null,
     cap_facebook:        (body['cap_facebook'] as string) ?? null,
@@ -148,6 +172,7 @@ postRoutes.post('/', async (c) => {
     gbp_terms:            (body['gbp_terms'] as string) ?? null,
     asset_r2_key:        (body['asset_r2_key'] as string) ?? null,
     canva_link:          (body['canva_link'] as string) ?? null,
+    platform_manual_override: allowPlatformOverride ? 1 : 0,
     created_by:          user.userId,
   } as Parameters<typeof createPost>[1]);
 
@@ -167,8 +192,46 @@ postRoutes.put('/:id', async (c) => {
   const post = await getPostById(c.env.DB, c.req.param('id'));
   if (!post) return c.json({ error: 'Not found' }, 404);
 
-  let body: unknown;
-  try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON' }, 400); }
+  let body: Record<string, unknown>;
+  try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'Invalid JSON' }, 400); }
+
+  const nextContentType = (body['content_type'] as string) ?? post.content_type ?? 'image';
+  const shouldValidatePlatforms =
+    Object.prototype.hasOwnProperty.call(body, 'platforms') ||
+    Object.prototype.hasOwnProperty.call(body, 'content_type') ||
+    Object.prototype.hasOwnProperty.call(body, 'allow_platform_override') ||
+    Object.prototype.hasOwnProperty.call(body, 'asset_type');
+
+  if (shouldValidatePlatforms) {
+    const clientConfig = await getClientWithConfig(c.env.DB, post.client_id);
+    if (!clientConfig) return c.json({ error: 'Client not found' }, 404);
+
+    const allowPlatformOverride = Object.prototype.hasOwnProperty.call(body, 'allow_platform_override')
+      ? body['allow_platform_override'] === true
+      : post.platform_manual_override === 1;
+
+    const requestedPlatforms = Object.prototype.hasOwnProperty.call(body, 'platforms')
+      ? parseRequestedPlatforms(body)
+      : parsePlatforms(post.platforms);
+
+    const selection = resolvePlatformSelection({
+      contentType: nextContentType,
+      requestedPlatforms,
+      clientPlatforms: clientConfig.platforms,
+      assetType: (body['asset_type'] as string) ?? post.asset_type,
+      allowIncompatibleOverride: allowPlatformOverride,
+    });
+    if (selection.incompatible.length > 0 && !allowPlatformOverride) {
+      return c.json({
+        error: `Selected platforms are incompatible with ${selection.contentType}`,
+        incompatible_platforms: selection.incompatible,
+        compatible_platforms: selection.compatible,
+      }, 409);
+    }
+    body['content_type'] = selection.contentType;
+    body['platforms'] = JSON.stringify(selection.selected);
+    body['platform_manual_override'] = allowPlatformOverride ? 1 : 0;
+  }
 
   // Version snapshot
   const snap = JSON.stringify(post);
@@ -364,7 +427,7 @@ postRoutes.post('/:id/generate-caption', async (c) => {
   const post = await getPostById(c.env.DB, c.req.param('id'));
   if (!post) return c.json({ error: 'Not found' }, 404);
 
-  const { platform } = await c.req.json<{ platform: string }>();
+  const { platform, allow_platform_override } = await c.req.json<{ platform: string; allow_platform_override?: boolean }>();
   if (!platform) return c.json({ error: 'platform required' }, 400);
 
   // Map platform to caption field
@@ -372,6 +435,21 @@ postRoutes.post('/:id/generate-caption', async (c) => {
 
   const client = await getClientWithConfig(c.env.DB, post.client_id);
   if (!client) return c.json({ error: 'Client not found' }, 404);
+
+  const selection = resolvePlatformSelection({
+    contentType: normalizeContentType(post.content_type, post.asset_type),
+    requestedPlatforms: [...parsePlatforms(post.platforms), platform],
+    clientPlatforms: client.platforms,
+    assetType: post.asset_type,
+    allowIncompatibleOverride: allow_platform_override === true,
+  });
+  if (selection.incompatible.includes(platform) && allow_platform_override !== true) {
+    return c.json({
+      error: `${platform} is incompatible with ${post.content_type}`,
+      incompatible_platforms: selection.incompatible,
+      compatible_platforms: selection.compatible,
+    }, 409);
+  }
 
   const intel = await c.env.DB
     .prepare('SELECT * FROM client_intelligence WHERE client_id = ?')
@@ -459,8 +537,8 @@ Return JSON: { "caption": "..." }`;
     : [...existingPlatforms, platform];
 
   await c.env.DB
-    .prepare(`UPDATE posts SET ${capField} = ?, platforms = ?, updated_at = ? WHERE id = ?`)
-    .bind(caption, JSON.stringify(updatedPlatforms), Math.floor(Date.now() / 1000), post.id)
+    .prepare(`UPDATE posts SET ${capField} = ?, platforms = ?, platform_manual_override = ?, updated_at = ? WHERE id = ?`)
+    .bind(caption, JSON.stringify(updatedPlatforms), allow_platform_override === true ? 1 : post.platform_manual_override, Math.floor(Date.now() / 1000), post.id)
     .run();
 
   await writeAuditLog(c.env.DB, {

@@ -6,6 +6,7 @@ export interface GenerateParams {
   date_from:      string;
   date_to:        string;
   publish_time?:  string;  // HH:MM — applied to all generated posts
+  overwrite_existing?: boolean;
 }
 
 export const runApi = {

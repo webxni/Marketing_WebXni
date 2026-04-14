@@ -29,7 +29,10 @@ import type { ClientRow } from '../types';
 import {
   listClients,
   getClientPlatforms,
+  getClientGbpLocations,
   createPost,
+  updatePost,
+  getPostByAutomationSlot,
   updateGenerationProgress,
   appendGenerationLog,
   appendGenerationError,
@@ -39,6 +42,14 @@ import {
   type GenerationProgress,
 } from '../db/queries';
 import { generatePostContent, type GenerationContext } from '../services/openai';
+import {
+  getAutomationSlotKey,
+  getGbpCaptionField,
+  isPostContentComplete,
+  normalizeContentType,
+  parsePlatforms,
+  resolvePlatformSelection,
+} from '../modules/platform-compatibility';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -51,6 +62,7 @@ export interface GenerationParams {
   period_end:   string;
   triggered_by: string;
   publish_time: string | null;
+  overwrite_existing?: boolean;
 }
 
 interface PostSlot {
@@ -59,6 +71,7 @@ interface PostSlot {
   date:           string;
   content_type:   string;
   content_intent: 'educational' | 'sales';
+  slot_key:       string;
 }
 
 interface PackageRow {
@@ -236,6 +249,55 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function pickGeneratedValue(
+  existing: string | null | undefined,
+  generated: string | null | undefined,
+  overwrite: boolean,
+): string | null | undefined {
+  if (overwrite) return generated ?? null;
+  return existing?.trim() ? existing : (generated ?? null);
+}
+
+function mergeGeneratedContent(
+  existing: Record<string, string | null | undefined> | null,
+  post: Record<string, string | undefined>,
+  overwrite: boolean,
+): Record<string, string | null> {
+  const current = existing ?? {};
+  const next: Record<string, string | null> = {};
+  const keys = [
+    'title',
+    'master_caption',
+    'cap_facebook',
+    'cap_instagram',
+    'cap_linkedin',
+    'cap_x',
+    'cap_threads',
+    'cap_tiktok',
+    'cap_pinterest',
+    'cap_bluesky',
+    'cap_google_business',
+    'cap_gbp_la',
+    'cap_gbp_wa',
+    'cap_gbp_or',
+    'youtube_title',
+    'youtube_description',
+    'blog_content',
+    'blog_excerpt',
+    'seo_title',
+    'meta_description',
+    'target_keyword',
+    'slug',
+    'video_script',
+    'ai_image_prompt',
+    'ai_video_prompt',
+  ];
+  for (const key of keys) {
+    next[key] = pickGeneratedValue(current[key], post[key], overwrite) ?? null;
+  }
+  return next;
+}
+
 export interface SlotWorkResult {
   outcome: 'skipped' | 'continue' | 'completed';
   nextSlot?: number;
@@ -338,11 +400,18 @@ export async function planGeneration(env: Env, params: GenerationParams, baseUrl
           ? (weeklySchedule[dayName] ?? ['image'])
           : [sequence[seqIdx++ % sequence.length]];
 
-        for (const contentType of contentTypes) {
+        for (const [dailyIndex, contentType] of contentTypes.entries()) {
           const totalSoFar = intentEduc + intentSales;
           const salesRatio = totalSoFar === 0 ? 0 : intentSales / totalSoFar;
           const intent: 'educational' | 'sales' = salesRatio < 0.30 ? 'sales' : 'educational';
-          slots.push({ client_id: client.id, client_slug: client.slug, date, content_type: contentType, content_intent: intent });
+          slots.push({
+            client_id: client.id,
+            client_slug: client.slug,
+            date,
+            content_type: normalizeContentType(contentType),
+            content_intent: intent,
+            slot_key: getAutomationSlotKey(client.id, date, contentType, dailyIndex),
+          });
           if (intent === 'sales') intentSales++; else intentEduc++;
         }
       }
@@ -397,7 +466,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
 
   async function finishSlot(
     nextCompletedIdx: number,
-    postCreated: boolean,
+    outcome: 'created' | 'updated' | 'skipped',
     clientName: string,
     slots: PostSlot[],
   ): Promise<SlotWorkResult> {
@@ -406,15 +475,16 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
       .prepare(`UPDATE generation_runs
                 SET current_slot_idx = ?,
                     posts_created    = posts_created + ?,
+                    posts_updated    = posts_updated + ?,
                     last_activity_at = ?
                 WHERE id = ?`)
-      .bind(nextCompletedIdx, postCreated ? 1 : 0, now, run_id)
+      .bind(nextCompletedIdx, outcome === 'created' ? 1 : 0, outcome === 'updated' ? 1 : 0, now, run_id)
       .run();
 
     const updated = await db
-      .prepare('SELECT current_slot_idx, total_slots, posts_created, error_log FROM generation_runs WHERE id = ?')
+      .prepare('SELECT current_slot_idx, total_slots, posts_created, posts_updated, error_log FROM generation_runs WHERE id = ?')
       .bind(run_id)
-      .first<{ current_slot_idx: number; total_slots: number; posts_created: number; error_log: string | null }>();
+      .first<{ current_slot_idx: number; total_slots: number; posts_created: number; posts_updated: number; error_log: string | null }>();
 
     if (!updated) return { outcome: 'skipped' };
 
@@ -432,9 +502,10 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
     try { await updateGenerationProgress(db, run_id, progress); } catch { /* ignore */ }
 
     if (updated.current_slot_idx >= updated.total_slots) {
-      const finalStatus = updated.posts_created > 0 ? (updated.error_log ? 'completed_with_errors' : 'completed') : 'failed';
+      const totalTouched = (updated.posts_created ?? 0) + (updated.posts_updated ?? 0);
+      const finalStatus = totalTouched > 0 ? (updated.error_log ? 'completed_with_errors' : 'completed') : 'failed';
       await finalizeGenerationRun(db, run_id, finalStatus, updated.posts_created, updated.error_log ?? null);
-      await log('DONE', `Run complete: ${updated.posts_created}/${updated.total_slots} posts, status=${finalStatus}`);
+      await log('DONE', `Run complete: created=${updated.posts_created}, updated=${updated.posts_updated}, total=${updated.total_slots}, status=${finalStatus}`);
       return { outcome: 'completed', totalSlots: updated.total_slots };
     }
 
@@ -480,7 +551,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
 
     await log('INFO', `Step ${slot_idx + 1}/${slots.length}: ${postKey}`);
 
-    let postCreated = false;
+    let slotOutcome: 'created' | 'updated' | 'skipped' = 'skipped';
     const settings = await loadSystemSettings(env);
     const apiKey = env.OPENAI_API_KEY || settings.ai_api_key || '';
 
@@ -497,13 +568,34 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         if (p) pkg = p;
       }
 
-      let platforms: string[] = [];
-      try { platforms = JSON.parse(pkg.platforms_included); } catch { /* */ }
+      const clientPlatforms = await getClientPlatforms(db, client.id);
+      let packagePlatforms: string[] = [];
+      try { packagePlatforms = JSON.parse(pkg.platforms_included); } catch { /* */ }
+      const platformSelection = resolvePlatformSelection({
+        contentType: slot.content_type,
+        packagePlatforms,
+        clientPlatforms,
+      });
+      const platforms = platformSelection.selected;
       if (platforms.length === 0) {
-        const cp = await getClientPlatforms(db, client.id);
-        platforms = cp.map(p => p.platform);
+        await log('WARN', `${postKey}: no compatible platforms after content-type filtering`);
+        return await finishSlot(slot_idx + 1, 'skipped', clientName, slots);
       }
-      if (platforms.length === 0) platforms = ['facebook', 'instagram'];
+
+      const existingPost = await getPostByAutomationSlot(
+        db,
+        client.id,
+        slot.slot_key,
+        slot.date,
+        normalizeContentType(slot.content_type),
+      );
+      const gbpLocations = await getClientGbpLocations(db, client.id);
+      const overwriteExisting = run.overwrite_existing === 1;
+
+      if (existingPost && !overwriteExisting && isPostContentComplete(existingPost, gbpLocations)) {
+        await log('INFO', `${postKey}: existing post ${existingPost.id} already complete — skipping`);
+        return await finishSlot(slot_idx + 1, 'skipped', clientName, slots);
+      }
 
       const intel   = await db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>() ?? null;
       const fbRows  = await db.prepare('SELECT sentiment, message AS note FROM client_feedback WHERE client_id = ? ORDER BY created_at DESC LIMIT 10').bind(client.id).all<FeedbackRow>();
@@ -530,6 +622,13 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         contentType:   slot.content_type,
         platforms,
         contentIntent: slot.content_intent,
+        gbpLocations: gbpLocations
+          .filter((location) => location.paused !== 1)
+          .map((location) => ({
+            label: location.label,
+            captionField: getGbpCaptionField(location),
+          }))
+          .filter((location) => Boolean(location.captionField)),
       };
 
       await log('AI', `OpenAI start: ${postKey} (${slot.content_intent}) — ${platforms.length} platforms`);
@@ -546,47 +645,55 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
       await log('INFO', `Save start: ${postKey}`);
       const saveStarted = Date.now();
       const p = genResult.post as unknown as Record<string, string | undefined>;
-      const caps: Record<string, string | null> = {};
-      for (const key of ['cap_facebook','cap_instagram','cap_linkedin','cap_x','cap_threads','cap_tiktok','cap_pinterest','cap_bluesky','cap_google_business'])
-        caps[key] = p[key] ?? null;
+      const merged = mergeGeneratedContent(existingPost as unknown as Record<string, string | null | undefined>, p, overwriteExisting);
 
-      await createPost(db, {
-        client_id:           client.id,
-        title:               genResult.post.title ?? `${client.canonical_name} — ${slot.date}`,
-        status:              'draft',
-        content_type:        slot.content_type,
-        platforms:           JSON.stringify(platforms),
-        publish_date:        `${slot.date}T${postTime}`,
-        master_caption:      genResult.post.master_caption ?? null,
-        ...caps,
-        youtube_title:       genResult.post.youtube_title       ?? null,
-        youtube_description: genResult.post.youtube_description ?? null,
-        blog_content:        genResult.post.blog_content        ?? null,
-        blog_excerpt:        genResult.post.blog_excerpt        ?? null,
-        slug:                genResult.post.slug                ?? null,
-        seo_title:           genResult.post.seo_title           ?? null,
-        meta_description:    genResult.post.meta_description    ?? null,
-        target_keyword:      genResult.post.target_keyword      ?? null,
-        video_script:        genResult.post.video_script        ?? null,
-        ai_image_prompt:     genResult.post.ai_image_prompt     ?? null,
-        ai_video_prompt:     genResult.post.ai_video_prompt     ?? null,
-      } as Parameters<typeof createPost>[1]);
+      if (existingPost) {
+        const nextPlatforms = existingPost.platform_manual_override === 1 && parsePlatforms(existingPost.platforms).length > 0
+          ? parsePlatforms(existingPost.platforms)
+          : platforms;
+        await updatePost(db, existingPost.id, {
+          title: merged.title,
+          content_type: normalizeContentType(slot.content_type),
+          platforms: JSON.stringify(nextPlatforms),
+          publish_date: existingPost.publish_date ?? `${slot.date}T${postTime}`,
+          platform_manual_override: existingPost.platform_manual_override ?? 0,
+          automation_slot_key: slot.slot_key,
+          generation_run_id: run_id,
+          scheduled_by_automation: 1,
+          ...merged,
+        });
+        slotOutcome = 'updated';
+        await log('SAVED', `Updated post ${existingPost.id} for ${postKey}`);
+      } else {
+        await createPost(db, {
+          client_id:           client.id,
+          title:               merged.title ?? `${client.canonical_name} — ${slot.date}`,
+          status:              'draft',
+          content_type:        normalizeContentType(slot.content_type),
+          platforms:           JSON.stringify(platforms),
+          publish_date:        `${slot.date}T${postTime}`,
+          scheduled_by_automation: 1,
+          platform_manual_override: 0,
+          automation_slot_key: slot.slot_key,
+          generation_run_id:   run_id,
+          ...merged,
+        } as Parameters<typeof createPost>[1]);
+        slotOutcome = 'created';
+        await log('SAVED', `Created post ${slot_idx + 1}/${slots.length}: "${genResult.post.title?.slice(0, 55) ?? '(no title)'}" — ${slot.client_slug}`);
+      }
       await log('INFO', `Save done: ${postKey} (${Date.now() - saveStarted}ms)`);
-
-      postCreated = true;
-      await log('SAVED', `Post ${slot_idx + 1}/${slots.length}: "${genResult.post.title?.slice(0, 55) ?? '(no title)'}" — ${slot.client_slug}`);
     } catch (err) {
       await log('ERROR', `${postKey}: ${str(err)}`);
       await recordError(`${postKey}\n${detail(err)}`);
     }
 
-    return await finishSlot(slot_idx + 1, postCreated, clientName, slots);
+    return await finishSlot(slot_idx + 1, slotOutcome, clientName, slots);
   } catch (err) {
     console.error(`[gen:${run_id.slice(0, 8)}] slot${slot_idx} UNHANDLED:`, err);
     await log('ERROR', `slot${slot_idx} UNHANDLED: ${str(err)}`);
     await recordError(`slot${slot_idx} UNHANDLED\n${detail(err)}`);
     if (slots.length > 0 && slot_idx < slots.length) {
-      return await finishSlot(slot_idx + 1, false, clientName || slots[slot_idx]?.client_slug || '', slots);
+      return await finishSlot(slot_idx + 1, 'skipped', clientName || slots[slot_idx]?.client_slug || '', slots);
     }
     return { outcome: 'skipped' };
   }

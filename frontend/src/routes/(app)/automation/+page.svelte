@@ -68,6 +68,7 @@
 
   // Publish time — applies to all generated posts
   let publishTime = '10:00';  // default 10:00 AM
+  let overwriteExisting = false;
 
   // Custom
   let customStart = todayStr;
@@ -233,6 +234,7 @@
         date_from:    periodStart,
         date_to:      periodEnd,
         publish_time: publishTime || '10:00',
+        overwrite_existing: overwriteExisting,
       });
       toast.success(`Generation started — ~${totalEstimated} drafts queued`);
       historyTab = 'generation';
@@ -578,6 +580,10 @@
           />
           <span class="text-xs text-muted">Applied to all generated posts · editable per post after</span>
         </div>
+        <label class="mt-3 flex items-center gap-2 text-xs text-muted cursor-pointer">
+          <input type="checkbox" bind:checked={overwriteExisting} class="rounded" />
+          Overwrite existing generated content instead of only filling missing fields
+        </label>
       </div>
     </div>
 

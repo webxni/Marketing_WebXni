@@ -150,6 +150,8 @@ CREATE TABLE IF NOT EXISTS posts (
   error_log               TEXT,
   last_automation_run     TEXT,
   scheduled_by_automation INTEGER NOT NULL DEFAULT 0,
+  platform_manual_override INTEGER NOT NULL DEFAULT 0,
+  automation_slot_key     TEXT,
   -- Generation metadata
   generation_run_id       TEXT,
   -- Audit
@@ -251,6 +253,7 @@ CREATE TABLE IF NOT EXISTS generation_runs (
   clients_processed TEXT,                     -- JSON array of slugs
   posts_created     INTEGER DEFAULT 0,
   posts_updated     INTEGER DEFAULT 0,
+  overwrite_existing INTEGER NOT NULL DEFAULT 0,
   error_log         TEXT,
   created_at        INTEGER NOT NULL DEFAULT (unixepoch()),
   completed_at      INTEGER

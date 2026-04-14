@@ -54,8 +54,11 @@ export const postsApi = {
   translateContext: (id: string) =>
     api.post<{ translations: Record<string, string> }>(`/api/posts/${id}/translate`, {}),
 
-  generateCaption: (id: string, platform: string) =>
-    api.post<{ ok: boolean; platform: string; caption: string; field: string }>(`/api/posts/${id}/generate-caption`, { platform }),
+  generateCaption: (id: string, platform: string, allowPlatformOverride = false) =>
+    api.post<{ ok: boolean; platform: string; caption: string; field: string }>(`/api/posts/${id}/generate-caption`, {
+      platform,
+      allow_platform_override: allowPlatformOverride,
+    }),
 
   publishBlog: (id: string, opts: { status?: 'draft' | 'publish'; force_update?: boolean } = {}) =>
     api.post<{ ok: boolean; wp_post_id: number; wp_post_url: string; status: string; warnings?: string[] }>(`/api/posts/${id}/publish-blog`, opts),

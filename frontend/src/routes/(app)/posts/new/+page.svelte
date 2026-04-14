@@ -5,6 +5,7 @@
   import PlatformBadge from '$lib/components/ui/PlatformBadge.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import { toast } from '$lib/stores/ui';
+  import { getCompatiblePlatforms, getDefaultPlatforms, getIncompatiblePlatforms, normalizeContentType } from '$lib/platforms';
   import type { Client } from '$lib/types';
 
   let clients: Client[] = [];
@@ -15,9 +16,11 @@
   // Form state
   let clientSlug = '';
   let title = '';
-  let contentType: 'text' | 'image' | 'video' | 'reel' | 'blog' = 'image';
+  let contentType: 'text' | 'image' | 'video' | 'reel' | 'blog' | 'google_business' = 'image';
   let publishDate = '';
   let selectedPlatforms: string[] = [];
+  let clientConfiguredPlatforms: string[] = [];
+  let allowPlatformOverride = false;
   let masterCaption = '';
   let assetFile: FileList | null = null;
   let assetPreviewUrl = '';
@@ -40,6 +43,7 @@
   $: isYoutube = selectedPlatforms.includes('youtube');
   $: isVideo   = contentType === 'video' || contentType === 'reel';
   $: isImage   = contentType === 'image';
+  $: incompatiblePlatforms = getIncompatiblePlatforms(contentType, selectedPlatforms);
 
   // GBP advanced fields — only shown when google_business is selected
   let gbp_topic_type = 'STANDARD';
@@ -101,6 +105,10 @@
   async function submit(action: 'draft' | 'publish') {
     if (!clientSlug) { toast.error('Select a client'); return; }
     if (selectedPlatforms.length === 0) { toast.error('Select at least one platform'); return; }
+    if (incompatiblePlatforms.length > 0 && !allowPlatformOverride) {
+      toast.error(`Incompatible platforms selected for ${normalizeContentType(contentType)}: ${incompatiblePlatforms.join(', ')}`);
+      return;
+    }
     if (!masterCaption.trim()) { toast.error('Master caption is required'); return; }
     submitting = true;
     try {
@@ -148,6 +156,7 @@
         asset_r2_key:     assetR2Key || null,
         dry_run:          dryRun,
         status:           action === 'draft' ? 'draft' : 'pending_approval',
+        allow_platform_override: allowPlatformOverride,
         ...captionFields,
         ...gbpFields,
         ...contentFields,
@@ -178,11 +187,20 @@
     clientsApi.getPlatforms(clientSlug)
       .then(r => {
         const active = r.platforms.filter(p => !(p as unknown as { paused?: number }).paused);
-        if (active.length > 0) {
-          selectedPlatforms = active.map(p => p.platform);
-        }
+        clientConfiguredPlatforms = active.map(p => p.platform);
+        selectedPlatforms = getDefaultPlatforms(contentType, clientConfiguredPlatforms);
       })
       .catch(() => { /* ignore — user can select manually */ });
+  }
+
+  $: if (clientConfiguredPlatforms.length > 0 && !allowPlatformOverride) {
+    const compatibleSelection = getCompatiblePlatforms(contentType, selectedPlatforms);
+    const nextPlatforms = compatibleSelection.length > 0
+      ? compatibleSelection
+      : getDefaultPlatforms(contentType, clientConfiguredPlatforms);
+    if (JSON.stringify(nextPlatforms) !== JSON.stringify(selectedPlatforms)) {
+      selectedPlatforms = nextPlatforms;
+    }
   }
 </script>
 
@@ -238,6 +256,7 @@
               <option value="reel">Reel</option>
               <option value="text">Text only</option>
               <option value="blog">Blog post</option>
+              <option value="google_business">Google Business post</option>
             </select>
           </div>
         </div>
@@ -531,6 +550,15 @@
           <button class="btn-ghost btn-sm text-[10px]" on:click={clearAll}>None</button>
         </div>
       </div>
+      {#if incompatiblePlatforms.length > 0}
+        <div class="mb-3 rounded-md border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-300">
+          {normalizeContentType(contentType)} is not compatible with: {incompatiblePlatforms.join(', ')}.
+        </div>
+      {/if}
+      <label class="mb-3 flex items-center gap-2 text-xs text-muted cursor-pointer">
+        <input type="checkbox" bind:checked={allowPlatformOverride} class="rounded" />
+        Allow manual incompatible platform override
+      </label>
       <div class="space-y-1">
         {#each allPlatforms as p}
           <button

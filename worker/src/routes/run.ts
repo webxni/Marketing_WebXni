@@ -240,6 +240,7 @@ runRoutes.post('/generate', async (c) => {
     triggered_by:  c.get('user').userId,
     date_range:    `${periodStart}:${periodEnd}`,
     client_filter: clientSlugs.length > 0 ? JSON.stringify(clientSlugs) : null,
+    overwrite_existing: body.overwrite_existing === true,
   });
 
   // Optional publish time override (HH:MM) — applied to all generated posts
@@ -254,8 +255,9 @@ runRoutes.post('/generate', async (c) => {
       client_slugs: clientSlugs,
       period_start: periodStart,
       period_end:   periodEnd,
-      triggered_by: c.get('user').userId,
-      publish_time: publishTime,
+        triggered_by: c.get('user').userId,
+        publish_time: publishTime,
+        overwrite_existing: body.overwrite_existing === true,
     }, baseUrl),
   );
 

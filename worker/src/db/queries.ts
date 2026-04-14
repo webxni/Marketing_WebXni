@@ -249,9 +249,11 @@ export async function createPost(
         meta_description, slug, target_keyword, ai_image_prompt, ai_video_prompt,
         video_script, asset_r2_key, asset_r2_bucket, asset_type, canva_link,
         ready_for_automation, asset_delivered, skarleth_notes, error_log,
+        scheduled_by_automation, platform_manual_override, automation_slot_key, generation_run_id,
         created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+               ?, ?, ?, ?)`,
     )
     .bind(
       id, data.client_id, data.title, data.status ?? 'draft',
@@ -272,10 +274,38 @@ export async function createPost(
       data.asset_type ?? null, data.canva_link ?? null,
       data.ready_for_automation ?? 0, data.asset_delivered ?? 0,
       data.skarleth_notes ?? null, data.error_log ?? null,
+      data.scheduled_by_automation ?? 0, data.platform_manual_override ?? 0,
+      data.automation_slot_key ?? null, data.generation_run_id ?? null,
       now, now,
     )
     .run();
   return (await getPostById(db, id))!;
+}
+
+export async function getPostByAutomationSlot(
+  db: D1Database,
+  clientId: string,
+  automationSlotKey: string,
+  publishDate: string,
+  contentType: string,
+): Promise<PostRow | null> {
+  const bySlot = await db
+    .prepare('SELECT * FROM posts WHERE client_id = ? AND automation_slot_key = ? LIMIT 1')
+    .bind(clientId, automationSlotKey)
+    .first<PostRow>();
+  if (bySlot) return bySlot;
+
+  const fallback = await db
+    .prepare(`SELECT * FROM posts
+              WHERE client_id = ?
+                AND substr(publish_date, 1, 10) = ?
+                AND content_type = ?
+                AND scheduled_by_automation = 1
+              ORDER BY updated_at DESC
+              LIMIT 1`)
+    .bind(clientId, publishDate, contentType)
+    .first<PostRow>();
+  return fallback ?? null;
 }
 
 export async function updatePost(
@@ -470,6 +500,7 @@ export interface GenerationRunRow {
   clients_processed: string | null;
   posts_created:     number;
   posts_updated:     number;
+  overwrite_existing: number;
   error_log:         string | null;
   progress_json:     string | null;
   execution_log:     string | null;   // timestamped append-only log lines
@@ -495,17 +526,17 @@ export interface GenerationProgress {
 
 export async function createGenerationRun(
   db: D1Database,
-  data: { triggered_by: string; date_range: string; client_filter: string | null },
+  data: { triggered_by: string; date_range: string; client_filter: string | null; overwrite_existing?: boolean },
 ): Promise<GenerationRunRow> {
   const id  = crypto.randomUUID().replace(/-/g, '').toLowerCase();
   const now = Math.floor(Date.now() / 1000);
   await db
     .prepare(
       `INSERT INTO generation_runs
-         (id, phase, triggered_by, week_start, client_filter, status, posts_created, posts_updated, created_at, last_activity_at)
-       VALUES (?, 1, ?, ?, ?, 'running', 0, 0, ?, ?)`,
+         (id, phase, triggered_by, week_start, client_filter, status, posts_created, posts_updated, overwrite_existing, created_at, last_activity_at)
+       VALUES (?, 1, ?, ?, ?, 'running', 0, 0, ?, ?, ?)`,
     )
-    .bind(id, data.triggered_by, data.date_range, data.client_filter, now, now)
+    .bind(id, data.triggered_by, data.date_range, data.client_filter, data.overwrite_existing ? 1 : 0, now, now)
     .run();
   return (await getGenerationRunById(db, id))!;
 }
