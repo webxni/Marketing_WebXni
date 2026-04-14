@@ -3,6 +3,7 @@
  */
 import type { ClientPlatformRow, PostRow } from '../types';
 import { normalizePlatform } from './captions';
+import { normalizeContentType } from './platform-compatibility';
 
 /**
  * Build Upload-Post platform-specific extra parameters.
@@ -14,7 +15,12 @@ export function buildExtraParams(
   post: PostRow,
 ): Record<string, string> {
   const normalized = normalizePlatform(platform);
+  const contentType = normalizeContentType(post.content_type, post.asset_type);
   const extra: Record<string, string> = {};
+  const platformCaptionField = `cap_${normalized}` as keyof PostRow;
+  const platformCaption = typeof post[platformCaptionField] === 'string'
+    ? post[platformCaptionField] as string
+    : null;
 
   switch (normalized) {
     case 'facebook':
@@ -67,6 +73,25 @@ export function buildExtraParams(
         if (post.gbp_terms)       extra.gbp_terms        = post.gbp_terms;
       }
       break;
+  }
+
+  if (contentType === 'reel' || contentType === 'video') {
+    extra.description =
+      (normalized === 'youtube' ? post.youtube_description : null)
+      ?? platformCaption
+      ?? post.master_caption
+      ?? post.title
+      ?? '';
+
+    if (contentType === 'reel') {
+      if (normalized === 'instagram') extra.instagram_media_type = 'REELS';
+      if (normalized === 'facebook') extra.facebook_media_type = 'REELS';
+    }
+
+    if (contentType === 'video') {
+      if (normalized === 'instagram') extra.instagram_media_type = 'VIDEO';
+      if (normalized === 'facebook') extra.facebook_media_type = 'VIDEO';
+    }
   }
 
   return extra;

@@ -14,6 +14,7 @@ import {
   getClientWithConfig,
 } from '../db/queries';
 import { normalizeContentType, parsePlatforms, resolvePlatformSelection } from '../modules/platform-compatibility';
+import { UploadPostClient } from '../services/uploadpost';
 
 export const postRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -316,6 +317,48 @@ postRoutes.post('/:id/retry', async (c) => {
     .run();
   await setPostStatus(c.env.DB, post.id, 'ready', 'Pending');
   return c.json({ ok: true, message: 'Failed platforms reset' });
+});
+
+/** POST /api/posts/:id/refresh-urls */
+postRoutes.post('/:id/refresh-urls', async (c) => {
+  const post = await getPostById(c.env.DB, c.req.param('id'));
+  if (!post) return c.json({ error: 'Not found' }, 404);
+
+  const rows = await getPostPlatforms(c.env.DB, post.id);
+  const pendingRows = rows.filter((row) => row.tracking_id && !row.real_url && ['sent', 'idempotent'].includes(row.status ?? ''));
+  if (pendingRows.length === 0) return c.json({ ok: true, updated: 0 });
+
+  const up = new UploadPostClient(c.env.UPLOAD_POST_API_KEY);
+  const { history } = await up.getHistory(200);
+  const urlMap = new Map<string, string>();
+  for (const entry of history) {
+    const trackingId = String(entry['job_id'] ?? entry['request_id'] ?? entry['id'] ?? '');
+    const url = String(entry['post_url'] ?? entry['url'] ?? entry['link'] ?? entry['post_link'] ?? '');
+    if (trackingId && url) urlMap.set(trackingId, url);
+  }
+
+  let updated = 0;
+  for (const row of pendingRows) {
+    const rawId = row.tracking_id!.replace(/^UP:(IDEM:)?/, '');
+    const realUrl = urlMap.get(rawId);
+    if (!realUrl) continue;
+    await c.env.DB
+      .prepare("UPDATE post_platforms SET real_url = ?, status = 'posted' WHERE id = ?")
+      .bind(realUrl, row.id)
+      .run();
+    updated++;
+  }
+
+  if (updated > 0) {
+    const now = Math.floor(Date.now() / 1000);
+    await c.env.DB
+      .prepare(`UPDATE posts SET status = 'posted', automation_status = 'Posted',
+                posted_at = COALESCE(posted_at, ?), updated_at = ? WHERE id = ?`)
+      .bind(now, now, post.id)
+      .run();
+  }
+
+  return c.json({ ok: true, updated });
 });
 
 /** GET /api/posts/:id/platforms */

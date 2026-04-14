@@ -98,6 +98,16 @@ export interface ClientPlatform {
   notes:                   string | null;
 }
 
+export interface ConnectionHealth {
+  platform:      string;
+  configured:    boolean;
+  connected:     boolean;
+  status:        'connected' | 'warning' | 'failed' | 'not_configured';
+  message:       string;
+  message_es:    string;
+  details?:      Record<string, unknown>;
+}
+
 export interface GbpLocation {
   id:           string;
   label:        string;

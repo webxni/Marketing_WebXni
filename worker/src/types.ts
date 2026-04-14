@@ -112,6 +112,11 @@ export interface ClientPlatformRow {
   upload_post_location_id: string | null;
   privacy_level:           string | null;
   privacy_status:          string | null;
+  profile_url?:            string | null;
+  profile_username?:       string | null;
+  connection_status?:      string | null;
+  yt_channel_id?:          string | null;
+  linkedin_urn?:           string | null;
   paused:                  number;
   paused_reason:           string | null;
   paused_since:            string | null;

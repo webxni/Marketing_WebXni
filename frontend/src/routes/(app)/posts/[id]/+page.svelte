@@ -2,7 +2,7 @@
   import { page } from '$app/stores';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
-  import { postsApi, assetsApi } from '$lib/api';
+  import { postsApi, assetsApi, clientsApi } from '$lib/api';
   import Badge from '$lib/components/ui/Badge.svelte';
   import PlatformBadge from '$lib/components/ui/PlatformBadge.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
@@ -11,7 +11,7 @@
   import { toast } from '$lib/stores/ui';
   import { formatDate, formatDateTime, parsePlatforms } from '$lib/utils';
   import { getCompatiblePlatforms, getIncompatiblePlatforms, normalizeContentType } from '$lib/platforms';
-  import type { Post, PostPlatform } from '$lib/types';
+  import type { ConnectionHealth, Post, PostPlatform } from '$lib/types';
 
   let post: Post | null = null;
   let platforms: PostPlatform[] = [];
@@ -20,6 +20,10 @@
   let showApproveConfirm = false;
   let showRejectConfirm = false;
   let showDeleteConfirm = false;
+  let checkingConnections = false;
+  let connectionAccounts: ConnectionHealth[] = [];
+  let connectionMessage = '';
+  let refreshingUrls = false;
 
   function setTab(key: string) { activeTab = key as typeof activeTab; }
 
@@ -28,13 +32,72 @@
     try {
       const postId = $page.params.id;
       if (!postId) return;
-      const r = await postsApi.get(postId);
+      let r = await postsApi.get(postId);
       post = r.post;
       platforms = r.platforms ?? [];
+      if (post?.client_id) await loadConnectionHealth(post.client_id);
+      if (post && platforms.some((pt) => pt.tracking_id && !pt.real_url && ['sent', 'idempotent'].includes(pt.status ?? ''))) {
+        await postsApi.refreshUrls(post.id);
+        r = await postsApi.get(postId);
+        post = r.post;
+        platforms = r.platforms ?? [];
+      }
     } finally { loading = false; }
   }
 
   onMount(load);
+
+  async function loadConnectionHealth(clientId: string) {
+    checkingConnections = true;
+    try {
+      const r = await clientsApi.connectionCheck(clientId);
+      connectionAccounts = r.accounts ?? [];
+      connectionMessage = r.profile_message_es;
+    } catch (e) {
+      connectionAccounts = [];
+      connectionMessage = e instanceof Error ? e.message : 'No se pudo cargar el estado de conexión.';
+    } finally {
+      checkingConnections = false;
+    }
+  }
+
+  function connectionBadge(status: string): string {
+    if (status === 'connected') return 'background:#1a73e81a;color:#1a73e8;border-color:#1a73e866;';
+    if (status === 'warning') return 'background:#f59e0b1a;color:#f59e0b;border-color:#f59e0b66;';
+    if (status === 'failed') return 'background:#ef44441a;color:#f87171;border-color:#ef444466;';
+    return 'background:#6b72801a;color:#9ca3af;border-color:#6b728066;';
+  }
+
+  function platformDisplay(platform: string): string {
+    return platform.replace(/^gbp_/, 'google_business_').replace(/_/g, ' ');
+  }
+
+  async function refreshUrls(showToast = true) {
+    if (!post) return;
+    refreshingUrls = true;
+    try {
+      const r = await postsApi.refreshUrls(post.id);
+      if (showToast) toast.success(r.updated > 0 ? 'Published URLs updated' : 'No new published URLs yet');
+      const latest = await postsApi.get(post.id);
+      post = latest.post;
+      platforms = latest.platforms ?? [];
+    } catch {
+      if (showToast) toast.error('Failed to refresh published URLs');
+    } finally {
+      refreshingUrls = false;
+    }
+  }
+
+  function errorInSpanish(message: string | null): string {
+    if (!message) return '—';
+    if (message.includes('Invalid platforms for text post')) {
+      return 'Se intentó enviar esta publicación como texto cuando la plataforma requiere video.';
+    }
+    if (message.toLowerCase().includes('invalid or expired token')) {
+      return 'La cuenta conectada expiró o el token dejó de ser válido. Reconectar en Upload-Post.';
+    }
+    return message;
+  }
 
   async function submitForReview() {
     if (!post) return;
@@ -439,6 +502,33 @@
           <PlatformBadge platform={p} />
         {/each}
       </div>
+      <div class="rounded-lg border border-border p-3 mb-4" style="background:#1a73e80d;border-color:#1a73e833;">
+        <div class="flex items-center justify-between gap-3 mb-2">
+          <p class="text-xs font-semibold uppercase tracking-wide" style="color:#1a73e8;">Connection Status</p>
+          {#if post.client_id}
+            <button class="btn-ghost btn-sm text-xs" on:click={() => post && loadConnectionHealth(post.client_id)} disabled={checkingConnections}>
+              {checkingConnections ? 'Checking…' : 'Refresh'}
+            </button>
+          {/if}
+        </div>
+        <p class="text-xs text-muted mb-3">{connectionMessage || 'Sin verificación reciente.'}</p>
+        <div class="space-y-2">
+          {#each connectionAccounts as account}
+            <div class="flex items-start justify-between gap-3 rounded border border-border px-3 py-2">
+              <div>
+                <p class="text-sm text-white capitalize">{platformDisplay(account.platform)}</p>
+                <p class="text-xs text-muted">{account.message_es}</p>
+              </div>
+              <span class="text-[11px] font-semibold uppercase tracking-wide px-2 py-1 rounded border" style={connectionBadge(account.status)}>
+                {account.status.replace(/_/g, ' ')}
+              </span>
+            </div>
+          {/each}
+          {#if connectionAccounts.length === 0 && !checkingConnections}
+            <p class="text-xs text-muted">No hay cuentas para validar en este cliente.</p>
+          {/if}
+        </div>
+      </div>
 
       <!-- GBP CTA inline when google_business is a platform -->
       {#if gbpIsSelected}
@@ -693,6 +783,11 @@
     {#if platforms.length === 0}
       <p class="text-sm text-muted text-center py-8">No platform tracking data yet.</p>
     {:else}
+    <div class="flex justify-end px-4 pt-4">
+      <button class="btn-ghost btn-sm" on:click={() => refreshUrls(true)} disabled={refreshingUrls}>
+        {refreshingUrls ? 'Refreshing…' : 'Refresh Published URLs'}
+      </button>
+    </div>
     <div class="table-wrapper">
       <table class="data-table">
         <thead>
@@ -715,10 +810,10 @@
                 {#if pt.real_url}
                   <a href={pt.real_url} target="_blank" class="text-accent hover:underline">View →</a>
                 {:else}
-                  <span class="text-muted">—</span>
+                  <span class="text-muted">{pt.tracking_id ? 'Pendiente de sincronización' : '—'}</span>
                 {/if}
               </td>
-              <td class="text-xs text-red-400 max-w-xs truncate">{pt.error_message ?? '—'}</td>
+              <td class="text-xs text-red-400 max-w-xs truncate" title={pt.error_message ?? ''}>{errorInSpanish(pt.error_message)}</td>
               <td class="text-xs text-muted">{pt.attempted_at ? formatDate(pt.attempted_at) : '—'}</td>
             </tr>
           {/each}

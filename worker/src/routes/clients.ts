@@ -14,11 +14,14 @@ import type { Env, SessionData } from '../types';
 import {
   listClients,
   getClientBySlug,
+  getClientById,
   getClientPlatforms,
   getClientGbpLocations,
   getClientRestrictions,
   writeAuditLog,
 } from '../db/queries';
+import { UploadPostClient, UploadPostError } from '../services/uploadpost';
+import { getConnectionHealth, type UploadPostProfileResponse } from '../modules/posting-diagnostics';
 
 export const clientRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -116,6 +119,139 @@ clientRoutes.get('/:slug', async (c) => {
     getClientRestrictions(c.env.DB, client.id),
   ]);
   return c.json({ client: { ...client, platforms, gbp_locations, restrictions } });
+});
+
+/** GET /api/clients/:id/connection-check */
+clientRoutes.get('/:id/connection-check', async (c) => {
+  const idOrSlug = c.req.param('id');
+  const client = await getClientById(c.env.DB, idOrSlug) ?? await getClientBySlug(c.env.DB, idOrSlug);
+  if (!client) return c.json({ error: 'Not found' }, 404);
+
+  const [platforms, gbp_locations] = await Promise.all([
+    getClientPlatforms(c.env.DB, client.id),
+    getClientGbpLocations(c.env.DB, client.id),
+  ]);
+
+  if (!client.upload_post_profile) {
+    return c.json({
+      ok: false,
+      profile_ok: false,
+      profile_message: 'Upload-Post profile is not configured.',
+      profile_message_es: 'El perfil de Upload-Post no está configurado.',
+      accounts: platforms.map((cfg) => ({
+        platform: cfg.platform,
+        configured: true,
+        connected: false,
+        status: 'failed',
+        message: 'Upload-Post profile is missing.',
+        message_es: 'Falta configurar el perfil de Upload-Post.',
+      })),
+    }, 400);
+  }
+
+  const up = new UploadPostClient(c.env.UPLOAD_POST_API_KEY);
+  let profilePayload: UploadPostProfileResponse | null = null;
+  let profileOk = false;
+  let profileMessage = 'Upload-Post profile reachable.';
+  let profileMessageEs = 'Perfil de Upload-Post accesible.';
+
+  try {
+    profilePayload = await up.getProfile(client.upload_post_profile) as UploadPostProfileResponse;
+    profileOk = true;
+  } catch (err) {
+    const raw = err instanceof UploadPostError ? err.body : String(err);
+    profileMessage = raw;
+    profileMessageEs = err instanceof UploadPostError && err.body.toLowerCase().includes('user not found')
+      ? 'El perfil configurado no existe en Upload-Post.'
+      : 'No se pudo validar el perfil en Upload-Post.';
+  }
+
+  const byPlatform = new Map(platforms.map((row) => [row.platform, row]));
+
+  const locationProbe = async (): Promise<{ ok: boolean; message: string; details?: Record<string, unknown> }> => {
+    try {
+      const payload = await up.getGbpLocations(client.upload_post_profile!) as { locations?: Array<Record<string, unknown>> };
+      const expected = gbp_locations
+        .filter((loc) => loc.paused !== 1)
+        .map((loc) => loc.location_id);
+      const returned = (payload.locations ?? []).map((loc) => String(loc.location_id ?? loc.id ?? ''));
+      const missing = expected.filter((locationId) => !returned.includes(locationId));
+      return missing.length === 0
+        ? { ok: true, message: 'Connected Google Business locations are available.', details: { expected, returned } }
+        : { ok: false, message: `Missing GBP locations: ${missing.join(', ')}`, details: { expected, returned, missing } };
+    } catch (err) {
+      return { ok: false, message: err instanceof UploadPostError ? err.body : String(err) };
+    }
+  };
+
+  const boardProbe = async (): Promise<{ ok: boolean; message: string; details?: Record<string, unknown> }> => {
+    try {
+      const payload = await up.getPinterestBoards(client.upload_post_profile!) as { boards?: Array<Record<string, unknown>> };
+      const expected = platforms
+        .filter((row) => row.platform === 'pinterest' && row.upload_post_board_id)
+        .map((row) => row.upload_post_board_id as string);
+      const returned = (payload.boards ?? []).map((board) => String(board.id ?? board.board_id ?? ''));
+      const missing = expected.filter((boardId) => !returned.includes(boardId));
+      return missing.length === 0
+        ? { ok: true, message: 'Configured Pinterest boards are available.', details: { expected, returned } }
+        : { ok: false, message: `Missing Pinterest boards: ${missing.join(', ')}`, details: { expected, returned, missing } };
+    } catch (err) {
+      return { ok: false, message: err instanceof UploadPostError ? err.body : String(err) };
+    }
+  };
+
+  const linkedinProbe = async (): Promise<{ ok: boolean; message: string; details?: Record<string, unknown> }> => {
+    try {
+      const payload = await up.getLinkedinPages(client.upload_post_profile!) as { pages?: Array<Record<string, unknown>> };
+      const expected = platforms
+        .filter((row) => row.platform === 'linkedin' && row.page_id)
+        .map((row) => row.page_id as string);
+      const returned = (payload.pages ?? []).map((page) => String(page.id ?? page.page_id ?? page.urn ?? ''));
+      const missing = expected.filter((pageId) => !returned.includes(pageId));
+      return missing.length === 0
+        ? { ok: true, message: 'Configured LinkedIn pages are available.', details: { expected, returned } }
+        : { ok: false, message: `Missing LinkedIn pages: ${missing.join(', ')}`, details: { expected, returned, missing } };
+    } catch (err) {
+      return { ok: false, message: err instanceof UploadPostError ? err.body : String(err) };
+    }
+  };
+
+  const probeFor = async (platform: string) => {
+    if (!profileOk) return { ok: false, message: profileMessage };
+    if (platform === 'google_business') return locationProbe();
+    if (platform === 'pinterest') return boardProbe();
+    if (platform === 'linkedin') return linkedinProbe();
+    return { ok: true, message: 'Connected account found in Upload-Post profile.' };
+  };
+
+  const accountPlatforms = Array.from(
+    new Set([
+      ...platforms.map((row) => row.platform),
+      ...Object.keys(profilePayload?.social_accounts ?? {}),
+    ]),
+  ).sort();
+
+  const accounts = [];
+  for (const platform of accountPlatforms) {
+    const cfg = byPlatform.get(platform) ?? null;
+    const probe = await probeFor(platform);
+    const item = getConnectionHealth(platform, cfg, profilePayload, probe);
+    accounts.push(item);
+    if (cfg) {
+      await c.env.DB
+        .prepare('UPDATE client_platforms SET connection_status = ? WHERE id = ?')
+        .bind(item.status, cfg.id)
+        .run();
+    }
+  }
+
+  return c.json({
+    ok: profileOk,
+    profile_ok: profileOk,
+    profile_message: profileMessage,
+    profile_message_es: profileMessageEs,
+    accounts,
+  });
 });
 
 /** PUT /api/clients/:slug — update a client */

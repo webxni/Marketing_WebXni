@@ -45,6 +45,9 @@ export const postsApi = {
   retry: (id: string) =>
     api.post<{ ok: boolean }>(`/api/posts/${id}/retry`),
 
+  refreshUrls: (id: string) =>
+    api.post<{ ok: boolean; updated: number }>(`/api/posts/${id}/refresh-urls`, {}),
+
   getPlatforms: (id: string) =>
     api.get<{ platforms: PostPlatform[] }>(`/api/posts/${id}/platforms`),
 

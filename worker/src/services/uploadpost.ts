@@ -103,8 +103,12 @@ export interface PostVideoParams {
   platform: string;
   title: string;
   videoUrl: string;
+  content_type?: 'reel' | 'video';
   scheduled_date?: string;
   idempotency_key?: string;
+  description?: string;
+  instagram_media_type?: 'REELS' | 'VIDEO';
+  facebook_media_type?: 'REELS' | 'VIDEO';
   youtube_title?: string;
   youtube_description?: string;
   privacyStatus?: string;
@@ -165,11 +169,46 @@ export class UploadPostClient {
   /** POST /api/upload — video URL posts: tiktok, instagram, youtube, facebook, etc. */
   async postVideo(params: PostVideoParams): Promise<UploadPostResponse> {
     const fd = new FormData();
-    for (const [k, v] of Object.entries(params)) {
-      if (k === 'idempotency_key' || k === 'videoUrl' || v === undefined) continue;
-      fd.append(k === 'platform' ? 'platform[]' : k, v);
-    }
+    fd.append('user', params.user);
+    fd.append('platform[]', params.platform);
+    fd.append('title', params.title);
     fd.append('video', params.videoUrl);
+    if (params.scheduled_date) fd.append('scheduled_date', params.scheduled_date);
+    if (params.description) fd.append('description', params.description);
+    if (params.youtube_title) fd.append('youtube_title', params.youtube_title);
+    if (params.youtube_description) fd.append('youtube_description', params.youtube_description);
+    if (params.privacyStatus) fd.append('privacyStatus', params.privacyStatus);
+    if (params.privacy_level) fd.append('privacy_level', params.privacy_level);
+    if (params.gbp_location_id) fd.append('gbp_location_id', params.gbp_location_id);
+    if (params.content_type === 'reel') {
+      if (params.platform === 'instagram') fd.append('media_type', params.instagram_media_type ?? 'REELS');
+      if (params.platform === 'facebook') fd.append('facebook_media_type', params.facebook_media_type ?? 'REELS');
+    } else if (params.content_type === 'video') {
+      if (params.platform === 'instagram') fd.append('media_type', params.instagram_media_type ?? 'VIDEO');
+      if (params.platform === 'facebook') fd.append('facebook_media_type', params.facebook_media_type ?? 'VIDEO');
+    }
+
+    for (const [k, v] of Object.entries(params)) {
+      if (
+        k === 'user' ||
+        k === 'platform' ||
+        k === 'title' ||
+        k === 'videoUrl' ||
+        k === 'scheduled_date' ||
+        k === 'idempotency_key' ||
+        k === 'description' ||
+        k === 'youtube_title' ||
+        k === 'youtube_description' ||
+        k === 'privacyStatus' ||
+        k === 'privacy_level' ||
+        k === 'gbp_location_id' ||
+        k === 'content_type' ||
+        k === 'instagram_media_type' ||
+        k === 'facebook_media_type' ||
+        v === undefined
+      ) continue;
+      fd.append(k, v);
+    }
     return this._call('/api/upload', fd, params.idempotency_key);
   }
 
@@ -192,6 +231,16 @@ export class UploadPostClient {
     });
     if (!r.ok) throw new UploadPostError(r.status, await r.text());
     return r.json() as Promise<{ history: Array<Record<string, unknown>> }>;
+  }
+
+  /** GET /api/uploadposts/post-analytics/request_id — published URL + stats by request id */
+  async getPostAnalytics(requestId: string): Promise<unknown> {
+    const r = await fetch(
+      `${BASE}/api/uploadposts/post-analytics/request_id?request_id=${encodeURIComponent(requestId)}`,
+      { headers: this.auth },
+    );
+    if (!r.ok) throw new UploadPostError(r.status, await r.text());
+    return r.json();
   }
 
   /** GET /api/uploadposts/google-business/locations — list GBP location IDs */
@@ -218,6 +267,16 @@ export class UploadPostClient {
   async getLinkedinPages(profile: string): Promise<unknown> {
     const r = await fetch(
       `${BASE}/api/uploadposts/linkedin/pages?profile=${encodeURIComponent(profile)}`,
+      { headers: this.auth },
+    );
+    if (!r.ok) throw new UploadPostError(r.status, await r.text());
+    return r.json();
+  }
+
+  /** GET /api/uploadposts/users/{username} — profile + connected social accounts */
+  async getProfile(profile: string): Promise<unknown> {
+    const r = await fetch(
+      `${BASE}/api/uploadposts/users/${encodeURIComponent(profile)}`,
       { headers: this.auth },
     );
     if (!r.ok) throw new UploadPostError(r.status, await r.text());

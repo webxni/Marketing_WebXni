@@ -9,6 +9,7 @@
  */
 import type { ClientPlatformRow, ClientRow, PostRow } from '../types';
 import { normalizePlatform } from './captions';
+import { normalizeContentType } from './platform-compatibility';
 
 export interface PreflightResult {
   ok:     boolean;
@@ -75,6 +76,30 @@ export async function preflight(
       ok: false, tag: 'SKIP',
       reason: `No caption for '${normalizedPlatform}'`,
     };
+  }
+
+  // 5b. Reels/videos must have a media asset and must not fall back to text delivery.
+  if (post) {
+    const contentType = normalizeContentType(post.content_type, post.asset_type);
+    if ((contentType === 'reel' || contentType === 'video') && !post.asset_r2_key) {
+      return {
+        ok: false,
+        tag: 'SKIP',
+        reason: `Reel/video post for '${normalizedPlatform}' requires a media asset before publishing`,
+      };
+    }
+
+    if (
+      contentType === 'reel' &&
+      ['instagram', 'tiktok', 'youtube', 'facebook', 'threads'].includes(normalizedPlatform) &&
+      !post.asset_r2_key
+    ) {
+      return {
+        ok: false,
+        tag: 'SKIP',
+        reason: `Reel platform '${normalizedPlatform}' cannot be sent as a text-only post`,
+      };
+    }
   }
 
   // 6. Pinterest requires upload_post_board_id

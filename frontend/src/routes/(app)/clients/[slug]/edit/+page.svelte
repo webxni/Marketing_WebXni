@@ -5,13 +5,17 @@
   import { clientsApi, packagesApi, assetsApi } from '$lib/api';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import { toast } from '$lib/stores/ui';
-  import type { Client, Package } from '$lib/types';
+  import type { Client, ConnectionHealth, Package } from '$lib/types';
 
   let client: Client | null = null;
   let loading = true;
   let saving = false;
   let testingWp = false;
   let wpTestResult: { ok: boolean; user?: { name: string }; error?: string } | null = null;
+  let checkingConnections = false;
+  let connectionError = '';
+  let connectionProfileMessage = '';
+  let connectionAccounts: ConnectionHealth[] = [];
 
   // ── Basic fields ────────────────────────────────────────────────────────────
   let canonical_name = '';
@@ -93,9 +97,32 @@
       wp_template_key          = client.wp_template_key ?? client.wp_template ?? '';
       wp_featured_image_mode   = client.wp_featured_image_mode ?? 'upload';
       wp_excerpt_mode          = client.wp_excerpt_mode ?? 'auto';
+      await loadConnectionHealth(client.id);
     } catch { toast.error('Failed to load client'); }
     finally { loading = false; }
   });
+
+  async function loadConnectionHealth(clientId: string) {
+    checkingConnections = true;
+    connectionError = '';
+    try {
+      const r = await clientsApi.connectionCheck(clientId);
+      connectionProfileMessage = r.profile_message_es;
+      connectionAccounts = r.accounts ?? [];
+    } catch (e) {
+      connectionError = e instanceof Error ? e.message : 'Failed to load connection status';
+      connectionAccounts = [];
+    } finally {
+      checkingConnections = false;
+    }
+  }
+
+  function connectionBadge(status: string): string {
+    if (status === 'connected') return 'background:#1a73e81a;color:#1a73e8;border-color:#1a73e866;';
+    if (status === 'warning') return 'background:#f59e0b1a;color:#f59e0b;border-color:#f59e0b66;';
+    if (status === 'failed') return 'background:#ef44441a;color:#f87171;border-color:#ef444466;';
+    return 'background:#6b72801a;color:#9ca3af;border-color:#6b728066;';
+  }
 
   async function uploadLogo() {
     if (!logoFile || !logoFile[0]) return;
@@ -237,7 +264,14 @@
 
     <!-- Upload-Post / Automation -->
     <div class="card p-5">
-      <h3 class="section-label mb-4">Automation</h3>
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="section-label">Automation</h3>
+        {#if client}
+          <button class="btn-ghost btn-sm" on:click={() => client && loadConnectionHealth(client.id)} disabled={checkingConnections}>
+            {checkingConnections ? 'Checking…' : 'Refresh Status'}
+          </button>
+        {/if}
+      </div>
       <div class="space-y-4">
         <div>
           <label for="upload_post_profile" class="block text-xs text-muted mb-1.5">Upload-Post Profile</label>
@@ -251,6 +285,33 @@
         <div class="flex items-center gap-2">
           <input type="checkbox" bind:checked={manual_only} id="manual-only" class="rounded" />
           <label for="manual-only" class="text-xs text-muted cursor-pointer">Manual only (skip automation entirely)</label>
+        </div>
+        <div class="rounded-lg border border-border p-3" style="background:#1a73e80d;border-color:#1a73e833;">
+          <div class="flex items-center justify-between gap-3 mb-2">
+            <p class="text-xs font-semibold uppercase tracking-wide" style="color:#1a73e8;">Connection Status</p>
+            {#if checkingConnections}<span class="text-xs text-muted">Checking live accounts…</span>{/if}
+          </div>
+          {#if connectionError}
+            <p class="text-xs text-red-400">{connectionError}</p>
+          {:else}
+            <p class="text-xs text-muted mb-3">{connectionProfileMessage || 'Sin verificación reciente.'}</p>
+            <div class="space-y-2">
+              {#each connectionAccounts as account}
+                <div class="flex items-start justify-between gap-3 rounded border border-border px-3 py-2">
+                  <div>
+                    <p class="text-sm text-white capitalize">{account.platform.replace(/_/g, ' ')}</p>
+                    <p class="text-xs text-muted">{account.message_es}</p>
+                  </div>
+                  <span class="text-[11px] font-semibold uppercase tracking-wide px-2 py-1 rounded border" style={connectionBadge(account.status)}>
+                    {account.status.replace(/_/g, ' ')}
+                  </span>
+                </div>
+              {/each}
+              {#if connectionAccounts.length === 0 && !checkingConnections}
+                <p class="text-xs text-muted">No hay plataformas conectadas para validar.</p>
+              {/if}
+            </div>
+          {/if}
         </div>
       </div>
     </div>

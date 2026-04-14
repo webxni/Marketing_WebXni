@@ -11,12 +11,13 @@ import {
   updatePostingJob,
   upsertPostPlatform,
   setPostStatus,
+  writeAuditLog,
 } from '../db/queries';
 import { UploadPostClient, UploadPostError } from '../services/uploadpost';
 import { preflight } from '../modules/preflight';
 import { makeIdempotencyKey } from '../modules/idempotency';
 import { getCaption, normalizePlatform, SKIP_PLATFORMS } from '../modules/captions';
-import { getGbpCaptionField, getGbpPostedKey } from '../modules/platform-compatibility';
+import { getGbpCaptionField, getGbpPostedKey, normalizeContentType } from '../modules/platform-compatibility';
 import {
   getScheduledTime,
   isVideoUrl,
@@ -24,6 +25,7 @@ import {
   requiresMedia,
 } from '../modules/media';
 import { buildExtraParams, extractTrackingId } from '../modules/posting';
+import { translatePostingError } from '../modules/posting-diagnostics';
 
 export interface PostingRunParams {
   mode: 'dry_run' | 'real';
@@ -120,12 +122,16 @@ async function processPost(
   const platforms: string[] = JSON.parse(post.platforms ?? '[]');
   const publishDate = post.publish_date ?? 'nodate';
   const sched_time = getScheduledTime(post.publish_date);
+  const normalizedContentType = normalizeContentType(post.content_type, post.asset_type);
 
   // Detect media kind
   let mediaKind: 'image' | 'video' | null = null;
   let mediaUrl: string | null = null;
 
-  if (post.asset_r2_key) {
+  if (normalizedContentType === 'reel' || normalizedContentType === 'video') {
+    mediaKind = 'video';
+    mediaUrl = post.asset_r2_key;
+  } else if (post.asset_r2_key) {
     mediaUrl = post.asset_r2_key; // Will be resolved to R2 URL or Drive URL below
     if (isVideoUrl(post.asset_r2_key)) {
       mediaKind = 'video';
@@ -193,6 +199,7 @@ async function processPost(
 
     const result = await preflight(client, platform, caption);
     if (!result.ok) {
+      const reasonEs = translatePostingError(result.reason, platform);
       if (result.tag === 'BLOCKED') stats.blocked++;
       else stats.skipped++;
       // Record skip/blocked in post_platforms
@@ -201,8 +208,9 @@ async function processPost(
           post_id: post.id,
           platform,
           status: result.tag.toLowerCase(),
-          error_message: result.reason,
+          error_message: reasonEs,
         });
+        await logPostingAudit(env.DB, post.id, platform, result.tag.toLowerCase(), reasonEs, result.reason);
       }
       continue;
     }
@@ -251,6 +259,7 @@ async function processPost(
           platform,
           title: caption!,
           videoUrl: videoR2Url,
+          content_type: normalizedContentType === 'reel' ? 'reel' : 'video',
           scheduled_date: sched_time,
           idempotency_key: idemKey,
           ...extra,
@@ -288,6 +297,7 @@ async function processPost(
           idempotency_key: idemKey,
         });
       }
+      await logPostingAudit(env.DB, post.id, platform, 'sent', 'Publicación enviada a Upload-Post.', response);
       stats.posted++;
       thisPosted++;
     } catch (err) {
@@ -300,12 +310,14 @@ async function processPost(
           status: 'idempotent',
           idempotency_key: idemKey,
         });
+        await logPostingAudit(env.DB, post.id, platform, 'idempotent', 'Upload-Post indicó que esta publicación ya existía.', err.body);
         stats.posted++;
         thisPosted++;
       } else {
-        const msg = err instanceof UploadPostError
+        const rawMsg = err instanceof UploadPostError
           ? `HTTP ${err.status}: ${err.body.slice(0, 300)}`
           : String(err);
+        const msg = translatePostingError(rawMsg, platform);
         await upsertPostPlatform(env.DB, {
           post_id: post.id,
           platform,
@@ -313,6 +325,7 @@ async function processPost(
           error_message: msg,
           idempotency_key: idemKey,
         });
+        await logPostingAudit(env.DB, post.id, platform, 'failed', msg, rawMsg);
         stats.failed++;
         thisFailed++;
       }
@@ -417,6 +430,7 @@ async function postGbpMultiLocation(
           platform: 'google_business',
           title: caption,
           videoUrl: videoR2Url,
+          content_type: 'video',
           scheduled_date: schedTime,
           idempotency_key: idemKey,
           ...extra,
@@ -452,6 +466,7 @@ async function postGbpMultiLocation(
         status: 'sent',
         idempotency_key: idemKey,
       });
+      await logPostingAudit(env.DB, post.id, postedField, 'sent', `Publicación GBP enviada para ${loc.label}.`, response);
       stats.posted++;
     } catch (err) {
       if (err instanceof UploadPostError && err.isIdempotent) {
@@ -461,17 +476,20 @@ async function postGbpMultiLocation(
           tracking_id: `UP:IDEM:${idemKey}`,
           status: 'idempotent',
         });
+        await logPostingAudit(env.DB, post.id, postedField, 'idempotent', `Upload-Post indicó que la publicación GBP de ${loc.label} ya existía.`, err.body);
         stats.posted++;
       } else {
-        const msg = err instanceof UploadPostError
+        const rawMsg = err instanceof UploadPostError
           ? `HTTP ${err.status}: ${err.body.slice(0, 200)}`
           : String(err);
+        const msg = translatePostingError(rawMsg, postedField);
         await upsertPostPlatform(env.DB, {
           post_id: post.id,
           platform: postedField,
           status: 'failed',
           error_message: msg,
         });
+        await logPostingAudit(env.DB, post.id, postedField, 'failed', msg, rawMsg);
         stats.failed++;
       }
     }
@@ -484,4 +502,24 @@ async function writeError(db: D1Database, postId: string, msg: string): Promise<
     .prepare('UPDATE posts SET error_log = ?, updated_at = ? WHERE id = ?')
     .bind(`[${new Date().toISOString()}] ${msg}`, now, postId)
     .run();
+}
+
+async function logPostingAudit(
+  db: D1Database,
+  postId: string,
+  platform: string,
+  status: string,
+  messageEs: string,
+  raw?: unknown,
+): Promise<void> {
+  await writeAuditLog(db, {
+    action: `posting.${status}`,
+    entity_type: 'post',
+    entity_id: postId,
+    new_value: {
+      platform,
+      message_es: messageEs,
+      raw,
+    },
+  });
 }

@@ -1,5 +1,5 @@
 import { api } from './client';
-import type { Client, ClientPlatform } from '../types';
+import type { Client, ClientPlatform, ConnectionHealth } from '../types';
 
 export interface WpTestResult {
   ok:     boolean;
@@ -21,6 +21,9 @@ export const clientsApi = {
 
   get: (slug: string) =>
     api.get<{ client: Client & { platforms: ClientPlatform[]; gbp_locations: unknown[]; restrictions: string[] } }>(`/api/clients/${slug}`),
+
+  connectionCheck: (id: string) =>
+    api.get<{ ok: boolean; profile_ok: boolean; profile_message: string; profile_message_es: string; accounts: ConnectionHealth[] }>(`/api/clients/${id}/connection-check`),
 
   create: (data: Partial<Client>) =>
     api.post<{ client: Client }>('/api/clients', data),
