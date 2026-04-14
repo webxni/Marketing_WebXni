@@ -165,15 +165,24 @@ That section is NOT needed — Skarleth submits for approval when she's done.
 
 ## AI Content Generation
 
-**Trigger:** `POST /api/run/generate` → creates `generation_run` record → runs in `waitUntil()`  
+**Trigger:** `POST /api/run/generate` → creates `generation_run` record → planning runs in `waitUntil()`  
 **Files:** `worker/src/loader/generation-run.ts` + `worker/src/services/openai.ts`
 
 - Reads client's package from DB to determine: posts/mo, content type mix, frequency, platforms
+- Stores a full slot plan in `generation_runs.post_slots`
+- Starts generation by dispatching slot `0` to `/internal/gen-step`
+- `/internal/gen-step` executes one slot inline, updates run progress/state, then queues the next self-dispatch
 - Generates platform-specific captions for each platform the client uses
 - Spanish designer prompts (`ai_image_prompt`, `ai_video_prompt`) — ALWAYS in Spanish
 - Posts created as `status = 'draft'`
 - Frontend: `frontend/src/routes/(app)/automation/+page.svelte`
 - Designer view: "🎨 Diseño" tab on `posts/[id]/+page.svelte`
+
+### Generation reliability rule
+- Do not dispatch the next generation step from inside post-generation slot work after the OpenAI request finishes
+- Real production evidence on April 14, 2026: a 19-slot run reached 14/19, then failed at `Next-step dispatch start: slot 15/19` with `gen-step returned 500`
+- Treat per-slot generation/save errors as partial-run errors, not orchestration-killing failures
+- Dispatch failures must be logged immediately to both `execution_log` and `error_log`
 
 ---
 

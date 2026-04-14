@@ -163,8 +163,20 @@ frontend/src/lib/api/
 1. Reads client's package from DB (posts/mo, content type mix, frequency, platforms)
 2. Builds a content-type sequence (images/videos/reels/blogs evenly interleaved)
 3. Builds publish dates based on `posting_frequency` (daily/3x_week/twice_weekly/weekly/biweekly/monthly)
-4. For each client × date → calls GPT-4o to generate platform-specific content
-5. Creates post as `status = 'draft'` in DB
+4. Stores a full slot plan in `generation_runs.post_slots`
+5. Dispatches slot `0` to `/internal/gen-step`
+6. Each `/internal/gen-step` request executes exactly one slot, saves the post, updates progress, then queues the next slot
+7. Creates post as `status = 'draft'` in DB
+
+### Reliability notes
+- Do not dispatch the next generation step from inside slot work after the long OpenAI request completes
+- The April 14, 2026 production failure was a mid-run self-dispatch crash after slot 14/19 (`Trigger failed for slot 14: gen-step returned 500`)
+- Current design is sequential: slot work runs inline in `/internal/gen-step`; only the quick next-hop dispatch is queued in `waitUntil()`
+- One slot failure should be recorded in `error_log` and the run should continue unless dispatch itself becomes impossible
+- Run status rules:
+  - `completed` = all planned slots reached, no recorded errors
+  - `completed_with_errors` = all reachable slots processed but one or more slot/dispatch errors were recorded
+  - `failed` = planning failed or dispatch/orchestration failed before any useful completion
 
 ### Designer prompts (always in Spanish)
 - `ai_image_prompt` — detailed image/design brief for the designer (Midjourney/Canva style)
@@ -404,6 +416,7 @@ bash deploy.sh
 - Return `c.json({ error: '...' }, 4xx)` for errors
 - Audit important actions: `writeAuditLog(db, { ... })`
 - Wrap `waitUntil()` for background tasks
+- For generation orchestration, never put a second network hop after a long OpenAI call inside the same `waitUntil()` chain
 
 ### Frontend (Svelte 4)
 - Svelte 4 syntax — NOT Svelte 5 runes (`$state`, `$effect`, etc.)

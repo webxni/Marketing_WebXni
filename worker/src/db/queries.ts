@@ -618,6 +618,23 @@ export async function appendGenerationLog(
     .run();
 }
 
+export async function appendGenerationError(
+  db: D1Database,
+  id: string,
+  message: string,
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  const ts  = new Date(now * 1000).toISOString().slice(0, 19) + 'Z';
+  const line = `${ts} ${message}`;
+  await db
+    .prepare(`UPDATE generation_runs
+              SET error_log = substr(COALESCE(error_log || char(10), '') || ?, -40000),
+                  last_activity_at = ?
+              WHERE id = ?`)
+    .bind(line, now, id)
+    .run();
+}
+
 /**
  * Auto-heal stuck runs — mark any run that has been 'running' for > thresholdSeconds
  * with no last_activity_at update as 'timed_out'.  Safe to call on every list request.

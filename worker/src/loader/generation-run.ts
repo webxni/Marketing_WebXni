@@ -1,26 +1,26 @@
 /**
- * AI content generation — trigger-first chained-invocation architecture.
+ * AI content generation — sequential chained-invocation architecture.
  *
  * Root problem: after a long-running outbound fetch (OpenAI ~20s) inside a
  * CF Workers waitUntil() context, the V8 event loop freezes.  Any subsequent
  * await — including SELF service-binding calls — never resolves.
  *
- * Fix: each /internal/gen-step request handler triggers the NEXT step
- * immediately (first and only outbound operation in the handler, always
- * reliable), then runs the current step's OpenAI work in waitUntil().
- * waitUntil() makes exactly ONE outbound connection (OpenAI) and then only
- * does D1 writes — no second connection, so the freeze never matters.
+ * Fix: each /internal/gen-step request handler executes exactly ONE slot in the
+ * request itself, then queues the NEXT step via waitUntil() only after the
+ * slot finishes. The queued waitUntil task performs only the quick self-fetch
+ * hop, so the fragile "dispatch after OpenAI inside waitUntil" path is gone.
  *
  * Flow:
  *   POST /api/run/generate
  *     → planGeneration()              [DB reads + writes, computes slots]
  *     → triggerStep(slot 0)           [SELF.fetch — first connection, reliable]
  *         ↓ /internal/gen-step
- *         handler: triggerStep(slot 1) [first connection in this invocation]
- *         waitUntil: executeSlotWork(slot 0) [OpenAI + D1 writes only]
+ *         ↓ /internal/gen-step
+ *         executeSlotWork(slot 0)      [OpenAI + D1 writes]
+ *         waitUntil: triggerStep(slot 1) [quick self-dispatch only]
  *             ↓ /internal/gen-step
- *             handler: triggerStep(slot 2)
- *             waitUntil: executeSlotWork(slot 1)
+ *             executeSlotWork(slot 1)
+ *             waitUntil: triggerStep(slot 2)
  *                 ...
  */
 
@@ -32,6 +32,7 @@ import {
   createPost,
   updateGenerationProgress,
   appendGenerationLog,
+  appendGenerationError,
   storeGenerationPlan,
   finalizeGenerationRun,
   getGenerationRunById,
@@ -226,8 +227,19 @@ function str(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+function detail(err: unknown): string {
+  if (err instanceof Error) return err.stack ? `${err.message}\n${err.stack}` : err.message;
+  return String(err);
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+export interface SlotWorkResult {
+  outcome: 'skipped' | 'continue' | 'completed';
+  nextSlot?: number;
+  totalSlots?: number;
 }
 
 /**
@@ -353,9 +365,6 @@ export async function planGeneration(env: Env, params: GenerationParams, baseUrl
 
     await log('INFO', `Plan ready: ${slots.length} slots — firing step 0`);
     await log('INFO', `Dispatch start: slot 0 / ${slots.length - 1}`);
-    // triggerStep is called from the request handler of /api/run/generate,
-    // which cascades: slot 0 handler triggers slot 1, slot 1 triggers slot 2, etc.
-    // All triggers resolve quickly; then all waitUntil tasks run in parallel.
     await triggerStep(env, baseUrl, params.run_id, 0);
     await log('INFO', 'Dispatch success: slot 0');
 
@@ -369,13 +378,12 @@ export async function planGeneration(env: Env, params: GenerationParams, baseUrl
 // ─────────────────────────────────────────────────────────────────────────────
 // Phase 2 — Execute one slot
 //
-// Called from POST /internal/gen-step waitUntil().
-// The trigger for the NEXT step was already fired from the handler (before
-// this function runs), so this function makes exactly ONE outbound connection
-// (OpenAI) and then only does D1 writes.  No second connection → no freeze.
+// Called directly by POST /internal/gen-step.
+// This function executes exactly one slot and returns the next orchestration
+// state. It never dispatches the next step itself.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function executeSlotWork(env: Env, run_id: string, slot_idx: number, baseUrl: string): Promise<void> {
+export async function executeSlotWork(env: Env, run_id: string, slot_idx: number): Promise<SlotWorkResult> {
   const db = env.DB;
 
   async function log(level: Parameters<typeof appendGenerationLog>[2], msg: string) {
@@ -383,160 +391,33 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
     try { await appendGenerationLog(db, run_id, level, msg); } catch { /* */ }
   }
 
-  // Top-level catch: write any unhandled crash to the DB log.
-  try {
-
-  // Heartbeat — proves this function was entered.
-  try {
-    await db.prepare('UPDATE generation_runs SET last_activity_at = ? WHERE id = ?')
-      .bind(Math.floor(Date.now() / 1000), run_id).run();
-  } catch { /* ignore */ }
-
-  const run = await getGenerationRunById(db, run_id);
-  if (!run || run.status !== 'running') {
-    await log('WARN', `Slot ${slot_idx}: skipped — status: ${run?.status ?? 'not found'}`);
-    return;
+  async function recordError(message: string) {
+    try { await appendGenerationError(db, run_id, message); } catch { /* ignore */ }
   }
 
-  const slots:    PostSlot[] = JSON.parse(run.post_slots ?? '[]');
-  const postTime: string     = run.publish_time ?? '10:00';
+  async function finishSlot(
+    nextCompletedIdx: number,
+    postCreated: boolean,
+    clientName: string,
+    slots: PostSlot[],
+  ): Promise<SlotWorkResult> {
+    const now = Math.floor(Date.now() / 1000);
+    await db
+      .prepare(`UPDATE generation_runs
+                SET current_slot_idx = ?,
+                    posts_created    = posts_created + ?,
+                    last_activity_at = ?
+                WHERE id = ?`)
+      .bind(nextCompletedIdx, postCreated ? 1 : 0, now, run_id)
+      .run();
 
-  if (slot_idx >= slots.length) {
-    await log('WARN', `Slot ${slot_idx} out of range (total ${slots.length}) — ignoring`);
-    return;
-  }
+    const updated = await db
+      .prepare('SELECT current_slot_idx, total_slots, posts_created, error_log FROM generation_runs WHERE id = ?')
+      .bind(run_id)
+      .first<{ current_slot_idx: number; total_slots: number; posts_created: number; error_log: string | null }>();
 
-  const slot    = slots[slot_idx];
-  const postKey = `${slot.client_slug} / ${slot.date} / ${slot.content_type}`;
-  let clientName = slot.client_slug;
+    if (!updated) return { outcome: 'skipped' };
 
-  await log('INFO', `Step ${slot_idx + 1}/${slots.length}: ${postKey}`);
-
-  let postCreated = false;
-  let errorMsg:   string | null = null;
-  const settings  = await loadSystemSettings(env);
-  const apiKey    = env.OPENAI_API_KEY || settings.ai_api_key || '';
-
-  try {
-    if (!apiKey) throw new Error('Missing OpenAI API key');
-
-    const client = await db.prepare('SELECT * FROM clients WHERE id = ?').bind(slot.client_id).first<ClientRow>();
-    if (!client) throw new Error(`Client not found: ${slot.client_slug}`);
-    clientName = client.canonical_name;
-
-    // Package
-    let pkg = DEFAULT_PACKAGE;
-    if (client.package) {
-      const p = await db.prepare('SELECT * FROM packages WHERE slug = ? AND active = 1').bind(client.package).first<PackageRow>();
-      if (p) pkg = p;
-    }
-
-    // Platforms
-    let platforms: string[] = [];
-    try { platforms = JSON.parse(pkg.platforms_included); } catch { /* */ }
-    if (platforms.length === 0) {
-      const cp = await getClientPlatforms(db, client.id);
-      platforms = cp.map(p => p.platform);
-    }
-    if (platforms.length === 0) platforms = ['facebook', 'instagram'];
-
-    // Context data
-    const intel   = await db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>() ?? null;
-    const fbRows  = await db.prepare('SELECT sentiment, message AS note FROM client_feedback WHERE client_id = ? ORDER BY created_at DESC LIMIT 10').bind(client.id).all<FeedbackRow>();
-    const recRows = await db.prepare(`SELECT title, master_caption FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 10`).bind(client.id).all<{title:string|null;master_caption:string|null}>();
-    const recentTitles = recRows.results.map(r => r.title ?? r.master_caption?.slice(0, 80) ?? '').filter(Boolean) as string[];
-
-    const ctx: GenerationContext = {
-      client: {
-        canonical_name:      client.canonical_name,
-        notes:               client.notes,
-        brand_json:          client.brand_json,
-        brand_primary_color: (client as unknown as {brand_primary_color?: string|null}).brand_primary_color ?? null,
-        language:            client.language,
-        phone:               client.phone,
-        cta_text:            client.cta_text,
-        industry:            client.industry,
-        state:               client.state,
-        owner_name:          client.owner_name,
-      },
-      intelligence:  intel,
-      recentTitles,
-      feedback:      fbRows.results,
-      publishDate:   slot.date,
-      contentType:   slot.content_type,
-      platforms,
-      contentIntent: slot.content_intent,
-    };
-
-    // OpenAI — single outbound fetch per invocation (no second connection after this).
-    await log('AI', `OpenAI start: ${postKey} (${slot.content_intent}) — ${platforms.length} platforms`);
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(new Error('OpenAI 30s timeout')), 30_000);
-    let genResult: Awaited<ReturnType<typeof generatePostContent>>;
-    try {
-      genResult = await generatePostContent(apiKey, ctx, { signal: controller.signal });
-    } finally {
-      clearTimeout(timer);
-    }
-    await log('AI', `OpenAI done: ${postKey} (${genResult.meta.elapsedMs}ms, attempts=${genResult.meta.attempts}, model=${genResult.meta.model})`);
-
-    // Save post
-    await log('INFO', `Save start: ${postKey}`);
-    const saveStarted = Date.now();
-    const p = genResult.post as unknown as Record<string, string | undefined>;
-    const caps: Record<string, string | null> = {};
-    for (const key of ['cap_facebook','cap_instagram','cap_linkedin','cap_x','cap_threads','cap_tiktok','cap_pinterest','cap_bluesky','cap_google_business'])
-      caps[key] = p[key] ?? null;
-
-    await createPost(db, {
-      client_id:           client.id,
-      title:               genResult.post.title ?? `${client.canonical_name} — ${slot.date}`,
-      status:              'draft',
-      content_type:        slot.content_type,
-      platforms:           JSON.stringify(platforms),
-      publish_date:        `${slot.date}T${postTime}`,
-      master_caption:      genResult.post.master_caption ?? null,
-      ...caps,
-      youtube_title:       genResult.post.youtube_title       ?? null,
-      youtube_description: genResult.post.youtube_description ?? null,
-      blog_content:        genResult.post.blog_content        ?? null,
-      blog_excerpt:        genResult.post.blog_excerpt        ?? null,
-      slug:                genResult.post.slug                ?? null,
-      seo_title:           genResult.post.seo_title           ?? null,
-      meta_description:    genResult.post.meta_description    ?? null,
-      target_keyword:      genResult.post.target_keyword      ?? null,
-      video_script:        genResult.post.video_script        ?? null,
-      ai_image_prompt:     genResult.post.ai_image_prompt     ?? null,
-      ai_video_prompt:     genResult.post.ai_video_prompt     ?? null,
-    } as Parameters<typeof createPost>[1]);
-    await log('INFO', `Save done: ${postKey} (${Date.now() - saveStarted}ms)`);
-
-    postCreated = true;
-    await log('SAVED', `Post ${slot_idx + 1}/${slots.length}: "${genResult.post.title?.slice(0, 55) ?? '(no title)'}" — ${slot.client_slug}`);
-
-  } catch (err) {
-    errorMsg = `${postKey}: ${str(err)}`;
-    await log('ERROR', errorMsg);
-  }
-
-  // Advance sequential progress after the slot finishes.
-  const now = Math.floor(Date.now() / 1000);
-  await db
-    .prepare(`UPDATE generation_runs
-              SET current_slot_idx = ?,
-                  posts_created    = posts_created + ?,
-                  last_activity_at = ?
-              WHERE id = ?`)
-    .bind(slot_idx + 1, postCreated ? 1 : 0, now, run_id)
-    .run();
-
-  // Re-read to check if this was the last slot and to decide the next one.
-  const updated = await db
-    .prepare('SELECT current_slot_idx, total_slots, posts_created, error_log FROM generation_runs WHERE id = ?')
-    .bind(run_id)
-    .first<{ current_slot_idx: number; total_slots: number; posts_created: number; error_log: string | null }>();
-
-  if (updated) {
     const progress: GenerationProgress = {
       current_client: clientName,
       current_post: updated.current_slot_idx < updated.total_slots
@@ -544,52 +425,169 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         : '',
       completed: updated.current_slot_idx,
       total_estimated: updated.total_slots,
-      errors: errorMsg ? 1 : 0,
+      errors: updated.error_log ? updated.error_log.split('\n').filter(Boolean).length : 0,
       clients_done: 0,
       clients_total: 0,
     };
     try { await updateGenerationProgress(db, run_id, progress); } catch { /* ignore */ }
-  }
 
-  if (updated && updated.current_slot_idx >= updated.total_slots) {
-    const errLog     = errorMsg ? (updated.error_log ? updated.error_log + '\n' + errorMsg : errorMsg) : updated.error_log;
-    const finalStatus = updated.posts_created > 0 ? (errLog ? 'completed_with_errors' : 'completed') : 'failed';
-    await finalizeGenerationRun(db, run_id, finalStatus, updated.posts_created, errLog ?? null);
-    await log('DONE', `Run complete: ${updated.posts_created}/${updated.total_slots} posts, status=${finalStatus}`);
-  } else if (updated) {
-    const nextSlot = updated.current_slot_idx;
-    try {
-      await log('INFO', `Next-step dispatch start: slot ${nextSlot + 1}/${updated.total_slots}`);
-      await triggerStep(env, baseUrl, run_id, nextSlot);
-      await log('INFO', `Next-step dispatch success: slot ${nextSlot + 1}/${updated.total_slots}`);
-    } catch (err) {
-      const trigMsg = `Trigger failed for slot ${nextSlot}: ${str(err)}`;
-      await log('ERROR', trigMsg);
-      const errLog = updated.error_log ? `${updated.error_log}\n${trigMsg}` : trigMsg;
-      const finalStatus = updated.posts_created > 0 ? 'completed_with_errors' : 'failed';
-      await finalizeGenerationRun(db, run_id, finalStatus, updated.posts_created, errLog);
+    if (updated.current_slot_idx >= updated.total_slots) {
+      const finalStatus = updated.posts_created > 0 ? (updated.error_log ? 'completed_with_errors' : 'completed') : 'failed';
+      await finalizeGenerationRun(db, run_id, finalStatus, updated.posts_created, updated.error_log ?? null);
+      await log('DONE', `Run complete: ${updated.posts_created}/${updated.total_slots} posts, status=${finalStatus}`);
+      return { outcome: 'completed', totalSlots: updated.total_slots };
     }
+
+    return { outcome: 'continue', nextSlot: updated.current_slot_idx, totalSlots: updated.total_slots };
   }
 
-  } catch (topErr) {
-    // Unhandled crash — write directly to the DB log so it appears in the UI.
-    const errMsg = topErr instanceof Error ? topErr.message : String(topErr);
-    console.error(`[gen:${run_id.slice(0, 8)}] slot${slot_idx} UNHANDLED:`, topErr);
+  let slots: PostSlot[] = [];
+  let clientName = '';
+
+  try {
     try {
-      const now = Math.floor(Date.now() / 1000);
-      await db
-        .prepare(`UPDATE generation_runs
-                  SET execution_log = COALESCE(execution_log || char(10), '') || ?,
-                      error_log     = COALESCE(error_log     || char(10), '') || ?,
-                      last_activity_at = ?
-                  WHERE id = ?`)
-        .bind(
-          `${new Date(now * 1000).toISOString().slice(0, 19)}Z [ERROR] slot${slot_idx} UNHANDLED: ${errMsg}`,
-          errMsg,
-          now,
-          run_id,
-        )
-        .run();
+      await db.prepare('UPDATE generation_runs SET last_activity_at = ? WHERE id = ?')
+        .bind(Math.floor(Date.now() / 1000), run_id).run();
     } catch { /* ignore */ }
+
+    const run = await getGenerationRunById(db, run_id);
+    if (!run || run.status !== 'running') {
+      await log('WARN', `Slot ${slot_idx}: skipped — status: ${run?.status ?? 'not found'}`);
+      return { outcome: 'skipped' };
+    }
+
+    slots = JSON.parse(run.post_slots ?? '[]');
+    const postTime = run.publish_time ?? '10:00';
+
+    if (slot_idx >= slots.length) {
+      await log('WARN', `Slot ${slot_idx} out of range (total ${slots.length}) — ignoring`);
+      return { outcome: 'skipped' };
+    }
+
+    if ((run.current_slot_idx ?? 0) > slot_idx) {
+      await log('WARN', `Slot ${slot_idx}: duplicate/stale dispatch — current_slot_idx=${run.current_slot_idx ?? 0}`);
+      return { outcome: 'skipped' };
+    }
+
+    if ((run.current_slot_idx ?? 0) < slot_idx) {
+      await log('WARN', `Slot ${slot_idx}: out-of-order dispatch — current_slot_idx=${run.current_slot_idx ?? 0}`);
+      return { outcome: 'continue', nextSlot: run.current_slot_idx ?? 0, totalSlots: run.total_slots ?? slots.length };
+    }
+
+    const slot = slots[slot_idx];
+    const postKey = `${slot.client_slug} / ${slot.date} / ${slot.content_type}`;
+    clientName = slot.client_slug;
+
+    await log('INFO', `Step ${slot_idx + 1}/${slots.length}: ${postKey}`);
+
+    let postCreated = false;
+    const settings = await loadSystemSettings(env);
+    const apiKey = env.OPENAI_API_KEY || settings.ai_api_key || '';
+
+    try {
+      if (!apiKey) throw new Error('Missing OpenAI API key');
+
+      const client = await db.prepare('SELECT * FROM clients WHERE id = ?').bind(slot.client_id).first<ClientRow>();
+      if (!client) throw new Error(`Client not found: ${slot.client_slug}`);
+      clientName = client.canonical_name;
+
+      let pkg = DEFAULT_PACKAGE;
+      if (client.package) {
+        const p = await db.prepare('SELECT * FROM packages WHERE slug = ? AND active = 1').bind(client.package).first<PackageRow>();
+        if (p) pkg = p;
+      }
+
+      let platforms: string[] = [];
+      try { platforms = JSON.parse(pkg.platforms_included); } catch { /* */ }
+      if (platforms.length === 0) {
+        const cp = await getClientPlatforms(db, client.id);
+        platforms = cp.map(p => p.platform);
+      }
+      if (platforms.length === 0) platforms = ['facebook', 'instagram'];
+
+      const intel   = await db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>() ?? null;
+      const fbRows  = await db.prepare('SELECT sentiment, message AS note FROM client_feedback WHERE client_id = ? ORDER BY created_at DESC LIMIT 10').bind(client.id).all<FeedbackRow>();
+      const recRows = await db.prepare(`SELECT title, master_caption FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 10`).bind(client.id).all<{title:string|null;master_caption:string|null}>();
+      const recentTitles = recRows.results.map(r => r.title ?? r.master_caption?.slice(0, 80) ?? '').filter(Boolean) as string[];
+
+      const ctx: GenerationContext = {
+        client: {
+          canonical_name:      client.canonical_name,
+          notes:               client.notes,
+          brand_json:          client.brand_json,
+          brand_primary_color: (client as unknown as {brand_primary_color?: string|null}).brand_primary_color ?? null,
+          language:            client.language,
+          phone:               client.phone,
+          cta_text:            client.cta_text,
+          industry:            client.industry,
+          state:               client.state,
+          owner_name:          client.owner_name,
+        },
+        intelligence:  intel,
+        recentTitles,
+        feedback:      fbRows.results,
+        publishDate:   slot.date,
+        contentType:   slot.content_type,
+        platforms,
+        contentIntent: slot.content_intent,
+      };
+
+      await log('AI', `OpenAI start: ${postKey} (${slot.content_intent}) — ${platforms.length} platforms`);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(new Error('OpenAI 30s timeout')), 30_000);
+      let genResult: Awaited<ReturnType<typeof generatePostContent>>;
+      try {
+        genResult = await generatePostContent(apiKey, ctx, { signal: controller.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+      await log('AI', `OpenAI done: ${postKey} (${genResult.meta.elapsedMs}ms, attempts=${genResult.meta.attempts}, model=${genResult.meta.model})`);
+
+      await log('INFO', `Save start: ${postKey}`);
+      const saveStarted = Date.now();
+      const p = genResult.post as unknown as Record<string, string | undefined>;
+      const caps: Record<string, string | null> = {};
+      for (const key of ['cap_facebook','cap_instagram','cap_linkedin','cap_x','cap_threads','cap_tiktok','cap_pinterest','cap_bluesky','cap_google_business'])
+        caps[key] = p[key] ?? null;
+
+      await createPost(db, {
+        client_id:           client.id,
+        title:               genResult.post.title ?? `${client.canonical_name} — ${slot.date}`,
+        status:              'draft',
+        content_type:        slot.content_type,
+        platforms:           JSON.stringify(platforms),
+        publish_date:        `${slot.date}T${postTime}`,
+        master_caption:      genResult.post.master_caption ?? null,
+        ...caps,
+        youtube_title:       genResult.post.youtube_title       ?? null,
+        youtube_description: genResult.post.youtube_description ?? null,
+        blog_content:        genResult.post.blog_content        ?? null,
+        blog_excerpt:        genResult.post.blog_excerpt        ?? null,
+        slug:                genResult.post.slug                ?? null,
+        seo_title:           genResult.post.seo_title           ?? null,
+        meta_description:    genResult.post.meta_description    ?? null,
+        target_keyword:      genResult.post.target_keyword      ?? null,
+        video_script:        genResult.post.video_script        ?? null,
+        ai_image_prompt:     genResult.post.ai_image_prompt     ?? null,
+        ai_video_prompt:     genResult.post.ai_video_prompt     ?? null,
+      } as Parameters<typeof createPost>[1]);
+      await log('INFO', `Save done: ${postKey} (${Date.now() - saveStarted}ms)`);
+
+      postCreated = true;
+      await log('SAVED', `Post ${slot_idx + 1}/${slots.length}: "${genResult.post.title?.slice(0, 55) ?? '(no title)'}" — ${slot.client_slug}`);
+    } catch (err) {
+      await log('ERROR', `${postKey}: ${str(err)}`);
+      await recordError(`${postKey}\n${detail(err)}`);
+    }
+
+    return await finishSlot(slot_idx + 1, postCreated, clientName, slots);
+  } catch (err) {
+    console.error(`[gen:${run_id.slice(0, 8)}] slot${slot_idx} UNHANDLED:`, err);
+    await log('ERROR', `slot${slot_idx} UNHANDLED: ${str(err)}`);
+    await recordError(`slot${slot_idx} UNHANDLED\n${detail(err)}`);
+    if (slots.length > 0 && slot_idx < slots.length) {
+      return await finishSlot(slot_idx + 1, false, clientName || slots[slot_idx]?.client_slug || '', slots);
+    }
+    return { outcome: 'skipped' };
   }
 }

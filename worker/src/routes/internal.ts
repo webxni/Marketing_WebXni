@@ -4,24 +4,28 @@
  */
 import { Hono } from 'hono';
 import type { Env } from '../types';
-import { executeSlotWork } from '../loader/generation-run';
-import { appendGenerationLog } from '../db/queries';
+import { executeSlotWork, triggerStep } from '../loader/generation-run';
+import {
+  appendGenerationError,
+  appendGenerationLog,
+  finalizeGenerationRun,
+  getGenerationRunById,
+} from '../db/queries';
 
 export const internalRoutes = new Hono<{ Bindings: Env; Variables: Record<string, unknown> }>();
+
+function detail(err: unknown): string {
+  if (err instanceof Error) return err.stack ? `${err.message}\n${err.stack}` : err.message;
+  return String(err);
+}
 
 /**
  * POST /internal/gen-step   body: { run_id, slot_idx }
  *
- * Trigger-first design:
- *   1. Handler triggers slot_idx+1 immediately (first + only connection in this
- *      handler context — always reliable, no event-loop-freeze risk).
- *   2. waitUntil runs the actual OpenAI work for slot_idx (one outbound fetch,
- *      then only D1 writes — nothing after the long connection, so freeze
- *      doesn't matter).
- *   3. Returns 200 immediately so the caller's await resolves fast.
- *
- * The trigger cascade (slot 0 handler → slot 1 handler → … → slot N handler)
- * resolves in ~N * 10 ms.  All waitUntil tasks then execute in parallel.
+ * Sequential slot runner:
+ *   1. Execute exactly one slot in this request.
+ *   2. If more work remains, queue the next self-dispatch in waitUntil.
+ *   3. The queued task performs only the next-hop dispatch and logging.
  */
 internalRoutes.post('/gen-step', async (c) => {
   let body: { run_id?: string; slot_idx?: number } = {};
@@ -32,34 +36,65 @@ internalRoutes.post('/gen-step', async (c) => {
     console.error('[gen-step] invalid body:', JSON.stringify(body));
     return c.json({ error: 'run_id and slot_idx (number) required' }, 400);
   }
+
   const runId = run_id;
   const slotIdx = slot_idx;
-
-  // Check run status and total_slots.
-  const run = await (c.env.DB as D1Database)
-    .prepare('SELECT status, total_slots FROM generation_runs WHERE id = ?')
-    .bind(runId)
-    .first<{ status: string; total_slots: number }>();
-
-  if (!run || run.status !== 'running') {
-    console.log(`[gen-step] slot${slotIdx} skipped — status: ${run?.status ?? 'not found'}`);
-    return c.json({ ok: true, skipped: true });
-  }
-
   const baseUrl = new URL(c.req.url).origin;
 
   async function log(level: 'INFO' | 'AI' | 'SAVED' | 'WARN' | 'ERROR' | 'START' | 'DONE', message: string) {
     try { await appendGenerationLog(c.env.DB, runId, level, message); } catch { /* ignore */ }
   }
 
-  await log('INFO', `Route called: /internal/gen-step slot ${slotIdx + 1}/${run.total_slots}`);
+  async function logError(message: string) {
+    try { await appendGenerationError(c.env.DB, runId, message); } catch { /* ignore */ }
+  }
 
-  // Execute current slot in the background. The slot itself is responsible for
-  // dispatching the next slot after it finishes.
-  c.executionCtx.waitUntil(
-    executeSlotWork(c.env, runId, slotIdx, baseUrl)
-      .catch(err => console.error(`[gen-step] slot${slotIdx} waitUntil unhandled:`, err)),
-  );
+  try {
+    const run = await c.env.DB
+      .prepare('SELECT status, total_slots FROM generation_runs WHERE id = ?')
+      .bind(runId)
+      .first<{ status: string; total_slots: number }>();
 
-  return c.json({ ok: true });
+    if (!run || run.status !== 'running') {
+      console.log(`[gen-step] slot${slotIdx} skipped — status: ${run?.status ?? 'not found'}`);
+      return c.json({ ok: true, skipped: true });
+    }
+
+    await log('INFO', `Route entered: /internal/gen-step slot ${slotIdx + 1}/${run.total_slots}`);
+
+    const result = await executeSlotWork(c.env, runId, slotIdx);
+
+    await log('INFO', `Route complete: /internal/gen-step slot ${slotIdx + 1}/${run.total_slots} outcome=${result.outcome}`);
+
+    if (result.outcome === 'continue' && typeof result.nextSlot === 'number' && typeof result.totalSlots === 'number') {
+      await log('INFO', `Next-step queued: slot ${result.nextSlot + 1}/${result.totalSlots}`);
+      c.executionCtx.waitUntil((async () => {
+        try {
+          await log('INFO', `Next-step dispatch start: slot ${result.nextSlot! + 1}/${result.totalSlots!}`);
+          await triggerStep(c.env, baseUrl, runId, result.nextSlot!);
+          await log('INFO', `Next-step dispatch success: slot ${result.nextSlot! + 1}/${result.totalSlots!}`);
+        } catch (err) {
+          const msg = `Trigger failed for slot ${result.nextSlot}: ${err instanceof Error ? err.message : String(err)}`;
+          await log('ERROR', msg);
+          await logError(`Dispatch failure after slot ${slotIdx}\n${detail(err)}`);
+
+          const latest = await getGenerationRunById(c.env.DB, runId);
+          if (latest && latest.status === 'running') {
+            const errorLog = latest.error_log
+              ? `${latest.error_log}\n${msg}`
+              : msg;
+            const finalStatus = latest.posts_created > 0 ? 'completed_with_errors' : 'failed';
+            await finalizeGenerationRun(c.env.DB, runId, finalStatus, latest.posts_created, errorLog);
+          }
+        }
+      })());
+    }
+
+    return c.json({ ok: true, outcome: result.outcome, next_slot: result.nextSlot ?? null });
+  } catch (err) {
+    console.error(`[gen-step] slot${slotIdx} route crash:`, err);
+    await log('ERROR', `Route crash: slot ${slotIdx} — ${err instanceof Error ? err.message : String(err)}`);
+    await logError(`Route crash: slot ${slotIdx}\n${detail(err)}`);
+    return c.json({ error: 'Internal Server Error' }, 500);
+  }
 });

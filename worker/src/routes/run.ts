@@ -248,14 +248,16 @@ runRoutes.post('/generate', async (c) => {
     : null;
 
   const baseUrl = new URL(c.req.url).origin;
-  await planGeneration(c.env, {
-    run_id:       run.id,
-    client_slugs: clientSlugs,
-    period_start: periodStart,
-    period_end:   periodEnd,
-    triggered_by: c.get('user').userId,
-    publish_time: publishTime,
-  }, baseUrl);
+  c.executionCtx.waitUntil(
+    planGeneration(c.env, {
+      run_id:       run.id,
+      client_slugs: clientSlugs,
+      period_start: periodStart,
+      period_end:   periodEnd,
+      triggered_by: c.get('user').userId,
+      publish_time: publishTime,
+    }, baseUrl),
+  );
 
   return c.json({ ok: true, job_id: run.id }, 202);
 });
