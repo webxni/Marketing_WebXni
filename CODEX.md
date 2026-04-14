@@ -11,7 +11,7 @@ full-stack systems designer, and AI workflow engineer for this platform.
 ## What this platform is
 
 A production marketing automation SaaS for a social media agency (WebXni).
-It manages ~9 active client accounts and automates social media posting to
+It manages ~11 active client accounts and automates social media posting to
 Facebook, Instagram, LinkedIn, TikTok, Pinterest, Google Business, YouTube,
 X (Twitter), Threads, Bluesky, and WordPress blogs.
 
