@@ -27,6 +27,8 @@ import {
 import { buildExtraParams, extractTrackingId } from '../modules/posting';
 import { translatePostingError } from '../modules/posting-diagnostics';
 
+const DEFAULT_PUBLIC_MEDIA_PROXY = 'https://marketing.webxni.com/media';
+
 export interface PostingRunParams {
   mode: 'dry_run' | 'real';
   job_id?: string;          // pass from caller to avoid double job creation
@@ -169,8 +171,9 @@ async function processPost(
   // Set R2_MEDIA_PUBLIC_URL in wrangler.toml [vars] after enabling public access
   // in Cloudflare R2 dashboard (format: https://pub-<hash>.r2.dev or custom domain).
   let videoR2Url: string | null = null;
-  if (mediaKind === 'video' && post.asset_r2_key && env.R2_MEDIA_PUBLIC_URL) {
-    videoR2Url = `${env.R2_MEDIA_PUBLIC_URL.replace(/\/$/, '')}/${post.asset_r2_key}`;
+  if (mediaKind === 'video' && post.asset_r2_key) {
+    const mediaBase = env.R2_MEDIA_PUBLIC_URL?.trim() || DEFAULT_PUBLIC_MEDIA_PROXY;
+    videoR2Url = `${mediaBase.replace(/\/$/, '')}/${post.asset_r2_key}`;
   }
 
   for (const notionPlatform of platforms) {
@@ -234,6 +237,23 @@ async function processPost(
     const extra = buildExtraParams(platform, platCfg, post);
     const idemKey = await makeIdempotencyKey(post.id, platform, publishDate);
 
+    if (mediaKind === 'video' && !videoR2Url) {
+      const msg = translatePostingError('Video post is missing a public media URL for Upload-Post.', platform);
+      if (!dryRun) {
+        await upsertPostPlatform(env.DB, {
+          post_id: post.id,
+          platform,
+          status: 'failed',
+          error_message: msg,
+          idempotency_key: idemKey,
+        });
+        await logPostingAudit(env.DB, post.id, platform, 'failed', msg, 'Video post is missing a public media URL for Upload-Post.');
+      }
+      stats.failed++;
+      thisFailed++;
+      continue;
+    }
+
     if (dryRun) {
       const endpoint =
         mediaKind === 'video'
@@ -277,7 +297,7 @@ async function processPost(
           idempotency_key: idemKey,
           ...extra,
         });
-      } else {
+      } else if (mediaKind !== 'video') {
         response = await up.postText({
           user: client.upload_post_profile!,
           platform,
@@ -286,6 +306,8 @@ async function processPost(
           idempotency_key: idemKey,
           ...extra,
         });
+      } else {
+        throw new Error('Video post cannot fall back to text delivery');
       }
 
       const trackingId = extractTrackingId(response);

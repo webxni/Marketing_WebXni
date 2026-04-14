@@ -5,6 +5,9 @@ import { Hono } from 'hono';
 import type { Env, SessionData } from '../types';
 
 export const assetRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
+export const publicAssetRoutes = new Hono<{ Bindings: Env }>();
+
+const DEFAULT_PUBLIC_MEDIA_PROXY = 'https://marketing.webxni.com/media';
 
 /** POST /api/assets/upload — multipart upload to R2 MEDIA bucket */
 assetRoutes.post('/upload', async (c) => {
@@ -49,8 +52,9 @@ assetRoutes.post('/upload', async (c) => {
   }
 
   const publicBase = (c.env as { R2_MEDIA_PUBLIC_URL?: string }).R2_MEDIA_PUBLIC_URL;
-  const url = publicBase && bucket !== 'IMAGES'
-    ? `${publicBase.replace(/\/$/, '')}/${r2Key}`
+  const mediaBase = publicBase?.trim() || DEFAULT_PUBLIC_MEDIA_PROXY;
+  const url = bucket !== 'IMAGES'
+    ? `${mediaBase.replace(/\/$/, '')}/${r2Key}`
     : null;
 
   return c.json({ ok: true, asset_id: assetId, r2_key: r2Key, bucket, url }, 201);
@@ -73,6 +77,23 @@ assetRoutes.get('/preview', async (c) => {
     headers: {
       'Content-Type': contentType,
       'Cache-Control': 'private, max-age=3600',
+    },
+  });
+});
+
+/** GET /media/* — public media proxy for Upload-Post video fetches */
+publicAssetRoutes.get('/*', async (c) => {
+  const key = decodeURIComponent(c.req.path.replace(/^\/+media\/?/, ''));
+  if (!key) return new Response('Not Found', { status: 404 });
+
+  const obj = await c.env.MEDIA.get(key);
+  if (!obj) return new Response('Not Found', { status: 404 });
+
+  return new Response(obj.body, {
+    headers: {
+      'Content-Type': obj.httpMetadata?.contentType ?? 'application/octet-stream',
+      'Cache-Control': 'public, max-age=3600',
+      'Access-Control-Allow-Origin': '*',
     },
   });
 });

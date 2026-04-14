@@ -11,7 +11,7 @@ import { rateLimitMiddleware } from './middleware/rateLimit';
 import { authRoutes }        from './routes/auth';
 import { clientRoutes }      from './routes/clients';
 import { postRoutes }        from './routes/posts';
-import { assetRoutes }       from './routes/assets';
+import { assetRoutes, publicAssetRoutes } from './routes/assets';
 import { runRoutes }         from './routes/run';
 import { userRoutes }        from './routes/users';
 import { reportRoutes }      from './routes/reports';
@@ -32,6 +32,7 @@ const app = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
 // ─── Internal routes (no auth — Worker-to-Worker only) ───────────────────────
 app.route('/internal', internalRoutes);
+app.route('/media', publicAssetRoutes);
 
 // ─── Global middleware ────────────────────────────────────────────────────────
 app.use('/api/*', rateLimitMiddleware);
