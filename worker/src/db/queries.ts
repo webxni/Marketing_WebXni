@@ -183,6 +183,7 @@ export async function listReadyPosts(
   db: D1Database,
   clientFilter?: string,
   limit = 50,
+  postIds?: string[],
 ): Promise<PostRow[]> {
   // Only pick up posts whose scheduled time has arrived (or have no time set).
   // publish_date is stored as-entered in Nicaragua time (CST = UTC-6, no DST).
@@ -196,6 +197,21 @@ export async function listReadyPosts(
     (status = 'ready' AND ready_for_automation = 1 AND asset_delivered = 1)
     OR status = 'approved'
   )`;
+  if (postIds && postIds.length > 0) {
+    const placeholders = postIds.map(() => '?').join(',');
+    const r = await db
+      .prepare(
+        `SELECT * FROM posts
+         WHERE id IN (${placeholders})
+           AND ((status = 'ready' AND ready_for_automation = 1 AND asset_delivered = 1)
+             OR status IN ('approved','scheduled','failed'))
+         ORDER BY publish_date ASC
+         LIMIT ?`,
+      )
+      .bind(...postIds, limit)
+      .all<PostRow>();
+    return r.results;
+  }
   if (clientFilter) {
     const client = await getClientBySlug(db, clientFilter);
     if (!client) return [];

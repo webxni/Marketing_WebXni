@@ -1,6 +1,6 @@
 <script lang="ts">
   import { page } from '$app/stores';
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { postsApi, assetsApi, clientsApi } from '$lib/api';
   import Badge from '$lib/components/ui/Badge.svelte';
@@ -24,6 +24,7 @@
   let connectionAccounts: ConnectionHealth[] = [];
   let connectionMessage = '';
   let refreshingUrls = false;
+  let autoRefreshHandle: ReturnType<typeof setInterval> | null = null;
 
   function setTab(key: string) { activeTab = key as typeof activeTab; }
 
@@ -45,7 +46,43 @@
     } finally { loading = false; }
   }
 
-  onMount(load);
+  onMount(() => {
+    load();
+  });
+
+  onDestroy(() => {
+    if (autoRefreshHandle) clearInterval(autoRefreshHandle);
+  });
+
+  function hasFailedPlatforms(items: PostPlatform[]): boolean {
+    return items.some((pt) => pt.status === 'failed');
+  }
+
+  function needsAutoRefresh(items: PostPlatform[]): boolean {
+    return items.some((pt) =>
+      pt.status === 'pending'
+      || pt.status === 'sent'
+      || pt.status === 'idempotent'
+      || (!!pt.tracking_id && !pt.real_url),
+    );
+  }
+
+  $: {
+    if (autoRefreshHandle) {
+      clearInterval(autoRefreshHandle);
+      autoRefreshHandle = null;
+    }
+    if (post && needsAutoRefresh(platforms)) {
+      autoRefreshHandle = setInterval(async () => {
+        if (refreshingUrls || loading || !post) return;
+        if (platforms.some((pt) => pt.tracking_id && !pt.real_url && ['sent', 'idempotent'].includes(pt.status ?? ''))) {
+          await refreshUrls(false);
+        } else {
+          await load();
+        }
+      }, 15000);
+    }
+  }
 
   async function loadConnectionHealth(clientId: string) {
     checkingConnections = true;
@@ -119,7 +156,11 @@
 
   async function retryFailed() {
     if (!post) return;
-    try { await postsApi.retry(post.id); toast.success('Retrying failed platforms'); load(); }
+    try {
+      await postsApi.retry(post.id);
+      toast.success('Retrying failed platforms only');
+      await load();
+    }
     catch { toast.error('Failed to retry'); }
   }
 
@@ -389,7 +430,7 @@
         <button class="btn-primary btn-sm" on:click={() => (showApproveConfirm = true)}>Approve</button>
         <button class="btn-danger btn-sm" on:click={() => (showRejectConfirm = true)}>Reject</button>
       {/if}
-      {#if post.status === 'failed' && can('automation.trigger')}
+      {#if hasFailedPlatforms(platforms) && can('automation.trigger')}
         <button class="btn-secondary btn-sm" on:click={retryFailed}>Retry Failed</button>
       {/if}
     </div>

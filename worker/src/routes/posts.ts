@@ -15,6 +15,8 @@ import {
 } from '../db/queries';
 import { normalizeContentType, parsePlatforms, resolvePlatformSelection } from '../modules/platform-compatibility';
 import { UploadPostClient } from '../services/uploadpost';
+import { runPosting } from '../loader/posting-run';
+import { runFetchUrls } from './run';
 
 export const postRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -311,12 +313,27 @@ postRoutes.post('/:id/publish', async (c) => {
 postRoutes.post('/:id/retry', async (c) => {
   const post = await getPostById(c.env.DB, c.req.param('id'));
   if (!post) return c.json({ error: 'Not found' }, 404);
-  await c.env.DB
+  const result = await c.env.DB
     .prepare("UPDATE post_platforms SET status = 'pending', tracking_id = NULL, error_message = NULL WHERE post_id = ? AND status = 'failed'")
     .bind(post.id)
     .run();
+  const failedCount = Number(result.meta?.changes ?? 0);
+  if (failedCount === 0) {
+    return c.json({ ok: true, message: 'No failed platforms to retry', retried: 0 });
+  }
   await setPostStatus(c.env.DB, post.id, 'ready', 'Pending');
-  return c.json({ ok: true, message: 'Failed platforms reset' });
+  const jobId = crypto.randomUUID().replace(/-/g, '').toLowerCase();
+  c.executionCtx.waitUntil((async () => {
+    await runPosting(c.env, {
+      mode: 'real',
+      job_id: jobId,
+      triggered_by: 'api.retry',
+      post_ids: [post.id],
+      limit: 1,
+    });
+    await runFetchUrls(c.env, `${jobId}-urls`);
+  })());
+  return c.json({ ok: true, message: 'Retrying failed platforms', retried: failedCount, job_id: jobId }, 202);
 });
 
 /** POST /api/posts/:id/refresh-urls */
@@ -329,12 +346,30 @@ postRoutes.post('/:id/refresh-urls', async (c) => {
   if (pendingRows.length === 0) return c.json({ ok: true, updated: 0 });
 
   const up = new UploadPostClient(c.env.UPLOAD_POST_API_KEY);
-  const { history } = await up.getHistory(200);
   const urlMap = new Map<string, string>();
-  for (const entry of history) {
-    const trackingId = String(entry['job_id'] ?? entry['request_id'] ?? entry['id'] ?? '');
-    const url = String(entry['post_url'] ?? entry['url'] ?? entry['link'] ?? entry['post_link'] ?? '');
-    if (trackingId && url) urlMap.set(trackingId, url);
+  for (const row of pendingRows) {
+    const rawId = row.tracking_id!.replace(/^UP:(IDEM:)?/, '');
+    try {
+      const analytics = await up.getPostAnalytics(rawId) as Record<string, unknown>;
+      const analyticsUrl = String(
+        analytics['post_url']
+        ?? analytics['url']
+        ?? analytics['link']
+        ?? analytics['post_link']
+        ?? '',
+      );
+      if (analyticsUrl) urlMap.set(rawId, analyticsUrl);
+    } catch {
+      // fall back to history below
+    }
+  }
+  if (urlMap.size < pendingRows.length) {
+    const { history } = await up.getHistory(200);
+    for (const entry of history) {
+      const trackingId = String(entry['job_id'] ?? entry['request_id'] ?? entry['id'] ?? '');
+      const url = String(entry['post_url'] ?? entry['url'] ?? entry['link'] ?? entry['post_link'] ?? '');
+      if (trackingId && url && !urlMap.has(trackingId)) urlMap.set(trackingId, url);
+    }
   }
 
   let updated = 0;

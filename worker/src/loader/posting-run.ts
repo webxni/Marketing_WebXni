@@ -32,6 +32,7 @@ export interface PostingRunParams {
   job_id?: string;          // pass from caller to avoid double job creation
   client_filter?: string;
   platform_filter?: string;
+  post_ids?: string[];
   limit?: number;
   triggered_by?: string;
 }
@@ -56,7 +57,7 @@ export async function runPosting(env: LoaderEnv, params: PostingRunParams): Prom
   const up = new UploadPostClient(env.UPLOAD_POST_API_KEY);
 
   try {
-    const posts = await listReadyPosts(env.DB, params.client_filter, params.limit ?? 50);
+    const posts = await listReadyPosts(env.DB, params.client_filter, params.limit ?? 50, params.post_ids);
 
     // Skip job creation and early-return when there is nothing to post.
     // This keeps posting_jobs clean when the per-minute cron fires with no due posts.
