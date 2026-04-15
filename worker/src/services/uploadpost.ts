@@ -236,7 +236,7 @@ export class UploadPostClient {
   /** GET /api/uploadposts/post-analytics/request_id — published URL + stats by request id */
   async getPostAnalytics(requestId: string): Promise<unknown> {
     const r = await fetch(
-      `${BASE}/api/uploadposts/post-analytics/request_id?request_id=${encodeURIComponent(requestId)}`,
+      `${BASE}/api/uploadposts/post-analytics/${encodeURIComponent(requestId)}`,
       { headers: this.auth },
     );
     if (!r.ok) throw new UploadPostError(r.status, await r.text());

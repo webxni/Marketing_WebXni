@@ -320,7 +320,7 @@ postRoutes.post('/:id/duplicate', async (c) => {
 
   const duplicate = await createPost(c.env.DB, {
     client_id: source.client_id,
-    title: source.title,
+    title: source.title ?? `Copy of ${source.id}`,
     status: publishNow ? 'ready' : ((source.status === 'draft' || source.status === 'pending_approval') ? source.status : 'draft'),
     content_type: source.content_type,
     platforms: source.platforms,
@@ -445,6 +445,28 @@ postRoutes.post('/:id/refresh-urls', async (c) => {
   const urlMap = new Map<string, string>();
   for (const row of pendingRows) {
     const rawId = row.tracking_id!.replace(/^UP:(IDEM:)?/, '');
+    try {
+      const statusPayload = await up.getStatus({ jobId: rawId }) as {
+        url?: string;
+        post_url?: string;
+        results?: Record<string, Record<string, unknown>>;
+      };
+      const directUrl = String(statusPayload.post_url ?? statusPayload.url ?? '');
+      if (directUrl) {
+        urlMap.set(rawId, directUrl);
+      } else {
+        const resultEntry = statusPayload.results?.[row.platform] ?? null;
+        const platformUrl = String(
+          resultEntry?.['url']
+          ?? resultEntry?.['post_url']
+          ?? resultEntry?.['link']
+          ?? '',
+        );
+        if (platformUrl) urlMap.set(rawId, platformUrl);
+      }
+    } catch {
+      // continue to analytics/history fallback
+    }
     try {
       const analytics = await up.getPostAnalytics(rawId) as Record<string, unknown>;
       const analyticsUrl = String(
