@@ -261,7 +261,7 @@ export async function createPost(
         publish_date, master_caption, cap_facebook, cap_instagram, cap_linkedin,
         cap_x, cap_threads, cap_tiktok, cap_pinterest, cap_bluesky,
         cap_google_business, cap_gbp_la, cap_gbp_wa, cap_gbp_or,
-        youtube_title, youtube_description, blog_content, blog_excerpt, seo_title,
+       youtube_title, youtube_description, blog_content, blog_excerpt, seo_title,
         meta_description, slug, target_keyword, secondary_keywords, ai_image_prompt, ai_video_prompt,
         video_script, asset_r2_key, asset_r2_bucket, asset_type, canva_link,
         ready_for_automation, asset_delivered, skarleth_notes, error_log,
@@ -269,7 +269,7 @@ export async function createPost(
         created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-               ?, ?, ?, ?)`,
+               ?, ?, ?, ?, ?)`,
     )
     .bind(
       id, data.client_id, data.title, data.status ?? 'draft',
