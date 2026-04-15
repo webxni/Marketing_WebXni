@@ -69,6 +69,9 @@ export const postsApi = {
   publishBlog: (id: string, opts: { status?: 'draft' | 'publish'; force_update?: boolean } = {}) =>
     api.post<{ ok: boolean; wp_post_id: number; wp_post_url: string; status: string; warnings?: string[] }>(`/api/posts/${id}/publish-blog`, opts),
 
+  syncBlog: (id: string) =>
+    api.post<{ ok: boolean; wp_post_id: number; wp_post_url: string; status: string; slug: string; featured_media: number | null }>(`/api/posts/${id}/sync-blog`, {}),
+
   unpublishBlog: (id: string) =>
     api.post<{ ok: boolean; status: string }>(`/api/posts/${id}/unpublish-blog`),
 

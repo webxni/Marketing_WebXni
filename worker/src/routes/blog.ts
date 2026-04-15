@@ -6,7 +6,16 @@
 import { Hono } from 'hono';
 import type { Env, SessionData } from '../types';
 import { getPostById, updatePost, getClientWithConfig } from '../db/queries';
-import { buildWordPressClient, renderTemplate, type TemplateTokens } from '../services/wordpress';
+import {
+  BLOG_BODY_IMAGE_PLACEHOLDER,
+  buildWordPressClient,
+  inferBusinessTemplateKey,
+  injectBodyImageIntoHtml,
+  renderStructuredBlogHtml,
+  renderTemplate,
+  stripHtml,
+  type TemplateTokens,
+} from '../services/wordpress';
 import { requirePermission } from '../middleware/auth';
 
 export const blogRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
@@ -26,8 +35,10 @@ function preflight(post: {
   seo_title:      string | null;
   meta_description: string | null;
   target_keyword: string | null;
+  secondary_keywords?: string | null;
   slug:           string | null;
   blog_excerpt:   string | null;
+  ai_image_prompt?: string | null;
 }): BlogPreflightResult {
   const errors:   string[] = [];
   const warnings: string[] = [];
@@ -37,9 +48,10 @@ function preflight(post: {
   if (!post.title)          errors.push('Post title is required');
   if (!post.seo_title)      warnings.push('SEO title missing — WordPress will use the post title');
   if (!post.meta_description) warnings.push('Meta description missing — Rank Math will generate one');
-  if (!post.target_keyword) warnings.push('Target keyword missing — Rank Math focus keyword will not be set');
+  if (!post.target_keyword) errors.push('Target keyword is required for Rank Math integration');
   if (!post.slug)           warnings.push('URL slug missing — WordPress will auto-generate one');
   if (!post.blog_excerpt)   warnings.push('Blog excerpt missing — WordPress excerpt field will be empty');
+  if (!post.ai_image_prompt) warnings.push('Image prompt missing — alt text and body image context may be weaker');
 
   return { ok: errors.length === 0, errors, warnings };
 }
@@ -74,21 +86,27 @@ blogRoutes.post('/:id/publish-blog', requirePermission('posts.edit'), async (c) 
 
   // ── Featured image upload from R2 ────────────────────────────────────────
   let featuredMediaId: number | undefined = (post as unknown as { wp_featured_media_id?: number }).wp_featured_media_id ?? undefined;
+  let bodyImageHtml = BLOG_BODY_IMAGE_PLACEHOLDER;
 
   if (!featuredMediaId && post.asset_r2_key) {
     const imageMode = (client as unknown as { wp_featured_image_mode?: string }).wp_featured_image_mode ?? 'upload';
     if (imageMode !== 'none') {
       try {
-        const r2Obj = await c.env.MEDIA.get(post.asset_r2_key);
+        const bucket = post.asset_r2_bucket === 'IMAGES' ? c.env.IMAGES : c.env.MEDIA;
+        const r2Obj = await bucket.get(post.asset_r2_key);
         if (r2Obj) {
           const blob    = await new Response(r2Obj.body).blob();
           const ext     = post.asset_r2_key.split('.').pop() ?? 'jpg';
           const fname   = `${(post.slug ?? post.id).replace(/[^a-z0-9-]/gi, '-')}.${ext}`;
-          const altText = post.title ?? client.canonical_name;
+          const altText = `${post.target_keyword ?? post.title ?? client.canonical_name} | ${client.canonical_name}`;
           const media   = await wp.uploadMediaBlob(blob, fname, altText, post.title ?? '');
           featuredMediaId = media.id;
           await c.env.DB.prepare('UPDATE posts SET wp_featured_media_id = ? WHERE id = ?')
             .bind(featuredMediaId, post.id).run();
+          bodyImageHtml = `
+            <img src="${media.source_url}" alt="${altText.replace(/"/g, '&quot;')}" />
+            <figcaption>${post.title ?? client.canonical_name}</figcaption>
+          `;
         }
       } catch (imgErr) {
         // Non-fatal — log and continue without featured image
@@ -97,6 +115,7 @@ blogRoutes.post('/:id/publish-blog', requirePermission('posts.edit'), async (c) 
       }
     }
   }
+  if (!post.asset_r2_key) bodyImageHtml = '';
 
   // ── Build categories ──────────────────────────────────────────────────────
   let categoryIds: number[] = [];
@@ -107,12 +126,26 @@ blogRoutes.post('/:id/publish-blog', requirePermission('posts.edit'), async (c) 
 
   // ── Build Rank Math meta ──────────────────────────────────────────────────
   const rankMathMeta: Record<string, string> = {};
-  if (post.target_keyword)  rankMathMeta['rank_math_focus_keyword'] = post.target_keyword;
-  if (post.meta_description) rankMathMeta['rank_math_description']   = post.meta_description;
-  if (post.seo_title)        rankMathMeta['rank_math_title']         = post.seo_title;
-  // rank_math_title supports %-tokens; append site name token when set
-  if (post.seo_title && !post.seo_title.includes('%'))
-    rankMathMeta['rank_math_title'] = `${post.seo_title} %sep% %sitename%`;
+  const focusKeyword = post.target_keyword?.trim() || client.industry?.trim() || post.title?.trim() || '';
+  const seoTitle = post.seo_title?.trim() || post.title?.trim() || '';
+  const metaDescription = post.meta_description?.trim() || (post.blog_excerpt?.trim() ?? '').slice(0, 155);
+  const secondaryKeywords = post.secondary_keywords?.trim() ?? '';
+  if (focusKeyword) {
+    rankMathMeta['rank_math_focus_keyword'] = focusKeyword;
+    rankMathMeta['rank_math_pillar_content'] = 'off';
+    rankMathMeta['rank_math_schema_type'] = 'Article';
+  }
+  if (metaDescription) {
+    rankMathMeta['rank_math_description'] = metaDescription;
+    rankMathMeta['rank_math_twitter_description'] = metaDescription;
+    rankMathMeta['rank_math_facebook_description'] = metaDescription;
+  }
+  if (seoTitle) {
+    rankMathMeta['rank_math_title'] = seoTitle.includes('%') ? seoTitle : `${seoTitle} %sep% %sitename%`;
+    rankMathMeta['rank_math_facebook_title'] = seoTitle;
+    rankMathMeta['rank_math_twitter_title'] = seoTitle;
+  }
+  if (secondaryKeywords) rankMathMeta['rank_math_secondary_keywords'] = secondaryKeywords;
 
   // ── Build HTML content (apply WP template if configured) ─────────────────
   let htmlContent = post.blog_content ?? '';
@@ -150,6 +183,45 @@ blogRoutes.post('/:id/publish-blog', requirePermission('posts.edit'), async (c) 
       }
     }
   }
+  if (!templateKey && post.blog_content) {
+    const sections = post.blog_content.split(/<h2[^>]*>/i).filter(Boolean);
+    htmlContent = renderStructuredBlogHtml({
+      templateKey: inferBusinessTemplateKey({
+        wp_template_key: templateKey ?? null,
+        industry: client.industry,
+      }),
+      primaryColor: (client as unknown as { brand_primary_color?: string | null }).brand_primary_color ?? '#1a73e8',
+      clientName: client.canonical_name,
+      phone: client.phone,
+      ctaDefault: client.cta_text,
+      bodyImageHtml,
+      blog: {
+        title: post.title ?? '',
+        excerpt: post.blog_excerpt ?? post.master_caption ?? '',
+        focusKeyword,
+        secondaryKeywords,
+        seoTitle,
+        metaDescription,
+        slug: post.slug ?? '',
+        intro: stripHtml(sections[0] ?? post.blog_excerpt ?? post.master_caption ?? ''),
+        sections: sections.length > 1
+          ? sections.slice(1).map((raw, index) => {
+            const [headingPart, ...rest] = raw.split(/<\/h2>/i);
+            return {
+              heading: stripHtml(headingPart || `Section ${index + 1}`),
+              html: rest.join('</h2>') || `<p>${stripHtml(raw)}</p>`,
+            };
+          })
+          : [{ heading: post.title ?? 'Overview', html: post.blog_content }],
+        faq: [],
+        ctaHeading: client.cta_text ?? 'Talk With Our Team',
+        ctaBody: `Contact ${client.canonical_name} for guidance tailored to your needs.`,
+        ctaButtonLabel: client.cta_text ?? 'Contact Us Today',
+        imagePrompt: post.ai_image_prompt ?? undefined,
+      },
+    });
+  }
+  htmlContent = injectBodyImageIntoHtml(htmlContent, bodyImageHtml);
 
   const excerpt = (post as unknown as { blog_excerpt?: string }).blog_excerpt
     ?? post.master_caption
@@ -160,12 +232,15 @@ blogRoutes.post('/:id/publish-blog', requirePermission('posts.edit'), async (c) 
   const existingWpId = (post as unknown as { wp_post_id?: number }).wp_post_id;
 
   try {
-    if (existingWpId && body.force_update) {
+    if (existingWpId) {
       wpPost = await wp.updatePost(existingWpId, {
         title:   post.title ?? '',
         content: htmlContent,
         excerpt,
         status:  wpStatus,
+        slug:    post.slug ?? undefined,
+        featured_media: featuredMediaId,
+        meta: Object.keys(rankMathMeta).length > 0 ? rankMathMeta : undefined,
       });
     } else {
       wpPost = await wp.createPost({
@@ -190,6 +265,11 @@ blogRoutes.post('/:id/publish-blog', requirePermission('posts.edit'), async (c) 
     wp_post_id:     wpPost.id,
     wp_post_url:    wpPost.link,
     wp_post_status: wpPost.status,
+    slug:           wpPost.slug ?? post.slug,
+    meta_description: metaDescription || post.meta_description,
+    seo_title: seoTitle || post.seo_title,
+    target_keyword: focusKeyword || post.target_keyword,
+    secondary_keywords: secondaryKeywords || post.secondary_keywords,
   } as Parameters<typeof updatePost>[2]);
 
   return c.json({
@@ -199,6 +279,36 @@ blogRoutes.post('/:id/publish-blog', requirePermission('posts.edit'), async (c) 
     status:      wpPost.status,
     warnings:    check.warnings.length > 0 ? check.warnings : undefined,
   });
+});
+
+blogRoutes.post('/:id/sync-blog', requirePermission('posts.edit'), async (c) => {
+  const post = await getPostById(c.env.DB, c.req.param('id') as string);
+  if (!post) return c.json({ error: 'Post not found' }, 404);
+  if (!post.wp_post_id) return c.json({ error: 'No WordPress post linked' }, 400);
+
+  const client = await getClientWithConfig(c.env.DB, post.client_id);
+  const wp = client ? buildWordPressClient(client) : null;
+  if (!wp) return c.json({ error: 'WordPress not configured for this client' }, 400);
+
+  try {
+    const wpPost = await wp.getPost(post.wp_post_id);
+    await updatePost(c.env.DB, post.id, {
+      wp_post_url: wpPost.link,
+      wp_post_status: wpPost.status,
+      slug: wpPost.slug ?? post.slug,
+      wp_featured_media_id: wpPost.featured_media ?? post.wp_featured_media_id,
+    } as Parameters<typeof updatePost>[2]);
+    return c.json({
+      ok: true,
+      wp_post_id: wpPost.id,
+      wp_post_url: wpPost.link,
+      status: wpPost.status,
+      slug: wpPost.slug,
+      featured_media: wpPost.featured_media ?? null,
+    });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 502);
+  }
 });
 
 // ── POST /api/posts/:id/unpublish-blog ────────────────────────────────────────

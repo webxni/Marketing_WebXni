@@ -218,6 +218,7 @@ export interface Post {
   seo_title:            string | null;
   meta_description:     string | null;
   target_keyword:       string | null;
+  secondary_keywords:   string | null;
   slug:                 string | null;   // WordPress post slug
   video_script:         string | null;
   ai_image_prompt:      string | null;

@@ -37,6 +37,16 @@
       let r = await postsApi.get(postId);
       post = r.post;
       platforms = r.platforms ?? [];
+      if (post?.content_type === 'blog' && post.wp_post_id) {
+        try {
+          await postsApi.syncBlog(post.id);
+          r = await postsApi.get(postId);
+          post = r.post;
+          platforms = r.platforms ?? [];
+        } catch {
+          // Keep rendering the local state if WP sync fails.
+        }
+      }
       if (post?.client_id) await loadConnectionHealth(post.client_id);
       if (post && platforms.some((pt) => pt.tracking_id && !pt.real_url && ['sent', 'idempotent'].includes(pt.status ?? ''))) {
         await postsApi.refreshUrls(post.id);
@@ -363,6 +373,7 @@
   // WordPress blog publishing
   let publishingBlog = false;
   let blogWarnings: string[] = [];
+  let syncingBlog = false;
 
   // Helpers for extra WP fields not yet in the Post type (avoid casts in template)
   function wpPostId(p: typeof post): number | null   { return p ? (p as Post & { wp_post_id?: number }).wp_post_id ?? null : null; }
@@ -410,6 +421,17 @@
       load();
     } catch (e) { toast.error(`WordPress error: ${e instanceof Error ? e.message : String(e)}`); }
     finally { publishingBlog = false; }
+  }
+
+  async function syncBlogStatus() {
+    if (!post || !wpPostId(post)) return;
+    syncingBlog = true;
+    try {
+      await postsApi.syncBlog(post.id);
+      toast.success('WordPress status synced');
+      load();
+    } catch (e) { toast.error(`WordPress sync error: ${e instanceof Error ? e.message : String(e)}`); }
+    finally { syncingBlog = false; }
   }
 </script>
 
@@ -1039,9 +1061,16 @@
     <div class="card p-4">
       <div class="flex items-center justify-between mb-3">
         <h3 class="section-label">WordPress</h3>
-        {#if wpPostUrl(post)}
-          <a href={wpPostUrl(post) ?? ''} target="_blank" rel="noopener" class="text-xs text-accent hover:underline truncate max-w-xs">{wpPostUrl(post)}</a>
-        {/if}
+        <div class="flex items-center gap-2">
+          {#if wpPostUrl(post)}
+            <a href={wpPostUrl(post) ?? ''} target="_blank" rel="noopener" class="text-xs text-accent hover:underline truncate max-w-xs">{wpPostUrl(post)}</a>
+          {/if}
+          {#if wpPostId(post)}
+            <button class="btn-ghost btn-sm text-xs" on:click={syncBlogStatus} disabled={syncingBlog}>
+              {syncingBlog ? 'Syncing…' : 'Sync WP'}
+            </button>
+          {/if}
+        </div>
       </div>
 
       <!-- Status row -->
@@ -1121,6 +1150,9 @@
         {/if}
         {#if post.target_keyword}
         <div><dt class="text-xs text-muted">Target Keyword</dt><dd class="text-sm text-white mt-0.5">{post.target_keyword}</dd></div>
+        {/if}
+        {#if post.secondary_keywords}
+        <div><dt class="text-xs text-muted">Secondary Keywords</dt><dd class="text-xs text-muted mt-0.5">{post.secondary_keywords}</dd></div>
         {/if}
         {#if post.meta_description}
         <div><dt class="text-xs text-muted">Meta Description</dt><dd class="text-xs text-muted mt-0.5">{post.meta_description}</dd></div>

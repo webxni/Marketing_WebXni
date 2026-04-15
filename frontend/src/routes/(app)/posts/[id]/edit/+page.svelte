@@ -36,6 +36,7 @@
   let seo_title = '';
   let meta_description = '';
   let target_keyword = '';
+  let secondary_keywords = '';
   let post_slug = '';
 
   // YouTube
@@ -90,6 +91,7 @@
       seo_title       = post.seo_title       ?? '';
       meta_description = post.meta_description ?? '';
       target_keyword  = post.target_keyword  ?? '';
+      secondary_keywords = post.secondary_keywords ?? '';
       post_slug       = post.slug            ?? '';
       // YouTube
       youtube_title       = post.youtube_title       ?? '';
@@ -134,6 +136,7 @@
         seo_title:           seo_title || null,
         meta_description:    meta_description || null,
         target_keyword:      target_keyword || null,
+        secondary_keywords:  secondary_keywords || null,
         slug:                post_slug || null,
         youtube_title:       youtube_title || null,
         youtube_description: youtube_description || null,
@@ -328,6 +331,10 @@
           <label for="meta_description" class="block text-xs text-muted mb-1.5">Meta Description</label>
           <input id="meta_description" type="text" bind:value={meta_description} placeholder="150-character summary…" class="input w-full" />
           <p class="text-xs text-muted mt-1">{meta_description.length}/155 characters</p>
+        </div>
+        <div>
+          <label for="secondary_keywords" class="block text-xs text-muted mb-1.5">Secondary Keywords</label>
+          <input id="secondary_keywords" type="text" bind:value={secondary_keywords} placeholder="comma-separated supporting keywords" class="input w-full" />
         </div>
         <div>
           <label for="post_slug" class="block text-xs text-muted mb-1.5">URL Slug</label>

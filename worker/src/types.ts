@@ -246,6 +246,7 @@ export interface PostRow {
   meta_description:       string | null;
   slug:                   string | null;
   target_keyword:         string | null;
+  secondary_keywords:     string | null;
   ai_image_prompt:        string | null;
   ai_video_prompt:        string | null;
   video_script:           string | null;

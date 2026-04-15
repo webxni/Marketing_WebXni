@@ -2,6 +2,13 @@
  * OpenAI client — direct fetch, no SDK dependency.
  * Used for AI content generation.
  */
+import {
+  inferBusinessTemplateKey,
+  renderStructuredBlogHtml,
+  type BlogFaqItem,
+  type BlogSection,
+  type StructuredBlogContent,
+} from './wordpress';
 
 export interface GeneratedPost {
   title:               string;
@@ -25,6 +32,7 @@ export interface GeneratedPost {
   seo_title?:          string;
   meta_description?:   string;
   target_keyword?:     string;
+  secondary_keywords?: string;
   slug?:               string;  // URL slug suggestion
   video_script?:       string;
   // Designer prompts (always generated in Spanish)
@@ -44,6 +52,7 @@ export interface GenerationContext {
     industry?:           string | null;
     state?:              string | null;
     owner_name?:         string | null;
+    wp_template_key?:    string | null;
   };
   intelligence: {
     brand_voice?:         string | null;
@@ -235,9 +244,10 @@ Return ONLY JSON matching the requested schema. Keep captions concise and platfo
 }
 
 function buildBlogPrompt(ctx: GenerationContext): string {
-  const primaryColor = getPrimaryColor(ctx);
-  const ctaPhone = ctx.client.phone ? `tel:${ctx.client.phone}` : '#contact';
-  const ctaLabel = ctx.client.cta_text ?? 'Contact Us Today';
+  const templateKey = inferBusinessTemplateKey({
+    wp_template_key: ctx.client.wp_template_key,
+    industry: ctx.client.industry,
+  });
 
   return `You are a senior SEO blog writer for ${ctx.client.canonical_name}.
 
@@ -250,26 +260,36 @@ This is BLOG generation only. Do not generate social-platform caption variants.
 Return ONLY JSON matching the requested schema:
 - "title": keyword-led blog title, 50-65 chars
 - "master_caption": short teaser summary for internal/social fallback, 110-180 chars
-- "blog_content": valid HTML blog post, 1200-1500 words of body content
 - "blog_excerpt": plain-text excerpt, 150-160 chars, no HTML
 - "slug": lowercase hyphenated slug, max 55 chars
 - "seo_title": SEO title, 50-60 chars
 - "meta_description": meta description, 148-155 chars
 - "target_keyword": primary keyword phrase
+- "secondary_keywords": comma-separated secondary keyword phrases, 3-6 items
+- "intro": opening section, 80-140 words, plain text
+- "sections": array of 3-4 objects with:
+  - "heading": H2 heading
+  - "html": valid HTML for that section body, 2-4 paragraphs and optional ul/ol
+- "faq": array of 3-4 objects with:
+  - "question"
+  - "answer"
+- "cta_heading": CTA heading
+- "cta_body": CTA body copy, 1-2 sentences, no prices
+- "cta_button_label": CTA button text, 2-5 words
+- "ai_image_prompt": image brief for the featured/blog image
 
 BLOG REQUIREMENTS:
 - Opening paragraph must include the target keyword within the first 100 words.
-- Use 3-4 <h2> sections and include the keyword or a close variant in at least 2 headings.
+- Use 3-4 sections and include the keyword or a close variant in at least 2 headings.
 - Use <ul> or <ol> where it improves clarity.
-- Add a CTA block using EXACTLY this structure, replacing only the visible text:
-  <div style="background:${primaryColor}18;border-left:4px solid ${primaryColor};padding:20px 24px;margin:32px 0;border-radius:0 8px 8px 0;">
-    <h3 style="color:${primaryColor};margin:0 0 8px 0;font-size:1.1rem;">Replace with a relevant heading</h3>
-    <p style="margin:0 0 14px 0;">Value proposition sentence — why contact this company. No prices.</p>
-    <a href="${ctaPhone}" style="display:inline-block;background:${primaryColor};color:#fff;padding:11px 22px;border-radius:6px;text-decoration:none;font-weight:600;font-size:0.95rem;">${ctaLabel}</a>
-  </div>
-- Add <h2>Frequently Asked Questions</h2> only if the topic naturally fits FAQs, with 3-4 <h3>/<p> pairs.
+- FAQ must be practical, specific, and non-promotional.
 - End with a conclusion paragraph that does not repeat the intro.
-- No prices, no invented stats, no markdown, no code fences.`;
+- No prices, no invented stats, no markdown, no code fences.
+
+TEMPLATE CONTEXT:
+- Selected business template: ${templateKey}
+- Do NOT generate full-page HTML, CSS, <html>, <body>, <style>, or inline layout markup.
+- Generate structured content only. The app will render the final professional template.`;
 }
 
 function buildResponseSchema(ctx: GenerationContext): { name: string; schema: JsonSchema } {
@@ -283,13 +303,56 @@ function buildResponseSchema(ctx: GenerationContext): { name: string; schema: Js
   const required = ['title', 'master_caption'];
 
   if (isBlog) {
-    properties.blog_content = { type: 'string' };
     properties.blog_excerpt = { type: 'string' };
     properties.slug = { type: 'string' };
     properties.seo_title = { type: 'string' };
     properties.meta_description = { type: 'string' };
     properties.target_keyword = { type: 'string' };
-    required.push('blog_content', 'blog_excerpt', 'slug', 'seo_title', 'meta_description', 'target_keyword');
+    properties.secondary_keywords = { type: 'string' };
+    properties.intro = { type: 'string' };
+    properties.sections = {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          heading: { type: 'string' },
+          html: { type: 'string' },
+        },
+        required: ['heading', 'html'],
+      },
+    };
+    properties.faq = {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          question: { type: 'string' },
+          answer: { type: 'string' },
+        },
+        required: ['question', 'answer'],
+      },
+    };
+    properties.cta_heading = { type: 'string' };
+    properties.cta_body = { type: 'string' };
+    properties.cta_button_label = { type: 'string' };
+    properties.ai_image_prompt = { type: 'string' };
+    required.push(
+      'blog_excerpt',
+      'slug',
+      'seo_title',
+      'meta_description',
+      'target_keyword',
+      'secondary_keywords',
+      'intro',
+      'sections',
+      'faq',
+      'cta_heading',
+      'cta_body',
+      'cta_button_label',
+      'ai_image_prompt',
+    );
   } else {
     if (platforms.includes('facebook')) properties.cap_facebook = { type: 'string' };
     if (platforms.includes('instagram')) properties.cap_instagram = { type: 'string' };
@@ -373,9 +436,55 @@ function normalizeGeneratedPost(value: unknown, ctx: GenerationContext): Generat
   if (!normalized.master_caption) throw new Error('Generation missing master_caption');
 
   if (ctx.contentType === 'blog') {
-    for (const key of ['blog_content', 'blog_excerpt', 'slug', 'seo_title', 'meta_description', 'target_keyword'] as const) {
+    const parsed = value as Record<string, unknown>;
+    const intro = typeof parsed['intro'] === 'string' ? parsed['intro'].trim() : '';
+    const sectionsRaw = Array.isArray(parsed['sections']) ? parsed['sections'] : [];
+    const faqRaw = Array.isArray(parsed['faq']) ? parsed['faq'] : [];
+    const sections: BlogSection[] = sectionsRaw
+      .map((item) => ({
+        heading: typeof (item as Record<string, unknown>)['heading'] === 'string' ? String((item as Record<string, unknown>)['heading']).trim() : '',
+        html: typeof (item as Record<string, unknown>)['html'] === 'string' ? String((item as Record<string, unknown>)['html']).trim() : '',
+      }))
+      .filter((item) => item.heading && item.html);
+    const faq: BlogFaqItem[] = faqRaw
+      .map((item) => ({
+        question: typeof (item as Record<string, unknown>)['question'] === 'string' ? String((item as Record<string, unknown>)['question']).trim() : '',
+        answer: typeof (item as Record<string, unknown>)['answer'] === 'string' ? String((item as Record<string, unknown>)['answer']).trim() : '',
+      }))
+      .filter((item) => item.question && item.answer);
+    const requiredBlogKeys = ['blog_excerpt', 'slug', 'seo_title', 'meta_description', 'target_keyword', 'secondary_keywords', 'ai_image_prompt'] as const;
+    for (const key of requiredBlogKeys) {
       if (!normalized[key]) throw new Error(`Generation missing ${key}`);
     }
+    if (!intro) throw new Error('Generation missing intro');
+    if (sections.length < 3) throw new Error('Generation missing blog sections');
+    const structured: StructuredBlogContent = {
+      title: normalized.title,
+      excerpt: normalized.blog_excerpt!,
+      focusKeyword: normalized.target_keyword!,
+      secondaryKeywords: normalized.secondary_keywords!,
+      seoTitle: normalized.seo_title!,
+      metaDescription: normalized.meta_description!,
+      slug: normalized.slug!,
+      intro,
+      sections,
+      faq,
+      ctaHeading: typeof parsed['cta_heading'] === 'string' ? String(parsed['cta_heading']).trim() : (ctx.client.cta_text ?? 'Talk To Our Team'),
+      ctaBody: typeof parsed['cta_body'] === 'string' ? String(parsed['cta_body']).trim() : 'Get expert guidance tailored to your situation and goals.',
+      ctaButtonLabel: typeof parsed['cta_button_label'] === 'string' ? String(parsed['cta_button_label']).trim() : (ctx.client.cta_text ?? 'Contact Us Today'),
+      imagePrompt: normalized.ai_image_prompt,
+    };
+    normalized.blog_content = renderStructuredBlogHtml({
+      templateKey: inferBusinessTemplateKey({
+        wp_template_key: ctx.client.wp_template_key,
+        industry: ctx.client.industry,
+      }),
+      primaryColor: getPrimaryColor(ctx),
+      clientName: ctx.client.canonical_name,
+      phone: ctx.client.phone,
+      ctaDefault: ctx.client.cta_text,
+      blog: structured,
+    });
   } else {
     if (!normalized.ai_image_prompt) throw new Error('Generation missing ai_image_prompt');
     if ((ctx.contentType === 'video' || ctx.contentType === 'reel') && (!normalized.video_script || !normalized.ai_video_prompt)) {
