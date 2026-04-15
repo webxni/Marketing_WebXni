@@ -45,6 +45,9 @@ export const postsApi = {
   retry: (id: string) =>
     api.post<{ ok: boolean }>(`/api/posts/${id}/retry`),
 
+  duplicate: (id: string, opts: { publish_now?: boolean } = {}) =>
+    api.post<{ ok: boolean; post: Post; job_id?: string }>(`/api/posts/${id}/duplicate`, opts),
+
   refreshUrls: (id: string) =>
     api.post<{ ok: boolean; updated: number }>(`/api/posts/${id}/refresh-urls`, {}),
 

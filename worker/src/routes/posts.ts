@@ -309,6 +309,100 @@ postRoutes.post('/:id/publish', async (c) => {
   return c.json({ ok: true, job_id: job.id, dry_run: dryRun }, 202);
 });
 
+/** POST /api/posts/:id/duplicate */
+postRoutes.post('/:id/duplicate', async (c) => {
+  const source = await getPostById(c.env.DB, c.req.param('id'));
+  if (!source) return c.json({ error: 'Not found' }, 404);
+
+  let publishNow = false;
+  try { publishNow = ((await c.req.json()) as { publish_now?: boolean }).publish_now === true; } catch { /* empty */ }
+
+  const duplicate = await createPost(c.env.DB, {
+    client_id: source.client_id,
+    title: source.title,
+    status: publishNow ? 'ready' : ((source.status === 'draft' || source.status === 'pending_approval') ? source.status : 'draft'),
+    content_type: source.content_type,
+    platforms: source.platforms,
+    publish_date: source.publish_date,
+    master_caption: source.master_caption,
+    cap_facebook: source.cap_facebook,
+    cap_instagram: source.cap_instagram,
+    cap_linkedin: source.cap_linkedin,
+    cap_x: source.cap_x,
+    cap_threads: source.cap_threads,
+    cap_tiktok: source.cap_tiktok,
+    cap_pinterest: source.cap_pinterest,
+    cap_bluesky: source.cap_bluesky,
+    cap_google_business: source.cap_google_business,
+    cap_gbp_la: source.cap_gbp_la,
+    cap_gbp_wa: source.cap_gbp_wa,
+    cap_gbp_or: source.cap_gbp_or,
+    blog_content: source.blog_content,
+    blog_excerpt: source.blog_excerpt,
+    seo_title: source.seo_title,
+    meta_description: source.meta_description,
+    slug: source.slug,
+    target_keyword: source.target_keyword,
+    youtube_title: source.youtube_title,
+    youtube_description: source.youtube_description,
+    video_script: source.video_script,
+    ai_image_prompt: source.ai_image_prompt,
+    ai_video_prompt: source.ai_video_prompt,
+    gbp_topic_type: source.gbp_topic_type,
+    gbp_cta_type: source.gbp_cta_type,
+    gbp_cta_url: source.gbp_cta_url,
+    gbp_event_title: source.gbp_event_title,
+    gbp_event_start_date: source.gbp_event_start_date,
+    gbp_event_start_time: source.gbp_event_start_time,
+    gbp_event_end_date: source.gbp_event_end_date,
+    gbp_event_end_time: source.gbp_event_end_time,
+    gbp_coupon_code: source.gbp_coupon_code,
+    gbp_redeem_url: source.gbp_redeem_url,
+    gbp_terms: source.gbp_terms,
+    asset_r2_key: source.asset_r2_key,
+    asset_r2_bucket: source.asset_r2_bucket,
+    asset_type: source.asset_type,
+    canva_link: source.canva_link,
+    ready_for_automation: publishNow ? 1 : source.ready_for_automation,
+    asset_delivered: source.asset_delivered,
+    skarleth_notes: source.skarleth_notes,
+    platform_manual_override: source.platform_manual_override,
+    scheduled_by_automation: 0,
+    automation_slot_key: null,
+    generation_run_id: null,
+    created_by: c.get('user').userId,
+    error_log: null,
+  } as Parameters<typeof createPost>[1]);
+
+  await writeAuditLog(c.env.DB, {
+    user_id: c.get('user').userId,
+    action: 'post.duplicate',
+    entity_type: 'post',
+    entity_id: duplicate.id,
+    old_value: { source_post_id: source.id },
+    new_value: { duplicated_post_id: duplicate.id, publish_now: publishNow },
+    ip: c.req.header('CF-Connecting-IP') ?? c.req.header('X-Forwarded-For') ?? undefined,
+  });
+
+  if (!publishNow) {
+    return c.json({ ok: true, post: duplicate }, 201);
+  }
+
+  const jobId = crypto.randomUUID().replace(/-/g, '').toLowerCase();
+  c.executionCtx.waitUntil((async () => {
+    await runPosting(c.env, {
+      mode: 'real',
+      job_id: jobId,
+      triggered_by: 'api.duplicate',
+      post_ids: [duplicate.id],
+      limit: 1,
+    });
+    await runFetchUrls(c.env, `${jobId}-urls`);
+  })());
+
+  return c.json({ ok: true, post: duplicate, job_id: jobId }, 202);
+});
+
 /** POST /api/posts/:id/retry */
 postRoutes.post('/:id/retry', async (c) => {
   const post = await getPostById(c.env.DB, c.req.param('id'));

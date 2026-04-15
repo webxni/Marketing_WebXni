@@ -25,6 +25,7 @@
   let connectionMessage = '';
   let refreshingUrls = false;
   let autoRefreshHandle: ReturnType<typeof setInterval> | null = null;
+  let duplicatingPost = false;
 
   function setTab(key: string) { activeTab = key as typeof activeTab; }
 
@@ -162,6 +163,20 @@
       await load();
     }
     catch { toast.error('Failed to retry'); }
+  }
+
+  async function duplicateAndRepublish() {
+    if (!post) return;
+    duplicatingPost = true;
+    try {
+      const r = await postsApi.duplicate(post.id, { publish_now: true });
+      toast.success('Post duplicated and queued for full republish');
+      goto(`/posts/${r.post.id}`);
+    } catch {
+      toast.error('Failed to duplicate post');
+    } finally {
+      duplicatingPost = false;
+    }
   }
 
   async function toggleAssetDelivered() {
@@ -420,6 +435,11 @@
     </div>
     <div class="flex gap-2">
       <a href="/posts/{post.id}/edit" class="btn-ghost btn-sm">Edit Content</a>
+      {#if can('automation.trigger')}
+        <button class="btn-ghost btn-sm" on:click={duplicateAndRepublish} disabled={duplicatingPost}>
+          {duplicatingPost ? 'Duplicating…' : 'Duplicate & Republish'}
+        </button>
+      {/if}
       {#if can('posts.delete')}
         <button class="btn-ghost btn-sm text-red-400" on:click={() => (showDeleteConfirm = true)}>Delete</button>
       {/if}
