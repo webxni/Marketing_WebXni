@@ -24,7 +24,7 @@ import {
   inferMediaTypeFromAssetType,
   requiresMedia,
 } from '../modules/media';
-import { buildExtraParams, extractTrackingId } from '../modules/posting';
+import { buildExtraParams, extractTrackingId, getVideoPostTitle } from '../modules/posting';
 import { translatePostingError } from '../modules/posting-diagnostics';
 
 const DEFAULT_PUBLIC_MEDIA_PROXY = 'https://marketing.webxni.com/media';
@@ -278,7 +278,7 @@ async function processPost(
         response = await up.postVideo({
           user: client.upload_post_profile!,
           platform,
-          title: caption!,
+          title: getVideoPostTitle(platform, post),
           videoUrl: videoR2Url,
           content_type: normalizedContentType === 'reel' ? 'reel' : 'video',
           scheduled_date: sched_time,

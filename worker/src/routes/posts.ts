@@ -535,6 +535,7 @@ postRoutes.delete('/:id', async (c) => {
     const db = c.env.DB;
     await db.prepare('DELETE FROM posting_attempts WHERE post_id = ?').bind(post.id).run();
     await db.prepare('DELETE FROM content_memory   WHERE post_id = ?').bind(post.id).run();
+    await db.prepare('DELETE FROM assets          WHERE post_id = ?').bind(post.id).run();
     await db.prepare('DELETE FROM post_platforms   WHERE post_id = ?').bind(post.id).run();
     await db.prepare('DELETE FROM post_versions    WHERE post_id = ?').bind(post.id).run();
     await db.prepare('DELETE FROM posts            WHERE id      = ?').bind(post.id).run();

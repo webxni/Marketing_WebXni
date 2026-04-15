@@ -97,6 +97,23 @@ export function buildExtraParams(
   return extra;
 }
 
+export function getVideoPostTitle(
+  platform: string,
+  post: PostRow,
+): string {
+  const normalized = normalizePlatform(platform);
+  const baseTitle =
+    (normalized === 'youtube' ? post.youtube_title : null)
+    ?? post.title
+    ?? post.target_keyword
+    ?? post.master_caption
+    ?? 'Video Post';
+
+  const title = baseTitle.trim();
+  const maxLen = normalized === 'facebook' ? 255 : normalized === 'youtube' ? 100 : 120;
+  return title.length > maxLen ? `${title.slice(0, maxLen - 1).trim()}…` : title;
+}
+
 /**
  * Extract tracking ID from Upload-Post response.
  * Scheduled posts return job_id (HTTP 202).
