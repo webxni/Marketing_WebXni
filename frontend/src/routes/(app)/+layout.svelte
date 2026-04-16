@@ -5,6 +5,7 @@
   import { authApi } from '$lib/api';
   import Sidebar from '$lib/components/layout/Sidebar.svelte';
   import TopBar from '$lib/components/layout/TopBar.svelte';
+  import AgentChat from '$lib/components/agent/AgentChat.svelte';
 
   let ready = false;
 
@@ -36,6 +37,7 @@
       </main>
     </div>
   </div>
+  <AgentChat />
 {:else}
   <div class="flex h-screen items-center justify-center bg-bg">
     <div class="w-6 h-6 border-2 border-accent border-t-transparent rounded-full animate-spin"></div>

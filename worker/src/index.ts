@@ -27,6 +27,7 @@ import { portalRoutes }      from './routes/portal';
 import { blogRoutes }        from './routes/blog';
 import { gbpRoutes }         from './routes/gbp';
 import { internalRoutes }    from './routes/internal';
+import { aiRoutes }          from './routes/ai';
 
 const app = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -56,6 +57,7 @@ app.route('/api/logs',      logRoutes);
 app.route('/api/settings',  settingsRoutes);
 app.route('/api/notion',    notionRoutes);
 app.route('/api/portal',    portalRoutes);
+app.route('/api/ai',        aiRoutes);
 
 app.get('/api/health', (c) =>
   c.json({ status: 'ok', ts: Date.now(), version: '2.0.0' }),
