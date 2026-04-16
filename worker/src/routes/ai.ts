@@ -726,7 +726,7 @@ async function executeTool(
             LIMIT 10
           `).all<Record<string, unknown>>(),
           env.DB.prepare(`
-            SELECT id, status, date_range, created_at
+            SELECT id, status, week_start, created_at, current_slot_idx, total_slots
             FROM generation_runs WHERE status = 'running'
               AND created_at < unixepoch('now') - 1800
             LIMIT 5
