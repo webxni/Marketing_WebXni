@@ -182,6 +182,47 @@ export async function notifyFailedPosts(opts: {
   });
 }
 
+// ── Direct messages ────────────────────────────────────────────────────────────
+
+/**
+ * Send a DM to a Discord user by their user ID.
+ * Creates the DM channel first (idempotent — Discord returns the same channel
+ * if it already exists), then sends the message.
+ */
+export async function discordDM(opts: {
+  userId:  string;
+  token:   string;
+  content?: string;
+  embeds?:  DiscordEmbed[];
+}): Promise<void> {
+  const { userId, token } = opts;
+
+  try {
+    // Step 1 — open/retrieve the DM channel
+    const chanRes = await fetch(`${DISCORD_API}/users/@me/channels`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bot ${token}`,
+        'Content-Type':  'application/json',
+      },
+      body: JSON.stringify({ recipient_id: userId }),
+    });
+
+    if (!chanRes.ok) {
+      const err = await chanRes.text();
+      console.error(`[discord] DM channel open failed ${chanRes.status}:`, err.slice(0, 120));
+      return;
+    }
+
+    const chan = await chanRes.json() as { id: string };
+
+    // Step 2 — send the message into the DM channel
+    await discordSend({ channelId: chan.id, token, content: opts.content, embeds: opts.embeds });
+  } catch (err) {
+    console.error('[discord] DM error:', err);
+  }
+}
+
 // ── Ed25519 signature verification ─────────────────────────────────────────────
 
 function hexToUint8(hex: string): Uint8Array {

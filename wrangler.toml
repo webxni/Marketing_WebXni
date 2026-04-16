@@ -54,6 +54,8 @@ R2_MEDIA_PUBLIC_URL = ""
 DISCORD_APPLICATION_ID = ""
 # Channel to send notifications to (from the channel URL)
 DISCORD_CHANNEL_ID = "1242943323828916234"
+# Owner's Discord user ID — receives DMs for critical alerts
+DISCORD_OWNER_ID = "1468394932837552248"
 
 # Secrets (set via: wrangler secret put <NAME>)
 # UPLOAD_POST_API_KEY

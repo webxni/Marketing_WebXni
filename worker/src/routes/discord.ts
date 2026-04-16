@@ -14,7 +14,7 @@ import { Hono } from 'hono';
 import type { Env } from '../types';
 import {
   verifyDiscordSignature,
-  discordSend, discordPatchInteraction,
+  discordSend, discordPatchInteraction, discordDM,
   registerSlashCommands,
   DISCORD_COLORS,
 } from '../services/discord';
@@ -278,6 +278,35 @@ discordInternalRoute.post('/notify', async (c) => {
       }] : undefined,
     });
     return c.json({ ok: true });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /internal/discord/dm
+// Send a direct message to the owner (DISCORD_OWNER_ID) or any user ID.
+// Body: { content, user_id? }  — user_id defaults to DISCORD_OWNER_ID
+// ─────────────────────────────────────────────────────────────────────────────
+
+discordInternalRoute.post('/dm', async (c) => {
+  const botToken = c.env.DISCORD_BOT_TOKEN ?? '';
+  const ownerId  = c.env.DISCORD_OWNER_ID  ?? '';
+
+  if (!botToken) return c.json({ error: 'DISCORD_BOT_TOKEN not configured' }, 400);
+
+  let body: { content?: string; user_id?: string };
+  try { body = await c.req.json() as typeof body; }
+  catch { return c.json({ error: 'Invalid JSON' }, 400); }
+
+  const userId  = body.user_id ?? ownerId;
+  const content = body.content ?? '';
+  if (!userId)  return c.json({ error: 'No user_id and DISCORD_OWNER_ID not set' }, 400);
+  if (!content) return c.json({ error: 'content is required' }, 400);
+
+  try {
+    await discordDM({ userId, token: botToken, content });
+    return c.json({ ok: true, user_id: userId });
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }

@@ -21,6 +21,7 @@ export interface Env {
   DISCORD_PUBLIC_KEY?:     string; // wrangler secret — Ed25519 public key from Developer Portal
   DISCORD_APPLICATION_ID?: string; // wrangler var — App ID from Developer Portal
   DISCORD_CHANNEL_ID?:     string; // wrangler var — target notification channel
+  DISCORD_OWNER_ID?:       string; // wrangler var — owner's user ID for DMs
 }
 
 /** LOADER worker bindings (no SESSION / ASSETS) */

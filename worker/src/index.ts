@@ -85,7 +85,7 @@ app.all('/*', async (c) => {
 import { runPosting } from './loader/posting-run';
 import { runRecurringGbp } from './loader/recurring-gbp-run';
 import { runFetchUrls } from './routes/run';
-import { notifyPostingComplete } from './services/discord';
+import { notifyPostingComplete, discordDM } from './services/discord';
 
 export default {
   fetch: app.fetch,
@@ -144,6 +144,15 @@ export default {
               // Only notify if something happened
               if (sent > 0 || failed > 0) {
                 await notifyPostingComplete({ channelId, token: botToken, sent, failed, skipped, jobId, triggered: 'cron' });
+              }
+              // DM the owner directly on failures
+              const ownerId = env.DISCORD_OWNER_ID;
+              if (ownerId && failed > 0) {
+                await discordDM({
+                  userId:  ownerId,
+                  token:   botToken,
+                  content: `⚠️ **${failed} post${failed !== 1 ? 's' : ''} failed** in the last posting run. Use \`/failed\` to see details or \`/ask "fix failed posts"\` to reset them.`,
+                });
               }
             } catch { /* non-fatal */ }
           }
