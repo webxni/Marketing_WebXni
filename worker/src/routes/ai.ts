@@ -779,6 +779,25 @@ aiRoutes.post('/agent', async (c) => {
       // keep default
     }
 
+    // ── 2b. Resolve OpenAI API key (secret → KV fallback) ──────────────────
+    let openAiKey = c.env.OPENAI_API_KEY || '';
+    if (!openAiKey) {
+      try {
+        const settingsRaw = await c.env.KV_BINDING.get('settings:system');
+        const settings: Record<string, string> = settingsRaw ? JSON.parse(settingsRaw) as Record<string, string> : {};
+        openAiKey = settings['ai_api_key'] || '';
+      } catch { /* ignore */ }
+    }
+    if (!openAiKey) {
+      console.error('[agent] OpenAI API key not configured');
+      return safeResponse(
+        'OpenAI API key is not configured. Set the OPENAI_API_KEY secret or configure it in Settings.',
+        [],
+        ['OpenAI API key not configured'],
+      );
+    }
+    console.log('[agent] OpenAI key resolved, length:', openAiKey.length);
+
     // ── 3. Build system prompt ──────────────────────────────────────────────
     console.log('[agent] building system prompt');
     let systemPrompt = '';
@@ -821,7 +840,7 @@ aiRoutes.post('/agent', async (c) => {
             signal: controller.signal,
             headers: {
               'Content-Type':  'application/json',
-              'Authorization': `Bearer ${c.env.OPENAI_API_KEY}`,
+              'Authorization': `Bearer ${openAiKey}`,
             },
             body: JSON.stringify({
               model:       'gpt-4o-mini',
