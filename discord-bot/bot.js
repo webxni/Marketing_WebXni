@@ -85,63 +85,96 @@ async function askAgent(userMessage, userId, username) {
 
 // ── Format agent response for Discord ─────────────────────────────────────────
 function formatResponse(data) {
-  const parts   = [];
-  const embeds  = [];
-  const assetUrls = []; // collected from items for image embeds
+  const parts  = [];
+  const embeds = [];
 
-  // Main message — skip if it's just a repeat of actions_taken
-  const actionsJoined = (data.actions_taken ?? []).join(' ');
-  const msg = data.message ?? '';
-  if (msg && msg !== actionsJoined) parts.push(msg);
+  // Deduplicate items by ID (agent may call get_posts twice across iterations)
+  let items = Array.isArray(data.items) ? data.items : [];
+  if (items.length > 0) {
+    const seen = new Set();
+    items = items.filter(item => {
+      const key = item.id ?? item.title ?? JSON.stringify(item);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
 
-  // Items list
-  if (Array.isArray(data.items) && data.items.length > 0) {
-    const MAX = 6;
-    const lines = [];
+  // ── Main message (skip if it just echoes action_taken) ────────────────────
+  const actionsText = (data.actions_taken ?? []).join(' ');
+  const msg = (data.message ?? '').trim();
+  // Only show message if it's a real sentence, not a repeat of the action summary
+  if (msg && msg !== actionsText && !actionsText.includes(msg)) {
+    parts.push(msg);
+  }
 
-    for (let i = 0; i < Math.min(data.items.length, MAX); i++) {
-      const item   = data.items[i];
-      const title  = item.title ?? item.name ?? item.type ?? item.id ?? '—';
-      const status = item.status       ? ` · \`${item.status}\`` : '';
-      const client = item.client       ? ` · ${item.client}`     : '';
-      const date   = item.publish_date ? ` · ${String(item.publish_date).slice(0, 10)}` : '';
-      lines.push(`**${i + 1}. ${title}**${status}${client}${date}`);
+  // ── Items ─────────────────────────────────────────────────────────────────
+  if (items.length === 1) {
+    // Single post — rich format with caption + image
+    const item   = items[0];
+    const title  = item.title ?? item.name ?? '—';
+    const status = item.status       ? `\`${item.status}\`` : '';
+    const client = item.client       ? item.client.split(' (')[0] : ''; // strip slug
+    const date   = item.publish_date ? String(item.publish_date).slice(0, 10) : '';
+    const meta   = [status, client, date].filter(Boolean).join(' · ');
 
-      // Caption
-      if (item.master_caption) {
-        const cap = String(item.master_caption).slice(0, 200);
-        lines.push(`> ${cap}${item.master_caption.length > 200 ? '…' : ''}`);
-      }
+    parts.push(`**${title}**\n${meta}`);
 
-      // Collect asset URL — will be shown as embed image below
-      if (item.asset_url) assetUrls.push({ url: item.asset_url, type: item.asset_type ?? '', title });
+    if (item.master_caption) {
+      const cap = String(item.master_caption);
+      parts.push(`>>> ${cap.slice(0, 900)}${cap.length > 900 ? '…' : ''}`);
     }
 
-    if (data.items.length > MAX) lines.push(`…+${data.items.length - MAX} more`);
+    if (item.asset_url) {
+      const isVideo = /\.(mp4|mov|webm)$/i.test(item.asset_url) ||
+                      item.asset_type === 'video' || item.asset_type === 'reel';
+      if (isVideo) {
+        parts.push(`📹 ${item.asset_url}`);
+      } else {
+        embeds.push({
+          color: 0x1a73e8,
+          image: { url: item.asset_url },
+        });
+      }
+    } else if (item.asset === 0 || item.asset === false) {
+      parts.push('_No media uploaded yet_');
+    }
+
+  } else if (items.length > 1) {
+    // Multiple posts — compact numbered list
+    const MAX   = 8;
+    const lines = items.slice(0, MAX).map((item, i) => {
+      const title  = item.title ?? item.name ?? item.type ?? '—';
+      const status = item.status       ? ` \`${item.status}\`` : '';
+      const date   = item.publish_date ? ` · ${String(item.publish_date).slice(0, 10)}` : '';
+      const client = item.client       ? ` · ${item.client.split(' (')[0]}` : '';
+      return `${i + 1}. **${title}**${status}${date}${client}`;
+    });
+    if (items.length > MAX) lines.push(`_…+${items.length - MAX} more_`);
     parts.push(lines.join('\n'));
   }
 
-  // Summary stats (scalar values only, skip obvious ones already in items)
-  if (data.summary && typeof data.summary === 'object') {
-    const skip = new Set(['total', 'shown']);
-    const statParts = Object.entries(data.summary)
+  // ── Summary bar (only interesting non-obvious stats) ─────────────────────
+  if (data.summary && typeof data.summary === 'object' && items.length !== 1) {
+    const skip = new Set(['total', 'shown', 'dry_run']);
+    const stats = Object.entries(data.summary)
       .filter(([k, v]) => !skip.has(k) && v !== null && typeof v !== 'object')
-      .map(([k, v]) => `${k.replace(/_/g, ' ')}: **${v}**`);
-    if (statParts.length) parts.push('> ' + statParts.join(' · '));
+      .map(([k, v]) => `**${v}** ${k.replace(/_/g, ' ')}`);
+    if (stats.length) parts.push('`' + stats.join(' · ') + '`');
   }
 
-  // Actions — only show if they add info beyond the message
-  if (Array.isArray(data.actions_taken) && data.actions_taken.length > 0) {
-    const unique = data.actions_taken.filter(a => a !== msg);
-    if (unique.length > 0) parts.push('✅ ' + unique.join('\n✅ '));
+  // ── Mutation confirmations ────────────────────────────────────────────────
+  const uniqueActions = (data.actions_taken ?? []).filter(a => a !== actionsText && a !== msg);
+  if (uniqueActions.length > 0) {
+    parts.push('✅ ' + uniqueActions.join('\n✅ '));
   }
 
-  // First suggestion only
+  // ── Suggestion ───────────────────────────────────────────────────────────
   if (Array.isArray(data.suggestions) && data.suggestions.length > 0) {
     parts.push(`💡 ${data.suggestions[0]}`);
   }
 
-  // Errors
+  // ── Errors ────────────────────────────────────────────────────────────────
   if (Array.isArray(data.errors) && data.errors.length > 0) {
     parts.push('⚠️ ' + data.errors.join('\n⚠️ '));
   }
@@ -149,20 +182,7 @@ function formatResponse(data) {
   let content = parts.filter(Boolean).join('\n\n');
   if (content.length > 1900) content = content.slice(0, 1900) + '…';
 
-  // Build Discord embeds for images/videos (max 4 embeds)
-  for (const asset of assetUrls.slice(0, 4)) {
-    const isVideo = asset.type === 'video' || asset.type === 'reel' ||
-                    /\.(mp4|mov|webm)$/i.test(asset.url);
-    if (isVideo) {
-      // Discord can't embed video natively in embeds — just show the URL as a link
-      content += `\n\n📹 **Video:** ${asset.url}`;
-    } else {
-      // Image — use embed so Discord renders it inline
-      embeds.push({ title: asset.title, image: { url: asset.url }, color: 0x1a73e8 });
-    }
-  }
-
-  return { content: content || '(no response)', embeds };
+  return { content: content || '…', embeds };
 }
 
 // ── Discord client ─────────────────────────────────────────────────────────────
