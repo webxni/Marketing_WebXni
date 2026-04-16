@@ -740,138 +740,220 @@ interface OpenAIMessage {
 }
 
 aiRoutes.post('/agent', async (c) => {
-  let body: AgentRequest;
+  const user = c.get('user');
+
+  // ── Safe response helper ────────────────────────────────────────────────
+  const safeResponse = (
+    message: string,
+    actions_taken: string[] = [],
+    errors: string[]        = [],
+    tools_used: string[]    = [],
+  ) => c.json({ message, actions_taken, data: {}, errors, tools_used });
+
+  // ── Global try/catch — handler must never crash ─────────────────────────
   try {
-    body = (await c.req.json()) as AgentRequest;
-  } catch {
-    return c.json({ error: 'Invalid JSON' }, 400);
-  }
+    console.log('[agent] request received — user:', user?.email ?? 'unknown');
 
-  if (!body.message?.trim()) {
-    return c.json({ error: 'message is required' }, 400);
-  }
-
-  const user    = c.get('user');
-  const baseUrl = new URL(c.req.url).origin;
-
-  const systemPrompt = await buildSystemPrompt(c.env);
-
-  // Build conversation messages
-  const messages: OpenAIMessage[] = [
-    { role: 'system', content: systemPrompt },
-  ];
-
-  // Include prior conversation turns (max 10)
-  const history = Array.isArray(body.history) ? body.history.slice(-10) : [];
-  for (const h of history) {
-    messages.push({ role: h.role, content: h.content });
-  }
-  messages.push({ role: 'user', content: body.message });
-
-  // ── Agentic loop (max 5 iterations to prevent runaway) ──────────────────
-  const allActionsTaken: string[] = [];
-  const allErrors: string[]       = [];
-  const toolsUsed: string[]       = [];
-  let finalMessage                = '';
-  let iterations                  = 0;
-  const MAX_ITER                  = 5;
-
-  while (iterations < MAX_ITER) {
-    iterations++;
-
-    const openAIResponse = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type':  'application/json',
-        'Authorization': `Bearer ${c.env.OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages,
-        tools: AGENT_TOOLS,
-        tool_choice: 'auto',
-        temperature: 0.2,
-        max_tokens: 1500,
-      }),
-    });
-
-    if (!openAIResponse.ok) {
-      const errText = await openAIResponse.text();
-      return c.json({
-        message: 'OpenAI API error. Please try again.',
-        actions_taken: allActionsTaken,
-        data: {},
-        errors: [`OpenAI ${openAIResponse.status}: ${errText.slice(0, 200)}`],
-      }, 502);
+    // ── 1. Parse and validate request body ─────────────────────────────────
+    let body: AgentRequest;
+    try {
+      body = (await c.req.json()) as AgentRequest;
+    } catch {
+      console.log('[agent] invalid JSON body');
+      return safeResponse('I could not parse your request. Please try again.');
     }
 
-    const completion = await openAIResponse.json() as {
-      choices: Array<{
-        message: OpenAIMessage;
-        finish_reason: string;
-      }>;
-    };
-
-    const choice = completion.choices[0];
-    if (!choice) break;
-
-    const assistantMsg = choice.message;
-    messages.push(assistantMsg);
-
-    // No tool calls — we have a final response
-    if (!assistantMsg.tool_calls || assistantMsg.tool_calls.length === 0) {
-      finalMessage = assistantMsg.content ?? '';
-      break;
+    const userMessage = typeof body?.message === 'string' ? body.message.trim() : '';
+    if (!userMessage) {
+      console.log('[agent] empty message');
+      return safeResponse('Please send a message so I can help you.');
     }
 
-    // Execute all tool calls
-    const toolResultMessages: OpenAIMessage[] = [];
+    console.log('[agent] message:', userMessage.slice(0, 100));
 
-    for (const toolCall of assistantMsg.tool_calls) {
-      const toolName = toolCall.function.name;
-      toolsUsed.push(toolName);
+    // ── 2. Resolve base URL safely ──────────────────────────────────────────
+    let baseUrl = 'https://marketing.webxni.com';
+    try {
+      baseUrl = new URL(c.req.url).origin;
+    } catch {
+      // keep default
+    }
 
-      let toolArgs: Record<string, unknown> = {};
+    // ── 3. Build system prompt ──────────────────────────────────────────────
+    console.log('[agent] building system prompt');
+    let systemPrompt = '';
+    try {
+      systemPrompt = await buildSystemPrompt(c.env);
+    } catch (err) {
+      console.error('[agent] system prompt error:', err);
+      systemPrompt = `You are the WebXni Marketing Platform AI Agent. Today is ${new Date().toISOString().split('T')[0]}.`;
+    }
+    console.log('[agent] system prompt ready, length:', systemPrompt.length);
+
+    // ── 4. Build message thread ─────────────────────────────────────────────
+    const messages: OpenAIMessage[] = [
+      { role: 'system', content: systemPrompt },
+    ];
+    const history = Array.isArray(body.history) ? body.history.slice(-6) : [];
+    for (const h of history) {
+      if (h.role && h.content) messages.push({ role: h.role, content: h.content });
+    }
+    messages.push({ role: 'user', content: userMessage });
+
+    // ── 5. Agentic loop — max 2 iterations ─────────────────────────────────
+    const allActionsTaken: string[] = [];
+    const allErrors: string[]       = [];
+    const toolsUsed: string[]       = [];
+    let finalMessage                = '';
+    const MAX_ITER                  = 2;
+
+    for (let iteration = 0; iteration < MAX_ITER; iteration++) {
+      console.log(`[agent] OpenAI call — iteration ${iteration + 1}/${MAX_ITER}`);
+
+      // ── OpenAI call with timeout ──────────────────────────────────────────
+      let openAIResponse: Response;
       try {
-        toolArgs = JSON.parse(toolCall.function.arguments) as Record<string, unknown>;
-      } catch {
-        toolArgs = {};
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 25_000); // 25s timeout
+        try {
+          openAIResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            signal: controller.signal,
+            headers: {
+              'Content-Type':  'application/json',
+              'Authorization': `Bearer ${c.env.OPENAI_API_KEY}`,
+            },
+            body: JSON.stringify({
+              model:       'gpt-4o-mini',
+              messages,
+              tools:       AGENT_TOOLS,
+              tool_choice: 'auto',
+              temperature: 0.2,
+              max_tokens:  1200,
+            }),
+          });
+        } finally {
+          clearTimeout(timeout);
+        }
+      } catch (fetchErr) {
+        const isTimeout = fetchErr instanceof Error && fetchErr.name === 'AbortError';
+        const errMsg = isTimeout ? 'OpenAI request timed out' : `OpenAI fetch error: ${String(fetchErr).slice(0, 100)}`;
+        console.error('[agent] fetch error:', errMsg);
+        allErrors.push(errMsg);
+        break;
       }
 
-      const result = await executeTool(toolName, toolArgs, c.env, user, baseUrl, c.executionCtx);
+      console.log('[agent] OpenAI response status:', openAIResponse.status);
 
-      if (result.action_summary) allActionsTaken.push(result.action_summary);
-      if (result.error)          allErrors.push(result.error);
+      // ── Handle non-200 from OpenAI — never return 502 ────────────────────
+      if (!openAIResponse.ok) {
+        let errText = '';
+        try { errText = await openAIResponse.text(); } catch { /* ignore */ }
+        const errMsg = `OpenAI error ${openAIResponse.status}: ${errText.slice(0, 150)}`;
+        console.error('[agent]', errMsg);
+        allErrors.push(errMsg);
+        break; // exit loop, return whatever we have
+      }
 
-      toolResultMessages.push({
-        role:         'tool',
-        tool_call_id: toolCall.id,
-        content:      JSON.stringify(result.success ? result.data : { error: result.error }),
-      });
+      // ── Parse completion ──────────────────────────────────────────────────
+      let completion: { choices: Array<{ message: OpenAIMessage; finish_reason: string }> };
+      try {
+        completion = await openAIResponse.json() as typeof completion;
+      } catch (parseErr) {
+        console.error('[agent] JSON parse error:', parseErr);
+        allErrors.push('Failed to parse OpenAI response');
+        break;
+      }
+
+      const choice = completion?.choices?.[0];
+      if (!choice?.message) {
+        console.error('[agent] no choice in completion');
+        allErrors.push('Empty response from OpenAI');
+        break;
+      }
+
+      const assistantMsg = choice.message;
+      messages.push(assistantMsg);
+
+      // ── No tool calls → final answer ──────────────────────────────────────
+      if (!assistantMsg.tool_calls || assistantMsg.tool_calls.length === 0) {
+        finalMessage = typeof assistantMsg.content === 'string' ? assistantMsg.content : '';
+        console.log('[agent] final answer received, length:', finalMessage.length);
+        break;
+      }
+
+      console.log('[agent] tool calls:', assistantMsg.tool_calls.map(t => t.function.name).join(', '));
+
+      // ── Execute tool calls ────────────────────────────────────────────────
+      const toolResultMessages: OpenAIMessage[] = [];
+
+      for (const toolCall of assistantMsg.tool_calls) {
+        const toolName = toolCall.function.name;
+        toolsUsed.push(toolName);
+        console.log('[agent] executing tool:', toolName);
+
+        let toolArgs: Record<string, unknown> = {};
+        try {
+          toolArgs = JSON.parse(toolCall.function.arguments) as Record<string, unknown>;
+        } catch {
+          toolArgs = {};
+        }
+
+        let result: ToolResult;
+        try {
+          result = await executeTool(toolName, toolArgs, c.env, user, baseUrl, c.executionCtx);
+        } catch (toolErr) {
+          const msg = toolErr instanceof Error ? toolErr.message : String(toolErr);
+          console.error(`[agent] tool ${toolName} threw:`, msg);
+          result = { success: false, error: msg };
+        }
+
+        console.log(`[agent] tool ${toolName} result — success: ${result.success}`);
+        if (result.action_summary) allActionsTaken.push(result.action_summary);
+        if (result.error)          allErrors.push(`${toolName}: ${result.error}`);
+
+        toolResultMessages.push({
+          role:         'tool',
+          tool_call_id: toolCall.id,
+          content:      JSON.stringify(
+            result.success
+              ? (result.data ?? {})
+              : { error: result.error ?? 'Tool failed' }
+          ),
+        });
+      }
+
+      messages.push(...toolResultMessages);
+    } // end agentic loop
+
+    // ── 6. Compose final message ────────────────────────────────────────────
+    if (!finalMessage) {
+      finalMessage = allActionsTaken.length > 0
+        ? allActionsTaken.join('\n')
+        : allErrors.length > 0
+          ? `I encountered some issues: ${allErrors.join('; ')}`
+          : 'Done.';
     }
 
-    // Add all tool results and continue loop
-    messages.push(...toolResultMessages);
+    console.log('[agent] responding — actions:', allActionsTaken.length, 'errors:', allErrors.length);
+
+    // ── 7. Log interaction (non-blocking) ───────────────────────────────────
+    c.executionCtx.waitUntil(
+      writeAgentLog(c.env.DB, user, userMessage, finalMessage, toolsUsed, allActionsTaken, allErrors),
+    );
+
+    return safeResponse(finalMessage, allActionsTaken, allErrors, toolsUsed);
+
+  } catch (outerErr) {
+    // Global fallback — must never 502
+    const msg = outerErr instanceof Error ? outerErr.message : String(outerErr);
+    console.error('[agent] uncaught error:', msg);
+    return safeResponse(
+      'Something went wrong on my end. Please try again.',
+      [],
+      [msg],
+    );
   }
-
-  if (!finalMessage) {
-    finalMessage = allActionsTaken.length > 0
-      ? allActionsTaken.join('\n')
-      : 'Done.';
-  }
-
-  // Log the interaction (non-blocking)
-  c.executionCtx.waitUntil(
-    writeAgentLog(c.env.DB, user, body.message, finalMessage, toolsUsed, allActionsTaken, allErrors),
-  );
-
-  return c.json({
-    message:       finalMessage,
-    actions_taken: allActionsTaken,
-    data:          {},
-    errors:        allErrors,
-    tools_used:    toolsUsed,
-  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
