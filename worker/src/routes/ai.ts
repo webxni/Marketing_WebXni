@@ -578,15 +578,18 @@ async function executeTool(
         }
 
         const items = rows.map(p => ({
-          id:           p.id,
-          title:        p.title,
-          status:       p.status,
-          content_type: p.content_type,
-          publish_date: p.publish_date,
-          client:       nameMap.get(p.client_id) ?? p.client_id,
-          platforms:    p.platforms,
-          ready:        p.ready_for_automation,
-          asset:        p.asset_delivered,
+          id:             p.id,
+          title:          p.title,
+          status:         p.status,
+          content_type:   p.content_type,
+          publish_date:   p.publish_date,
+          client:         nameMap.get(p.client_id) ?? p.client_id,
+          platforms:      p.platforms,
+          ready:          p.ready_for_automation,
+          asset:          p.asset_delivered,
+          master_caption: p.master_caption,
+          asset_url:      p.asset_r2_key ? `${baseUrl}/media/${p.asset_r2_key}` : null,
+          asset_type:     p.asset_type,
         }));
 
         const byStatus: Record<string, number> = {};

@@ -26,6 +26,18 @@ const API_BASE_URL = process.env.API_BASE_URL         || 'https://marketing.webx
 if (!BOT_TOKEN)  { console.error('DISCORD_BOT_TOKEN is required'); process.exit(1); }
 if (!BOT_SECRET) { console.error('DISCORD_BOT_SECRET is required'); process.exit(1); }
 
+// ── Deduplication — prevent processing the same message twice ──────────────────
+// Happens on gateway reconnects or after bot restarts while Discord still has
+// an open session. Track processed message IDs for 60s.
+const processedMessages = new Set();
+
+function isDuplicate(messageId) {
+  if (processedMessages.has(messageId)) return true;
+  processedMessages.add(messageId);
+  setTimeout(() => processedMessages.delete(messageId), 60_000);
+  return false;
+}
+
 // ── Per-user conversation history (last 6 turns, resets on bot restart) ────────
 const histories = new Map(); // userId → [{role, content}]
 
@@ -73,36 +85,55 @@ async function askAgent(userMessage, userId, username) {
 
 // ── Format agent response for Discord ─────────────────────────────────────────
 function formatResponse(data) {
-  const parts = [];
+  const parts   = [];
+  const embeds  = [];
+  const assetUrls = []; // collected from items for image embeds
 
-  // Main message
-  if (data.message) parts.push(data.message);
+  // Main message — skip if it's just a repeat of actions_taken
+  const actionsJoined = (data.actions_taken ?? []).join(' ');
+  const msg = data.message ?? '';
+  if (msg && msg !== actionsJoined) parts.push(msg);
 
-  // Items list (max 8)
+  // Items list
   if (Array.isArray(data.items) && data.items.length > 0) {
-    const MAX = 8;
-    const lines = data.items.slice(0, MAX).map((item, i) => {
+    const MAX = 6;
+    const lines = [];
+
+    for (let i = 0; i < Math.min(data.items.length, MAX); i++) {
+      const item   = data.items[i];
       const title  = item.title ?? item.name ?? item.type ?? item.id ?? '—';
-      const status = item.status ? ` · ${item.status}` : '';
-      const client = item.client ? ` · ${item.client}` : '';
+      const status = item.status       ? ` · \`${item.status}\`` : '';
+      const client = item.client       ? ` · ${item.client}`     : '';
       const date   = item.publish_date ? ` · ${String(item.publish_date).slice(0, 10)}` : '';
-      return `${i + 1}. **${title}**${status}${client}${date}`;
-    });
+      lines.push(`**${i + 1}. ${title}**${status}${client}${date}`);
+
+      // Caption
+      if (item.master_caption) {
+        const cap = String(item.master_caption).slice(0, 200);
+        lines.push(`> ${cap}${item.master_caption.length > 200 ? '…' : ''}`);
+      }
+
+      // Collect asset URL — will be shown as embed image below
+      if (item.asset_url) assetUrls.push({ url: item.asset_url, type: item.asset_type ?? '', title });
+    }
+
     if (data.items.length > MAX) lines.push(`…+${data.items.length - MAX} more`);
     parts.push(lines.join('\n'));
   }
 
-  // Summary stats (scalar values only)
+  // Summary stats (scalar values only, skip obvious ones already in items)
   if (data.summary && typeof data.summary === 'object') {
+    const skip = new Set(['total', 'shown']);
     const statParts = Object.entries(data.summary)
-      .filter(([, v]) => v !== null && typeof v !== 'object')
+      .filter(([k, v]) => !skip.has(k) && v !== null && typeof v !== 'object')
       .map(([k, v]) => `${k.replace(/_/g, ' ')}: **${v}**`);
     if (statParts.length) parts.push('> ' + statParts.join(' · '));
   }
 
-  // Actions taken
+  // Actions — only show if they add info beyond the message
   if (Array.isArray(data.actions_taken) && data.actions_taken.length > 0) {
-    parts.push('✅ ' + data.actions_taken.join('\n✅ '));
+    const unique = data.actions_taken.filter(a => a !== msg);
+    if (unique.length > 0) parts.push('✅ ' + unique.join('\n✅ '));
   }
 
   // First suggestion only
@@ -115,12 +146,23 @@ function formatResponse(data) {
     parts.push('⚠️ ' + data.errors.join('\n⚠️ '));
   }
 
-  let reply = parts.filter(Boolean).join('\n\n');
+  let content = parts.filter(Boolean).join('\n\n');
+  if (content.length > 1900) content = content.slice(0, 1900) + '…';
 
-  // Discord message limit
-  if (reply.length > 1900) reply = reply.slice(0, 1900) + '…';
+  // Build Discord embeds for images/videos (max 4 embeds)
+  for (const asset of assetUrls.slice(0, 4)) {
+    const isVideo = asset.type === 'video' || asset.type === 'reel' ||
+                    /\.(mp4|mov|webm)$/i.test(asset.url);
+    if (isVideo) {
+      // Discord can't embed video natively in embeds — just show the URL as a link
+      content += `\n\n📹 **Video:** ${asset.url}`;
+    } else {
+      // Image — use embed so Discord renders it inline
+      embeds.push({ title: asset.title, image: { url: asset.url }, color: 0x1a73e8 });
+    }
+  }
 
-  return reply || '(no response)';
+  return { content: content || '(no response)', embeds };
 }
 
 // ── Discord client ─────────────────────────────────────────────────────────────
@@ -149,6 +191,9 @@ client.on(Events.MessageCreate, async (message) => {
   // Only respond in: our channel, DMs to the bot, or @mentions elsewhere
   if (!isDM && !isOurChannel && !isMention) return;
 
+  // Skip duplicates (gateway reconnect can re-deliver events)
+  if (isDuplicate(message.id)) return;
+
   // Strip @mention prefix if present
   let text = message.content
     .replace(`<@${client.user.id}>`, '')
@@ -166,9 +211,9 @@ client.on(Events.MessageCreate, async (message) => {
   try { await message.channel.sendTyping(); } catch { /* ignore */ }
 
   try {
-    const data  = await askAgent(text, userId, username);
-    const reply = formatResponse(data);
-    await message.reply({ content: reply, allowedMentions: { repliedUser: false } });
+    const data = await askAgent(text, userId, username);
+    const { content, embeds } = formatResponse(data);
+    await message.reply({ content, embeds, allowedMentions: { repliedUser: false } });
   } catch (err) {
     console.error('[bot] error:', err);
     await message.reply({ content: '❌ Agent error — please try again.', allowedMentions: { repliedUser: false } });
