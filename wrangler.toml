@@ -57,7 +57,7 @@ DISCORD_CHANNEL_ID = "1242943323828916234"
 # Owner's personal Discord user ID — receives DMs for critical alerts
 # NOTE: This is YOUR user ID, not the bot's. To find yours: Discord → Settings → Advanced
 # → enable Developer Mode → right-click your username → Copy User ID
-DISCORD_OWNER_ID = ""
+DISCORD_OWNER_ID = "1242861091214721139"
 
 # Secrets (set via: wrangler secret put <NAME>)
 # UPLOAD_POST_API_KEY
