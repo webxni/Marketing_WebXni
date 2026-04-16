@@ -140,6 +140,9 @@ CREATE TABLE IF NOT EXISTS posts (
   asset_type              TEXT,           -- 'Image'|'Video'|'Short Video'|'Carousel'
   canva_link              TEXT,           -- Design reference only (NOT used for posting)
   wp_post_url             TEXT,           -- URL after WP draft created
+  wp_post_id              INTEGER,        -- Linked WordPress post ID
+  wp_post_status          TEXT,           -- draft|publish|pending|private
+  wp_featured_media_id    INTEGER,        -- WP media library ID of featured image
   -- Automation gates
   ready_for_automation    INTEGER NOT NULL DEFAULT 0,
   asset_delivered         INTEGER NOT NULL DEFAULT 0,

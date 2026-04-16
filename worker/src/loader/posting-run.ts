@@ -25,6 +25,7 @@ import {
   requiresMedia,
 } from '../modules/media';
 import { buildExtraParams, extractTrackingId, getVideoPostTitle } from '../modules/posting';
+import { cleanupLegacyInvalidPlatformAttempts, extractPublishedUrl, syncPublishedUrls } from '../modules/published-urls';
 import { translatePostingError } from '../modules/posting-diagnostics';
 
 const DEFAULT_PUBLIC_MEDIA_PROXY = 'https://marketing.webxni.com/media';
@@ -59,6 +60,7 @@ export async function runPosting(env: LoaderEnv, params: PostingRunParams): Prom
   const up = new UploadPostClient(env.UPLOAD_POST_API_KEY);
 
   try {
+    await cleanupLegacyInvalidPlatformAttempts(env.DB);
     const posts = await listReadyPosts(env.DB, params.client_filter, params.limit ?? 50, params.post_ids);
 
     // Skip job creation and early-return when there is nothing to post.
@@ -81,6 +83,10 @@ export async function runPosting(env: LoaderEnv, params: PostingRunParams): Prom
 
     for (const post of posts) {
       await processPost(env, up, post, params, stats, dryRun, jobId);
+    }
+
+    if (!dryRun && posts.length > 0) {
+      await syncPublishedUrls(env, { postIds: posts.map((post) => post.id) });
     }
 
     if (jobId) await updatePostingJob(env.DB, jobId, 'completed', JSON.stringify(stats));
@@ -311,12 +317,22 @@ async function processPost(
       }
 
       const trackingId = extractTrackingId(response);
+      const directPublishedUrl = extractPublishedUrl(response, platform);
       if (trackingId) {
         await upsertPostPlatform(env.DB, {
           post_id: post.id,
           platform,
           tracking_id: `UP:${trackingId}`,
-          status: 'sent',
+          real_url: directPublishedUrl,
+          status: directPublishedUrl ? 'posted' : 'sent',
+          idempotency_key: idemKey,
+        });
+      } else if (directPublishedUrl) {
+        await upsertPostPlatform(env.DB, {
+          post_id: post.id,
+          platform,
+          real_url: directPublishedUrl,
+          status: 'posted',
           idempotency_key: idemKey,
         });
       }
@@ -482,11 +498,13 @@ async function postGbpMultiLocation(
       }
 
       const trackingId = extractTrackingId(response);
+      const directPublishedUrl = extractPublishedUrl(response, postedField);
       await upsertPostPlatform(env.DB, {
         post_id: post.id,
         platform: postedField,
         tracking_id: trackingId ? `UP:${trackingId}` : null,
-        status: 'sent',
+        real_url: directPublishedUrl,
+        status: directPublishedUrl ? 'posted' : 'sent',
         idempotency_key: idemKey,
       });
       await logPostingAudit(env.DB, post.id, postedField, 'sent', `Publicación GBP enviada para ${loc.label}.`, response);

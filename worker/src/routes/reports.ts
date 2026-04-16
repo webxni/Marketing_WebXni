@@ -81,7 +81,7 @@ reportRoutes.get('/posting-stats', async (c) => {
       SELECT pp.platform, pp.status, COUNT(*) as count
       FROM post_platforms pp
       JOIN posts p ON p.id = pp.post_id
-      ${where}
+      ${where ? `${where} AND pp.status != 'legacy_invalid'` : `WHERE pp.status != 'legacy_invalid'`}
       GROUP BY pp.platform, pp.status
       ORDER BY pp.platform, pp.status
     `)
@@ -120,7 +120,7 @@ reportRoutes.get('/client-health', async (c) => {
         c.slug, c.canonical_name,
         pp.platform,
         COUNT(*) as attempts,
-        SUM(CASE WHEN pp.status = 'sent' OR pp.status = 'idempotent' THEN 1 ELSE 0 END) as ok,
+        SUM(CASE WHEN pp.status IN ('sent','idempotent','posted') THEN 1 ELSE 0 END) as ok,
         SUM(CASE WHEN pp.status = 'failed' THEN 1 ELSE 0 END) as failed,
         SUM(CASE WHEN pp.status = 'blocked' THEN 1 ELSE 0 END) as blocked,
         SUM(CASE WHEN pp.status = 'skipped' THEN 1 ELSE 0 END) as skipped,
@@ -128,6 +128,7 @@ reportRoutes.get('/client-health', async (c) => {
       FROM post_platforms pp
       JOIN posts p ON p.id = pp.post_id
       JOIN clients c ON c.id = p.client_id
+      WHERE pp.status != 'legacy_invalid'
       GROUP BY c.id, pp.platform
       ORDER BY c.canonical_name, pp.platform
     `)
@@ -169,6 +170,7 @@ reportRoutes.get('/monthly/:clientId', async (c) => {
         FROM post_platforms pp
         JOIN posts p ON p.id = pp.post_id
         WHERE p.client_id = ? AND substr(p.publish_date,1,10) >= ? AND substr(p.publish_date,1,10) <= ?
+          AND pp.status != 'legacy_invalid'
         ORDER BY p.publish_date ASC, pp.platform ASC
       `)
       .bind(client.id, from, to)
@@ -180,6 +182,7 @@ reportRoutes.get('/monthly/:clientId', async (c) => {
         JOIN posts p ON p.id = pp.post_id
         WHERE p.client_id = ? AND pp.status = 'failed'
           AND substr(p.publish_date,1,10) >= ? AND substr(p.publish_date,1,10) <= ?
+          AND pp.status != 'legacy_invalid'
       `)
       .bind(client.id, from, to)
       .all(),

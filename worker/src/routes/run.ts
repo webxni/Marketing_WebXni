@@ -11,7 +11,7 @@ import {
 } from '../db/queries';
 import { runPosting } from '../loader/posting-run';
 import { planGeneration } from '../loader/generation-run';
-import { UploadPostClient } from '../services/uploadpost';
+import { cleanupLegacyInvalidPlatformAttempts, repairOrphanScheduledPosts, syncPublishedUrls } from '../modules/published-urls';
 
 /**
  * Fetch published URLs from Upload-Post history.
@@ -27,126 +27,14 @@ import { UploadPostClient } from '../services/uploadpost';
  */
 export async function runFetchUrls(env: Env, jobId: string): Promise<void> {
   console.log('[fetch-urls] starting job', jobId);
-  const up = new UploadPostClient((env as unknown as { UPLOAD_POST_API_KEY: string }).UPLOAD_POST_API_KEY);
-  const db = (env as unknown as { DB: D1Database }).DB;
 
   try {
-    // ── Pass 1: URL matching ──────────────────────────────────────────────────
-    const { history } = await up.getHistory(200);
-
-    // Build lookup: job_id or request_id → real post URL
-    const urlMap = new Map<string, string>();
-    for (const entry of history) {
-      // Try all known field name variants for the job identifier
-      const jid = (
-        entry['job_id'] ??
-        entry['request_id'] ??
-        entry['id']
-      ) as string | undefined;
-      // Try all known field name variants for the published URL
-      const url = (
-        entry['post_url'] ??
-        entry['url'] ??
-        entry['link'] ??
-        entry['post_link']
-      ) as string | undefined;
-      if (jid && url) urlMap.set(String(jid), url);
-    }
-
-    // Find all sent post_platforms that have a tracking_id
-    const sentRows = await db
-      .prepare(`SELECT pp.id, pp.post_id, pp.platform, pp.tracking_id
-                FROM post_platforms pp
-                WHERE pp.status = 'sent' AND pp.tracking_id IS NOT NULL`)
-      .all<{ id: string; post_id: string; platform: string; tracking_id: string }>();
-
-    let urlsMatched = 0;
-    const promotionCandidates = new Set<string>(); // post_ids to check for full promotion
-
-    for (const row of sentRows.results) {
-      const rawId = row.tracking_id.replace(/^UP:(IDEM:)?/, '');
-      const realUrl = urlMap.get(rawId);
-      if (realUrl) {
-        await db
-          .prepare("UPDATE post_platforms SET real_url = ?, status = 'posted' WHERE id = ?")
-          .bind(realUrl, row.id)
-          .run();
-        urlsMatched++;
-      }
-      promotionCandidates.add(row.post_id);
-    }
-
-    // Also include idempotent rows' posts as candidates
-    const idemRows = await db
-      .prepare(`SELECT DISTINCT post_id FROM post_platforms WHERE status = 'idempotent'`)
-      .all<{ post_id: string }>();
-    for (const r of idemRows.results) promotionCandidates.add(r.post_id);
-
-    // Promote any post where no pending-state platforms remain
-    // Terminal states for this check: posted, sent (URL may not have been found yet),
-    // idempotent, skipped, blocked, failed — none of these need further action.
-    let promoted = 0;
-    for (const postId of promotionCandidates) {
-      const remaining = await db
-        .prepare(`SELECT COUNT(*) as n FROM post_platforms
-                  WHERE post_id = ? AND status NOT IN ('posted','sent','idempotent','skipped','blocked','failed')`)
-        .bind(postId)
-        .first<{ n: number }>();
-      const hasSuccess = await db
-        .prepare(`SELECT COUNT(*) as n FROM post_platforms
-                  WHERE post_id = ? AND status IN ('posted','sent','idempotent')`)
-        .bind(postId)
-        .first<{ n: number }>();
-
-      if ((remaining?.n ?? 1) === 0 && (hasSuccess?.n ?? 0) > 0) {
-        const now = Math.floor(Date.now() / 1000);
-        await db
-          .prepare(`UPDATE posts SET status = 'posted', automation_status = 'Posted',
-                    posted_at = COALESCE(posted_at, ?), updated_at = ? WHERE id = ? AND status = 'scheduled'`)
-          .bind(now, now, postId)
-          .run();
-        promoted++;
-      }
-    }
-
-    // ── Pass 2: Fallback — stale scheduled posts ──────────────────────────────
-    // Posts that have been 'scheduled' with publish_date in the past and have at least
-    // one sent/idempotent platform but no active (non-terminal) rows. Catches cases
-    // where tracking_id lookup failed or entry aged out of Upload-Post history.
-    const nowExpr = `strftime('%Y-%m-%dT%H:%M','now','-6 hours')`; // NIC time
-    const staleSent = await db
-      .prepare(`SELECT DISTINCT pp.post_id
-                FROM post_platforms pp
-                JOIN posts p ON p.id = pp.post_id
-                WHERE p.status = 'scheduled'
-                  AND p.publish_date IS NOT NULL
-                  AND substr(p.publish_date,1,16) < ${nowExpr}
-                  AND pp.status IN ('sent','idempotent')`)
-      .all<{ post_id: string }>();
-
-    let fallbackPromoted = 0;
-    for (const { post_id } of staleSent.results) {
-      if (promotionCandidates.has(post_id)) continue; // already handled above
-      const stillActive = await db
-        .prepare(`SELECT COUNT(*) as n FROM post_platforms
-                  WHERE post_id = ? AND status NOT IN ('posted','sent','idempotent','skipped','blocked','failed')`)
-        .bind(post_id)
-        .first<{ n: number }>();
-      if ((stillActive?.n ?? 1) === 0) {
-        const now = Math.floor(Date.now() / 1000);
-        await db
-          .prepare(`UPDATE posts SET status = 'posted', automation_status = 'Posted',
-                    posted_at = COALESCE(posted_at, ?), updated_at = ? WHERE id = ?`)
-          .bind(now, now, post_id)
-          .run();
-        fallbackPromoted++;
-      }
-    }
-
-    console.log(
-      `[fetch-urls] done — URLs matched: ${urlsMatched}, ` +
-      `posts promoted: ${promoted}, fallback promoted: ${fallbackPromoted}`,
-    );
+    const [syncResult, cleanupResult, orphanResult] = await Promise.all([
+      syncPublishedUrls(env),
+      cleanupLegacyInvalidPlatformAttempts(env.DB),
+      repairOrphanScheduledPosts(env.DB),
+    ]);
+    console.log(`[fetch-urls] done — URLs matched: ${syncResult.matched}, posts promoted: ${syncResult.posts_promoted}, legacy invalid archived: ${cleanupResult.archived}, orphan scheduled reset: ${orphanResult.reset_to_ready}`);
   } catch (err) {
     console.error('[fetch-urls] error:', err);
   }
@@ -310,6 +198,42 @@ runRoutes.post('/fetch-urls', async (c) => {
   const jobId = crypto.randomUUID().replace(/-/g, '').toLowerCase();
   c.executionCtx.waitUntil(runFetchUrls(c.env, jobId));
   return c.json({ ok: true, job_id: jobId }, 202);
+});
+
+/** GET /api/run/queue — real actionable posting queue only */
+runRoutes.get('/queue', async (c) => {
+  await cleanupLegacyInvalidPlatformAttempts(c.env.DB);
+  const nowExpr = `strftime('%Y-%m-%dT%H:%M','now','-6 hours')`;
+  const rows = await c.env.DB
+    .prepare(`
+      SELECT p.*,
+             c.canonical_name AS client_name,
+             c.slug AS client_slug,
+             CASE
+               WHEN substr(p.publish_date,1,16) < ${nowExpr} THEN 'overdue'
+               WHEN substr(p.publish_date,1,16) <= strftime('%Y-%m-%dT%H:%M', 'now', '-6 hours', '+2 minutes') THEN 'posting'
+               WHEN substr(p.publish_date,1,16) <= strftime('%Y-%m-%dT%H:%M', 'now', '-6 hours', '+60 minutes') THEN 'due_soon'
+               ELSE 'queued'
+             END AS queue_state
+      FROM posts p
+      JOIN clients c ON c.id = p.client_id
+      WHERE p.status IN ('ready','approved')
+        AND p.content_type != 'blog'
+        AND p.ready_for_automation = 1
+        AND p.asset_delivered = 1
+        AND p.publish_date IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM post_platforms pp
+          WHERE pp.post_id = p.id
+            AND pp.status IN ('sent','idempotent','posted')
+        )
+      ORDER BY p.publish_date IS NULL ASC, p.publish_date ASC, p.updated_at ASC
+      LIMIT 200
+    `)
+    .all<Record<string, unknown>>();
+
+  return c.json({ posts: rows.results });
 });
 
 /** GET /api/run/jobs — list recent posting jobs */

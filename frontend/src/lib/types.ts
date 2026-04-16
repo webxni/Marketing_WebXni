@@ -259,6 +259,7 @@ export interface Post {
   // joined from client
   client_name?:         string;
   client_slug?:         string;
+  queue_state?:         'queued' | 'due_soon' | 'overdue' | 'posting';
 }
 
 export interface PostPlatform {

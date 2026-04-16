@@ -1,5 +1,5 @@
 import { api } from './client';
-import type { PostingJob, GenerationRun } from '../types';
+import type { PostingJob, GenerationRun, Post } from '../types';
 
 export interface GenerateParams {
   client_slugs?:  string[];
@@ -18,6 +18,9 @@ export const runApi = {
 
   fetchUrls: (params: Record<string, unknown> = {}) =>
     api.post<{ ok: boolean; job_id: string }>('/api/run/fetch-urls', params),
+
+  listQueue: () =>
+    api.get<{ posts: Post[] }>('/api/run/queue'),
 
   listJobs: () =>
     api.get<{ jobs: PostingJob[] }>('/api/run/jobs'),

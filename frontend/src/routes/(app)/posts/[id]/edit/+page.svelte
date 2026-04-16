@@ -10,6 +10,7 @@
   let post: Post | null = null;
   let loading = true;
   let saving = false;
+  let savingAndPublishing = false;
 
   // Core fields
   let title = '';
@@ -112,9 +113,18 @@
   });
 
   async function save() {
+    return saveInternal(false);
+  }
+
+  async function saveAndUpdateWordPress() {
+    return saveInternal(true);
+  }
+
+  async function saveInternal(updateWordPress: boolean) {
     const postId = $page.params.id;
     if (!postId) return;
-    saving = true;
+    if (updateWordPress) savingAndPublishing = true;
+    else saving = true;
     try {
       await postsApi.update(postId, {
         title:               title || null,
@@ -145,10 +155,17 @@
         ai_video_prompt:     ai_video_prompt || null,
         canva_link:          canva_link || null,
       });
+      if (updateWordPress && isBlog && post?.wp_post_id) {
+        const targetStatus = post.wp_post_status === 'publish' ? 'publish' : 'draft';
+        await postsApi.publishBlog(postId, { status: targetStatus });
+      }
       toast.success('Post saved');
       goto(`/posts/${postId}`);
     } catch (e) { toast.error(String(e)); }
-    finally { saving = false; }
+    finally {
+      saving = false;
+      savingAndPublishing = false;
+    }
   }
 </script>
 
@@ -171,6 +188,11 @@
     </div>
     <div class="flex gap-2">
       <a href="/posts/{post.id}" class="btn-ghost btn-sm">Cancel</a>
+      {#if isBlog && post.wp_post_id}
+      <button class="btn-secondary btn-sm" on:click={saveAndUpdateWordPress} disabled={saving || savingAndPublishing}>
+        {savingAndPublishing ? 'Updating WordPress…' : 'Save & Replace Published Blog'}
+      </button>
+      {/if}
       <button class="btn-primary btn-sm" on:click={save} disabled={saving}>
         {saving ? 'Saving…' : 'Save Changes'}
       </button>

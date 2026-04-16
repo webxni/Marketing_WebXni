@@ -5,6 +5,8 @@
 import { Hono } from 'hono';
 import type { Env } from '../types';
 import { executeSlotWork, triggerStep } from '../loader/generation-run';
+import { isRepairKeyValid, repairExistingBlogs } from '../loader/repair-blogs';
+import { cleanupLegacyInvalidPlatformAttempts, repairOrphanScheduledPosts, syncPublishedUrls } from '../modules/published-urls';
 import {
   appendGenerationError,
   appendGenerationLog,
@@ -96,5 +98,37 @@ internalRoutes.post('/gen-step', async (c) => {
     await log('ERROR', `Route crash: slot ${slotIdx} — ${err instanceof Error ? err.message : String(err)}`);
     await logError(`Route crash: slot ${slotIdx}\n${detail(err)}`);
     return c.json({ error: 'Internal Server Error' }, 500);
+  }
+});
+
+internalRoutes.post('/repair-blogs', async (c) => {
+  if (!isRepairKeyValid(c.req.header('x-repair-key'))) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+
+  try {
+    const stats = await repairExistingBlogs(c.env);
+    return c.json({ ok: true, stats });
+  } catch (err) {
+    console.error('[repair-blogs] failed:', err);
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+internalRoutes.post('/repair-posting-state', async (c) => {
+  if (!isRepairKeyValid(c.req.header('x-repair-key'))) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+
+  try {
+    const [cleanup, sync, orphan] = await Promise.all([
+      cleanupLegacyInvalidPlatformAttempts(c.env.DB),
+      syncPublishedUrls(c.env),
+      repairOrphanScheduledPosts(c.env.DB),
+    ]);
+    return c.json({ ok: true, cleanup, sync, orphan });
+  } catch (err) {
+    console.error('[repair-posting-state] failed:', err);
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
 });

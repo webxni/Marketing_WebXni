@@ -21,6 +21,71 @@ X (Twitter), Threads, Bluesky, and WordPress blogs.
 
 ---
 
+## Recent project state — April 2026
+
+This repo now includes a more complete WordPress blog publishing and repair workflow.
+Before changing blog generation, publishing, or template rendering, read:
+
+- `worker/src/services/wordpress.ts`
+- `worker/src/routes/blog.ts`
+- `worker/src/loader/repair-blogs.ts`
+- `frontend/src/routes/(app)/posts/[id]/+page.svelte`
+- `frontend/src/routes/(app)/posts/[id]/edit/+page.svelte`
+
+### What was implemented recently
+
+- Published WordPress blogs can now be replaced from the app without creating duplicate posts
+- The post detail page changes its publish action label to `Replace Published Blog` when `wp_post_status === 'publish'`
+- The edit page now supports `Save & Replace Published Blog`
+- Blog publishing rerenders structured content instead of trusting previously rendered HTML blindly
+- Existing live blog posts can be normalized through `/internal/repair-blogs`
+
+### WordPress blog renderer rules
+
+- Blog HTML is rendered in `worker/src/services/wordpress.ts`
+- Renderer now outputs inline styles only; do not reintroduce embedded `<style>` blocks in `post.content`
+- Inline style serialization must stay HTML-safe and use kebab-case CSS properties
+- Blog templates should remain minimalist and editorial:
+  - larger titles
+  - stronger left/right padding
+  - clean professional presentation
+  - newspaper-like main column + right rail layout on wide screens
+- Keep template variants by business type through `inferBusinessTemplateKey()` / `getTemplateChrome()`
+
+### Blog repair/extraction rules
+
+- `extractStructuredBlogContent()` is used to recover structure from already-rendered blog HTML
+- The extractor must aggressively strip old `wx-blog-*` wrappers, duplicated CTA/footer blocks, and malformed nested section wrappers
+- The goal of repair is normalization, not preservation of broken HTML fragments
+- If a live blog looks visually wrong, inspect both:
+  - stored `posts.blog_content` in D1
+  - rendered markup produced by `renderStructuredBlogHtml()`
+
+### Current operational behavior
+
+- `/api/blog/publish` updates the existing WP post when `wp_post_id` is already present
+- When a WP post is published successfully, local status should remain aligned with production:
+  - `status = 'posted'`
+  - `wp_post_status = 'publish'`
+- `/internal/repair-blogs` is safe to use after renderer changes and should be run after any blog-template fix
+
+### Verification checklist after blog changes
+
+1. `cd worker && npm run typecheck`
+2. If frontend was touched: `cd frontend && npm run check && npm run build`
+3. `npx wrangler deploy`
+4. Run production repair:
+   - `curl -sS -X POST https://marketing.webxni.com/internal/repair-blogs -H 'x-repair-key: repair-posts-2026-04-14-webxni'`
+5. Inspect at least one affected `posts.blog_content` row in remote D1
+
+### Important caution
+
+- There are unrelated dirty files in this repo at times; do not revert user work
+- For blog work, prefer additive cleanup in renderer/extractor logic instead of touching unrelated posting automation modules
+- If changing the blog article shell, preserve the CTA/phone behavior and body-image injection flow
+
+---
+
 ## CRITICAL — DO NOT BREAK THESE
 
 These modules are working in production. Do not modify their core logic

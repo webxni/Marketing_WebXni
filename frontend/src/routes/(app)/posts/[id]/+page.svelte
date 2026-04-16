@@ -26,6 +26,7 @@
   let refreshingUrls = false;
   let autoRefreshHandle: ReturnType<typeof setInterval> | null = null;
   let duplicatingPost = false;
+  let blogPreviewSrcDoc = '';
 
   function setTab(key: string) { activeTab = key as typeof activeTab; }
 
@@ -48,12 +49,15 @@
         }
       }
       if (post?.client_id) await loadConnectionHealth(post.client_id);
-      if (post && platforms.some((pt) => pt.tracking_id && !pt.real_url && ['sent', 'idempotent'].includes(pt.status ?? ''))) {
+      if (post && platforms.some((pt) => pt.tracking_id && !pt.real_url && ['sent', 'idempotent', 'posted'].includes(pt.status ?? ''))) {
         await postsApi.refreshUrls(post.id);
         r = await postsApi.get(postId);
         post = r.post;
         platforms = r.platforms ?? [];
       }
+      blogPreviewSrcDoc = post?.blog_content
+        ? `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1" /><style>body{margin:0;padding:24px;background:#ffffff;color:#132033;font-family:Arial,sans-serif;} img{max-width:100%;height:auto;} a{color:#1a73e8;}</style></head><body>${post.blog_content}</body></html>`
+        : '';
     } finally { loading = false; }
   }
 
@@ -86,7 +90,7 @@
     if (post && needsAutoRefresh(platforms)) {
       autoRefreshHandle = setInterval(async () => {
         if (refreshingUrls || loading || !post) return;
-        if (platforms.some((pt) => pt.tracking_id && !pt.real_url && ['sent', 'idempotent'].includes(pt.status ?? ''))) {
+        if (platforms.some((pt) => pt.tracking_id && !pt.real_url && ['sent', 'idempotent', 'posted'].includes(pt.status ?? ''))) {
           await refreshUrls(false);
         } else {
           await load();
@@ -1121,7 +1125,7 @@
           </button>
         {:else}
           <button class="btn-primary btn-sm" on:click={updateBlog} disabled={publishingBlog}>
-            {publishingBlog ? 'Updating…' : 'Update WordPress'}
+            {publishingBlog ? 'Updating…' : (wpPostStatus(post) === 'publish' ? 'Replace Published Blog' : 'Update WordPress')}
           </button>
           {#if wpPostStatus(post) === 'publish'}
             <button class="btn-ghost btn-sm text-yellow-400 hover:text-yellow-300" on:click={unpublishBlog} disabled={publishingBlog}>
@@ -1171,8 +1175,8 @@
         <h3 class="section-label">Blog Content</h3>
         <a href="/posts/{post.id}/edit" class="btn-ghost btn-sm text-xs">Edit</a>
       </div>
-      <div class="prose prose-invert prose-sm max-w-none text-sm text-white">
-        {@html post.blog_content}
+      <div class="rounded-xl overflow-hidden border border-border bg-white">
+        <iframe title="Blog preview" class="w-full min-h-[900px] bg-white" srcdoc={blogPreviewSrcDoc}></iframe>
       </div>
     </div>
     {:else}

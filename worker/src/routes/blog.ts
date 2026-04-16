@@ -9,11 +9,11 @@ import { getPostById, updatePost, getClientWithConfig } from '../db/queries';
 import {
   BLOG_BODY_IMAGE_PLACEHOLDER,
   buildWordPressClient,
+  extractStructuredBlogContent,
   inferBusinessTemplateKey,
   injectBodyImageIntoHtml,
   renderStructuredBlogHtml,
   renderTemplate,
-  stripHtml,
   type TemplateTokens,
 } from '../services/wordpress';
 import { requirePermission } from '../middleware/auth';
@@ -150,6 +150,7 @@ blogRoutes.post('/:id/publish-blog', requirePermission('posts.edit'), async (c) 
   // ── Build HTML content (apply WP template if configured) ─────────────────
   let htmlContent = post.blog_content ?? '';
   const templateKey = (client as unknown as { wp_template_key?: string }).wp_template_key;
+  let appliedCustomTemplate = false;
   if (templateKey) {
     const tpl = await c.env.DB
       .prepare(
@@ -181,10 +182,10 @@ blogRoutes.post('/:id/publish-blog', requirePermission('posts.edit'), async (c) 
       if (tpl.css) {
         htmlContent = `<style scoped>\n${tpl.css}\n</style>\n${htmlContent}`;
       }
+      appliedCustomTemplate = true;
     }
   }
-  if (!templateKey && post.blog_content) {
-    const sections = post.blog_content.split(/<h2[^>]*>/i).filter(Boolean);
+  if (!appliedCustomTemplate && post.blog_content) {
     htmlContent = renderStructuredBlogHtml({
       templateKey: inferBusinessTemplateKey({
         wp_template_key: templateKey ?? null,
@@ -195,7 +196,7 @@ blogRoutes.post('/:id/publish-blog', requirePermission('posts.edit'), async (c) 
       phone: client.phone,
       ctaDefault: client.cta_text,
       bodyImageHtml,
-      blog: {
+      blog: extractStructuredBlogContent(post.blog_content, {
         title: post.title ?? '',
         excerpt: post.blog_excerpt ?? post.master_caption ?? '',
         focusKeyword,
@@ -203,22 +204,14 @@ blogRoutes.post('/:id/publish-blog', requirePermission('posts.edit'), async (c) 
         seoTitle,
         metaDescription,
         slug: post.slug ?? '',
-        intro: stripHtml(sections[0] ?? post.blog_excerpt ?? post.master_caption ?? ''),
-        sections: sections.length > 1
-          ? sections.slice(1).map((raw, index) => {
-            const [headingPart, ...rest] = raw.split(/<\/h2>/i);
-            return {
-              heading: stripHtml(headingPart || `Section ${index + 1}`),
-              html: rest.join('</h2>') || `<p>${stripHtml(raw)}</p>`,
-            };
-          })
-          : [{ heading: post.title ?? 'Overview', html: post.blog_content }],
+        intro: post.blog_excerpt ?? post.master_caption ?? '',
+        sections: [{ heading: post.title ?? 'Overview', html: post.blog_content }],
         faq: [],
         ctaHeading: client.cta_text ?? 'Talk With Our Team',
         ctaBody: `Contact ${client.canonical_name} for guidance tailored to your needs.`,
         ctaButtonLabel: client.cta_text ?? 'Contact Us Today',
         imagePrompt: post.ai_image_prompt ?? undefined,
-      },
+      }),
     });
   }
   htmlContent = injectBodyImageIntoHtml(htmlContent, bodyImageHtml);
@@ -265,6 +258,8 @@ blogRoutes.post('/:id/publish-blog', requirePermission('posts.edit'), async (c) 
     wp_post_id:     wpPost.id,
     wp_post_url:    wpPost.link,
     wp_post_status: wpPost.status,
+    status:         wpPost.status === 'publish' ? 'posted' : 'draft',
+    ready_for_automation: 0,
     slug:           wpPost.slug ?? post.slug,
     meta_description: metaDescription || post.meta_description,
     seo_title: seoTitle || post.seo_title,
@@ -295,6 +290,8 @@ blogRoutes.post('/:id/sync-blog', requirePermission('posts.edit'), async (c) => 
     await updatePost(c.env.DB, post.id, {
       wp_post_url: wpPost.link,
       wp_post_status: wpPost.status,
+      status: wpPost.status === 'publish' ? 'posted' : 'draft',
+      ready_for_automation: 0,
       slug: wpPost.slug ?? post.slug,
       wp_featured_media_id: wpPost.featured_media ?? post.wp_featured_media_id,
     } as Parameters<typeof updatePost>[2]);
@@ -326,7 +323,11 @@ blogRoutes.post('/:id/unpublish-blog', requirePermission('posts.edit'), async (c
 
   try {
     const wpPost = await wp.updatePost(wpId, { status: 'draft' });
-    await updatePost(c.env.DB, post.id, { wp_post_status: 'draft' } as Parameters<typeof updatePost>[2]);
+    await updatePost(c.env.DB, post.id, {
+      wp_post_status: 'draft',
+      status: 'draft',
+      ready_for_automation: 0,
+    } as Parameters<typeof updatePost>[2]);
     return c.json({ ok: true, status: wpPost.status });
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 502);

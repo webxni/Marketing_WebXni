@@ -6,6 +6,64 @@ Also read `CODEX.md` for the full architecture audit before making changes.
 
 ---
 
+## Recent context to preserve
+
+The current project state includes active work on WordPress blog publishing, repair, and template normalization.
+
+Read these files first if the task touches blogs, WordPress sync, or published-post editing:
+
+- `worker/src/services/wordpress.ts`
+- `worker/src/routes/blog.ts`
+- `worker/src/loader/repair-blogs.ts`
+- `frontend/src/routes/(app)/posts/[id]/+page.svelte`
+- `frontend/src/routes/(app)/posts/[id]/edit/+page.svelte`
+
+### Current blog workflow assumptions
+
+- If a post already has `wp_post_id`, publishing should update/replace the existing WP post rather than create a duplicate
+- Published posts show `Replace Published Blog` in the detail view
+- The edit screen supports `Save & Replace Published Blog`
+- Existing broken blog markup is repaired by rerendering structured content, not by preserving old malformed HTML
+
+### Blog renderer rules
+
+- The renderer lives in `worker/src/services/wordpress.ts`
+- Use inline styles only for blog content sent to WordPress
+- Do not reintroduce `<style>` tags in blog post HTML
+- Keep the visual direction minimalist and professional:
+  - bigger titles
+  - more horizontal padding
+  - editorial/newspaper-like layout
+  - main content column with a support/CTA side rail on desktop
+
+### Blog repair rules
+
+- `extractStructuredBlogContent()` must strip:
+  - duplicate CTA/footer fragments
+  - nested repeated `.wx-blog-section-body` wrappers
+  - stale `wx-blog-*` layout chrome from prior renders
+- After renderer changes, run the production repair job so old posts are normalized
+
+### Production repair command
+
+```bash
+curl -sS -X POST https://marketing.webxni.com/internal/repair-blogs \
+  -H 'x-repair-key: repair-posts-2026-04-14-webxni'
+```
+
+### Verification after blog/template changes
+
+```bash
+cd worker && npm run typecheck
+cd frontend && npm run check
+cd frontend && npm run build
+npx wrangler deploy
+```
+
+Then verify remote D1 `posts.blog_content` for at least one repaired post.
+
+---
+
 ## Commands
 
 ```bash

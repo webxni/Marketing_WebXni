@@ -14,7 +14,7 @@ import {
   getClientWithConfig,
 } from '../db/queries';
 import { normalizeContentType, parsePlatforms, resolvePlatformSelection } from '../modules/platform-compatibility';
-import { UploadPostClient } from '../services/uploadpost';
+import { cleanupLegacyInvalidPlatformAttempts, syncPublishedUrls } from '../modules/published-urls';
 import { runPosting } from '../loader/posting-run';
 import { runFetchUrls } from './run';
 
@@ -436,82 +436,11 @@ postRoutes.post('/:id/retry', async (c) => {
 postRoutes.post('/:id/refresh-urls', async (c) => {
   const post = await getPostById(c.env.DB, c.req.param('id'));
   if (!post) return c.json({ error: 'Not found' }, 404);
-
-  const rows = await getPostPlatforms(c.env.DB, post.id);
-  const pendingRows = rows.filter((row) => row.tracking_id && !row.real_url && ['sent', 'idempotent'].includes(row.status ?? ''));
-  if (pendingRows.length === 0) return c.json({ ok: true, updated: 0 });
-
-  const up = new UploadPostClient(c.env.UPLOAD_POST_API_KEY);
-  const urlMap = new Map<string, string>();
-  for (const row of pendingRows) {
-    const rawId = row.tracking_id!.replace(/^UP:(IDEM:)?/, '');
-    try {
-      const statusPayload = await up.getStatus({ jobId: rawId }) as {
-        url?: string;
-        post_url?: string;
-        results?: Record<string, Record<string, unknown>>;
-      };
-      const directUrl = String(statusPayload.post_url ?? statusPayload.url ?? '');
-      if (directUrl) {
-        urlMap.set(rawId, directUrl);
-      } else {
-        const resultEntry = statusPayload.results?.[row.platform] ?? null;
-        const platformUrl = String(
-          resultEntry?.['url']
-          ?? resultEntry?.['post_url']
-          ?? resultEntry?.['link']
-          ?? '',
-        );
-        if (platformUrl) urlMap.set(rawId, platformUrl);
-      }
-    } catch {
-      // continue to analytics/history fallback
-    }
-    try {
-      const analytics = await up.getPostAnalytics(rawId) as Record<string, unknown>;
-      const analyticsUrl = String(
-        analytics['post_url']
-        ?? analytics['url']
-        ?? analytics['link']
-        ?? analytics['post_link']
-        ?? '',
-      );
-      if (analyticsUrl) urlMap.set(rawId, analyticsUrl);
-    } catch {
-      // fall back to history below
-    }
-  }
-  if (urlMap.size < pendingRows.length) {
-    const { history } = await up.getHistory(200);
-    for (const entry of history) {
-      const trackingId = String(entry['job_id'] ?? entry['request_id'] ?? entry['id'] ?? '');
-      const url = String(entry['post_url'] ?? entry['url'] ?? entry['link'] ?? entry['post_link'] ?? '');
-      if (trackingId && url && !urlMap.has(trackingId)) urlMap.set(trackingId, url);
-    }
-  }
-
-  let updated = 0;
-  for (const row of pendingRows) {
-    const rawId = row.tracking_id!.replace(/^UP:(IDEM:)?/, '');
-    const realUrl = urlMap.get(rawId);
-    if (!realUrl) continue;
-    await c.env.DB
-      .prepare("UPDATE post_platforms SET real_url = ?, status = 'posted' WHERE id = ?")
-      .bind(realUrl, row.id)
-      .run();
-    updated++;
-  }
-
-  if (updated > 0) {
-    const now = Math.floor(Date.now() / 1000);
-    await c.env.DB
-      .prepare(`UPDATE posts SET status = 'posted', automation_status = 'Posted',
-                posted_at = COALESCE(posted_at, ?), updated_at = ? WHERE id = ?`)
-      .bind(now, now, post.id)
-      .run();
-  }
-
-  return c.json({ ok: true, updated });
+  const [syncResult, cleanupResult] = await Promise.all([
+    syncPublishedUrls(c.env, { postIds: [post.id] }),
+    cleanupLegacyInvalidPlatformAttempts(c.env.DB),
+  ]);
+  return c.json({ ok: true, updated: syncResult.matched, legacy_invalid_archived: cleanupResult.archived });
 });
 
 /** GET /api/posts/:id/platforms */

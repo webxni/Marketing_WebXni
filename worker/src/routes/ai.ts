@@ -1442,7 +1442,7 @@ interface OpenAIMessage {
   tool_call_id?: string;
 }
 
-async function runAgent(opts: {
+export async function runAgent(opts: {
   message: string;
   history: Array<{ role: 'user' | 'assistant'; content: string }>;
   systemPrompt: string;

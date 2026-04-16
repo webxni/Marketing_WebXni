@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { runApi, clientsApi, packagesApi, postsApi } from '$lib/api';
+  import { runApi, clientsApi, packagesApi } from '$lib/api';
   import Badge from '$lib/components/ui/Badge.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
@@ -246,22 +246,15 @@
   let scheduledPosts:    Post[] = [];
   let loadingScheduled = true;
   let showAdvancedPosting = false;
+  let queueCollapsed = false;
+  let postingJobsCollapsed = false;
+  let expandedQueueGroups = new Set<string>(['overdue', 'due_soon', 'posting', 'queued']);
 
   async function loadScheduledPosts() {
     loadingScheduled = true;
     try {
-      const [readyR, approvedR] = await Promise.all([
-        postsApi.list({ status: 'ready',    limit: 100 }),
-        postsApi.list({ status: 'approved', limit: 100 }),
-      ]);
-      const combined = [...readyR.posts, ...approvedR.posts];
-      // deduplicate (shouldn't overlap, but be safe)
-      const seen = new Set<string>();
-      scheduledPosts = combined.filter(p => {
-        if (seen.has(p.id)) return false;
-        seen.add(p.id);
-        return true;
-      }).sort((a, b) => {
+      const queue = await runApi.listQueue();
+      scheduledPosts = [...queue.posts].sort((a, b) => {
         if (!a.publish_date) return 1;
         if (!b.publish_date) return -1;
         return a.publish_date.localeCompare(b.publish_date);
@@ -305,6 +298,48 @@
     if (dtNorm.startsWith(nicToday())) return { label: 'Today', cls: 'text-accent' };
     if (dtNorm.startsWith(nicTomorrow())) return { label: 'Tomorrow', cls: 'text-muted' };
     return { label: 'Upcoming', cls: 'text-muted' };
+  }
+
+  function queueBadge(post: Post): { label: string; cls: string; hint?: string } {
+    if (post.queue_state === 'overdue') return {
+      label: 'Overdue',
+      cls: 'text-red-400',
+      hint: 'Scheduled time has passed and this post is still queued.',
+    };
+    if (post.queue_state === 'posting') return {
+      label: 'Posting',
+      cls: 'text-green-400',
+      hint: 'This post is within the active send window.',
+    };
+    if (post.queue_state === 'due_soon') return {
+      label: 'Due soon',
+      cls: 'text-yellow-400',
+    };
+    return {
+      label: 'Queued',
+      cls: 'text-accent',
+    };
+  }
+
+  function toggleQueueGroup(group: string) {
+    if (expandedQueueGroups.has(group)) expandedQueueGroups.delete(group);
+    else expandedQueueGroups.add(group);
+    expandedQueueGroups = expandedQueueGroups;
+  }
+
+  function queueGroups(posts: Post[]) {
+    const grouped = {
+      overdue: posts.filter((post) => post.queue_state === 'overdue'),
+      due_soon: posts.filter((post) => post.queue_state === 'due_soon'),
+      posting: posts.filter((post) => post.queue_state === 'posting'),
+      queued: posts.filter((post) => !post.queue_state || post.queue_state === 'queued'),
+    };
+    return [
+      { key: 'overdue', label: 'Overdue', posts: grouped.overdue },
+      { key: 'due_soon', label: 'Due Soon', posts: grouped.due_soon },
+      { key: 'posting', label: 'Posting', posts: grouped.posting },
+      { key: 'queued', label: 'Queued', posts: grouped.queued },
+    ].filter((group) => group.posts.length > 0);
   }
 
   // ── Posting trigger (manual / emergency) ─────────────────────────────────────
@@ -391,7 +426,7 @@
     <h1 class="page-title">Automation</h1>
     <p class="page-subtitle">Generate content &amp; manage posting</p>
   </div>
-  <button class="btn-ghost btn-sm" on:click={() => { loadGenRuns(); loadJobs(); }}>Refresh</button>
+  <button class="btn-ghost btn-sm" on:click={() => { loadGenRuns(); loadJobs(); loadScheduledPosts(); }}>Refresh</button>
 </div>
 
 <!-- ═══ CONTENT GENERATION ════════════════════════════════════════════════════ -->
@@ -700,12 +735,18 @@
 <!-- ═══ SCHEDULED QUEUE ═══════════════════════════════════════════════════════ -->
 <div class="card p-4 mb-5">
   <div class="flex items-center justify-between mb-3">
-    <h3 class="section-label">Scheduled Queue</h3>
-    <span class="text-xs text-muted">
-      {#if !loadingScheduled}{scheduledPosts.length} post{scheduledPosts.length !== 1 ? 's' : ''} queued{/if}
-    </span>
+    <div class="flex items-center gap-3">
+      <h3 class="section-label">Scheduled Queue</h3>
+      <span class="text-xs text-muted">
+        {#if !loadingScheduled}{scheduledPosts.length} post{scheduledPosts.length !== 1 ? 's' : ''} queued{/if}
+      </span>
+    </div>
+    <button class="btn-ghost btn-sm" on:click={() => (queueCollapsed = !queueCollapsed)}>
+      {queueCollapsed ? 'Expand' : 'Collapse'}
+    </button>
   </div>
-  <p class="text-xs text-muted mb-4">Posts go out automatically at their exact scheduled time. Set publish date + time on each post to control when it sends.</p>
+  {#if !queueCollapsed}
+  <p class="text-xs text-muted mb-4">Only approved, ready, scheduled-for-send posts appear here. Posted, cancelled, failed, and legacy invalid items are excluded automatically.</p>
 
   {#if loadingScheduled}
     <div class="flex justify-center py-6"><Spinner /></div>
@@ -713,32 +754,47 @@
     <p class="text-xs text-muted italic py-4 text-center">No posts are currently scheduled.</p>
   {:else}
     <div class="space-y-2">
-      {#each scheduledPosts as post}
-      {@const lbl = scheduledLabel(post.publish_date)}
-      {@const platforms = JSON.parse(post.platforms ?? '[]')}
-      <div class="px-3 py-2.5 rounded-lg bg-surface border {lbl.label === 'Overdue' ? 'border-red-500/30' : lbl.label === 'Sending…' ? 'border-green-500/30' : 'border-border'} hover:border-border/80">
-        <div class="flex items-center gap-3">
-          <div class="flex-1 min-w-0">
-            <a href="/posts/{post.id}" class="text-white hover:text-accent truncate block font-medium text-xs">{post.title}</a>
-            <p class="text-[11px] text-muted truncate">{post.client_name ?? post.client_slug}</p>
-          </div>
-          <div class="hidden sm:flex flex-wrap gap-1 flex-shrink-0">
-            {#each platforms.slice(0,3) as p}
-              <PlatformBadge platform={p} size="sm" />
-            {/each}
-            {#if platforms.length > 3}
-              <span class="text-[10px] text-muted">+{platforms.length - 3}</span>
-            {/if}
-          </div>
-          <div class="text-right flex-shrink-0">
-            <span class="text-[11px] {lbl.cls} font-medium block">{lbl.label}</span>
-            <span class="text-[11px] text-muted font-mono">{formatScheduledTime(post.publish_date)}</span>
-          </div>
+      {#each queueGroups(scheduledPosts) as group}
+        <div class="rounded-lg border border-border bg-surface/35">
+          <button
+            class="w-full px-3 py-2 flex items-center justify-between text-left"
+            on:click={() => toggleQueueGroup(group.key)}
+          >
+            <span class="text-xs font-medium text-white">{group.label}</span>
+            <span class="text-[11px] text-muted">{group.posts.length} {expandedQueueGroups.has(group.key) ? 'Hide' : 'Show'}</span>
+          </button>
+          {#if expandedQueueGroups.has(group.key)}
+            <div class="px-2 pb-2 space-y-2">
+              {#each group.posts as post}
+              {@const lbl = queueBadge(post)}
+              {@const platforms = JSON.parse(post.platforms ?? '[]')}
+              <div class="px-3 py-2.5 rounded-lg bg-surface border {lbl.label === 'Overdue' ? 'border-red-500/30' : lbl.label === 'Posting' ? 'border-green-500/30' : lbl.label === 'Due soon' ? 'border-yellow-500/30' : 'border-border'} hover:border-border/80">
+                <div class="flex items-center gap-3">
+                  <div class="flex-1 min-w-0">
+                    <a href="/posts/{post.id}" class="text-white hover:text-accent truncate block font-medium text-xs">{post.title}</a>
+                    <p class="text-[11px] text-muted truncate">{post.client_name ?? post.client_slug}</p>
+                  </div>
+                  <div class="hidden sm:flex flex-wrap gap-1 flex-shrink-0">
+                    {#each platforms.slice(0,3) as p}
+                      <PlatformBadge platform={p} size="sm" />
+                    {/each}
+                    {#if platforms.length > 3}
+                      <span class="text-[10px] text-muted">+{platforms.length - 3}</span>
+                    {/if}
+                  </div>
+                  <div class="text-right flex-shrink-0">
+                    <span class="text-[11px] {lbl.cls} font-medium block">{lbl.label}</span>
+                    <span class="text-[11px] text-muted font-mono">{formatScheduledTime(post.publish_date)}</span>
+                  </div>
+                </div>
+                {#if lbl.hint}
+                <p class="text-[11px] text-muted mt-1.5 leading-tight">{lbl.hint}</p>
+                {/if}
+              </div>
+              {/each}
+            </div>
+          {/if}
         </div>
-        {#if lbl.hint}
-        <p class="text-[11px] text-muted mt-1.5 leading-tight">{lbl.hint}</p>
-        {/if}
-      </div>
       {/each}
     </div>
   {/if}
@@ -785,6 +841,7 @@
     </div>
     {/if}
   </div>
+  {/if}
   {/if}
 </div>
 
@@ -896,6 +953,13 @@
     <EmptyState title="No posting jobs yet" detail="Trigger a posting run above." icon="▶" />
   {:else}
     <div class="card">
+      <div class="flex items-center justify-between px-4 pt-4">
+        <p class="text-xs text-muted uppercase tracking-wider">Posting Jobs</p>
+        <button class="btn-ghost btn-sm" on:click={() => (postingJobsCollapsed = !postingJobsCollapsed)}>
+          {postingJobsCollapsed ? 'Expand' : 'Collapse'}
+        </button>
+      </div>
+      {#if !postingJobsCollapsed}
       <div class="table-wrapper">
         <table class="data-table">
           <thead>
@@ -920,6 +984,7 @@
           </tbody>
         </table>
       </div>
+      {/if}
     </div>
   {/if}
 {/if}

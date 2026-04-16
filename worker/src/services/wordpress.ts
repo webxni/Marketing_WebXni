@@ -141,6 +141,15 @@ export class WordPressClient {
     return this.request<WpPost>(`/posts/${postId}?context=edit`);
   }
 
+  async findPostsBySlug(slug: string): Promise<WpPost[]> {
+    const safeSlug = encodeURIComponent(slug.trim());
+    return this.request<WpPost[]>(`/posts?slug=${safeSlug}&context=edit&per_page=20&status=any`);
+  }
+
+  async getMedia(mediaId: number): Promise<WpMediaItem> {
+    return this.request<WpMediaItem>(`/media/${mediaId}?context=edit`);
+  }
+
   /** Create a blog post */
   async createPost(data: {
     title:            string;
@@ -305,31 +314,8 @@ export function stripHtml(value: string): string {
 function sanitizeHtmlBlock(value: string): string {
   return value
     .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?>[\s\S]*?<\/style>/gi, '')
     .replace(/ on\w+="[^"]*"/gi, '');
-}
-
-function renderFaqSection(faq: BlogFaqItem[]): string {
-  if (!faq.length) return '';
-  return `
-    <section class="wx-blog-faq">
-      <h2>Frequently Asked Questions</h2>
-      ${faq.map((item) => `
-        <div class="wx-blog-faq-item">
-          <h3>${escapeHtml(item.question)}</h3>
-          <p>${escapeHtml(item.answer)}</p>
-        </div>
-      `).join('')}
-    </section>
-  `;
-}
-
-function renderSections(sections: BlogSection[]): string {
-  return sections.map((section) => `
-    <section class="wx-blog-section">
-      <h2>${escapeHtml(section.heading)}</h2>
-      <div class="wx-blog-section-body">${sanitizeHtmlBlock(section.html)}</div>
-    </section>
-  `).join('');
 }
 
 function getTemplateChrome(templateKey: BusinessTemplateKey): {
@@ -337,6 +323,7 @@ function getTemplateChrome(templateKey: BusinessTemplateKey): {
   supportTitle: string;
   supportBody: string;
   footerTitle: string;
+  ctaKicker: string;
 } {
   switch (templateKey) {
     case 'builders-remodeling':
@@ -345,6 +332,7 @@ function getTemplateChrome(templateKey: BusinessTemplateKey): {
         supportTitle: 'What Homeowners Should Know',
         supportBody: 'Clear guidance, practical planning tips, and design-forward ideas for your next renovation.',
         footerTitle: 'Plan Your Next Improvement With Confidence',
+        ctaKicker: 'Talk With The Remodeling Team',
       };
     case 'roofing':
       return {
@@ -352,6 +340,7 @@ function getTemplateChrome(templateKey: BusinessTemplateKey): {
         supportTitle: 'Protecting Your Property',
         supportBody: 'Preventive advice, repair indicators, and decision-making support for roof performance and longevity.',
         footerTitle: 'Stay Ahead Of Roofing Problems',
+        ctaKicker: 'Talk With The Roofing Team',
       };
     case 'locksmith':
       return {
@@ -359,6 +348,7 @@ function getTemplateChrome(templateKey: BusinessTemplateKey): {
         supportTitle: 'Fast, Reliable Access Support',
         supportBody: 'Practical lock, key, and access advice focused on safety, convenience, and local response.',
         footerTitle: 'Security Guidance You Can Use Today',
+        ctaKicker: 'Need Immediate Help?',
       };
     case 'accounting':
       return {
@@ -366,6 +356,7 @@ function getTemplateChrome(templateKey: BusinessTemplateKey): {
         supportTitle: 'Clarity For Business Decisions',
         supportBody: 'Useful explanations and actionable financial guidance for owners who want better visibility and control.',
         footerTitle: 'Stay Organized And Informed',
+        ctaKicker: 'Talk With The Accounting Team',
       };
     case 'agency-marketing':
       return {
@@ -373,6 +364,7 @@ function getTemplateChrome(templateKey: BusinessTemplateKey): {
         supportTitle: 'Strategy That Supports Growth',
         supportBody: 'Clear, informative content focused on visibility, demand generation, and practical next steps.',
         footerTitle: 'Build A Stronger Marketing Foundation',
+        ctaKicker: 'Talk With The Marketing Team',
       };
     default:
       return {
@@ -380,113 +372,186 @@ function getTemplateChrome(templateKey: BusinessTemplateKey): {
         supportTitle: 'Helpful Guidance From A Trusted Team',
         supportBody: 'Educational, practical information designed to help readers make better service decisions.',
         footerTitle: 'Helpful Information For Your Next Step',
+        ctaKicker: 'Talk With Our Team',
       };
   }
 }
 
-function getTemplateCss(primaryColor: string): string {
-  return `
-    .wx-blog {
-      --wx-primary: ${primaryColor};
-      --wx-primary-soft: ${primaryColor}16;
-      --wx-text: #132033;
-      --wx-muted: #5b6678;
-      --wx-border: #d9e1ea;
-      font-family: Georgia, "Times New Roman", serif;
-      color: var(--wx-text);
-      line-height: 1.7;
-      max-width: 840px;
-      margin: 0 auto;
-    }
-    .wx-blog * { box-sizing: border-box; }
-    .wx-blog-hero {
-      background: linear-gradient(140deg, ${primaryColor}12 0%, #ffffff 55%, ${primaryColor}08 100%);
-      border: 1px solid var(--wx-border);
-      border-radius: 18px;
-      padding: 36px 34px 30px;
-      margin: 0 0 28px;
-    }
-    .wx-blog-eyebrow {
-      display: inline-block;
-      font: 700 12px/1.2 Arial, sans-serif;
-      letter-spacing: .12em;
-      text-transform: uppercase;
-      color: var(--wx-primary);
-      margin: 0 0 12px;
-    }
-    .wx-blog h1, .wx-blog h2, .wx-blog h3 {
-      color: #0f172a;
-      line-height: 1.2;
-      margin: 0 0 14px;
-      font-family: "Helvetica Neue", Arial, sans-serif;
-    }
-    .wx-blog h1 { font-size: 2.2rem; }
-    .wx-blog h2 { font-size: 1.45rem; margin-top: 32px; }
-    .wx-blog h3 { font-size: 1.1rem; margin-top: 22px; }
-    .wx-blog p, .wx-blog li { font-size: 1.04rem; color: var(--wx-text); }
-    .wx-blog ul, .wx-blog ol { padding-left: 1.2rem; }
-    .wx-blog-excerpt { color: var(--wx-muted); font-size: 1rem; margin: 10px 0 0; }
-    .wx-blog-intro {
-      background: #ffffff;
-      border: 1px solid var(--wx-border);
-      border-radius: 14px;
-      padding: 24px 26px;
-      margin: 0 0 24px;
-    }
-    .wx-blog-body-image {
-      margin: 22px 0 28px;
-      border-radius: 16px;
-      overflow: hidden;
-      border: 1px solid var(--wx-border);
-      background: #fff;
-    }
-    .wx-blog-body-image img {
-      display: block;
-      width: 100%;
-      height: auto;
-    }
-    .wx-blog-body-image figcaption {
-      font: 400 0.88rem/1.5 Arial, sans-serif;
-      color: var(--wx-muted);
-      padding: 10px 14px 12px;
-    }
-    .wx-blog-support {
-      margin: 0 0 28px;
-      padding: 22px 24px;
-      border-left: 4px solid var(--wx-primary);
-      background: var(--wx-primary-soft);
-      border-radius: 0 14px 14px 0;
-    }
-    .wx-blog-cta {
-      margin: 34px 0;
-      padding: 24px 26px;
-      border-radius: 16px;
-      background: linear-gradient(135deg, var(--wx-primary-soft), #ffffff);
-      border: 1px solid var(--wx-border);
-    }
-    .wx-blog-cta a {
-      display: inline-block;
-      margin-top: 8px;
-      padding: 12px 20px;
-      border-radius: 999px;
-      text-decoration: none;
-      background: var(--wx-primary);
-      color: #ffffff;
-      font: 600 0.95rem/1 Arial, sans-serif;
-    }
-    .wx-blog-faq-item {
-      border-top: 1px solid var(--wx-border);
-      padding-top: 16px;
-      margin-top: 16px;
-    }
-    .wx-blog-footer {
-      margin-top: 36px;
-      padding-top: 20px;
-      border-top: 1px solid var(--wx-border);
-      color: var(--wx-muted);
-      font: 400 0.95rem/1.7 Arial, sans-serif;
-    }
-  `;
+function decodeHtmlEntities(value: string): string {
+  let current = value;
+  for (let i = 0; i < 3; i += 1) {
+    const next = current
+      .replace(/&amp;/g, '&')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>');
+    if (next === current) break;
+    current = next;
+  }
+  return current;
+}
+
+function normalizePrimaryColor(primaryColor: string): string {
+  const match = primaryColor.trim().match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (!match) return '#1a73e8';
+  const hex = match[1];
+  if (hex.length === 3) {
+    return `#${hex.split('').map((char) => `${char}${char}`).join('')}`;
+  }
+  return `#${hex.toLowerCase()}`;
+}
+
+function withAlpha(hex: string, alphaHex: string): string {
+  return `${normalizePrimaryColor(hex)}${alphaHex}`;
+}
+
+function toKebabCase(value: string): string {
+  return value.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`);
+}
+
+function inlineStyle(style: Record<string, string | null | undefined>): string {
+  return Object.entries(style)
+    .filter(([, value]) => value)
+    .map(([key, value]) => `${toKebabCase(key)}:${value}`)
+    .join(';');
+}
+
+function stripTemplateArtifacts(html: string): string {
+  return html
+    .replace(/<style[\s\S]*?>[\s\S]*?<\/style>/gi, '')
+    .replace(/^\s*\.(wx-blog|wx-blog-[\w-]+)[\s\S]*?(?=<article\b|$)/i, '')
+    .trim();
+}
+
+function removeCssArtifactText(value: string): string {
+  return value
+    .replace(/\.wx-blog\s*\{[\s\S]*?\.wx-blog-footer\s*\{[\s\S]*?\}\s*/gi, ' ')
+    .replace(/\.wx-blog\s*\*\s*\{[\s\S]*?\}\s*/gi, ' ');
+}
+
+function stripWxBlogChrome(value: string): string {
+  return value
+    .replace(/<header[^>]*class="[^"]*wx-blog-hero[^"]*"[^>]*>[\s\S]*?<\/header>/gi, '')
+    .replace(/<section[^>]*class="[^"]*wx-blog-intro[^"]*"[^>]*>[\s\S]*?<\/section>/gi, '')
+    .replace(/<figure[^>]*class="[^"]*wx-blog-body-image[^"]*"[^>]*>[\s\S]*?<\/figure>/gi, '')
+    .replace(/<aside[^>]*class="[^"]*wx-blog-support[^"]*"[^>]*>[\s\S]*?<\/aside>/gi, '')
+    .replace(/<section[^>]*class="[^"]*wx-blog-cta[^"]*"[^>]*>[\s\S]*?<\/section>/gi, '')
+    .replace(/<footer[^>]*class="[^"]*wx-blog-footer[^"]*"[^>]*>[\s\S]*?<\/footer>/gi, '')
+    .replace(/<section[^>]*class="[^"]*wx-blog-faq[^"]*"[^>]*>[\s\S]*?<\/section>/gi, '')
+    .replace(/<\/?(?:article|main)\b[^>]*>/gi, '')
+    .replace(/<\/?(?:header|section|div|aside|footer|figure)\b[^>]*class="[^"]*wx-blog[^"]*"[^>]*>/gi, '')
+    .replace(/<\/(?:section|article|aside|header|footer|figure)>/gi, '');
+}
+
+function cleanExtractedText(value: string, removals: string[] = []): string {
+  let cleaned = stripHtml(removeCssArtifactText(value));
+  for (const removal of removals.filter(Boolean)) {
+    const escaped = removal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    cleaned = cleaned.replace(new RegExp(escaped, 'ig'), ' ');
+  }
+  const chromePhrases = [
+    'Remodeling Insights',
+    'Roofing Guide',
+    'Security Tips',
+    'Accounting Insights',
+    'Marketing Perspective',
+    'Professional Insights',
+    'What Homeowners Should Know',
+    'Protecting Your Property',
+    'Fast, Reliable Access Support',
+    'Clarity For Business Decisions',
+    'Strategy That Supports Growth',
+    'Helpful Guidance From A Trusted Team',
+    'Clear guidance, practical planning tips, and design-forward ideas for your next renovation.',
+    'Preventive advice, repair indicators, and decision-making support for roof performance and longevity.',
+    'Practical lock, key, and access advice focused on safety, convenience, and local response.',
+    'Useful explanations and actionable financial guidance for owners who want better visibility and control.',
+    'Clear, informative content focused on visibility, demand generation, and practical next steps.',
+    'Educational, practical information designed to help readers make better service decisions.',
+  ];
+  for (const phrase of chromePhrases) {
+    const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    cleaned = cleaned.replace(new RegExp(escaped, 'ig'), ' ');
+  }
+  return cleaned.replace(/\s+/g, ' ').trim();
+}
+
+function cleanExtractedHtml(value: string, removals: string[] = []): string {
+  let cleaned = stripWxBlogChrome(sanitizeHtmlBlock(removeCssArtifactText(value)));
+  for (const removal of removals.filter(Boolean)) {
+    const escaped = removal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    cleaned = cleaned.replace(new RegExp(escaped, 'ig'), ' ');
+  }
+  cleaned = cleaned
+    .replace(/<div[^>]*class="[^"]*wx-blog-section-body[^"]*"[^>]*>/gi, '')
+    .replace(/<\/div>\s*(?=<\/section|<section|<footer|$)/gi, '')
+    .replace(/<(?:\/)?(?:html|body)[^>]*>/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  return cleaned;
+}
+
+export function extractStructuredBlogContent(
+  html: string | null | undefined,
+  fallback: Omit<StructuredBlogContent, 'intro' | 'sections' | 'faq' | 'ctaHeading' | 'ctaBody' | 'ctaButtonLabel'> & {
+    intro?: string;
+    sections?: BlogSection[];
+    faq?: BlogFaqItem[];
+    ctaHeading?: string;
+    ctaBody?: string;
+    ctaButtonLabel?: string;
+  },
+): StructuredBlogContent {
+  const source = stripTemplateArtifacts(html ?? '');
+  const cleaned = decodeHtmlEntities(source);
+  const textRemovals = [
+    fallback.title,
+    fallback.excerpt,
+  ];
+
+  const introMatch = cleaned.match(/<section[^>]*class="wx-blog-intro"[^>]*>[\s\S]*?<p[^>]*>([\s\S]*?)<\/p>[\s\S]*?<\/section>/i);
+  const excerptMatch = cleaned.match(/<p[^>]*class="wx-blog-excerpt"[^>]*>([\s\S]*?)<\/p>/i);
+  const ctaHeadingMatch = cleaned.match(/<section[^>]*class="wx-blog-cta"[^>]*>[\s\S]*?<h2[^>]*>([\s\S]*?)<\/h2>/i);
+  const ctaBodyMatch = cleaned.match(/<section[^>]*class="wx-blog-cta"[^>]*>[\s\S]*?<p[^>]*>([\s\S]*?)<\/p>/i);
+  const ctaButtonMatch = cleaned.match(/<section[^>]*class="wx-blog-cta"[^>]*>[\s\S]*?<a[^>]*>([\s\S]*?)<\/a>/i);
+
+  const sections = [...cleaned.matchAll(/<section[^>]*class="wx-blog-section"[^>]*>[\s\S]*?<h2[^>]*>([\s\S]*?)<\/h2>[\s\S]*?<div[^>]*class="wx-blog-section-body"[^>]*>([\s\S]*?)<\/div>[\s\S]*?<\/section>/gi)]
+    .map((match) => ({
+      heading: cleanExtractedText(match[1] ?? ''),
+      html: cleanExtractedHtml(match[2] ?? '', textRemovals),
+    }))
+    .filter((section) => section.heading && stripHtml(section.html));
+
+  const faq = [...cleaned.matchAll(/<div[^>]*class="wx-blog-faq-item"[^>]*>[\s\S]*?<h3[^>]*>([\s\S]*?)<\/h3>[\s\S]*?<p[^>]*>([\s\S]*?)<\/p>[\s\S]*?<\/div>/gi)]
+    .map((match) => ({
+      question: stripHtml(match[1] ?? ''),
+      answer: stripHtml(match[2] ?? ''),
+    }))
+    .filter((item) => item.question && item.answer);
+
+  const fallbackSectionHtml = cleanExtractedHtml(stripTemplateArtifacts(cleaned), textRemovals);
+
+  return {
+    title: fallback.title,
+    excerpt: cleanExtractedText(excerptMatch?.[1] ?? '') || fallback.excerpt,
+    focusKeyword: fallback.focusKeyword,
+    secondaryKeywords: fallback.secondaryKeywords,
+    seoTitle: fallback.seoTitle,
+    metaDescription: fallback.metaDescription,
+    slug: fallback.slug,
+    intro: cleanExtractedText(introMatch?.[1] ?? '', textRemovals) || fallback.intro || fallback.excerpt || fallback.title,
+    sections: sections.length
+      ? sections
+      : (fallback.sections && fallback.sections.length
+        ? fallback.sections
+        : [{ heading: fallback.title, html: fallbackSectionHtml || `<p>${escapeHtml(fallback.excerpt || fallback.title)}</p>` }]),
+    faq: faq.length ? faq : (fallback.faq ?? []),
+    ctaHeading: stripHtml(ctaHeadingMatch?.[1] ?? '') || fallback.ctaHeading || 'Talk With Our Team',
+    ctaBody: stripHtml(ctaBodyMatch?.[1] ?? '') || fallback.ctaBody || 'Get expert guidance tailored to your needs.',
+    ctaButtonLabel: stripHtml(ctaButtonMatch?.[1] ?? '') || fallback.ctaButtonLabel || 'Contact Us Today',
+    imagePrompt: fallback.imagePrompt,
+  };
 }
 
 export function inferBusinessTemplateKey(client: {
@@ -513,35 +578,153 @@ export function renderStructuredBlogHtml(input: {
 }): string {
   const chrome = getTemplateChrome(input.templateKey);
   const ctaHref = input.phone ? `tel:${input.phone}` : '#contact';
+  const primaryColor = normalizePrimaryColor(input.primaryColor);
   const bodyImageHtml = input.bodyImageHtml ?? BLOG_BODY_IMAGE_PLACEHOLDER;
-  const faqHtml = renderFaqSection(input.blog.faq);
+  const bodyImageSection = bodyImageHtml
+    ? `<figure class="wx-blog-body-image" style="${inlineStyle({
+      margin: '0 0 24px',
+      border: '1px solid #d9e1ea',
+      borderRadius: '16px',
+      overflow: 'hidden',
+      background: '#ffffff',
+    })}">${bodyImageHtml}</figure>`
+    : '';
+  const faqHtml = input.blog.faq.length
+    ? `
+      <section class="wx-blog-faq" style="${inlineStyle({ margin: '32px 0 0' })}">
+        <h2 style="${inlineStyle({ color: '#0f172a', fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '1.45rem', lineHeight: '1.2', margin: '0 0 14px' })}">Frequently Asked Questions</h2>
+        ${input.blog.faq.map((item) => `
+          <div class="wx-blog-faq-item" style="${inlineStyle({ borderTop: '1px solid #d9e1ea', paddingTop: '16px', marginTop: '16px' })}">
+            <h3 style="${inlineStyle({ color: '#0f172a', fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '1.08rem', lineHeight: '1.3', margin: '0 0 10px' })}">${escapeHtml(item.question)}</h3>
+            <p style="${inlineStyle({ color: '#132033', fontSize: '1rem', lineHeight: '1.75', margin: '0' })}">${escapeHtml(item.answer)}</p>
+          </div>
+        `).join('')}
+      </section>
+    `
+    : '';
+
+  const sectionHtml = input.blog.sections.map((section) => `
+    <section class="wx-blog-section" style="${inlineStyle({ margin: '0 0 28px' })}">
+      <h2 style="${inlineStyle({ color: '#0f172a', fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '1.8rem', lineHeight: '1.15', margin: '0 0 14px', letterSpacing: '-0.02em' })}">${escapeHtml(section.heading)}</h2>
+      <div class="wx-blog-section-body" style="${inlineStyle({ color: '#132033', fontSize: '1rem', lineHeight: '1.75' })}">${sanitizeHtmlBlock(section.html)}</div>
+    </section>
+  `).join('');
+
   return `
-    <style>${getTemplateCss(input.primaryColor)}</style>
-    <article class="wx-blog">
-      <header class="wx-blog-hero">
-        <div class="wx-blog-eyebrow">${chrome.eyebrow}</div>
-        <h1>${escapeHtml(input.blog.title)}</h1>
-        <p class="wx-blog-excerpt">${escapeHtml(input.blog.excerpt)}</p>
+    <article class="wx-blog" data-wx-blog-template="${input.templateKey}" style="${inlineStyle({
+      maxWidth: '1180px',
+      margin: '0 auto',
+      padding: '0 24px 56px',
+      color: '#132033',
+      fontFamily: 'Georgia, Times New Roman, serif',
+      lineHeight: '1.7',
+    })}">
+      <header class="wx-blog-hero" style="${inlineStyle({
+        background: `linear-gradient(140deg, ${withAlpha(primaryColor, '12')} 0%, #ffffff 62%, ${withAlpha(primaryColor, '08')} 100%)`,
+        border: '1px solid #d9e1ea',
+        borderRadius: '22px',
+        padding: '48px 44px 40px',
+        margin: '0 0 30px',
+      })}">
+        <div class="wx-blog-eyebrow" style="${inlineStyle({
+          display: 'inline-block',
+          color: primaryColor,
+          fontFamily: 'Arial, Helvetica, sans-serif',
+          fontSize: '12px',
+          fontWeight: '700',
+          letterSpacing: '.18em',
+          textTransform: 'uppercase',
+          margin: '0 0 16px',
+        })}">${chrome.eyebrow}</div>
+        <h1 style="${inlineStyle({
+          color: '#0f172a',
+          fontFamily: 'Arial, Helvetica, sans-serif',
+          fontSize: '3.35rem',
+          lineHeight: '1.02',
+          letterSpacing: '-0.04em',
+          maxWidth: '14ch',
+          margin: '0 0 16px',
+        })}">${escapeHtml(input.blog.title)}</h1>
+        <p class="wx-blog-excerpt" style="${inlineStyle({
+          color: '#5b6678',
+          fontSize: '1.12rem',
+          lineHeight: '1.8',
+          maxWidth: '58ch',
+          margin: '0',
+        })}">${escapeHtml(input.blog.excerpt)}</p>
       </header>
-      <section class="wx-blog-intro">
-        <p>${escapeHtml(input.blog.intro)}</p>
-      </section>
-      <figure class="wx-blog-body-image">${bodyImageHtml}</figure>
-      <aside class="wx-blog-support">
-        <h3>${chrome.supportTitle}</h3>
-        <p>${chrome.supportBody}</p>
-      </aside>
-      ${renderSections(input.blog.sections)}
-      ${faqHtml}
-      <section class="wx-blog-cta">
-        <h2>${escapeHtml(input.blog.ctaHeading)}</h2>
-        <p>${escapeHtml(input.blog.ctaBody)}</p>
-        <a href="${ctaHref}">${escapeHtml(input.blog.ctaButtonLabel || input.ctaDefault || 'Contact Us Today')}</a>
-      </section>
-      <footer class="wx-blog-footer">
-        <strong>${chrome.footerTitle}</strong>
-        <p>${escapeHtml(input.clientName)} provides service-specific guidance focused on informed decisions, clear expectations, and practical next steps.</p>
-      </footer>
+      <div class="wx-blog-layout" style="${inlineStyle({
+        display: 'flex',
+        flexWrap: 'wrap',
+        alignItems: 'flex-start',
+        gap: '42px',
+      })}">
+        <div class="wx-blog-main" style="${inlineStyle({
+          flex: '1 1 640px',
+          minWidth: '0',
+          maxWidth: '760px',
+        })}">
+          <section class="wx-blog-intro" style="${inlineStyle({
+            background: '#ffffff',
+            border: '1px solid #d9e1ea',
+            borderRadius: '14px',
+            padding: '28px 30px',
+            margin: '0 0 24px',
+          })}">
+            <p style="${inlineStyle({ margin: '0', fontSize: '1.08rem', lineHeight: '1.9', color: '#132033' })}">${escapeHtml(input.blog.intro)}</p>
+          </section>
+          ${bodyImageSection}
+          ${sectionHtml}
+          ${faqHtml}
+          <footer class="wx-blog-footer" style="${inlineStyle({
+            marginTop: '36px',
+            paddingTop: '20px',
+            borderTop: '1px solid #d9e1ea',
+          })}">
+            <strong style="${inlineStyle({ display: 'block', color: '#0f172a', fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '1rem', margin: '0 0 8px' })}">${chrome.footerTitle}</strong>
+            <p style="${inlineStyle({ margin: '0', color: '#5b6678', fontSize: '.95rem', lineHeight: '1.7' })}">${escapeHtml(input.clientName)} provides service-specific guidance focused on informed decisions, clear expectations, and practical next steps.</p>
+          </footer>
+        </div>
+        <aside class="wx-blog-rail" style="${inlineStyle({
+          flex: '0 1 300px',
+          minWidth: '260px',
+          width: '300px',
+        })}">
+          <div class="wx-blog-support" style="${inlineStyle({
+            margin: '0 0 20px',
+            padding: '22px 24px',
+            borderLeft: `4px solid ${primaryColor}`,
+            background: withAlpha(primaryColor, '10'),
+            borderRadius: '0 14px 14px 0',
+          })}">
+            <h3 style="${inlineStyle({ color: '#0f172a', fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '1.08rem', lineHeight: '1.3', margin: '0 0 8px' })}">${chrome.supportTitle}</h3>
+            <p style="${inlineStyle({ margin: '0', color: '#132033', fontSize: '1rem', lineHeight: '1.75' })}">${chrome.supportBody}</p>
+          </div>
+          <section class="wx-blog-cta" style="${inlineStyle({
+            margin: '0',
+            padding: '26px 24px',
+            borderRadius: '16px',
+            background: `linear-gradient(135deg, ${withAlpha(primaryColor, '12')}, #ffffff)`,
+            border: '1px solid #d9e1ea',
+          })}">
+            <div style="${inlineStyle({ color: primaryColor, fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '12px', fontWeight: '700', letterSpacing: '.12em', textTransform: 'uppercase', margin: '0 0 10px' })}">${chrome.ctaKicker}</div>
+            <h2 style="${inlineStyle({ color: '#0f172a', fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '1.7rem', lineHeight: '1.1', letterSpacing: '-0.02em', margin: '0 0 12px' })}">${escapeHtml(input.blog.ctaHeading)}</h2>
+            <p style="${inlineStyle({ margin: '0 0 16px', color: '#132033', fontSize: '0.98rem', lineHeight: '1.8' })}">${escapeHtml(input.blog.ctaBody)}</p>
+            <a href="${ctaHref}" style="${inlineStyle({
+              display: 'inline-block',
+              padding: '12px 18px',
+              borderRadius: '999px',
+              textDecoration: 'none',
+              background: primaryColor,
+              color: '#ffffff',
+              fontFamily: 'Arial, Helvetica, sans-serif',
+              fontSize: '.95rem',
+              fontWeight: '600',
+              lineHeight: '1',
+            })}">${escapeHtml(input.blog.ctaButtonLabel || input.ctaDefault || 'Contact Us Today')}</a>
+          </section>
+        </aside>
+      </div>
     </article>
   `;
 }
