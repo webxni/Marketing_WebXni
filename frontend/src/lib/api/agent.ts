@@ -12,10 +12,13 @@ export interface AgentRequest {
 
 export interface AgentResponse {
   message:       string;
+  summary?:      Record<string, unknown>;
+  items?:        unknown[];
   actions_taken: string[];
-  data:          Record<string, unknown>;
+  suggestions?:  string[];
   errors:        string[];
-  tools_used:    string[];
+  tools_used?:   string[];
+  job_id?:       string;
 }
 
 export const agentApi = {

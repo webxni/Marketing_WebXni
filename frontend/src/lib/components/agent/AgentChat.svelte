@@ -10,12 +10,16 @@
   let messagesEl: HTMLDivElement;
 
   interface ChatMessage {
-    role:    'user' | 'assistant';
-    content: string;
-    actions?: string[];
-    errors?:  string[];
-    tools?:   string[];
-    pending?: boolean;
+    role:        'user' | 'assistant';
+    content:     string;
+    actions?:    string[];
+    errors?:     string[];
+    tools?:      string[];
+    suggestions?: string[];
+    items?:      unknown[];
+    summary?:    Record<string, unknown>;
+    job_id?:     string;
+    pending?:    boolean;
   }
 
   let messages: ChatMessage[] = [];
@@ -48,8 +52,8 @@
   }
 
   // ── Send message ───────────────────────────────────────────────────────────
-  async function send() {
-    const text = input.trim();
+  async function send(overrideText?: string) {
+    const text = (overrideText ?? input).trim();
     if (!text || loading) return;
 
     input   = '';
@@ -58,7 +62,6 @@
     messages = [...messages, { role: 'user', content: text }];
     await scrollToBottom();
 
-    // Placeholder while waiting
     const placeholderIdx = messages.length;
     messages = [...messages, { role: 'assistant', content: '', pending: true }];
     await scrollToBottom();
@@ -66,18 +69,21 @@
     try {
       const res: AgentResponse = await agentApi.chat({
         message: text,
-        history: history.slice(0, -1), // exclude the message we just sent (already in request)
+        history: history.slice(0, -1),
       });
 
-      // Replace placeholder with real response
       messages = messages.map((m, i) => {
         if (i === placeholderIdx) {
           return {
-            role:    'assistant',
-            content: res.message,
-            actions: res.actions_taken?.length ? res.actions_taken : undefined,
-            errors:  res.errors?.length        ? res.errors        : undefined,
-            tools:   res.tools_used?.length    ? res.tools_used    : undefined,
+            role:        'assistant' as const,
+            content:     res.message,
+            actions:     res.actions_taken?.length  ? res.actions_taken  : undefined,
+            errors:      res.errors?.length         ? res.errors         : undefined,
+            tools:       res.tools_used?.length     ? res.tools_used     : undefined,
+            suggestions: res.suggestions?.length    ? res.suggestions    : undefined,
+            items:       res.items?.length          ? res.items          : undefined,
+            summary:     res.summary && Object.keys(res.summary).length ? res.summary : undefined,
+            job_id:      res.job_id,
           };
         }
         return m;
@@ -86,7 +92,7 @@
       const msg = err instanceof Error ? err.message : 'Something went wrong.';
       messages = messages.map((m, i) => {
         if (i === placeholderIdx) {
-          return { role: 'assistant', content: '', errors: [msg] };
+          return { role: 'assistant' as const, content: '', errors: [msg] };
         }
         return m;
       });
@@ -109,12 +115,47 @@
     input    = '';
   }
 
+  function retryMessage(idx: number) {
+    // Find the user message before this assistant message
+    for (let i = idx - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        send(messages[i].content);
+        return;
+      }
+    }
+  }
+
+  // Render a single item from the items array as a compact row
+  function itemTitle(item: unknown): string {
+    if (!item || typeof item !== 'object') return String(item);
+    const o = item as Record<string, unknown>;
+    return (o['title'] ?? o['name'] ?? o['type'] ?? o['id'] ?? '—') as string;
+  }
+
+  function itemMeta(item: unknown): string {
+    if (!item || typeof item !== 'object') return '';
+    const o = item as Record<string, unknown>;
+    const parts: string[] = [];
+    if (o['status'])       parts.push(String(o['status']));
+    if (o['client'])       parts.push(String(o['client']));
+    if (o['publish_date']) parts.push(String(o['publish_date']).slice(0, 10));
+    if (o['severity'])     parts.push(String(o['severity']));
+    if (o['count'] != null) parts.push(`×${o['count']}`);
+    return parts.join(' · ');
+  }
+
+  function formatSummaryValue(v: unknown): string {
+    if (v === null || v === undefined) return '—';
+    if (typeof v === 'object') return JSON.stringify(v);
+    return String(v);
+  }
+
   // Quick-action shortcuts
   const QUICK_ACTIONS = [
-    { label: 'Queue',        msg: 'Show me the current posting queue' },
-    { label: 'Failed posts', msg: 'Show me all failed posts' },
+    { label: 'Queue',         msg: 'Show me the current posting queue' },
+    { label: 'Failed posts',  msg: 'Show me all failed posts' },
     { label: "Today's posts", msg: "Show me today's posts" },
-    { label: 'Report',       msg: 'Give me an overview report' },
+    { label: 'System status', msg: 'Run a system health check' },
   ];
 
   onMount(() => {
@@ -138,9 +179,9 @@
 <!-- ── Chat panel ─────────────────────────────────────────────────────────── -->
 {#if open}
 <div
-  class="fixed bottom-20 right-5 z-50 w-96 flex flex-col rounded-xl shadow-2xl
+  class="fixed bottom-20 right-5 z-50 w-[420px] flex flex-col rounded-xl shadow-2xl
          bg-surface border border-border overflow-hidden"
-  style="height: min(600px, calc(100vh - 100px));"
+  style="height: min(640px, calc(100vh - 100px));"
 >
   <!-- Header -->
   <div class="flex items-center justify-between px-4 py-3 border-b border-border bg-card">
@@ -178,7 +219,7 @@
         <div class="grid grid-cols-2 gap-2">
           {#each QUICK_ACTIONS as qa}
             <button
-              on:click={() => { input = qa.msg; send(); }}
+              on:click={() => send(qa.msg)}
               class="text-xs px-3 py-2 rounded-lg bg-card border border-border
                      text-muted hover:text-white hover:border-accent/50 transition-all text-left"
             >
@@ -191,14 +232,14 @@
 
     {#each messages as msg, i (i)}
       <div class="flex {msg.role === 'user' ? 'justify-end' : 'justify-start'}">
-        <div class="max-w-[85%] {msg.role === 'user'
+        <div class="max-w-[90%] {msg.role === 'user'
           ? 'bg-accent text-white rounded-2xl rounded-tr-sm px-3 py-2 text-sm'
-          : 'space-y-2'}">
+          : 'space-y-2 w-full'}">
 
           {#if msg.role === 'user'}
             {msg.content}
           {:else}
-            <!-- Assistant bubble -->
+            <!-- Assistant bubble: message text -->
             <div class="bg-card border border-border rounded-2xl rounded-tl-sm px-3 py-2">
               {#if msg.pending}
                 <div class="flex gap-1 items-center py-1">
@@ -211,12 +252,73 @@
               {/if}
             </div>
 
+            <!-- Summary stats (key/value pairs) -->
+            {#if msg.summary}
+              <div class="bg-card/60 border border-border/60 rounded-xl px-3 py-2">
+                <div class="flex flex-wrap gap-x-4 gap-y-1">
+                  {#each Object.entries(msg.summary) as [k, v]}
+                    {#if typeof v !== 'object' || v === null}
+                      <span class="text-xs">
+                        <span class="text-muted">{k.replace(/_/g, ' ')}:</span>
+                        <span class="text-white ml-1">{formatSummaryValue(v)}</span>
+                      </span>
+                    {/if}
+                  {/each}
+                </div>
+              </div>
+            {/if}
+
+            <!-- Items list -->
+            {#if msg.items && msg.items.length > 0}
+              <div class="border border-border/60 rounded-xl overflow-hidden">
+                <div class="max-h-48 overflow-y-auto divide-y divide-border/40">
+                  {#each msg.items as item, idx}
+                    <div class="px-3 py-1.5 flex items-start gap-2 hover:bg-white/5 transition-colors">
+                      <span class="text-muted text-xs mt-0.5 shrink-0 w-4 text-right">{idx + 1}</span>
+                      <div class="min-w-0">
+                        <p class="text-xs text-white truncate">{itemTitle(item)}</p>
+                        {#if itemMeta(item)}
+                          <p class="text-xs text-muted truncate">{itemMeta(item)}</p>
+                        {/if}
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+                {#if msg.items.length > 8}
+                  <div class="px-3 py-1 text-xs text-muted bg-card/40">
+                    {msg.items.length} items total
+                  </div>
+                {/if}
+              </div>
+            {/if}
+
             <!-- Actions taken -->
             {#if msg.actions && msg.actions.length > 0}
               <div class="bg-green-900/20 border border-green-800/40 rounded-lg px-3 py-2 space-y-1">
-                <p class="text-xs text-green-400 font-medium uppercase tracking-wide">Actions taken</p>
+                <p class="text-xs text-green-400 font-medium uppercase tracking-wide">Done</p>
                 {#each msg.actions as action}
                   <p class="text-xs text-green-300">• {action}</p>
+                {/each}
+              </div>
+            {/if}
+
+            <!-- Job ID -->
+            {#if msg.job_id}
+              <p class="text-xs text-muted px-1">Job: <span class="font-mono text-accent/70">{msg.job_id}</span></p>
+            {/if}
+
+            <!-- Suggestions (clickable) -->
+            {#if msg.suggestions && msg.suggestions.length > 0}
+              <div class="space-y-1">
+                {#each msg.suggestions as suggestion}
+                  <button
+                    on:click={() => { input = suggestion; send(); }}
+                    class="w-full text-left text-xs px-3 py-1.5 rounded-lg border border-accent/30
+                           text-accent/80 hover:text-white hover:bg-accent/10 hover:border-accent/60
+                           transition-all"
+                  >
+                    → {suggestion}
+                  </button>
                 {/each}
               </div>
             {/if}
@@ -229,7 +331,7 @@
                   <p class="text-xs text-red-300">• {err}</p>
                 {/each}
                 <button
-                  on:click={() => { input = messages[i - 1]?.content ?? ''; send(); }}
+                  on:click={() => retryMessage(i)}
                   class="mt-1 text-xs text-red-400 hover:text-red-200 underline"
                 >
                   Retry
@@ -264,7 +366,7 @@
                disabled:opacity-50 transition-colors"
       ></textarea>
       <button
-        on:click={send}
+        on:click={() => send()}
         disabled={loading || !input.trim()}
         class="shrink-0 w-9 h-9 rounded-lg bg-accent text-white flex items-center justify-center
                hover:bg-accent/90 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
