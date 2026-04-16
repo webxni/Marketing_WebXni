@@ -720,7 +720,7 @@ async function executeTool(
             WHERE p.status = 'failed' ORDER BY p.updated_at DESC LIMIT 20
           `).all<Record<string, unknown>>(),
           env.DB.prepare(`
-            SELECT id, mode, status, created_at, updated_at
+            SELECT id, mode, status, created_at, completed_at
             FROM posting_jobs WHERE status = 'running'
               AND created_at < unixepoch('now') - 1800
             LIMIT 10

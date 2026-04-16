@@ -62,8 +62,9 @@ export async function authMiddleware(
   c: Context<{ Bindings: Env; Variables: { user: SessionData } }>,
   next: Next,
 ): Promise<Response | void> {
-  if (c.req.path.startsWith('/api/auth/')) return next();
-  if (c.req.path.startsWith('/api/setup'))  return next();
+  if (c.req.path.startsWith('/api/auth/'))         return next();
+  if (c.req.path.startsWith('/api/setup'))         return next();
+  if (c.req.path === '/api/ai/dispatch')           return next(); // bot_token auth inside
 
   const sessionId = getCookie(c, 'session');
   if (!sessionId) return c.json({ error: 'Unauthorized' }, 401);
