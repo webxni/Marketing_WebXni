@@ -15,7 +15,12 @@ export interface Env {
   UPLOAD_POST_API_KEY: string;
   OPENAI_API_KEY: string;
   R2_MEDIA_PUBLIC_URL: string;
-  NOTION_API_TOKEN?: string;  // optional — only needed for Notion import
+  NOTION_API_TOKEN?: string;       // optional — only needed for Notion import
+  // Discord
+  DISCORD_BOT_TOKEN?:      string; // wrangler secret
+  DISCORD_PUBLIC_KEY?:     string; // wrangler secret — Ed25519 public key from Developer Portal
+  DISCORD_APPLICATION_ID?: string; // wrangler var — App ID from Developer Portal
+  DISCORD_CHANNEL_ID?:     string; // wrangler var — target notification channel
 }
 
 /** LOADER worker bindings (no SESSION / ASSETS) */

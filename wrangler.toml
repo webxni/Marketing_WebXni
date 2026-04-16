@@ -49,6 +49,14 @@ not_found_handling = "single-page-application"
 # Format: https://pub-<hash>.r2.dev   OR your custom domain e.g. https://media.webxni.com
 R2_MEDIA_PUBLIC_URL = ""
 
-# Secrets (set via: wrangler secret put UPLOAD_POST_API_KEY)
+# Discord — non-secret config (channel/app IDs are not sensitive)
+# Get Application ID from: discord.com/developers/applications → your app → General Information
+DISCORD_APPLICATION_ID = ""
+# Channel to send notifications to (from the channel URL)
+DISCORD_CHANNEL_ID = "1242943323828916234"
+
+# Secrets (set via: wrangler secret put <NAME>)
 # UPLOAD_POST_API_KEY
 # OPENAI_API_KEY
+# DISCORD_BOT_TOKEN       — Bot token from Developer Portal → Bot → Reset Token
+# DISCORD_PUBLIC_KEY      — Ed25519 Public Key from Developer Portal → General Information

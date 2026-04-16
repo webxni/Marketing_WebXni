@@ -28,12 +28,17 @@ import { blogRoutes }        from './routes/blog';
 import { gbpRoutes }         from './routes/gbp';
 import { internalRoutes }    from './routes/internal';
 import { aiRoutes }          from './routes/ai';
+import { discordInteractRoute, discordInternalRoute } from './routes/discord';
 
 const app = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
 // ─── Internal routes (no auth — Worker-to-Worker only) ───────────────────────
 app.route('/internal', internalRoutes);
+app.route('/internal/discord', discordInternalRoute); // register/notify
 app.route('/media', publicAssetRoutes);
+
+// Discord interaction endpoint — NO auth middleware (Discord signs with Ed25519)
+app.route('/api/discord', discordInteractRoute);
 
 // ─── Global middleware ────────────────────────────────────────────────────────
 app.use('/api/*', rateLimitMiddleware);
@@ -80,6 +85,7 @@ app.all('/*', async (c) => {
 import { runPosting } from './loader/posting-run';
 import { runRecurringGbp } from './loader/recurring-gbp-run';
 import { runFetchUrls } from './routes/run';
+import { notifyPostingComplete } from './services/discord';
 
 export default {
   fetch: app.fetch,
@@ -113,12 +119,34 @@ export default {
       // Every minute — exact-time posting (only runs if cron_enabled=true in settings)
       ctx.waitUntil((async () => {
         try {
-          const raw = await (env as unknown as { KV_BINDING: KVNamespace }).KV_BINDING.get('settings:system');
+          const kv = (env as unknown as { KV_BINDING: KVNamespace }).KV_BINDING;
+          const raw = await kv.get('settings:system');
           const settings: Record<string, string> = raw ? JSON.parse(raw) : {};
 
           if (settings['cron_enabled'] === 'false') return;
 
-          await runPosting(env as any, { mode: 'real', triggered_by: 'cron', limit: 50 });
+          const jobId = crypto.randomUUID().replace(/-/g, '');
+          await runPosting(env as any, { mode: 'real', triggered_by: 'cron', limit: 50, job_id: jobId });
+
+          // Discord notification — only if bot token and channel are configured
+          const botToken  = env.DISCORD_BOT_TOKEN;
+          const channelId = env.DISCORD_CHANNEL_ID;
+          if (botToken && channelId) {
+            // Check for failures after the run
+            try {
+              const job = await env.DB
+                .prepare('SELECT stats_json FROM posting_jobs WHERE id = ? LIMIT 1')
+                .bind(jobId).first<{ stats_json: string | null }>();
+              const stats: Record<string, number> = job?.stats_json ? JSON.parse(job.stats_json) : {};
+              const sent    = stats['sent']    ?? 0;
+              const failed  = stats['failed']  ?? 0;
+              const skipped = stats['skipped'] ?? 0;
+              // Only notify if something happened
+              if (sent > 0 || failed > 0) {
+                await notifyPostingComplete({ channelId, token: botToken, sent, failed, skipped, jobId, triggered: 'cron' });
+              }
+            } catch { /* non-fatal */ }
+          }
         } catch (err) {
           console.error('Cron posting error:', err);
         }
