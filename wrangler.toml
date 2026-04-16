@@ -51,11 +51,13 @@ R2_MEDIA_PUBLIC_URL = ""
 
 # Discord — non-secret config (channel/app IDs are not sensitive)
 # Get Application ID from: discord.com/developers/applications → your app → General Information
-DISCORD_APPLICATION_ID = ""
+DISCORD_APPLICATION_ID = "1468394932837552248"
 # Channel to send notifications to (from the channel URL)
 DISCORD_CHANNEL_ID = "1242943323828916234"
-# Owner's Discord user ID — receives DMs for critical alerts
-DISCORD_OWNER_ID = "1468394932837552248"
+# Owner's personal Discord user ID — receives DMs for critical alerts
+# NOTE: This is YOUR user ID, not the bot's. To find yours: Discord → Settings → Advanced
+# → enable Developer Mode → right-click your username → Copy User ID
+DISCORD_OWNER_ID = ""
 
 # Secrets (set via: wrangler secret put <NAME>)
 # UPLOAD_POST_API_KEY
