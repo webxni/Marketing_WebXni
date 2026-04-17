@@ -224,6 +224,84 @@ async function handleCommand(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// POST /internal/discord/upload-asset
+// Bot uploads a Discord attachment here (multipart, bearer auth).
+// Stores in R2 MEDIA bucket, optionally links to a post.
+// Body (multipart): file, post_id?, client_id?
+// ─────────────────────────────────────────────────────────────────────────────
+
+discordInternalRoute.post('/upload-asset', async (c) => {
+  // Verify bot secret
+  const authHeader  = c.req.header('Authorization') ?? '';
+  const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+
+  let botSecret = '';
+  try {
+    const raw = await c.env.KV_BINDING.get('settings:system');
+    const s   = raw ? JSON.parse(raw) as Record<string, string> : {};
+    botSecret  = s['discord_bot_secret'] || '';
+  } catch { /* ignore */ }
+
+  if (!botSecret || bearerToken !== botSecret) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+
+  let formData: FormData;
+  try { formData = await c.req.formData(); }
+  catch { return c.json({ error: 'Invalid multipart data' }, 400); }
+
+  const file     = formData.get('file') as File | null;
+  const postId   = (formData.get('post_id')   as string | null) || null;
+  const clientId = (formData.get('client_id') as string | null) || null;
+
+  if (!file) return c.json({ error: 'file is required' }, 400);
+
+  // Resolve client_id from post if not provided
+  let resolvedClientId = clientId;
+  if (!resolvedClientId && postId) {
+    const row = await c.env.DB
+      .prepare('SELECT client_id FROM posts WHERE id = ?')
+      .bind(postId).first<{ client_id: string }>();
+    resolvedClientId = row?.client_id ?? null;
+  }
+  if (!resolvedClientId) return c.json({ error: 'client_id or valid post_id required' }, 400);
+
+  const filename    = file.name ?? 'upload.bin';
+  const ext         = (filename.split('.').pop() ?? 'bin').toLowerCase();
+  const assetId     = crypto.randomUUID().replace(/-/g, '').toLowerCase();
+  const r2Key       = `${resolvedClientId}/${postId ?? 'unlinked'}/${assetId}.${ext}`;
+  const contentType = file.type || (/^(mp4|mov|webm|avi)$/.test(ext) ? 'video/mp4' : 'image/jpeg');
+  const isVideo     = contentType.startsWith('video/') || /^(mp4|mov|webm|avi)$/.test(ext);
+  const assetType   = isVideo ? 'video' : 'image';
+
+  await c.env.MEDIA.put(r2Key, file.stream(), {
+    httpMetadata: { contentType },
+    customMetadata: { clientId: resolvedClientId, postId: postId ?? '', originalName: filename, source: 'discord' },
+  });
+
+  const now = Math.floor(Date.now() / 1000);
+  try {
+    await c.env.DB
+      .prepare(`INSERT INTO assets (id, post_id, client_id, r2_key, r2_bucket, filename, content_type, size_bytes, source, created_at)
+                VALUES (?, ?, ?, ?, 'MEDIA', ?, ?, ?, 'discord', ?)`)
+      .bind(assetId, postId, resolvedClientId, r2Key, filename, contentType, file.size, now)
+      .run();
+  } catch { /* non-fatal — asset still uploaded to R2 */ }
+
+  if (postId) {
+    await c.env.DB
+      .prepare(`UPDATE posts SET asset_r2_key = ?, asset_r2_bucket = 'MEDIA', asset_type = ?, asset_delivered = 1, updated_at = ? WHERE id = ?`)
+      .bind(r2Key, assetType, now, postId)
+      .run();
+  }
+
+  const mediaUrl = `https://marketing.webxni.com/media/${r2Key}`;
+  console.log(`[discord] asset uploaded: ${r2Key} (${assetType}, ${file.size} bytes)`);
+
+  return c.json({ ok: true, r2_key: r2Key, asset_id: assetId, asset_type: assetType, url: mediaUrl, linked_post_id: postId }, 201);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // POST /internal/discord/register
 // Call once to register slash commands with Discord.
 // ─────────────────────────────────────────────────────────────────────────────

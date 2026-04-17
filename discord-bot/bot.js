@@ -52,6 +52,48 @@ function pushHistory(userId, role, content) {
   if (h.length > 12) h.splice(0, h.length - 12); // keep last 6 turns
 }
 
+// ── Upload a Discord attachment to the WebXni worker ─────────────────────────
+async function uploadAttachmentToWorker(attachment) {
+  try {
+    const isImage = (attachment.contentType ?? '').startsWith('image/') ||
+                    /\.(png|jpg|jpeg|gif|webp)$/i.test(attachment.name ?? '');
+    const isVideo = (attachment.contentType ?? '').startsWith('video/') ||
+                    /\.(mp4|mov|webm|avi)$/i.test(attachment.name ?? '');
+    if (!isImage && !isVideo) return null;
+
+    console.log(`[bot] downloading attachment: ${attachment.name} (${attachment.size} bytes)`);
+    const fileRes = await fetch(attachment.url);
+    if (!fileRes.ok) throw new Error(`Discord CDN ${fileRes.status}`);
+    const buffer = await fileRes.arrayBuffer();
+
+    const contentType = attachment.contentType ??
+      (/\.(mp4|mov|webm)$/i.test(attachment.name ?? '') ? 'video/mp4' : 'image/jpeg');
+
+    const blob = new Blob([buffer], { type: contentType });
+    const form = new FormData();
+    form.append('file', blob, attachment.name ?? 'upload.bin');
+
+    const res = await fetch(`${API_BASE_URL}/internal/discord/upload-asset`, {
+      method:  'POST',
+      headers: { 'Authorization': `Bearer ${BOT_SECRET}` },
+      body:    form,
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      console.error(`[bot] upload failed ${res.status}:`, errText.slice(0, 200));
+      return null;
+    }
+
+    const data = await res.json();
+    console.log(`[bot] uploaded → ${data.r2_key} (${data.asset_type})`);
+    return data;
+  } catch (err) {
+    console.error('[bot] attachment upload error:', err.message);
+    return null;
+  }
+}
+
 // ── Call the WebXni AI agent ───────────────────────────────────────────────────
 async function askAgent(userMessage, userId, username) {
   const history = getHistory(userId);
@@ -220,18 +262,57 @@ client.on(Events.MessageCreate, async (message) => {
     .replace(`<@!${client.user.id}>`, '')
     .trim();
 
-  if (!text) return;
+  // Check for media attachments (images / videos)
+  const mediaAttachments = [...message.attachments.values()].filter(a => {
+    const isImage = (a.contentType ?? '').startsWith('image/') ||
+                    /\.(png|jpg|jpeg|gif|webp)$/i.test(a.name ?? '');
+    const isVideo = (a.contentType ?? '').startsWith('video/') ||
+                    /\.(mp4|mov|webm|avi)$/i.test(a.name ?? '');
+    return isImage || isVideo;
+  });
+
+  // If no text and no media, ignore
+  if (!text && mediaAttachments.length === 0) return;
 
   const userId   = message.author.id;
   const username = message.author.globalName ?? message.author.username;
 
-  console.log(`[bot] message from ${username} (${isDM ? 'DM' : 'channel'}): ${text.slice(0, 80)}`);
+  console.log(`[bot] message from ${username} (${isDM ? 'DM' : 'channel'}): ${text.slice(0, 80)}${mediaAttachments.length ? ` + ${mediaAttachments.length} attachment(s)` : ''}`);
 
   // Show typing indicator
   try { await message.channel.sendTyping(); } catch { /* ignore */ }
 
+  // Upload attachments to R2 (up to 3 media files)
+  const uploadedAssets = [];
+  for (const att of mediaAttachments.slice(0, 3)) {
+    const uploaded = await uploadAttachmentToWorker(att);
+    if (uploaded) uploadedAssets.push(uploaded);
+  }
+
+  // Augment the message with attachment context for the agent
+  let agentMessage = text;
+  if (uploadedAssets.length > 0) {
+    const attContext = uploadedAssets
+      .map(a => `[Media uploaded to R2: key="${a.r2_key}", url="${a.url}", type="${a.asset_type}"]`)
+      .join(' ');
+    agentMessage = text
+      ? `${text}\n\nATTACHMENTS: ${attContext}`
+      : `I attached a file. Please help me post it.\n\nATTACHMENTS: ${attContext}`;
+  }
+
+  // If we uploaded something, let the user know we received it
+  if (uploadedAssets.length > 0) {
+    const typeLabel = uploadedAssets[0].asset_type === 'video' ? '📹 video' : '🖼️ image';
+    try {
+      await message.channel.send({
+        content: `✅ Got your ${typeLabel} — uploading to platform…`,
+        allowedMentions: { repliedUser: false },
+      });
+    } catch { /* ignore */ }
+  }
+
   try {
-    const data = await askAgent(text, userId, username);
+    const data = await askAgent(agentMessage, userId, username);
     const { content, embeds } = formatResponse(data);
     await message.reply({ content, embeds, allowedMentions: { repliedUser: false } });
   } catch (err) {

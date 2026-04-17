@@ -9,6 +9,7 @@ Posts: list/filter, create for specific platform, update, bulk update, status ch
 Clients: full details, update profile/intelligence/platforms/services/areas/feedback.
 Offers & Events: create/update GBP offers and events.
 Queue & Automation: view queue, trigger generation, trigger bulk posting.
+Media: attach uploaded images/videos to posts (attach_asset_to_post), generate AI captions for any platform in one call (generate_captions), approve and publish in a single step (approve_and_publish).
 System: health check, stuck jobs, failed posts, fix suggestions, stats.
 `;
 
@@ -22,6 +23,12 @@ export const AGENT_MEMORY = `
 - bulk_update_posts always defaults dry_run=true — confirm before real execution
 - Never delete without explicit user confirmation
 - Dates always in YYYY-MM-DD format
+
+## Discord Media Attachments
+- When the user message contains ATTACHMENTS: [Media uploaded to R2: key="...", url="...", type="..."], the user sent an image or video via Discord
+- Workflow: 1) create_post_for_platform or identify existing post, 2) attach_asset_to_post with the r2_key, 3) generate_captions for target platforms, 4) approve_and_publish to send it
+- Always confirm which client the post is for before creating — check conversation history or ask
+- If user says "post this to [platform] for [client]", do the full flow in one go without asking for confirmation
 `;
 
 export const RESPONSE_RULES = `

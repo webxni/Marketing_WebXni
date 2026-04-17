@@ -491,6 +491,58 @@ const AGENT_TOOLS = [
       },
     },
   },
+
+  // ── MEDIA & QUICK PUBLISH ─────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'attach_asset_to_post',
+      description: 'Attach a Discord-uploaded asset (r2_key) to a post. Sets asset_delivered=1 so the post is ready for automation.',
+      parameters: {
+        type: 'object',
+        properties: {
+          post_id:    { type: 'string', description: 'Post ID to attach the asset to' },
+          r2_key:     { type: 'string', description: 'The R2 storage key from the uploaded asset' },
+          asset_type: { type: 'string', description: 'image|video|reel (default: image)' },
+        },
+        required: ['post_id', 'r2_key'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'generate_captions',
+      description: 'Generate AI captions for a post for one or more social media platforms in one call. Saves captions directly to the post.',
+      parameters: {
+        type: 'object',
+        properties: {
+          post_id:   { type: 'string' },
+          platforms: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'facebook|instagram|linkedin|x|threads|tiktok|pinterest|bluesky|google_business|youtube',
+          },
+        },
+        required: ['post_id', 'platforms'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'approve_and_publish',
+      description: 'Approve a post and immediately trigger social media posting in one step (sets ready + ready_for_automation + triggers job).',
+      parameters: {
+        type: 'object',
+        properties: {
+          post_id: { type: 'string' },
+          dry_run: { type: 'boolean', description: 'Default false. Set true to simulate without sending.' },
+        },
+        required: ['post_id'],
+      },
+    },
+  },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -545,6 +597,7 @@ async function executeTool(
   user: SessionData,
   baseUrl: string,
   ctx: ExecutionContext,
+  openAiKey: string = '',
 ): Promise<ToolResult> {
   try {
     switch (name) {
@@ -1396,6 +1449,193 @@ async function executeTool(
         };
       }
 
+      // ── ATTACH ASSET TO POST ───────────────────────────────────────────────
+      case 'attach_asset_to_post': {
+        const postId    = typeof args.post_id    === 'string' ? args.post_id    : null;
+        const r2Key     = typeof args.r2_key     === 'string' ? args.r2_key     : null;
+        const assetType = typeof args.asset_type === 'string' ? args.asset_type : 'image';
+
+        if (!postId || !r2Key) return { success: false, error: 'post_id and r2_key are required' };
+
+        const post = await getPostById(env.DB, postId);
+        if (!post) return { success: false, error: `Post not found: ${postId}` };
+
+        const now = Math.floor(Date.now() / 1000);
+        await env.DB
+          .prepare(`UPDATE posts SET asset_r2_key = ?, asset_r2_bucket = 'MEDIA', asset_type = ?, asset_delivered = 1, updated_at = ? WHERE id = ?`)
+          .bind(r2Key, assetType, now, postId)
+          .run();
+
+        await writeAuditLog(env.DB, {
+          user_id: user.userId, action: 'agent_attach_asset',
+          entity_type: 'post', entity_id: postId,
+          new_value: { r2_key: r2Key, asset_type: assetType },
+        });
+
+        const assetUrl = `${baseUrl}/media/${r2Key}`;
+        return {
+          success: true,
+          items: [{ id: postId, title: post.title, asset_url: assetUrl, asset_type: assetType, asset_delivered: true }],
+          summary: { post_id: postId, r2_key: r2Key, asset_url: assetUrl },
+          action_summary: `Asset (${assetType}) attached to "${post.title || postId}" — asset_delivered=1`,
+        };
+      }
+
+      // ── GENERATE CAPTIONS ──────────────────────────────────────────────────
+      case 'generate_captions': {
+        const postId    = typeof args.post_id === 'string' ? args.post_id : null;
+        const rawPlatforms = Array.isArray(args.platforms) ? (args.platforms as string[]) : [];
+
+        if (!postId)              return { success: false, error: 'post_id is required' };
+        if (!rawPlatforms.length) return { success: false, error: 'platforms array is required' };
+        if (!openAiKey)           return { success: false, error: 'OpenAI key not available' };
+
+        const VALID_PLATFORMS = new Set(['facebook','instagram','linkedin','x','threads','tiktok','pinterest','bluesky','google_business','youtube']);
+        const platforms = rawPlatforms.filter(p => VALID_PLATFORMS.has(p));
+        if (!platforms.length) return { success: false, error: 'No valid platforms specified' };
+
+        const post = await getPostById(env.DB, postId);
+        if (!post) return { success: false, error: `Post not found: ${postId}` };
+
+        const [clientRow, intelRow] = await Promise.all([
+          env.DB
+            .prepare('SELECT canonical_name, industry, language, phone, cta_text FROM clients WHERE id = ?')
+            .bind(post.client_id).first<Record<string, string>>(),
+          env.DB
+            .prepare('SELECT brand_voice, prohibited_terms FROM client_intelligence WHERE client_id = ?')
+            .bind(post.client_id).first<Record<string, string | null>>(),
+        ]);
+        if (!clientRow) return { success: false, error: 'Client not found' };
+
+        const PLATFORM_INSTRUCTIONS: Record<string, string> = {
+          facebook:        'engaging Facebook caption, 150-400 chars, include a call-to-action',
+          instagram:       'Instagram caption with relevant emojis and 10-15 hashtags (150-300 chars, hashtags on new lines)',
+          linkedin:        'professional LinkedIn post, insight-driven, 200-400 chars, max 5 hashtags',
+          x:               'X/Twitter post, punchy and direct, max 280 chars',
+          threads:         'casual Threads post, conversational, 100-250 chars',
+          tiktok:          'TikTok caption with 5-10 trending hashtags, 150-250 chars',
+          pinterest:       'Pinterest description, keyword-rich, 100-200 chars + 5-8 hashtags',
+          bluesky:         'Bluesky post, casual and direct, max 300 chars',
+          google_business: 'Google Business post, factual and local, 100-250 chars, NO hashtags',
+          youtube:         'YouTube description with CTA, 200-400 chars',
+        };
+
+        const clientName  = clientRow['canonical_name'] ?? '';
+        const brandVoice  = intelRow?.['brand_voice'] ?? null;
+        const prohibited  = intelRow?.['prohibited_terms'] ?? null;
+
+        // Generate captions in parallel
+        const captionResults = await Promise.all(platforms.map(async (platform) => {
+          const instr = PLATFORM_INSTRUCTIONS[platform] ?? '100-250 char social media caption';
+          const prompt = `You are a social media writer for ${clientName}.${clientRow['industry'] ? ` Industry: ${clientRow['industry']}.` : ''}${brandVoice ? ` Brand voice: ${brandVoice}.` : ''}${prohibited ? ` NEVER USE: ${prohibited}.` : ''}${clientRow['cta_text'] ? ` Preferred CTA: ${clientRow['cta_text']}.` : ''}
+
+Post title: ${post.title ?? ''}
+Master caption: ${post.master_caption ?? ''}
+
+Write a ${platform} caption: ${instr}.
+Return JSON: { "caption": "..." }`;
+
+          try {
+            const res = await fetch('https://api.openai.com/v1/chat/completions', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openAiKey}` },
+              body: JSON.stringify({
+                model: 'gpt-4o-mini',
+                messages: [
+                  { role: 'system', content: 'Social media caption writer. Respond with valid JSON only.' },
+                  { role: 'user', content: prompt },
+                ],
+                response_format: { type: 'json_object' },
+                temperature: 0.75,
+                max_tokens: 400,
+              }),
+            });
+            if (!res.ok) return { platform, caption: null as string | null, err: `API ${res.status}` };
+            const data = await res.json() as { choices: Array<{ message: { content: string } }> };
+            const raw  = data.choices?.[0]?.message?.content;
+            if (!raw) return { platform, caption: null as string | null, err: 'Empty response' };
+            const caption = (JSON.parse(raw) as { caption: string }).caption;
+            return { platform, caption, err: null as string | null };
+          } catch (e) {
+            return { platform, caption: null as string | null, err: e instanceof Error ? e.message : String(e) };
+          }
+        }));
+
+        const succeeded = captionResults.filter(r => r.caption !== null);
+        const failed    = captionResults.filter(r => r.caption === null);
+
+        if (succeeded.length > 0) {
+          const existingPlatforms: string[] = JSON.parse(post.platforms ?? '[]');
+          const allPlatforms = [...new Set([...existingPlatforms, ...succeeded.map(r => r.platform)])];
+
+          const setParts: string[] = ['platforms = ?', 'updated_at = ?'];
+          const vals: unknown[]    = [JSON.stringify(allPlatforms), Math.floor(Date.now() / 1000)];
+
+          // Set master_caption if not already set
+          if (!post.master_caption) {
+            const fallback = succeeded.find(r => r.platform === 'instagram')
+              ?? succeeded.find(r => r.platform === 'facebook')
+              ?? succeeded[0];
+            if (fallback?.caption) { setParts.push('master_caption = ?'); vals.push(fallback.caption); }
+          }
+
+          for (const { platform, caption } of succeeded) {
+            const field = `cap_${platform}`;
+            setParts.push(`${field} = ?`);
+            vals.push(caption);
+          }
+
+          vals.push(postId);
+          await env.DB.prepare(`UPDATE posts SET ${setParts.join(', ')} WHERE id = ?`).bind(...vals).run();
+          await writeAuditLog(env.DB, {
+            user_id: user.userId, action: 'agent_generate_captions',
+            entity_type: 'post', entity_id: postId,
+            new_value: { platforms: succeeded.map(r => r.platform) },
+          });
+        }
+
+        return {
+          success: true,
+          summary: { generated: succeeded.length, failed: failed.length, platforms: succeeded.map(r => r.platform), failed_platforms: failed.map(r => `${r.platform}: ${r.err}`) },
+          suggestions: succeeded.length > 0 ? ['Captions saved — use approve_and_publish to post it'] : undefined,
+          error: failed.length > 0 ? `Failed: ${failed.map(r => r.platform).join(', ')}` : undefined,
+          action_summary: `Generated ${succeeded.length} caption${succeeded.length !== 1 ? 's' : ''} for "${post.title || postId}": ${succeeded.map(r => r.platform).join(', ')}`,
+        };
+      }
+
+      // ── APPROVE AND PUBLISH ────────────────────────────────────────────────
+      case 'approve_and_publish': {
+        const postId = typeof args.post_id === 'string' ? args.post_id : null;
+        if (!postId) return { success: false, error: 'post_id is required' };
+
+        const post = await getPostById(env.DB, postId);
+        if (!post) return { success: false, error: `Post not found: ${postId}` };
+
+        const dryRun = args.dry_run === true;
+        const now    = Math.floor(Date.now() / 1000);
+
+        await env.DB
+          .prepare(`UPDATE posts SET status = 'ready', ready_for_automation = 1, asset_delivered = 1, updated_at = ? WHERE id = ?`)
+          .bind(now, postId)
+          .run();
+
+        const job = await createPostingJob(env.DB, { triggered_by: user.userId, mode: dryRun ? 'dry_run' : 'real' });
+        ctx.waitUntil(runPosting(env, { mode: dryRun ? 'dry_run' : 'real', job_id: job.id, post_ids: [postId], triggered_by: user.userId }));
+
+        await writeAuditLog(env.DB, {
+          user_id: user.userId, action: 'agent_approve_and_publish',
+          entity_type: 'post', entity_id: postId,
+          new_value: { dry_run: dryRun, job_id: job.id },
+        });
+
+        return {
+          success: true,
+          job_id: job.id,
+          summary: { post_id: postId, job_id: job.id, mode: dryRun ? 'dry_run' : 'real', platforms: post.platforms },
+          action_summary: `${dryRun ? '[DRY RUN] ' : ''}Approved and posting "${post.title || postId}" — job ${job.id}`,
+        };
+      }
+
       default:
         return { success: false, error: `Unknown tool: ${name}` };
     }
@@ -1537,7 +1777,7 @@ export async function runAgent(opts: {
 
       let result: ToolResult;
       try {
-        result = await executeTool(toolName, toolArgs, env, user, baseUrl, ctx);
+        result = await executeTool(toolName, toolArgs, env, user, baseUrl, ctx, openAiKey);
       } catch (toolErr) {
         result = { success: false, error: toolErr instanceof Error ? toolErr.message : String(toolErr) };
       }
