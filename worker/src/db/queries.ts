@@ -717,24 +717,30 @@ export async function writeAuditLog(
     ip?: string;
   },
 ): Promise<void> {
-  const id = crypto.randomUUID().replace(/-/g, '').toLowerCase();
-  const now = Math.floor(Date.now() / 1000);
-  await db
-    .prepare(
-      `INSERT INTO audit_logs (id, user_id, action, entity_type, entity_id,
-         old_value, new_value, ip, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .bind(
-      id,
-      entry.user_id ?? null,
-      entry.action,
-      entry.entity_type ?? null,
-      entry.entity_id ?? null,
-      entry.old_value ? JSON.stringify(entry.old_value) : null,
-      entry.new_value ? JSON.stringify(entry.new_value) : null,
-      entry.ip ?? null,
-      now,
-    )
-    .run();
+  try {
+    const id = crypto.randomUUID().replace(/-/g, '').toLowerCase();
+    const now = Math.floor(Date.now() / 1000);
+    // Only store user_id if it looks like a real UUID (not a synthetic bot/system ID)
+    const userId = (entry.user_id && /^[0-9a-f]{32}$/i.test(entry.user_id.replace(/-/g, '')))
+      ? entry.user_id
+      : null;
+    await db
+      .prepare(
+        `INSERT INTO audit_logs (id, user_id, action, entity_type, entity_id,
+           old_value, new_value, ip, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        id,
+        userId,
+        entry.action,
+        entry.entity_type ?? null,
+        entry.entity_id ?? null,
+        entry.old_value ? JSON.stringify(entry.old_value) : null,
+        entry.new_value ? JSON.stringify(entry.new_value) : null,
+        entry.ip ?? null,
+        now,
+      )
+      .run();
+  } catch { /* audit logs are non-fatal — never block business operations */ }
 }
