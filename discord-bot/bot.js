@@ -118,9 +118,19 @@ async function askAgent(userMessage, userId, username) {
 
   const data = await res.json();
 
-  // Update history with this exchange
+  // Update history — include numbered item list so the agent can resolve
+  // ordinal references like "approve the 8th post" in the next turn.
   pushHistory(userId, 'user', userMessage);
-  if (data.message) pushHistory(userId, 'assistant', data.message);
+  let assistantEntry = data.message || '';
+  if (Array.isArray(data.items) && data.items.length > 0) {
+    const itemLines = data.items.map((item, i) => {
+      const id    = item.id    ?? '?';
+      const title = item.title ?? item.name ?? '—';
+      return `${i + 1}. [id:${id}] ${title}`;
+    });
+    assistantEntry += `\n\n[Items shown in this response:\n${itemLines.join('\n')}]`;
+  }
+  pushHistory(userId, 'assistant', assistantEntry);
 
   return data;
 }

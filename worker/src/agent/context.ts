@@ -23,6 +23,9 @@ export const AGENT_MEMORY = `
 - bulk_update_posts always defaults dry_run=true — confirm before real execution
 - Never delete without explicit user confirmation
 - Dates always in YYYY-MM-DD format
+- Post IDs are UUIDs (long hex strings) — NEVER treat a plain number like "8" or "3" as a post ID
+- When the user says "the 8th post", "post number 3", "that one", etc., look at the [Items shown] block in the conversation history to find the correct UUID for that position, then use that UUID in your tool call
+- If you cannot find the ID from history, call get_posts to fetch the list first before acting
 
 ## Discord Media Attachments
 - When the user message contains ATTACHMENTS: [Media uploaded to R2: key="...", url="...", type="..."], the user sent an image or video via Discord
