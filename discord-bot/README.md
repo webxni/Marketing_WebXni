@@ -122,3 +122,142 @@ railway up
 | `/status` | Health check del sistema |
 | `/queue` | Cola de posts pendientes |
 | `/failed` | Posts fallidos |
+
+---
+
+## Subir imágenes y publicar desde Discord
+
+El bot puede recibir archivos adjuntos (imágenes y videos) y publicarlos directamente en las redes sociales.
+
+### Flujo completo — crear y publicar un post con imagen
+
+Adjunta una imagen al mensaje y escribe:
+
+```
+Post this to Instagram and Facebook for Daniels Locksmith, publish date tomorrow
+```
+
+El bot automáticamente:
+1. Descarga la imagen de Discord
+2. La sube al almacenamiento R2 de la plataforma
+3. Crea un post con la fecha y plataformas indicadas
+4. Genera captions con IA para cada plataforma
+5. Aprueba y dispara el posting — todo en un solo turn
+
+### Otros comandos con imágenes
+
+```
+# Adjuntar media a un post existente
+Attach image + "Add this image to post ABC123"
+
+# Solo generar captions sin publicar
+"Generate captions for post ABC123 for Facebook, Instagram, and LinkedIn"
+
+# Publicar un post que ya está listo
+"Approve and publish post ABC123"
+
+# Publicar con dry run (simula sin enviar)
+"Approve and publish post ABC123 with dry run"
+```
+
+### Formatos de archivo soportados
+
+| Tipo | Extensiones |
+|------|-------------|
+| Imágenes | `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp` |
+| Videos | `.mp4`, `.mov`, `.webm`, `.avi` |
+
+Puedes adjuntar hasta 3 archivos por mensaje.
+
+---
+
+## Comandos del agente AI (chat natural)
+
+El agente puede hacer todo lo que hace el dashboard web, desde Discord:
+
+### Posts
+
+```
+# Ver posts de hoy
+Show me today's posts for Daniels Locksmith
+
+# Crear un post
+Create a Facebook post for Unlocked Pros about emergency lockout service, publish April 20
+
+# Actualizar un post
+Update post ABC123 title to "Spring Lockout Special"
+
+# Cambiar status
+Approve post ABC123
+Set post ABC123 to ready
+
+# Ver cola de posting
+Show the posting queue
+```
+
+### Captions
+
+```
+# Generar caption para una plataforma
+Generate an Instagram caption for post ABC123
+
+# Generar para varias plataformas a la vez
+Generate captions for post ABC123 for Facebook, Instagram, and Google Business
+```
+
+### Publicar
+
+```
+# Publicar un post inmediatamente
+Publish post ABC123
+
+# Publicar todos los posts listos
+Run bulk posting
+
+# Publicar en modo prueba (no envía realmente)
+Publish post ABC123 dry run
+```
+
+### Google Business Profile (GBP)
+
+```
+# Crear una oferta GBP
+Create a GBP offer for Unlocked Pros — 15% off, valid until May 31, CALL CTA, monthly recurrence
+
+# Crear un evento GBP
+Create a GBP event for Elite Team Builders — Spring Open House, April 25 10am to 4pm
+
+# Actualizar una oferta
+Update offer ABC123 — pause it
+```
+
+### Sistema y reportes
+
+```
+# Health check
+/status  (slash command)
+
+# Ver posts fallidos
+/failed
+
+# Estadísticas
+Show me a report for April
+
+# Reparar posts fallidos
+Fix failed posts for Daniels Locksmith
+```
+
+---
+
+## Arquitectura de la subida de imágenes
+
+```
+Discord adjunto → bot.js descarga del CDN de Discord
+               → POST /internal/discord/upload-asset (bearer auth)
+               → Cloudflare Worker sube a R2 MEDIA bucket
+               → Retorna r2_key + url pública
+               → bot.js inyecta contexto en el mensaje del agente
+               → Agente usa attach_asset_to_post + generate_captions + approve_and_publish
+```
+
+El endpoint `/internal/discord/upload-asset` está protegido con el mismo `DISCORD_BOT_SECRET` del KV.
