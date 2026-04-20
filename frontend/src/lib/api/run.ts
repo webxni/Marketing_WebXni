@@ -37,6 +37,9 @@ export const runApi = {
   cancelRun: (id: string) =>
     api.patch<{ ok: boolean }>(`/api/run/generate/runs/${id}/cancel`),
 
+  resumeRun: (id: string) =>
+    api.post<{ ok: boolean; resumed: boolean; next_slot: number; total_slots: number }>(`/api/run/generate/runs/${id}/resume`, {}),
+
   getStatus: (trackingId: string) =>
     api.get<{ status: unknown }>(`/api/run/status/${trackingId}`),
 };

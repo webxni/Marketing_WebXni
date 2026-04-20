@@ -377,6 +377,7 @@
 
   // ── Execution log expand/collapse ─────────────────────────────────────────────
   let expandedLogs = new Set<string>();
+  let resumingRunIds = new Set<string>();
   function toggleLog(id: string) {
     if (expandedLogs.has(id)) expandedLogs.delete(id); else expandedLogs.add(id);
     expandedLogs = expandedLogs;
@@ -390,6 +391,25 @@
       toast.success('Run cancelled');
       await loadGenRuns();
     } catch (e) { toast.error(String(e)); }
+  }
+
+  async function resumeRun(id: string) {
+    if (resumingRunIds.has(id)) return;
+    resumingRunIds.add(id);
+    resumingRunIds = resumingRunIds;
+    try {
+      const result = await runApi.resumeRun(id);
+      toast.success(`Run resumed from slot ${result.next_slot + 1}/${result.total_slots}`);
+      generating = true;
+      historyTab = 'generation';
+      await loadGenRuns();
+      startProgressPolling();
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      resumingRunIds.delete(id);
+      resumingRunIds = resumingRunIds;
+    }
   }
 
   onMount(async () => {
@@ -867,6 +887,9 @@
         {@const isStuck = run.status === 'running' && run.last_activity_at !== null && run.last_activity_at !== undefined && (Math.floor(Date.now()/1000) - run.last_activity_at) > 300}
         {@const isRunning = run.status === 'running'}
         {@const canCancel = run.status === 'running' || run.status === 'timed_out'}
+        {@const completedSlots = run.current_slot_idx ?? prog?.completed ?? 0}
+        {@const totalSlots = run.total_slots ?? prog?.total_estimated ?? 0}
+        {@const canResume = !isRunning && totalSlots > 0 && completedSlots < totalSlots && ['completed_with_errors','timed_out','failed','cancelled'].includes(run.status)}
         {@const duration = run.completed_at ? run.completed_at - run.created_at : Math.floor(Date.now()/1000) - run.created_at}
         {@const statusCls = run.status === 'completed' ? 'badge-posted' : run.status === 'running' ? 'badge-running' : run.status === 'completed_with_errors' ? 'badge-blocked' : run.status === 'cancelled' ? 'badge-draft' : 'badge-failed'}
         <div class="card p-4 {isStuck ? 'border border-red-500/40' : ''}">
@@ -887,6 +910,13 @@
               {/if}
               <span class="text-xs text-muted">{timeAgo(run.created_at)}</span>
               <span class="text-xs text-muted">{Math.round(duration / 60)}m {duration % 60}s</span>
+              {#if canResume}
+                <button
+                  class="btn-secondary btn-sm text-xs"
+                  disabled={resumingRunIds.has(run.id)}
+                  on:click={() => resumeRun(run.id)}
+                >{resumingRunIds.has(run.id) ? 'Resuming…' : 'Resume'}</button>
+              {/if}
               {#if canCancel}
                 <button
                   class="btn-ghost btn-sm text-xs text-red-400 border border-red-500/30 hover:bg-red-500/10"

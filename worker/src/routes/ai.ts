@@ -14,11 +14,11 @@ import type { Env, SessionData } from '../types';
 import {
   listClients, getClientBySlug,
   listPosts, getPostById, updatePost, setPostStatus,
-  createPost, createGenerationRun, createPostingJob,
+  createPost, createGenerationRun, createPostingJob, getGenerationRunById,
   writeAuditLog,
 } from '../db/queries';
 import { runPosting }    from '../loader/posting-run';
-import { planGeneration } from '../loader/generation-run';
+import { planGeneration, resumeGenerationRun } from '../loader/generation-run';
 import { AGENT_SKILLS, AGENT_MEMORY, RESPONSE_RULES } from '../agent/context';
 
 export const aiRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
@@ -123,6 +123,20 @@ const AGENT_TOOLS = [
           overwrite_existing: { type: 'boolean' },
         },
         required: ['date_from', 'date_to'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'resume_generation_run',
+      description: 'Resume a partial, timed out, failed, or cancelled generation run from its saved current slot.',
+      parameters: {
+        type: 'object',
+        properties: {
+          run_id: { type: 'string', description: 'Generation run ID' },
+        },
+        required: ['run_id'],
       },
     },
   },
@@ -862,6 +876,39 @@ async function executeTool(
           job_id: run.id,
           summary: { job_id: run.id, date_range: `${dates[0]} → ${dates[dates.length - 1]}`, clients: clientSlugs.length > 0 ? clientSlugs.join(', ') : 'all active', days: dates.length },
           action_summary: `Generation job ${run.id} started — ${clientSlugs.length > 0 ? clientSlugs.join(', ') : 'all clients'} for ${dates.length} days`,
+        };
+      }
+
+      case 'resume_generation_run': {
+        const runId = typeof args.run_id === 'string' ? args.run_id : null;
+        if (!runId) return { success: false, error: 'run_id is required' };
+
+        const run = await getGenerationRunById(env.DB, runId);
+        if (!run) return { success: false, error: `Generation run not found: ${runId}` };
+
+        const totalSlots = run.total_slots ?? 0;
+        const currentSlot = Math.max(0, run.current_slot_idx ?? 0);
+        if (!run.post_slots || totalSlots === 0) {
+          return { success: false, error: 'Run has no stored slot plan to resume' };
+        }
+        if (currentSlot >= totalSlots) {
+          return { success: false, error: 'Run is already complete' };
+        }
+
+        const resumed = await resumeGenerationRun(env, baseUrl, runId);
+        await writeAuditLog(env.DB, {
+          user_id: user.userId,
+          action: 'agent_resume_generation_run',
+          entity_type: 'generation_run',
+          entity_id: runId,
+          new_value: { next_slot: resumed.nextSlot, total_slots: resumed.totalSlots },
+        });
+
+        return {
+          success: true,
+          job_id: runId,
+          summary: { run_id: runId, next_slot: resumed.nextSlot, total_slots: resumed.totalSlots },
+          action_summary: `Generation run ${runId} resumed from slot ${resumed.nextSlot + 1}/${resumed.totalSlots}`,
         };
       }
 

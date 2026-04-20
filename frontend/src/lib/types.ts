@@ -311,6 +311,10 @@ export interface GenerationRun {
   last_activity_at:  number | null;
   created_at:        number;
   completed_at:      number | null;
+  post_slots?:       string | null;
+  total_slots?:      number | null;
+  current_slot_idx?: number | null;
+  publish_time?:     string | null;
 }
 
 export interface GenerationProgress {
@@ -485,6 +489,9 @@ export const PLATFORM_META: Record<string, { label: string; color: string }> = {
   bluesky:         { label: 'Bluesky',          color: '#0085FF' },
   youtube:         { label: 'YouTube',          color: '#FF0000' },
   google_business: { label: 'Google Business',  color: '#4285F4' },
+  gbp_la:          { label: 'GBP LA',           color: '#4285F4' },
+  gbp_wa:          { label: 'GBP WA',           color: '#4285F4' },
+  gbp_or:          { label: 'GBP OR',           color: '#4285F4' },
   website_blog:    { label: 'Blog',             color: '#6366F1' },
 };
 
