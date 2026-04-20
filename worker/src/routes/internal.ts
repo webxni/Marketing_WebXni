@@ -76,7 +76,7 @@ internalRoutes.post('/gen-step', async (c) => {
           await triggerStep(c.env, baseUrl, runId, result.nextSlot!);
           await log('INFO', `Next-step dispatch success: slot ${result.nextSlot! + 1}/${result.totalSlots!}`);
         } catch (err) {
-          const msg = `Trigger failed for slot ${result.nextSlot}: ${err instanceof Error ? err.message : String(err)}`;
+          const msg = `Trigger failed for slot ${result.nextSlot! + 1}: ${err instanceof Error ? err.message : String(err)}`;
           await log('ERROR', msg);
           await logError(`Dispatch failure after slot ${slotIdx}\n${detail(err)}`);
 

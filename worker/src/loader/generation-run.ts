@@ -25,7 +25,7 @@
  */
 
 import type { Env } from '../types';
-import type { ClientRow } from '../types';
+import type { ClientRow, PostRow } from '../types';
 import {
   listClients,
   getClientPlatforms,
@@ -299,6 +299,16 @@ function mergeGeneratedContent(
   return next;
 }
 
+function hasMaterializedSlotContent(post: PostRow | null | undefined): boolean {
+  if (!post) return false;
+  const contentType = normalizeContentType(post.content_type, post.asset_type);
+  if (String(post.title ?? '').trim()) return true;
+  if (String(post.master_caption ?? '').trim()) return true;
+  if (contentType === 'blog' && String(post.blog_content ?? '').trim()) return true;
+  if ((contentType === 'video' || contentType === 'reel') && String(post.video_script ?? '').trim()) return true;
+  return false;
+}
+
 export interface SlotWorkResult {
   outcome: 'skipped' | 'continue' | 'completed';
   nextSlot?: number;
@@ -348,6 +358,36 @@ export async function triggerStep(env: Env, baseUrl: string, run_id: string, slo
   }
 
   throw lastError ?? new Error('Unknown gen-step dispatch error');
+}
+
+export async function resumeGenerationRun(env: Env, baseUrl: string, runId: string): Promise<{ resumed: boolean; nextSlot: number; totalSlots: number }> {
+  const run = await getGenerationRunById(env.DB, runId);
+  if (!run) throw new Error('Generation run not found');
+
+  const slots = JSON.parse(run.post_slots ?? '[]') as Array<unknown>;
+  const totalSlots = run.total_slots ?? slots.length;
+  const nextSlot = Math.max(0, run.current_slot_idx ?? 0);
+
+  if (!Array.isArray(slots) || slots.length === 0 || totalSlots === 0) {
+    throw new Error('Generation run has no stored slot plan');
+  }
+  if (nextSlot >= totalSlots) {
+    throw new Error('Generation run is already complete');
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB
+    .prepare(`UPDATE generation_runs
+              SET status = 'running',
+                  completed_at = NULL,
+                  last_activity_at = ?,
+                  execution_log = substr(COALESCE(execution_log || char(10), '') || ?, -40000)
+              WHERE id = ?`)
+    .bind(now, `${new Date(now * 1000).toISOString().slice(0, 19)}Z [INFO] Run resumed from slot ${nextSlot + 1}/${totalSlots}`, runId)
+    .run();
+
+  await triggerStep(env, baseUrl, runId, nextSlot);
+  return { resumed: true, nextSlot, totalSlots };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -595,6 +635,11 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
 
       if (existingPost && !overwriteExisting && isPostContentComplete(existingPost, gbpLocations)) {
         await log('INFO', `${postKey}: existing post ${existingPost.id} already complete — skipping`);
+        return await finishSlot(slot_idx + 1, 'skipped', clientName, slots);
+      }
+
+      if (existingPost && !overwriteExisting && hasMaterializedSlotContent(existingPost)) {
+        await log('INFO', `${postKey}: existing post ${existingPost.id} already has generated content — reusing and advancing`);
         return await finishSlot(slot_idx + 1, 'skipped', clientName, slots);
       }
 

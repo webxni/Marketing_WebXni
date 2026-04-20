@@ -10,7 +10,7 @@ import {
   healStuckGenerationRuns,
 } from '../db/queries';
 import { runPosting } from '../loader/posting-run';
-import { planGeneration } from '../loader/generation-run';
+import { planGeneration, resumeGenerationRun } from '../loader/generation-run';
 import { cleanupLegacyInvalidPlatformAttempts, repairOrphanScheduledPosts, syncPublishedUrls } from '../modules/published-urls';
 import { syncPostPlatformMetrics } from '../modules/reporting-metrics';
 
@@ -193,6 +193,34 @@ runRoutes.get('/generate/runs/:id', async (c) => {
   const run = await getGenerationRunById(c.env.DB, c.req.param('id'));
   if (!run) return c.json({ error: 'Not found' }, 404);
   return c.json({ run });
+});
+
+/** POST /api/run/generate/runs/:id/resume — resume a partial/timed_out/failed run from current_slot_idx */
+runRoutes.post('/generate/runs/:id/resume', async (c) => {
+  const run = await getGenerationRunById(c.env.DB, c.req.param('id'));
+  if (!run) return c.json({ error: 'Not found' }, 404);
+
+  const totalSlots = run.total_slots ?? 0;
+  const currentSlot = Math.max(0, run.current_slot_idx ?? 0);
+  if (!run.post_slots || totalSlots === 0) {
+    return c.json({ error: 'Run has no stored slot plan to resume' }, 409);
+  }
+  if (currentSlot >= totalSlots) {
+    return c.json({ error: 'Run is already complete' }, 409);
+  }
+
+  const baseUrl = new URL(c.req.url).origin;
+  try {
+    const resumed = await resumeGenerationRun(c.env, baseUrl, run.id);
+    return c.json({
+      ok: true,
+      resumed: true,
+      next_slot: resumed.nextSlot,
+      total_slots: resumed.totalSlots,
+    }, 202);
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
 });
 
 /** POST /api/run/fetch-urls — poll Upload-Post history and write real URLs back */
