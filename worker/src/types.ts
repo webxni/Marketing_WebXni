@@ -315,10 +315,18 @@ export interface PostPlatformRow {
   platform:        string;
   tracking_id:     string | null;
   real_url:        string | null;
+  platform_post_id: string | null;
   status:          string | null;
   error_message:   string | null;
   attempted_at:    string | null;
   idempotency_key: string | null;
+  metrics_json:    string | null;
+  metrics_source:  string | null;
+  metrics_error:   string | null;
+  profile_snapshot_json: string | null;
+  profile_snapshot_latest_json: string | null;
+  profile_snapshot_latest_date: string | null;
+  metrics_synced_at: number | null;
 }
 
 export interface PostingJobRow {

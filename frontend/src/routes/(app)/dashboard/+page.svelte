@@ -72,7 +72,7 @@
   <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3 mb-6">
     <MetricCard label="Active Clients"  value={stats.clients}              href="/clients" />
     <MetricCard label="Total Posts"     value={stats.total_posts}          href="/posts" />
-    <MetricCard label="Posted"          value={stats.posted}               color="success" href="/posts?status=posted" />
+    <MetricCard label="Posted"          value={stats.posted}               color="success" href="/reports" />
     <MetricCard label="Scheduled"       value={stats.scheduled ?? 0}       color="default" href="/posts?status=scheduled" />
     <MetricCard label="Ready"           value={stats.ready ?? 0}           color="default" href="/posts?status=ready" />
     <MetricCard label="Pending Review"  value={stats.pending_approvals}    color={stats.pending_approvals > 0 ? 'warning' : 'default'} href="/approvals" />

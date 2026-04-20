@@ -117,6 +117,7 @@ export async function getClientWithConfig(
 export interface ListPostsParams {
   clientId?: string;
   status?: string;
+  includePosted?: boolean;
   platform?: string;
   dateFrom?: string;
   dateTo?: string;
@@ -140,6 +141,8 @@ export async function listPosts(
   if (params.status) {
     conditions.push('status = ?');
     binds.push(params.status);
+  } else if (!params.includePosted) {
+    conditions.push("status != 'posted'");
   }
   if (params.platform) {
     // platforms is stored as a JSON array — use LIKE for substring match

@@ -172,11 +172,19 @@ CREATE TABLE IF NOT EXISTS post_platforms (
   platform        TEXT NOT NULL,
   tracking_id     TEXT,           -- 'UP:{job_id}' from Upload-Post
   real_url        TEXT,           -- fetched back from Upload-Post history
+  platform_post_id TEXT,          -- native platform post/media id from analytics
   status          TEXT NOT NULL DEFAULT 'pending',
   -- 'pending'|'sent'|'posted'|'failed'|'skipped'|'blocked'|'idempotent'
   error_message   TEXT,
   attempted_at    TEXT,
   idempotency_key TEXT,
+  metrics_json    TEXT,           -- normalized per-post metrics snapshot
+  metrics_source  TEXT,           -- 'platform_api'|'upload_post'
+  metrics_error   TEXT,
+  profile_snapshot_json TEXT,     -- metrics snapshot at post date
+  profile_snapshot_latest_json TEXT, -- latest available profile snapshot
+  profile_snapshot_latest_date TEXT,
+  metrics_synced_at INTEGER,
   UNIQUE(post_id, platform)
 );
 

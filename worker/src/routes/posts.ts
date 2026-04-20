@@ -30,6 +30,7 @@ function parseRequestedPlatforms(body: Record<string, unknown>): string[] {
 postRoutes.get('/', async (c) => {
   const q = c.req.query();
   const { client, status, platform, limit, page, search, sort } = q;
+  const includePosted = q['include_posted'] === 'true';
   const dateFrom = q['date_from'] ?? q['from'];
   const dateTo   = q['date_to']   ?? q['to'];
 
@@ -49,6 +50,7 @@ postRoutes.get('/', async (c) => {
   const { rows: posts, total } = await listPosts(c.env.DB, {
     clientId,
     status,
+    includePosted,
     platform,
     dateFrom,
     dateTo,

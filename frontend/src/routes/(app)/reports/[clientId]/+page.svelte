@@ -1,12 +1,12 @@
 <script lang="ts">
+  import { browser } from '$app/environment';
   import { page } from '$app/stores';
   import { onMount } from 'svelte';
   import { reportsApi } from '$lib/api';
   import Badge from '$lib/components/ui/Badge.svelte';
-  import PlatformBadge from '$lib/components/ui/PlatformBadge.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
-  import { formatDate, currentMonth, monthRange, parsePlatforms } from '$lib/utils';
-  import type { MonthlyReport } from '$lib/types';
+  import { PLATFORM_META, type MetricTotals, type MonthlyReport, type ReportPlatformRow } from '$lib/types';
+  import { currentMonth, formatDate, monthRange } from '$lib/utils';
 
   let report: MonthlyReport | null = null;
   let loading = true;
@@ -14,294 +14,379 @@
 
   const months = monthRange(12, 3);
   let selectedMonth = $page.url.searchParams.get('month') ?? currentMonth();
-  let useCustomRange = false;
-  let customFrom = '';
-  let customTo = '';
+  let useCustomRange = Boolean($page.url.searchParams.get('from') || $page.url.searchParams.get('to'));
+  let customFrom = $page.url.searchParams.get('from') ?? '';
+  let customTo = $page.url.searchParams.get('to') ?? '';
+  let selectedPlatform = $page.url.searchParams.get('platform') ?? '';
+  let lastQueryKey = '';
+
+  function formatNumber(value: number | null | undefined): string {
+    if (value == null) return '—';
+    return new Intl.NumberFormat('en-US').format(value);
+  }
+
+  function metricList(metrics: MetricTotals): { key: keyof MetricTotals; label: string; value: number }[] {
+    const labels: Record<keyof MetricTotals, string> = {
+      impressions: 'Impressions',
+      likes: 'Likes',
+      comments: 'Comments',
+      shares: 'Shares',
+      saves: 'Saves',
+      views: 'Views',
+      reach: 'Reach',
+      followers: 'Followers',
+    };
+    return (Object.entries(metrics) as [keyof MetricTotals, number | null][])
+      .filter(([, value]) => value != null)
+      .map(([key, value]) => ({ key, label: labels[key], value: value ?? 0 }));
+  }
+
+  function compactMetrics(metrics: MetricTotals, limit = 4): string[] {
+    return metricList(metrics)
+      .filter((row) => row.key !== 'followers')
+      .slice(0, limit)
+      .map((row) => `${row.label} ${formatNumber(row.value)}`);
+  }
+
+  function platformMeta(platform: string) {
+    return PLATFORM_META[platform] ?? { label: platform.replace(/_/g, ' '), color: '#94a3b8' };
+  }
 
   async function load() {
+    if (useCustomRange && (!customFrom || !customTo)) return;
     loading = true;
     error = '';
     try {
-      report = await reportsApi.monthly($page.params.clientId ?? '', selectedMonth);
-    } catch (e) { error = String(e); }
-    finally { loading = false; }
+      report = await reportsApi.monthly($page.params.clientId ?? '', useCustomRange
+        ? { from: customFrom, to: customTo, platform: selectedPlatform || undefined }
+        : { month: selectedMonth, platform: selectedPlatform || undefined });
+      if (browser) {
+        const qs = new URLSearchParams();
+        if (useCustomRange) {
+          qs.set('from', customFrom);
+          qs.set('to', customTo);
+        } else {
+          qs.set('month', selectedMonth);
+        }
+        if (selectedPlatform) qs.set('platform', selectedPlatform);
+        window.history.replaceState({}, '', `${$page.url.pathname}?${qs}`);
+      }
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      loading = false;
+    }
   }
 
-  onMount(load);
-  $: selectedMonth, load();
-
-  function pct(n: number, d: number) { return d ? Math.round((n / d) * 100) : 0; }
-
-  function printReport() { window.print(); }
-
-  interface PlatformRow { post_id?: string; platform: string; real_url: string | null; status: string; title: string; publish_date: string; }
-  interface PlatformStat { total: number; posted: number; failed: number; }
-
-  function getPlatRows(rep: MonthlyReport): PlatformRow[] {
-    return rep.platforms as unknown as PlatformRow[];
+  function refresh() {
+    const queryKey = useCustomRange
+      ? `custom:${customFrom}:${customTo}:${selectedPlatform}`
+      : `month:${selectedMonth}:${selectedPlatform}`;
+    if (queryKey === lastQueryKey) return;
+    lastQueryKey = queryKey;
+    load();
   }
 
-  // Build a lookup: post_id (or title fallback) → platform rows
-  $: urlsByPost = report
-    ? getPlatRows(report).reduce<Record<string, PlatformRow[]>>((acc, r) => {
-        const key = r.post_id ?? r.title;
-        if (!acc[key]) acc[key] = [];
-        acc[key].push(r);
-        return acc;
-      }, {})
-    : {};
+  onMount(refresh);
+  $: refresh();
 
-  function getPostUrls(rep: MonthlyReport, postId: string, postTitle: string): PlatformRow[] {
-    return getPlatRows(rep).filter(r => r.post_id === postId || (!r.post_id && r.title === postTitle));
+  $: platformOptions = report?.platform_breakdown.map((row) => row.platform) ?? [];
+
+  const topCards = [
+    { key: 'total', label: 'Total posts' },
+    { key: 'posted', label: 'Posted' },
+    { key: 'failed', label: 'Failed' },
+    { key: 'success_rate', label: 'Success rate', suffix: '%' },
+    { key: 'total_impressions', label: 'Total impressions' },
+    { key: 'likes', label: 'Likes' },
+    { key: 'comments', label: 'Comments' },
+    { key: 'shares', label: 'Shares' },
+    { key: 'saves', label: 'Saves' },
+  ] as const;
+
+  function topCardValue(key: typeof topCards[number]['key']): string {
+    if (!report) return '—';
+    if (key === 'total') return formatNumber(report.summary.total);
+    if (key === 'posted') return formatNumber(report.summary.posted);
+    if (key === 'failed') return formatNumber(report.summary.failed);
+    if (key === 'success_rate') return formatNumber(report.summary.success_rate);
+    if (key === 'total_impressions') return formatNumber(report.summary.total_impressions);
+    return formatNumber(report.summary.metrics[key as keyof MetricTotals] ?? null);
   }
 
-  // Platform success summary
-  $: platformStats = report
-    ? getPlatRows(report).reduce<Record<string, PlatformStat>>((acc, r) => {
-        if (!acc[r.platform]) acc[r.platform] = { total: 0, posted: 0, failed: 0 };
-        acc[r.platform].total++;
-        if (r.status === 'sent' || r.status === 'posted') acc[r.platform].posted++;
-        if (r.status === 'failed') acc[r.platform].failed++;
-        return acc;
-      }, {})
-    : {};
-
-  $: platformStatEntries = Object.entries(platformStats).sort((a, b) => b[1].total - a[1].total);
-  $: maxPlatTotal = platformStatEntries.reduce((m, [, d]) => Math.max(m, d.total), 1);
-
-  const platformColors: Record<string, string> = {
-    facebook: '#1877F2', instagram: '#E1306C', linkedin: '#0A66C2',
-    x: '#E7E9EA', threads: '#AAAAAA', tiktok: '#EE1D52', pinterest: '#E60023',
-    bluesky: '#0085FF', youtube: '#FF0000', google_business: '#4285F4',
-  };
-
-  function platformLabel(p: string) {
-    return ({ google_business: 'Google Business', x: 'X / Twitter', website_blog: 'Blog' })[p]
-      ?? p.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  function isLive(row: ReportPlatformRow): boolean {
+    return Boolean(row.real_url);
   }
 </script>
 
 <svelte:head>
-  <title>
-    {report?.client.canonical_name ?? 'Report'} · {selectedMonth} — WebXni
-  </title>
+  <title>{report?.client.canonical_name ?? 'Report'} — WebXni</title>
 </svelte:head>
 
-<div class="page-header print:hidden">
+<div class="page-header">
   <div>
     <div class="flex items-center gap-2 text-xs text-muted mb-1">
       <a href="/reports" class="hover:text-white">Reports</a>
       <span>/</span>
       <span>{report?.client.canonical_name ?? $page.params.clientId}</span>
     </div>
-    <h1 class="page-title">{report?.client.canonical_name ?? '…'}</h1>
-    <p class="page-subtitle">Monthly Report</p>
+    <h1 class="page-title">{report?.client.canonical_name ?? 'Client report'}</h1>
+    <p class="page-subtitle">
+      Posted history, published links, and KPI totals for the selected reporting range.
+    </p>
   </div>
-  <div class="flex items-center gap-3 flex-wrap">
+
+  <div class="flex flex-wrap items-center gap-3">
     <div class="flex rounded-lg border border-border overflow-hidden text-xs">
       <button
-        class="px-3 py-1.5 transition-colors {!useCustomRange ? 'bg-accent/20 text-accent' : 'text-muted hover:text-white'}"
+        class="px-3 py-1.5 transition-colors {!useCustomRange ? 'bg-accent/15 text-accent' : 'text-muted hover:text-white'}"
         on:click={() => { useCustomRange = false; }}
-      >Monthly</button>
+      >Month</button>
       <button
-        class="px-3 py-1.5 transition-colors {useCustomRange ? 'bg-accent/20 text-accent' : 'text-muted hover:text-white'}"
+        class="px-3 py-1.5 transition-colors {useCustomRange ? 'bg-accent/15 text-accent' : 'text-muted hover:text-white'}"
         on:click={() => { useCustomRange = true; }}
       >Custom</button>
     </div>
-    {#if !useCustomRange}
-      <select bind:value={selectedMonth} class="input text-sm w-36">
-        {#each months as m}
-          <option value={m.value}>{m.label}</option>
+
+    {#if useCustomRange}
+      <input type="date" bind:value={customFrom} class="input text-sm" />
+      <input type="date" bind:value={customTo} class="input text-sm" />
+    {:else}
+      <select bind:value={selectedMonth} class="input text-sm w-40">
+        {#each months as month}
+          <option value={month.value}>{month.label}</option>
         {/each}
       </select>
-    {:else}
-      <input type="date" bind:value={customFrom} class="input text-sm" title="From" on:change={load} />
-      <input type="date" bind:value={customTo}   class="input text-sm" title="To"   on:change={load} />
     {/if}
-    <button class="btn-secondary btn-sm" on:click={printReport}>Print / PDF</button>
+
+    <select bind:value={selectedPlatform} class="input text-sm w-44">
+      <option value="">All platforms</option>
+      {#each platformOptions as platform}
+        <option value={platform}>{platformMeta(platform).label}</option>
+      {/each}
+    </select>
   </div>
 </div>
 
 {#if loading}
-  <div class="flex justify-center py-20 print:hidden"><Spinner size="lg" /></div>
+  <div class="flex justify-center py-20"><Spinner size="lg" /></div>
 {:else if error}
-  <div class="text-red-400 text-sm">{error}</div>
+  <div class="card p-5 text-sm text-red-400">{error}</div>
 {:else if report}
-
-<!-- ===== PRINTABLE REPORT ===== -->
-<div class="print-report">
-
-  <!-- Report Header (visible in print) -->
-  <div class="hidden print:block mb-8">
-    <div class="flex items-start justify-between">
-      <div>
-        <h1 class="text-2xl font-bold text-white">{report.client.canonical_name}</h1>
-        <p class="text-sm text-muted mt-1">Monthly Marketing Report · {report.period.month}</p>
-      </div>
-      <div class="text-right text-xs text-muted">
-        <div>WebXni Marketing</div>
-        <div class="font-mono">{report.period.from} – {report.period.to}</div>
-      </div>
-    </div>
-    <hr class="border-border mt-4" />
-  </div>
-
-  <!-- Summary metrics -->
-  <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-    <div class="card p-4 text-center">
-      <div class="text-3xl font-bold text-white">{report.summary.total}</div>
-      <div class="text-xs text-muted mt-1">Total Posts</div>
-    </div>
-    <div class="card p-4 text-center">
-      <div class="text-3xl font-bold text-green-400">{report.summary.posted}</div>
-      <div class="text-xs text-muted mt-1">Published</div>
-      {#if report.summary.scheduled > 0}
-        <div class="text-[10px] text-yellow-400 mt-0.5">+{report.summary.scheduled} pending</div>
-      {/if}
-    </div>
-    <div class="card p-4 text-center">
-      <div class="text-3xl font-bold {report.summary.failed > 0 ? 'text-red-400' : 'text-muted'}">{report.summary.failed}</div>
-      <div class="text-xs text-muted mt-1">Failed</div>
-    </div>
-    <div class="card p-4 text-center">
-      <div class="text-3xl font-bold text-accent">{report.summary.success_rate}%</div>
-      <div class="text-xs text-muted mt-1">Success Rate</div>
-    </div>
-  </div>
-
-  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-
-    <!-- Platform performance chart -->
-    <div class="card p-5">
-      <h2 class="font-medium text-white text-sm mb-4">Platform Performance</h2>
-      {#if platformStatEntries.length === 0}
-        <p class="text-xs text-muted">No platform data yet.</p>
-      {:else}
-      <div class="space-y-3">
-        {#each platformStatEntries as [platform, data]}
-        {@const sp = pct(data.posted, data.total)}
-        {@const color = platformColors[platform] ?? '#666'}
-        <div>
-          <div class="flex items-center justify-between mb-1 text-xs">
-            <div class="flex items-center gap-1.5">
-              <span class="w-2 h-2 rounded-full" style="background:{color}"></span>
-              <span class="text-white">{platformLabel(platform)}</span>
-            </div>
-            <span class="text-muted">{data.posted}/{data.total} · <span class="text-white font-medium">{sp}%</span></span>
-          </div>
-          <div class="h-1.5 bg-surface rounded-full overflow-hidden">
-            <div class="h-full rounded-full" style="width:{(data.total/maxPlatTotal)*100}%; background:{color}; opacity:0.25"></div>
-            <div class="h-full rounded-full -mt-1.5" style="width:{(data.posted/maxPlatTotal)*100}%; background:{color}"></div>
-          </div>
+  <section class="grid grid-cols-2 xl:grid-cols-5 gap-3 mb-6">
+    {#each topCards as card}
+      <div class="card p-4">
+        <div class="text-[11px] uppercase tracking-[0.14em] text-muted">{card.label}</div>
+        <div class="mt-2 text-2xl font-semibold text-white">
+          {topCardValue(card.key)}{'suffix' in card ? card.suffix : ''}
         </div>
-        {/each}
       </div>
+    {/each}
+  </section>
+
+  <section class="grid grid-cols-1 xl:grid-cols-[1.25fr,0.75fr] gap-6 mb-6">
+    <div class="card p-5">
+      <div class="flex items-center justify-between gap-3 mb-4">
+        <div>
+          <h2 class="text-sm font-semibold text-white">Platform performance</h2>
+          <p class="text-xs text-muted mt-1">Published rows, link coverage, and available metric totals.</p>
+        </div>
+        <div class="text-xs text-muted">{report.period.from} to {report.period.to}</div>
+      </div>
+
+      {#if report.platform_breakdown.length === 0}
+        <div class="text-sm text-muted py-10 text-center">No posted platforms in this range.</div>
+      {:else}
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {#each report.platform_breakdown as row}
+            {@const meta = platformMeta(row.platform)}
+            <div class="rounded-xl border border-border bg-bg/55 p-4">
+              <div class="flex items-start justify-between gap-3">
+                <div>
+                  <div class="inline-flex items-center gap-2 text-sm font-medium text-white">
+                    <span class="w-2.5 h-2.5 rounded-full" style="background:{meta.color}"></span>
+                    {meta.label}
+                  </div>
+                  <div class="mt-1 text-xs text-muted">
+                    {row.posted}/{row.total} posted • {row.failed} failed • {row.links} live links
+                  </div>
+                </div>
+                <div class="text-right">
+                  <div class="text-lg font-semibold text-white">{row.success_rate}%</div>
+                  <div class="text-[11px] text-muted">success</div>
+                </div>
+              </div>
+
+              <div class="mt-3 h-2 rounded-full bg-surface overflow-hidden">
+                <div class="h-full rounded-full" style="width:{row.success_rate}%; background:{meta.color}"></div>
+              </div>
+
+              <div class="mt-4 flex flex-wrap gap-2">
+                {#each compactMetrics(row.metrics, 4) as metric}
+                  <span class="rounded-full border border-border px-2.5 py-1 text-[11px] text-muted">{metric}</span>
+                {/each}
+                {#if row.profile.followers != null}
+                  <span class="rounded-full border border-border px-2.5 py-1 text-[11px] text-muted">
+                    Followers {formatNumber(row.profile.followers)}
+                  </span>
+                {/if}
+              </div>
+            </div>
+          {/each}
+        </div>
       {/if}
     </div>
 
-    <!-- Posts this period -->
-    <div class="card lg:col-span-2">
-      <div class="px-5 py-4 border-b border-border flex items-center justify-between">
-        <h2 class="font-medium text-white text-sm">Posts This Period</h2>
-        <span class="text-xs text-muted">{report.posts.length} total</span>
+    <div class="card p-5">
+      <h2 class="text-sm font-semibold text-white">Range summary</h2>
+      <div class="mt-4 space-y-3 text-sm">
+        <div class="flex items-center justify-between">
+          <span class="text-muted">Selected range</span>
+          <span class="text-white">{report.period.from} to {report.period.to}</span>
+        </div>
+        <div class="flex items-center justify-between">
+          <span class="text-muted">Platform filter</span>
+          <span class="text-white">{selectedPlatform ? platformMeta(selectedPlatform).label : 'All platforms'}</span>
+        </div>
+        <div class="flex items-center justify-between">
+          <span class="text-muted">Published history rows</span>
+          <span class="text-white">{formatNumber(report.posts.length)}</span>
+        </div>
+        <div class="flex items-center justify-between">
+          <span class="text-muted">Profile impressions</span>
+          <span class="text-white">{formatNumber(report.profile_analytics.total_impressions)}</span>
+        </div>
       </div>
-      {#if report.posts.length === 0}
-        <p class="text-sm text-muted text-center py-6">No posts this period.</p>
-      {:else}
+
+      <div class="mt-5 pt-5 border-t border-border">
+        <h3 class="text-xs uppercase tracking-[0.14em] text-muted">Available metrics</h3>
+        <div class="mt-3 flex flex-wrap gap-2">
+          {#each compactMetrics(report.summary.metrics, 6) as metric}
+            <span class="rounded-full border border-border px-2.5 py-1 text-[11px] text-muted">{metric}</span>
+          {/each}
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card overflow-hidden">
+    <div class="px-5 py-4 border-b border-border flex items-center justify-between gap-3">
+      <div>
+        <h2 class="text-sm font-semibold text-white">Published history</h2>
+        <p class="text-xs text-muted mt-1">Operational work stays on Posts. Published links and results live here.</p>
+      </div>
+      <div class="text-xs text-muted">{report.posts.length} post{report.posts.length === 1 ? '' : 's'}</div>
+    </div>
+
+    {#if report.posts.length === 0}
+      <div class="py-12 text-center text-sm text-muted">No reported posts in this range.</div>
+    {:else}
       <div class="divide-y divide-border">
         {#each report.posts as post}
-        {@const postPlatforms = getPostUrls(report, post.id, post.title ?? '')}
-        {@const liveUrls = postPlatforms.filter(r => r.real_url)}
-        <div class="px-5 py-3">
-          <div class="flex items-start justify-between gap-3">
-            <div class="flex-1 min-w-0">
-              <div class="flex items-center gap-2 flex-wrap">
-                <a href="/posts/{post.id}" class="text-sm text-white hover:text-accent font-medium">{post.title ?? '(untitled)'}</a>
-                <Badge status={post.status ?? 'draft'} />
-              </div>
-              <div class="flex items-center gap-3 mt-1">
-                <span class="text-xs text-muted">{post.publish_date ? formatDate(post.publish_date) : '—'}</span>
-                <span class="text-xs text-muted capitalize">{post.content_type ?? ''}</span>
+          <article class="px-5 py-4">
+            <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+              <div class="min-w-0 flex-1">
+                <div class="flex flex-wrap items-center gap-2">
+                  <a href="/posts/{post.id}" class="text-base font-medium text-white hover:text-accent">{post.title ?? '(untitled)'}</a>
+                  <Badge status={post.status ?? 'draft'} />
+                  <span class="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted capitalize">{post.content_type ?? '—'}</span>
+                </div>
+
+                <div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
+                  <span>{post.publish_date ? formatDate(post.publish_date) : '—'}</span>
+                  <span>{post.actual_platforms.length > 0 ? `${post.actual_platforms.length} platform${post.actual_platforms.length === 1 ? '' : 's'} posted` : 'No live platforms yet'}</span>
+                  {#each compactMetrics(post.metrics, 4) as metric}
+                    <span>{metric}</span>
+                  {/each}
+                </div>
               </div>
             </div>
-            <div class="flex flex-wrap gap-1 flex-shrink-0">
-              {#each parsePlatforms(post.platforms) as p}
-                <PlatformBadge platform={p} size="sm" />
+
+            <div class="mt-4 flex flex-wrap gap-2">
+              {#each post.platform_rows as row}
+                {@const meta = platformMeta(row.platform)}
+                {#if isLive(row)}
+                  <a
+                    href={row.real_url ?? '#'}
+                    target="_blank"
+                    rel="noreferrer"
+                    class="inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-white/5"
+                    style="border-color:{meta.color}40; color:{meta.color};"
+                    title={`Open on ${meta.label}`}
+                  >
+                    <span>{meta.label}</span>
+                    <span class="text-[10px] opacity-70">↗</span>
+                  </a>
+                {:else}
+                  <span
+                    class="inline-flex items-center gap-2 rounded-full border border-border px-3 py-1.5 text-xs text-muted opacity-70"
+                    title={row.metrics_error ?? row.error_message ?? `No published link for ${meta.label}`}
+                  >
+                    <span>{meta.label}</span>
+                    <span class="text-[10px]">Unavailable</span>
+                  </span>
+                {/if}
               {/each}
             </div>
-          </div>
-          <!-- Live URLs inline -->
-          {#if liveUrls.length > 0}
-          <div class="flex flex-wrap gap-2 mt-2">
-            {#each liveUrls as r}
-            {@const rurl = r.real_url ?? ''}
-            <a href={rurl} target="_blank"
-               class="inline-flex items-center gap-1 text-[11px] text-accent hover:underline bg-accent/10 px-2 py-0.5 rounded">
-              <PlatformBadge platform={r.platform} size="sm" />
-              View on {platformLabel(r.platform)} →
-            </a>
-            {/each}
-          </div>
-          {/if}
-        </div>
+
+            {#if post.platform_rows.some((row) => metricList(row.metrics).length > 0 || row.metrics_error)}
+              <details class="mt-4 rounded-xl border border-border bg-bg/40">
+                <summary class="cursor-pointer list-none px-4 py-3 text-xs font-medium text-muted">
+                  View post metrics
+                </summary>
+                <div class="border-t border-border px-4 py-4 space-y-3">
+                  {#each post.platform_rows as row}
+                    {@const metrics = metricList(row.metrics)}
+                    {#if metrics.length > 0 || row.metrics_error}
+                      <div class="rounded-lg bg-surface/50 px-3 py-3">
+                        <div class="flex items-center justify-between gap-3">
+                          <div class="text-sm text-white">{platformMeta(row.platform).label}</div>
+                          {#if row.metrics_synced_at}
+                            <div class="text-[11px] text-muted">Synced {formatDate(row.metrics_synced_at)}</div>
+                          {/if}
+                        </div>
+
+                        {#if metrics.length > 0}
+                          <div class="mt-2 flex flex-wrap gap-2">
+                            {#each metrics as metric}
+                              <span class="rounded-full border border-border px-2.5 py-1 text-[11px] text-muted">
+                                {metric.label} {formatNumber(metric.value)}
+                              </span>
+                            {/each}
+                          </div>
+                        {/if}
+
+                        {#if row.metrics_error}
+                          <div class="mt-2 text-[11px] text-muted">{row.metrics_error}</div>
+                        {/if}
+                      </div>
+                    {/if}
+                  {/each}
+                </div>
+              </details>
+            {/if}
+          </article>
         {/each}
       </div>
-      {/if}
-    </div>
+    {/if}
+  </section>
 
-  </div>
-
-  <!-- Failed posts -->
   {#if report.failed_detail.length > 0}
-  <div class="card mb-6">
-    <div class="px-5 py-4 border-b border-border">
-      <h2 class="font-medium text-white text-sm text-red-400">Failed Posts</h2>
-    </div>
-    <div class="table-wrapper">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>Post</th>
-            <th>Platform</th>
-            <th>Date</th>
-            <th>Error</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each report.failed_detail as f}
-            <tr>
-              <td class="text-sm text-white">{f.title}</td>
-              <td><PlatformBadge platform={f.platform} size="sm" /></td>
-              <td class="text-xs text-muted">{formatDate(f.publish_date)}</td>
-              <td class="text-xs text-red-400 max-w-xs truncate">{f.error_message}</td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
-  </div>
+    <section class="card mt-6 overflow-hidden">
+      <div class="px-5 py-4 border-b border-border">
+        <h2 class="text-sm font-semibold text-white">Failed publishing attempts</h2>
+      </div>
+      <div class="divide-y divide-border">
+        {#each report.failed_detail as failure}
+          <div class="px-5 py-3 flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+            <div>
+              <div class="text-sm text-white">{failure.title}</div>
+              <div class="text-xs text-muted mt-1">{formatDate(failure.publish_date)} • {platformMeta(failure.platform).label}</div>
+            </div>
+            <div class="text-xs text-red-400 md:max-w-md">{failure.error_message}</div>
+          </div>
+        {/each}
+      </div>
+    </section>
   {/if}
-
-  <!-- Footer (print only) -->
-  <div class="hidden print:block mt-12 pt-4 border-t border-border text-xs text-muted text-center">
-    Generated by WebXni Marketing Platform · {new Date().toLocaleDateString()}
-  </div>
-</div>
-
 {/if}
-
-<style>
-  @media print {
-    :global(.page-header) { display: none !important; }
-    :global(nav), :global(aside), :global(.sidebar), :global(.topbar) { display: none !important; }
-    :global(body) { background: white !important; color: #111 !important; }
-    :global(.card) { border: 1px solid #ddd !important; background: white !important; }
-    :global(.text-white) { color: #111 !important; }
-    :global(.text-muted) { color: #666 !important; }
-    :global(.text-accent) { color: #5b21b6 !important; }
-    :global(.text-green-400) { color: #059669 !important; }
-    :global(.text-red-400) { color: #dc2626 !important; }
-    :global(.border-border) { border-color: #e5e7eb !important; }
-    :global(.bg-surface), :global(.bg-bg) { background: white !important; }
-  }
-</style>

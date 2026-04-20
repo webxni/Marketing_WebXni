@@ -5,7 +5,7 @@
   import PlatformBadge from '$lib/components/ui/PlatformBadge.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
-  import { can } from '$lib/stores/auth';
+  import { can, hasRole } from '$lib/stores/auth';
   import { toast } from '$lib/stores/ui';
   import { formatDate, parsePlatforms } from '$lib/utils';
   import type { Post, Client } from '$lib/types';
@@ -50,6 +50,7 @@
   let filterDateFrom = '';
   let filterDateTo = '';
   let filterSort = 'desc';
+  let includePosted = false;
   let page = 1;
   const limit = 50;
   let total = 0;
@@ -58,12 +59,13 @@
   async function load() {
     loading = true;
     try {
-      const params: Record<string, string | number> = { page, limit, sort: filterSort };
+      const params: Record<string, string | number | boolean> = { page, limit, sort: filterSort };
       if (filterStatus)   params.status   = filterStatus;
       if (filterClient)   params.client   = filterClient;
       if (filterPlatform) params.platform = filterPlatform;
       if (filterDateFrom) params.from     = filterDateFrom;
       if (filterDateTo)   params.to       = filterDateTo;
+      if (includePosted)  params.include_posted = true;
       if (filterSearch.trim()) params.search = filterSearch.trim();
       const r = await postsApi.list(params);
       posts = r.posts;
@@ -83,6 +85,7 @@
     filterStatus = ''; filterClient = ''; filterPlatform = '';
     filterDateFrom = ''; filterDateTo = '';
     filterSort = 'desc';
+    includePosted = false;
     page = 1; load();
   }
 
@@ -91,8 +94,8 @@
     searchDebounce = setTimeout(() => { page = 1; load(); }, 350);
   }
 
-  // Status filter options — omit 'ready' (transient automation gate, not a useful end-state)
-  const statuses = ['draft','pending_approval','approved','scheduled','posted','failed','cancelled'];
+  const operationalStatuses = ['draft','pending_approval','approved','ready','scheduled','failed','cancelled'];
+  $: statuses = includePosted ? [...operationalStatuses, 'posted'] : operationalStatuses;
   const platforms = ['facebook','instagram','linkedin','x','threads','tiktok','pinterest','bluesky','youtube','google_business','website_blog'];
 
   $: totalPages = Math.ceil(total / limit);
@@ -111,7 +114,7 @@
 <div class="page-header">
   <div>
     <h1 class="page-title">Posts</h1>
-    <p class="page-subtitle">{total} post{total === 1 ? '' : 's'} found</p>
+    <p class="page-subtitle">{total} operational post{total === 1 ? '' : 's'} found{includePosted ? ' including published history' : ''}</p>
   </div>
   <div class="flex items-center gap-2">
     {#if selected.size > 0}
@@ -169,9 +172,17 @@
       <option value="asc">Oldest first</option>
     </select>
   </div>
-  <div class="flex gap-2 mt-3">
+  <div class="flex flex-wrap items-center justify-between gap-3 mt-3">
+    {#if hasRole('admin')}
+      <label class="inline-flex items-center gap-2 text-xs text-muted">
+        <input type="checkbox" bind:checked={includePosted} on:change={applyFilters} class="rounded" />
+        Include posted history
+      </label>
+    {/if}
+    <div class="flex gap-2">
     <button class="btn-primary btn-sm" on:click={applyFilters}>Apply</button>
     <button class="btn-ghost btn-sm" on:click={clearFilters}>Clear</button>
+    </div>
   </div>
 </div>
 

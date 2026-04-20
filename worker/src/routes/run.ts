@@ -12,6 +12,7 @@ import {
 import { runPosting } from '../loader/posting-run';
 import { planGeneration } from '../loader/generation-run';
 import { cleanupLegacyInvalidPlatformAttempts, repairOrphanScheduledPosts, syncPublishedUrls } from '../modules/published-urls';
+import { syncPostPlatformMetrics } from '../modules/reporting-metrics';
 
 /**
  * Fetch published URLs from Upload-Post history.
@@ -29,12 +30,13 @@ export async function runFetchUrls(env: Env, jobId: string): Promise<void> {
   console.log('[fetch-urls] starting job', jobId);
 
   try {
-    const [syncResult, cleanupResult, orphanResult] = await Promise.all([
+    const [syncResult, cleanupResult, orphanResult, metricsResult] = await Promise.all([
       syncPublishedUrls(env),
       cleanupLegacyInvalidPlatformAttempts(env.DB),
       repairOrphanScheduledPosts(env.DB),
+      syncPostPlatformMetrics(env, { limit: 150 }),
     ]);
-    console.log(`[fetch-urls] done — URLs matched: ${syncResult.matched}, posts promoted: ${syncResult.posts_promoted}, legacy invalid archived: ${cleanupResult.archived}, orphan scheduled reset: ${orphanResult.reset_to_ready}`);
+    console.log(`[fetch-urls] done — URLs matched: ${syncResult.matched}, posts promoted: ${syncResult.posts_promoted}, legacy invalid archived: ${cleanupResult.archived}, orphan scheduled reset: ${orphanResult.reset_to_ready}, metrics synced: ${metricsResult.synced}/${metricsResult.attempted}`);
   } catch (err) {
     console.error('[fetch-urls] error:', err);
   }
@@ -198,6 +200,12 @@ runRoutes.post('/fetch-urls', async (c) => {
   const jobId = crypto.randomUUID().replace(/-/g, '').toLowerCase();
   c.executionCtx.waitUntil(runFetchUrls(c.env, jobId));
   return c.json({ ok: true, job_id: jobId }, 202);
+});
+
+/** POST /api/run/fetch-report-metrics — refresh Upload-Post analytics cache */
+runRoutes.post('/fetch-report-metrics', async (c) => {
+  c.executionCtx.waitUntil(syncPostPlatformMetrics(c.env, { limit: 250 }));
+  return c.json({ ok: true }, 202);
 });
 
 /** GET /api/run/queue — real actionable posting queue only */

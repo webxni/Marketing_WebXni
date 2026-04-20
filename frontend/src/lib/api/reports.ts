@@ -23,6 +23,15 @@ export const reportsApi = {
   clientHealth: () =>
     api.get<{ health: unknown[] }>('/api/reports/client-health'),
 
-  monthly: (clientId: string, month: string) =>
-    api.get<MonthlyReport>(`/api/reports/monthly/${clientId}?month=${month}`),
+  monthly: (
+    clientId: string,
+    params: { month?: string; from?: string; to?: string; platform?: string } = {},
+  ) => {
+    const q = new URLSearchParams();
+    if (params.month) q.set('month', params.month);
+    if (params.from) q.set('from', params.from);
+    if (params.to) q.set('to', params.to);
+    if (params.platform) q.set('platform', params.platform);
+    return api.get<MonthlyReport>(`/api/reports/monthly/${clientId}?${q}`);
+  },
 };

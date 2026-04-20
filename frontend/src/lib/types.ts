@@ -268,10 +268,18 @@ export interface PostPlatform {
   platform:        string;
   tracking_id:     string | null;
   real_url:        string | null;
+  platform_post_id: string | null;
   status:          string | null;
   error_message:   string | null;
   attempted_at:    string | null;
   idempotency_key: string | null;
+  metrics_json:    string | null;
+  metrics_source:  string | null;
+  metrics_error:   string | null;
+  profile_snapshot_json: string | null;
+  profile_snapshot_latest_json: string | null;
+  profile_snapshot_latest_date: string | null;
+  metrics_synced_at: number | null;
 }
 
 export interface PostingJob {
@@ -396,12 +404,67 @@ export interface PostingStats {
   by_client:   { slug: string; canonical_name: string; total: number; posted: number; scheduled: number; failed: number }[];
 }
 
+export interface MetricTotals {
+  impressions: number | null;
+  likes: number | null;
+  comments: number | null;
+  shares: number | null;
+  saves: number | null;
+  views: number | null;
+  reach: number | null;
+  followers: number | null;
+}
+
+export interface ReportMetricConfig {
+  primary_impressions_field: string | null;
+  available_metrics: string[];
+  metric_labels: Record<string, string>;
+}
+
+export interface ReportPlatformRow extends PostPlatform {
+  title: string;
+  publish_date: string;
+  metrics: MetricTotals;
+  metric_labels: Record<string, string>;
+  primary_impressions_field: string | null;
+}
+
+export interface ReportPost extends Post {
+  actual_platforms: string[];
+  metrics: MetricTotals;
+  platform_rows: ReportPlatformRow[];
+}
+
 export interface MonthlyReport {
   client:       Client & { brand: Record<string, string> | null };
-  period:       { month: string; from: string; to: string };
-  summary:      { total: number; posted: number; scheduled: number; failed: number; success_rate: number };
-  posts:        Post[];
-  platforms:    (PostPlatform & { title: string; publish_date: string })[];
+  period:       { month: string | null; from: string; to: string };
+  filters:      { platform: string | null };
+  summary:      {
+    total: number;
+    posted: number;
+    scheduled: number;
+    failed: number;
+    success_rate: number;
+    metrics: MetricTotals;
+    total_impressions: number | null;
+  };
+  platform_breakdown: {
+    platform: string;
+    total: number;
+    posted: number;
+    failed: number;
+    success_rate: number;
+    links: number;
+    metrics: MetricTotals;
+    profile: MetricTotals;
+    primary_impressions_field: string | null;
+  }[];
+  profile_analytics: {
+    total_impressions: number | null;
+    by_platform: Record<string, MetricTotals>;
+    metric_config: Record<string, ReportMetricConfig>;
+  };
+  posts:        ReportPost[];
   failed_detail: { title: string; publish_date: string; platform: string; error_message: string }[];
 }
 

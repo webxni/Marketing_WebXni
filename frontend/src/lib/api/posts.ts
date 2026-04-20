@@ -4,12 +4,13 @@ import type { Post, PostPlatform } from '../types';
 export interface ListPostsParams {
   client?:    string;
   status?:    string;
+  include_posted?: boolean;
   platform?:  string;
   from?:      string;
   to?:        string;
   page?:      number;
   limit?:     number;
-  [key: string]: string | number | undefined;
+  [key: string]: string | number | boolean | undefined;
 }
 
 export const postsApi = {

@@ -234,11 +234,80 @@ export class UploadPostClient {
   }
 
   /** GET /api/uploadposts/post-analytics/request_id — published URL + stats by request id */
-  async getPostAnalytics(requestId: string): Promise<unknown> {
+  async getPostAnalytics(requestId: string, platform?: string): Promise<unknown> {
+    const qs = new URLSearchParams();
+    if (platform) qs.set('platform', platform);
     const r = await fetch(
-      `${BASE}/api/uploadposts/post-analytics/${encodeURIComponent(requestId)}`,
+      `${BASE}/api/uploadposts/post-analytics/${encodeURIComponent(requestId)}${qs.size ? `?${qs}` : ''}`,
       { headers: this.auth },
     );
+    if (!r.ok) throw new UploadPostError(r.status, await r.text());
+    return r.json();
+  }
+
+  /** GET /api/uploadposts/post-analytics?platform_post_id=... */
+  async getPostAnalyticsByPlatformPostId(params: {
+    platformPostId: string;
+    platform: string;
+    user: string;
+  }): Promise<unknown> {
+    const qs = new URLSearchParams({
+      platform_post_id: params.platformPostId,
+      platform: params.platform,
+      user: params.user,
+    });
+    const r = await fetch(`${BASE}/api/uploadposts/post-analytics?${qs}`, {
+      headers: this.auth,
+    });
+    if (!r.ok) throw new UploadPostError(r.status, await r.text());
+    return r.json();
+  }
+
+  /** GET /api/analytics/{profile} */
+  async getProfileAnalytics(params: {
+    profile: string;
+    platforms: string[];
+    pageId?: string;
+    pageUrn?: string;
+  }): Promise<unknown> {
+    const qs = new URLSearchParams();
+    qs.set('platforms', params.platforms.join(','));
+    if (params.pageId) qs.set('page_id', params.pageId);
+    if (params.pageUrn) qs.set('page_urn', params.pageUrn);
+    const r = await fetch(`${BASE}/api/analytics/${encodeURIComponent(params.profile)}?${qs}`, {
+      headers: this.auth,
+    });
+    if (!r.ok) throw new UploadPostError(r.status, await r.text());
+    return r.json();
+  }
+
+  /** GET /api/uploadposts/total-impressions/{profile} */
+  async getTotalImpressions(params: {
+    profile: string;
+    startDate?: string;
+    endDate?: string;
+    platforms?: string[];
+    metrics?: string[];
+    breakdown?: boolean;
+  }): Promise<unknown> {
+    const qs = new URLSearchParams();
+    if (params.startDate) qs.set('start_date', params.startDate);
+    if (params.endDate) qs.set('end_date', params.endDate);
+    if (params.platforms && params.platforms.length > 0) qs.set('platform', params.platforms.join(','));
+    if (params.metrics && params.metrics.length > 0) qs.set('metrics', params.metrics.join(','));
+    if (params.breakdown) qs.set('breakdown', 'true');
+    const r = await fetch(`${BASE}/api/uploadposts/total-impressions/${encodeURIComponent(params.profile)}?${qs}`, {
+      headers: this.auth,
+    });
+    if (!r.ok) throw new UploadPostError(r.status, await r.text());
+    return r.json();
+  }
+
+  /** GET /api/uploadposts/platform-metrics */
+  async getPlatformMetricsConfig(): Promise<unknown> {
+    const r = await fetch(`${BASE}/api/uploadposts/platform-metrics`, {
+      headers: this.auth,
+    });
     if (!r.ok) throw new UploadPostError(r.status, await r.text());
     return r.json();
   }
