@@ -141,13 +141,14 @@ runRoutes.post('/generate', async (c) => {
   const baseUrl = new URL(c.req.url).origin;
   c.executionCtx.waitUntil(
     planGeneration(c.env, {
-      run_id:       run.id,
-      client_slugs: clientSlugs,
-      period_start: periodStart,
-      period_end:   periodEnd,
-        triggered_by: c.get('user').userId,
-        publish_time: publishTime,
-        overwrite_existing: body.overwrite_existing === true,
+      run_id:             run.id,
+      client_slugs:       clientSlugs,
+      period_start:       periodStart,
+      period_end:         periodEnd,
+      triggered_by:       c.get('user').userId,
+      publish_time:       publishTime,
+      overwrite_existing: body.overwrite_existing === true,
+      high_quality:       body.high_quality === true,
     }, baseUrl),
   );
 

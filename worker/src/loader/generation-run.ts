@@ -41,7 +41,15 @@ import {
   getGenerationRunById,
   type GenerationProgress,
 } from '../db/queries';
-import { generatePostContent, type GenerationContext } from '../services/openai';
+import {
+  generatePostContent,
+  researchTopic,
+  validateGeneratedContent,
+  detectFormatFromTitle,
+  type GenerationContext,
+  type ContentFormat,
+  type TopicResearch,
+} from '../services/openai';
 import {
   getAutomationSlotKey,
   getGbpCaptionField,
@@ -63,6 +71,7 @@ export interface GenerationParams {
   triggered_by: string;
   publish_time: string | null;
   overwrite_existing?: boolean;
+  high_quality?: boolean;
 }
 
 interface PostSlot {
@@ -72,6 +81,7 @@ interface PostSlot {
   content_type:   string;
   content_intent: 'educational' | 'sales';
   slot_key:       string;
+  high_quality?:  boolean;
 }
 
 interface PackageRow {
@@ -446,12 +456,13 @@ export async function planGeneration(env: Env, params: GenerationParams, baseUrl
           const salesRatio = totalSoFar === 0 ? 0 : intentSales / totalSoFar;
           const intent: 'educational' | 'sales' = salesRatio < 0.30 ? 'sales' : 'educational';
           slots.push({
-            client_id: client.id,
-            client_slug: client.slug,
+            client_id:      client.id,
+            client_slug:    client.slug,
             date,
-            content_type: normalizeContentType(contentType),
+            content_type:   normalizeContentType(contentType),
             content_intent: intent,
-            slot_key: getAutomationSlotKey(client.id, date, contentType, dailyIndex),
+            slot_key:       getAutomationSlotKey(client.id, date, contentType, dailyIndex),
+            high_quality:   params.high_quality ?? false,
           });
           if (intent === 'sales') intentSales++; else intentEduc++;
         }
@@ -643,10 +654,54 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         return await finishSlot(slot_idx + 1, 'skipped', clientName, slots);
       }
 
-      const intel   = await db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>() ?? null;
-      const fbRows  = await db.prepare('SELECT sentiment, message AS note FROM client_feedback WHERE client_id = ? ORDER BY created_at DESC LIMIT 10').bind(client.id).all<FeedbackRow>();
-      const recRows = await db.prepare(`SELECT title, master_caption FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 10`).bind(client.id).all<{title:string|null;master_caption:string|null}>();
-      const recentTitles = recRows.results.map(r => r.title ?? r.master_caption?.slice(0, 80) ?? '').filter(Boolean) as string[];
+      const isHighQuality = slot.high_quality ?? false;
+
+      // Parallel fetch: intelligence, feedback, recent posts, service areas, service names
+      const [intel, fbRows, recRows, svcAreaRows, svcNameRows] = await Promise.all([
+        db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then(r => r ?? null),
+        db.prepare('SELECT sentiment, message AS note FROM client_feedback WHERE client_id = ? ORDER BY created_at DESC LIMIT 10').bind(client.id).all<FeedbackRow>(),
+        db.prepare(`SELECT title, master_caption, content_type FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`).bind(client.id).all<{title:string|null;master_caption:string|null;content_type:string|null}>(),
+        db.prepare('SELECT city FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 8').bind(client.id).all<{city:string}>(),
+        db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC LIMIT 12').bind(client.id).all<{name:string}>(),
+      ]);
+
+      const recentTitles  = recRows.results.map(r => r.title ?? r.master_caption?.slice(0, 80) ?? '').filter(Boolean) as string[];
+      const serviceAreas  = svcAreaRows.results.map(r => r.city);
+      const serviceNames  = svcNameRows.results.map(r => r.name);
+      const recentFormats = recRows.results
+        .map(r => detectFormatFromTitle(r.title ?? r.master_caption ?? ''))
+        .filter((f): f is ContentFormat => f !== null);
+
+      // Topic research — directs this post to a specific, non-repetitive, SEO-aware topic
+      let topicResearch: TopicResearch | null = null;
+      try {
+        topicResearch = await researchTopic(apiKey, {
+          client: {
+            canonical_name: client.canonical_name,
+            industry:       client.industry,
+            state:          client.state,
+            language:       client.language,
+          },
+          intelligence: intel ? {
+            service_priorities: intel.service_priorities,
+            seasonal_notes:     intel.seasonal_notes,
+            local_seo_themes:   intel.local_seo_themes,
+          } : null,
+          contentType:   slot.content_type,
+          contentIntent: slot.content_intent,
+          platforms,
+          publishDate:   slot.date,
+          recentTitles,
+          recentFormats,
+          serviceAreas,
+          serviceNames,
+        });
+        if (topicResearch) {
+          await log('AI', `Topic: "${topicResearch.topic}" [${topicResearch.format}] kw: "${topicResearch.targetKeyword}"`);
+        }
+      } catch (err) {
+        await log('WARN', `Topic research failed (non-fatal): ${str(err)}`);
+      }
 
       const ctx: GenerationContext = {
         client: {
@@ -676,11 +731,17 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
             captionField: getGbpCaptionField(location),
           }))
           .filter((location) => Boolean(location.captionField)),
+        topicResearch,
+        serviceAreas,
+        serviceNames,
+        recentFormats,
+        highQuality: isHighQuality,
       };
 
-      await log('AI', `OpenAI start: ${postKey} (${slot.content_intent}) — ${platforms.length} platforms`);
+      const genTimeoutMs = isHighQuality ? 60_000 : 30_000;
+      await log('AI', `OpenAI start: ${postKey} (${slot.content_intent}${isHighQuality ? '/HQ' : ''}) — ${platforms.length} platforms`);
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(new Error('OpenAI 30s timeout')), 30_000);
+      const timer = setTimeout(() => controller.abort(new Error(`OpenAI ${genTimeoutMs / 1000}s timeout`)), genTimeoutMs);
       let genResult: Awaited<ReturnType<typeof generatePostContent>>;
       try {
         genResult = await generatePostContent(apiKey, ctx, { signal: controller.signal });
@@ -688,6 +749,12 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         clearTimeout(timer);
       }
       await log('AI', `OpenAI done: ${postKey} (${genResult.meta.elapsedMs}ms, attempts=${genResult.meta.attempts}, model=${genResult.meta.model})`);
+
+      // Quality validation — soft check, log warnings but never block saves
+      const qualityResult = validateGeneratedContent(genResult.post, ctx);
+      if (!qualityResult.passed) {
+        await log('WARN', `Quality flags for "${genResult.post.title?.slice(0, 50)}": ${qualityResult.warnings.join('; ')}`);
+      }
 
       await log('INFO', `Save start: ${postKey}`);
       const saveStarted = Date.now();

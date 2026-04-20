@@ -1,5 +1,6 @@
 import type { Env } from '../types';
 import { UploadPostClient, UploadPostError } from '../services/uploadpost';
+import { normalizePlatform } from './captions';
 import { extractPublishedUrl, trackingIdRaw } from './published-urls';
 
 export const REPORT_METRIC_KEYS = [
@@ -22,6 +23,12 @@ export interface PlatformMetricConfig {
   metric_labels: Record<string, string>;
 }
 
+export interface ClientProfileAnalytics {
+  total_impressions: number | null;
+  metrics: MetricTotals;
+  by_platform: Record<string, MetricTotals>;
+}
+
 interface MetricsCandidateRow {
   id: string;
   post_id: string;
@@ -37,6 +44,19 @@ interface MetricsCandidateRow {
 
 function basePlatform(platform: string): string {
   return platform.startsWith('google_business_') ? 'google_business' : platform;
+}
+
+export function canonicalReportPlatform(platform: string): string {
+  const normalized = normalizePlatform(platform);
+  const aliases: Record<string, string> = {
+    posted_google_business_la: 'gbp_la',
+    posted_google_business_wa: 'gbp_wa',
+    posted_google_business_or: 'gbp_or',
+    google_business_la: 'gbp_la',
+    google_business_wa: 'gbp_wa',
+    google_business_or: 'gbp_or',
+  };
+  return aliases[normalized] ?? normalized;
 }
 
 function parseMetricNumber(value: unknown): number | null {
@@ -68,6 +88,8 @@ export function metricTotalsFromUnknown(value: unknown): MetricTotals {
   for (const key of REPORT_METRIC_KEYS) {
     totals[key] = parseMetricNumber(record[key]);
   }
+  if (totals.saves == null) totals.saves = parseMetricNumber(record['favorites']);
+  if (totals.impressions == null) totals.impressions = parseMetricNumber(record['views']);
   return totals;
 }
 
@@ -86,6 +108,14 @@ export function addMetricTotals(base: MetricTotals, next: MetricTotals): MetricT
     const a = base[key];
     const b = next[key];
     totals[key] = a == null && b == null ? null : (a ?? 0) + (b ?? 0);
+  }
+  return totals;
+}
+
+export function preferMetricTotals(preferred: MetricTotals, fallback: MetricTotals): MetricTotals {
+  const totals = emptyMetricTotals();
+  for (const key of REPORT_METRIC_KEYS) {
+    totals[key] = preferred[key] ?? fallback[key];
   }
   return totals;
 }
@@ -159,7 +189,7 @@ export async function syncPostPlatformMetrics(
   let synced = 0;
 
   for (const row of rows.results) {
-    const platform = basePlatform(row.platform);
+    const platform = basePlatform(canonicalReportPlatform(row.platform));
     if (!isAnalyticsSupported(platform)) continue;
 
     try {
@@ -251,18 +281,17 @@ export async function getClientProfileAnalytics(
     to: string;
     platforms: string[];
   },
-): Promise<{
-  total_impressions: number | null;
-  by_platform: Record<string, MetricTotals>;
-}> {
+): Promise<ClientProfileAnalytics> {
   if (!client.upload_post_profile || options.platforms.length === 0) {
-    return { total_impressions: null, by_platform: {} };
+    return { total_impressions: null, metrics: emptyMetricTotals(), by_platform: {} };
   }
 
   const up = new UploadPostClient(env.UPLOAD_POST_API_KEY);
   const byPlatform: Record<string, MetricTotals> = {};
   let totalImpressions: number | null = null;
-  const supported = options.platforms.filter((platform) => isAnalyticsSupported(platform));
+  let metrics = emptyMetricTotals();
+  const supported = [...new Set(options.platforms.map(canonicalReportPlatform))]
+    .filter((platform) => isAnalyticsSupported(platform));
 
   if (supported.length > 0) {
     try {
@@ -274,7 +303,7 @@ export async function getClientProfileAnalytics(
       });
       if (payload && typeof payload === 'object') {
         for (const [platform, value] of Object.entries(payload as Record<string, unknown>)) {
-          byPlatform[platform] = metricTotalsFromUnknown(value);
+          byPlatform[canonicalReportPlatform(platform)] = metricTotalsFromUnknown(value);
         }
       }
     } catch {
@@ -299,5 +328,35 @@ export async function getClientProfileAnalytics(
     // Graceful degradation: rely on persisted post metrics.
   }
 
-  return { total_impressions: totalImpressions, by_platform: byPlatform };
+  try {
+    const payload = await up.getTotalImpressions({
+      profile: client.upload_post_profile,
+      startDate: options.from,
+      endDate: options.to,
+      platforms: supported,
+      breakdown: true,
+      metrics: ['likes', 'comments', 'shares', 'saves'],
+    });
+    if (payload && typeof payload === 'object') {
+      const record = payload as Record<string, unknown>;
+      metrics = metricTotalsFromUnknown(record['metrics']);
+      const perPlatform = record['per_platform'];
+      if (perPlatform && typeof perPlatform === 'object') {
+        for (const [metricKey, values] of Object.entries(perPlatform as Record<string, unknown>)) {
+          if (!REPORT_METRIC_KEYS.includes(metricKey as ReportMetricKey)) continue;
+          if (!values || typeof values !== 'object') continue;
+          for (const [platform, value] of Object.entries(values as Record<string, unknown>)) {
+            const canonical = canonicalReportPlatform(platform);
+            const existing = byPlatform[canonical] ?? emptyMetricTotals();
+            existing[metricKey as ReportMetricKey] = parseMetricNumber(value);
+            byPlatform[canonical] = existing;
+          }
+        }
+      }
+    }
+  } catch {
+    // Graceful degradation.
+  }
+
+  return { total_impressions: totalImpressions, metrics, by_platform: byPlatform };
 }

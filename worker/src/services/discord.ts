@@ -282,6 +282,34 @@ export const SLASH_COMMANDS = [
     name:        'failed',
     description: 'Show all failed posts',
   },
+  {
+    name:        'weekly-content',
+    description: 'Trigger AI content generation for a week',
+    options: [
+      {
+        name:        'client',
+        description: 'Client slug (omit for all active clients)',
+        type:        3, // STRING
+        required:    false,
+      },
+      {
+        name:        'week',
+        description: 'Which week: this-week, next-week, or YYYY-MM-DD (Monday)',
+        type:        3,
+        required:    false,
+      },
+      {
+        name:        'mode',
+        description: 'Generation mode: standard (default) or high-quality',
+        type:        3,
+        required:    false,
+        choices: [
+          { name: 'standard',     value: 'standard' },
+          { name: 'high-quality', value: 'high-quality' },
+        ],
+      },
+    ],
+  },
 ];
 
 export async function registerSlashCommands(applicationId: string, botToken: string): Promise<void> {

@@ -19,6 +19,8 @@ import {
   DISCORD_COLORS,
 } from '../services/discord';
 import { runAgent } from './ai';
+import { createGenerationRun } from '../db/queries';
+import { planGeneration } from '../loader/generation-run';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -147,6 +149,48 @@ async function handleCommand(
     agentMessage = 'Show me the current posting queue with overdue/due-soon counts.';
   } else if (commandName === 'failed') {
     agentMessage = 'Show me all failed posts grouped by client.';
+  } else if (commandName === 'weekly-content') {
+    const opts      = interaction.data?.options ?? [];
+    const clientArg = (opts.find(o => o.name === 'client')?.value  as string | undefined) ?? '';
+    const weekArg   = (opts.find(o => o.name === 'week')?.value    as string | undefined) ?? 'next-week';
+    const modeArg   = (opts.find(o => o.name === 'mode')?.value    as string | undefined) ?? 'standard';
+    const isHQ      = modeArg === 'high-quality';
+
+    try {
+      const { start, end } = resolveWeekRange(weekArg);
+      const clientSlugs: string[] = clientArg ? [clientArg] : [];
+
+      const run = await createGenerationRun(env.DB, {
+        triggered_by:       `discord:${username}`,
+        date_range:         `${start}:${end}`,
+        client_filter:      clientSlugs.length > 0 ? JSON.stringify(clientSlugs) : null,
+        overwrite_existing: false,
+      });
+
+      ctx.waitUntil(
+        planGeneration(env, {
+          run_id:             run.id,
+          client_slugs:       clientSlugs,
+          period_start:       start,
+          period_end:         end,
+          triggered_by:       `discord:${username}`,
+          publish_time:       null,
+          overwrite_existing: false,
+          high_quality:       isHQ,
+        }, 'https://marketing.webxni.com'),
+      );
+
+      const modeLabel = isHQ ? '✨ High-Quality' : 'Standard';
+      const clientLabel = clientArg ? `**${clientArg}**` : 'all active clients';
+      await discordPatchInteraction({
+        applicationId: appId, token, botToken,
+        content: `🚀 ${modeLabel} content generation started for ${clientLabel} — week of ${start} to ${end}.\nRun ID: \`${run.id}\`\nCheck progress: https://marketing.webxni.com/automation`,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await discordPatchInteraction({ applicationId: appId, token, botToken, content: `❌ Failed to start generation: ${msg.slice(0, 200)}` });
+    }
+    return;
   }
 
   if (agentMessage) {
@@ -316,7 +360,7 @@ discordInternalRoute.post('/register', async (c) => {
 
   try {
     await registerSlashCommands(appId, botToken);
-    return c.json({ ok: true, message: 'Slash commands registered: /ask, /status, /queue, /failed' });
+    return c.json({ ok: true, message: 'Slash commands registered: /ask, /status, /queue, /failed, /weekly-content' });
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
@@ -404,6 +448,36 @@ async function resolveOpenAiKey(env: Env): Promise<string> {
     } catch { /* ignore */ }
   }
   return key;
+}
+
+function resolveWeekRange(weekStr: string): { start: string; end: string } {
+  const today    = new Date();
+  const dayOfWeek = today.getUTCDay(); // 0=Sun, 1=Mon ... 6=Sat
+  const monday   = new Date(today);
+  monday.setUTCHours(12, 0, 0, 0);
+
+  if (weekStr === 'next-week') {
+    const daysUntilNextMonday = dayOfWeek === 0 ? 1 : (8 - dayOfWeek);
+    monday.setUTCDate(today.getUTCDate() + daysUntilNextMonday);
+  } else if (weekStr === 'this-week') {
+    const daysToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+    monday.setUTCDate(today.getUTCDate() + daysToMonday);
+  } else if (/^\d{4}-\d{2}-\d{2}$/.test(weekStr)) {
+    const d = new Date(weekStr + 'T12:00:00Z');
+    monday.setTime(d.getTime());
+  } else {
+    // Default: next week
+    const daysUntilNextMonday = dayOfWeek === 0 ? 1 : (8 - dayOfWeek);
+    monday.setUTCDate(today.getUTCDate() + daysUntilNextMonday);
+  }
+
+  const sunday = new Date(monday);
+  sunday.setUTCDate(monday.getUTCDate() + 6);
+
+  return {
+    start: monday.toISOString().split('T')[0],
+    end:   sunday.toISOString().split('T')[0],
+  };
 }
 
 async function buildDiscordSystemPrompt(env: Env): Promise<string> {

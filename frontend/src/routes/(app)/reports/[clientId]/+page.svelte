@@ -41,11 +41,48 @@
       .map(([key, value]) => ({ key, label: labels[key], value: value ?? 0 }));
   }
 
+  function metricListNonZero(metrics: MetricTotals): { key: keyof MetricTotals; label: string; value: number }[] {
+    return metricList(metrics).filter((row) => row.value > 0);
+  }
+
   function compactMetrics(metrics: MetricTotals, limit = 4): string[] {
-    return metricList(metrics)
+    return metricListNonZero(metrics)
       .filter((row) => row.key !== 'followers')
       .slice(0, limit)
       .map((row) => `${row.label} ${formatNumber(row.value)}`);
+  }
+
+  function primaryPlatformMetric(platform: string, metrics: MetricTotals): string | null {
+    const preferred: Record<string, Array<keyof MetricTotals>> = {
+      instagram: ['reach', 'views', 'impressions'],
+      facebook: ['reach', 'impressions'],
+      linkedin: ['reach', 'impressions'],
+      youtube: ['views', 'impressions'],
+      tiktok: ['views', 'impressions'],
+      threads: ['views', 'impressions'],
+      pinterest: ['impressions', 'views'],
+      x: ['impressions', 'views'],
+      bluesky: ['impressions', 'views'],
+      gbp_la: ['impressions', 'views'],
+      gbp_wa: ['impressions', 'views'],
+      gbp_or: ['impressions', 'views'],
+      google_business: ['impressions', 'views'],
+    };
+    const labels: Record<keyof MetricTotals, string> = {
+      impressions: 'Impressions',
+      likes: 'Likes',
+      comments: 'Comments',
+      shares: 'Shares',
+      saves: 'Saves',
+      views: 'Views',
+      reach: 'Reach',
+      followers: 'Followers',
+    };
+    for (const key of preferred[platform] ?? ['impressions', 'views', 'reach']) {
+      const value = metrics[key];
+      if (value != null && value > 0) return `${labels[key]} ${formatNumber(value)}`;
+    }
+    return null;
   }
 
   function platformMeta(platform: string) {
@@ -222,14 +259,20 @@
               </div>
 
               <div class="mt-4 flex flex-wrap gap-2">
-                {#each compactMetrics(row.metrics, 4) as metric}
+                {#if primaryPlatformMetric(row.platform, row.profile)}
+                  <span class="rounded-full border border-border px-2.5 py-1 text-[11px] text-white">{primaryPlatformMetric(row.platform, row.profile)}</span>
+                {/if}
+                {#each compactMetrics(row.profile, 3) as metric}
                   <span class="rounded-full border border-border px-2.5 py-1 text-[11px] text-muted">{metric}</span>
                 {/each}
-                {#if row.profile.followers != null}
+                {#if row.profile.followers != null && row.profile.followers > 0}
                   <span class="rounded-full border border-border px-2.5 py-1 text-[11px] text-muted">
                     Followers {formatNumber(row.profile.followers)}
                   </span>
                 {/if}
+                {#each compactMetrics(row.metrics, 2) as metric}
+                  <span class="rounded-full border border-border px-2.5 py-1 text-[11px] text-muted">{metric}</span>
+                {/each}
               </div>
             </div>
           {/each}
@@ -264,6 +307,9 @@
           {#each compactMetrics(report.summary.metrics, 6) as metric}
             <span class="rounded-full border border-border px-2.5 py-1 text-[11px] text-muted">{metric}</span>
           {/each}
+          {#if compactMetrics(report.summary.metrics, 6).length === 0}
+            <span class="text-xs text-muted">No analytics returned for this range.</span>
+          {/if}
         </div>
       </div>
     </div>

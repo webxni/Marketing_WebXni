@@ -10,11 +10,13 @@ import type { Env, SessionData } from '../types';
 import { requirePermission } from '../middleware/auth';
 import {
   addMetricTotals,
+  canonicalReportPlatform,
   emptyMetricTotals,
   getClientProfileAnalytics,
   getPlatformMetricConfig,
   type PlatformMetricConfig,
   parseStoredMetricTotals,
+  preferMetricTotals,
   syncPostPlatformMetrics,
 } from '../modules/reporting-metrics';
 
@@ -355,11 +357,11 @@ reportRoutes.get('/monthly/:clientId', async (c) => {
   }, {
     from,
     to,
-    platforms: [...new Set(byPlatform.results.map((row) => String(row['platform'] ?? '')))].filter(Boolean),
+    platforms: [...new Set(byPlatform.results.map((row) => canonicalReportPlatform(String(row['platform'] ?? ''))))].filter(Boolean),
   });
 
   const platformRows: ReportPlatformRow[] = byPlatform.results.map((row) => {
-    const platform = String(row['platform'] ?? '');
+    const platform = canonicalReportPlatform(String(row['platform'] ?? ''));
     return {
       id: String(row['id'] ?? ''),
       post_id: String(row['post_id'] ?? ''),
@@ -423,9 +425,12 @@ reportRoutes.get('/monthly/:clientId', async (c) => {
       });
     }
     const postMetrics = postPlatformRows.reduce((acc, row) => addMetricTotals(acc, row.metrics), emptyMetricTotals());
+    const hasPublishedAttempt = postPlatformRows.some((row) => ['posted', 'sent', 'idempotent'].includes(String(row.status ?? '')));
+    const hasFailures = postPlatformRows.some((row) => String(row.status ?? '') === 'failed');
+    const derivedStatus = hasFailures ? 'failed' : hasPublishedAttempt ? 'posted' : (post['status'] == null ? null : String(post['status']));
     return {
       ...post,
-      status: post['status'] == null ? null : String(post['status']),
+      status: derivedStatus,
       actual_platforms: [...new Set(postPlatformRows.filter((row) => ['posted', 'sent', 'idempotent'].includes(String(row.status ?? ''))).map((row) => row.platform))],
       metrics: postMetrics,
       platform_rows: postPlatformRows,
@@ -476,7 +481,7 @@ reportRoutes.get('/monthly/:clientId', async (c) => {
       scheduled,
       failed,
       success_rate: total > 0 ? Math.round((posted / total) * 100) : 0,
-      metrics: summaryMetrics,
+      metrics: preferMetricTotals(profileAnalytics.metrics, summaryMetrics),
       total_impressions: profileAnalytics.total_impressions ?? summaryMetrics.impressions,
     },
     platform_breakdown: [...platformBreakdownMap.values()]
