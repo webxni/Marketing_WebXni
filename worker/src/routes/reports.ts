@@ -13,6 +13,7 @@ import {
   emptyMetricTotals,
   getClientProfileAnalytics,
   getPlatformMetricConfig,
+  type PlatformMetricConfig,
   parseStoredMetricTotals,
   syncPostPlatformMetrics,
 } from '../modules/reporting-metrics';
@@ -51,6 +52,16 @@ interface ReportPostRow extends Record<string, unknown> {
   actual_platforms: string[];
   metrics: ReturnType<typeof emptyMetricTotals>;
   platform_rows: ReportPlatformRow[];
+}
+
+async function hasPostPlatformMetricsColumns(db: D1Database): Promise<boolean> {
+  try {
+    const info = await db.prepare('PRAGMA table_info(post_platforms)').all<{ name: string }>();
+    const names = new Set(info.results.map((row) => row.name));
+    return names.has('platform_post_id') && names.has('metrics_json') && names.has('metrics_synced_at');
+  } catch {
+    return false;
+  }
 }
 
 /** GET /api/reports/overview */
@@ -196,14 +207,25 @@ reportRoutes.get('/monthly/:clientId', async (c) => {
     .first<{ id: string; slug: string; canonical_name: string; brand_json: string | null; upload_post_profile: string | null }>();
   if (!client) return c.json({ error: 'Client not found' }, 404);
 
+  const hasMetricsColumns = await hasPostPlatformMetricsColumns(c.env.DB);
+
   const platformExistsClause = !platformFilter
-    ? ''
+    ? `AND (
+         p.wp_post_url IS NOT NULL
+         OR EXISTS (
+           SELECT 1 FROM post_platforms pp2
+           WHERE pp2.post_id = p.id
+             AND pp2.status IN ('sent','idempotent','posted')
+             AND pp2.status != 'legacy_invalid'
+         )
+       )`
     : platformFilter === 'website_blog'
       ? "AND p.wp_post_url IS NOT NULL"
       : `AND EXISTS (
            SELECT 1 FROM post_platforms pp2
            WHERE pp2.post_id = p.id
              AND pp2.platform = ?
+             AND pp2.status IN ('sent','idempotent','posted')
              AND pp2.status != 'legacy_invalid'
          )`;
   const postIdBinds: unknown[] = [client.id, from, to];
@@ -221,16 +243,75 @@ reportRoutes.get('/monthly/:clientId', async (c) => {
     .bind(...postIdBinds)
     .all<{ id: string }>();
 
-  await syncPostPlatformMetrics(c.env, {
-    postIds: postIds.results.map((row) => row.id),
-    limit: 250,
-  });
+  if (hasMetricsColumns) {
+    try {
+      await syncPostPlatformMetrics(c.env, {
+        postIds: postIds.results.map((row) => row.id),
+        limit: 250,
+      });
+    } catch {
+      // Reporting must still load from persisted URLs/status rows if metrics sync fails.
+    }
+  }
 
   const rangeBinds: unknown[] = [client.id, from, to];
   if (platformFilter && platformFilter !== 'website_blog') rangeBinds.push(platformFilter);
   const platformWhere = platformFilter && platformFilter !== 'website_blog' ? 'AND pp.platform = ?' : '';
 
-  const [clientPlatformRows, posts, byPlatform, failedPosts, metricConfig] = await Promise.all([
+  const byPlatformQuery = hasMetricsColumns
+    ? `
+        SELECT pp.*,
+               p.id as post_id,
+               p.title,
+               p.publish_date
+        FROM post_platforms pp
+        JOIN posts p ON p.id = pp.post_id
+        WHERE p.client_id = ?
+          AND substr(p.publish_date,1,10) >= ?
+          AND substr(p.publish_date,1,10) <= ?
+          ${platformWhere}
+          AND pp.status != 'legacy_invalid'
+          AND pp.status IN ('sent','idempotent','posted','failed')
+        ORDER BY p.publish_date DESC, pp.platform ASC
+      `
+    : `
+        SELECT pp.id,
+               pp.post_id,
+               pp.platform,
+               pp.tracking_id,
+               pp.real_url,
+               pp.status,
+               pp.error_message,
+               pp.attempted_at,
+               pp.idempotency_key,
+               NULL as platform_post_id,
+               NULL as metrics_json,
+               NULL as metrics_source,
+               NULL as metrics_error,
+               NULL as profile_snapshot_json,
+               NULL as profile_snapshot_latest_json,
+               NULL as profile_snapshot_latest_date,
+               NULL as metrics_synced_at,
+               p.title,
+               p.publish_date
+        FROM post_platforms pp
+        JOIN posts p ON p.id = pp.post_id
+        WHERE p.client_id = ?
+          AND substr(p.publish_date,1,10) >= ?
+          AND substr(p.publish_date,1,10) <= ?
+          ${platformWhere}
+          AND pp.status != 'legacy_invalid'
+          AND pp.status IN ('sent','idempotent','posted','failed')
+        ORDER BY p.publish_date DESC, pp.platform ASC
+      `;
+
+  const [clientPlatformRows, posts, byPlatform, failedPosts, metricConfig]: [
+    D1Result<{ platform: string; page_id: string | null }>,
+    D1Result<Record<string, unknown>>,
+    D1Result<Record<string, unknown>>,
+    D1Result<{ title: string; publish_date: string; platform: string; error_message: string }>,
+    Record<string, PlatformMetricConfig>,
+  ] = await Promise.all([
     c.env.DB
       .prepare('SELECT platform, page_id FROM client_platforms WHERE client_id = ?')
       .bind(client.id)
@@ -248,20 +329,7 @@ reportRoutes.get('/monthly/:clientId', async (c) => {
       .bind(...rangeBinds)
       .all<Record<string, unknown>>(),
     c.env.DB
-      .prepare(`
-        SELECT pp.*,
-               p.id as post_id,
-               p.title,
-               p.publish_date
-        FROM post_platforms pp
-        JOIN posts p ON p.id = pp.post_id
-        WHERE p.client_id = ?
-          AND substr(p.publish_date,1,10) >= ?
-          AND substr(p.publish_date,1,10) <= ?
-          ${platformWhere}
-          AND pp.status != 'legacy_invalid'
-        ORDER BY p.publish_date DESC, pp.platform ASC
-      `)
+      .prepare(byPlatformQuery)
       .bind(...rangeBinds)
       .all<Record<string, unknown>>(),
     c.env.DB
@@ -278,7 +346,7 @@ reportRoutes.get('/monthly/:clientId', async (c) => {
       `)
       .bind(...rangeBinds)
       .all<{ title: string; publish_date: string; platform: string; error_message: string }>(),
-    getPlatformMetricConfig(c.env),
+    hasMetricsColumns ? getPlatformMetricConfig(c.env) : Promise.resolve({}),
   ]);
 
   const profileAnalytics = await getClientProfileAnalytics(c.env, {
