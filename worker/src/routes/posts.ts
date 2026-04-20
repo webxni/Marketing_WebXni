@@ -17,6 +17,7 @@ import { normalizeContentType, parsePlatforms, resolvePlatformSelection } from '
 import { cleanupLegacyInvalidPlatformAttempts, syncPublishedUrls } from '../modules/published-urls';
 import { runPosting } from '../loader/posting-run';
 import { runFetchUrls } from './run';
+import { normalizeBlogDraftPayload } from '../modules/blog-publishing';
 
 export const postRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -131,12 +132,17 @@ postRoutes.post('/', async (c) => {
     }, 409);
   }
 
+  body = normalizeBlogDraftPayload(clientConfig, {
+    ...body,
+    content_type: selection.contentType,
+  });
+
   const user = c.get('user');
   const post = await createPost(c.env.DB, {
     client_id:           clientId,
     title:               (body['title'] as string) ?? null,
     status:              (body['status'] as string) ?? 'draft',
-    content_type:        selection.contentType,
+    content_type:        body['content_type'] as string ?? selection.contentType,
     platforms:           JSON.stringify(selection.selected),
     publish_date:        (body['publish_date'] as string) ?? null,
     master_caption:      (body['master_caption'] as string) ?? null,
@@ -239,6 +245,10 @@ postRoutes.put('/:id', async (c) => {
     body['platform_manual_override'] = allowPlatformOverride ? 1 : 0;
   }
 
+  const clientConfig = await getClientWithConfig(c.env.DB, post.client_id);
+  if (!clientConfig) return c.json({ error: 'Client not found' }, 404);
+  body = normalizeBlogDraftPayload(clientConfig, body);
+
   // Version snapshot
   const snap = JSON.stringify(post);
   const version = await c.env.DB
@@ -306,7 +316,13 @@ postRoutes.post('/:id/publish', async (c) => {
 
   const { runPosting } = await import('../loader/posting-run');
   c.executionCtx.waitUntil(
-    runPosting(c.env, { mode: dryRun ? 'dry_run' : 'real', job_id: job.id, triggered_by: 'api' }),
+    runPosting(c.env, {
+      mode: dryRun ? 'dry_run' : 'real',
+      job_id: job.id,
+      triggered_by: 'api',
+      post_ids: [post.id],
+      limit: 1,
+    }),
   );
 
   return c.json({ ok: true, job_id: job.id, dry_run: dryRun }, 202);

@@ -79,6 +79,96 @@ export interface StructuredBlogContent {
 
 export const BLOG_BODY_IMAGE_PLACEHOLDER = '<!-- BLOG_BODY_IMAGE -->';
 
+const WORDPRESS_BLOG_CHROME = `<style>
+.page-header,
+.page-header .entry-title {
+  display: none !important;
+}
+.wx-blog {
+  box-sizing: border-box;
+}
+.wx-blog *,
+.wx-blog *::before,
+.wx-blog *::after {
+  box-sizing: border-box;
+}
+.wx-blog img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.wx-blog .wx-blog-body-image figcaption {
+  margin: 0;
+  padding: 12px 16px;
+  color: #5b6678;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+.wx-blog .wx-blog-section-body p,
+.wx-blog .wx-blog-section-body ul,
+.wx-blog .wx-blog-section-body ol {
+  margin: 0 0 1.05em;
+}
+.wx-blog .wx-blog-section-body ul,
+.wx-blog .wx-blog-section-body ol {
+  padding-left: 1.25rem;
+}
+.wx-blog .wx-blog-section-body li + li {
+  margin-top: 0.45rem;
+}
+@media (max-width: 900px) {
+  .wx-blog {
+    padding: 0 16px 40px !important;
+  }
+  .wx-blog .wx-blog-hero {
+    padding: 34px 24px 28px !important;
+    margin-bottom: 24px !important;
+  }
+  .wx-blog .wx-blog-hero h1 {
+    font-size: 2.45rem !important;
+    max-width: none !important;
+  }
+  .wx-blog .wx-blog-layout {
+    gap: 24px !important;
+  }
+  .wx-blog .wx-blog-main,
+  .wx-blog .wx-blog-rail {
+    flex: 1 1 100% !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: none !important;
+  }
+}
+@media (max-width: 640px) {
+  .wx-blog .wx-blog-hero {
+    border-radius: 18px !important;
+    padding: 28px 18px 24px !important;
+  }
+  .wx-blog .wx-blog-hero h1 {
+    font-size: 2rem !important;
+    line-height: 1.06 !important;
+  }
+  .wx-blog .wx-blog-intro,
+  .wx-blog .wx-blog-support,
+  .wx-blog .wx-blog-cta {
+    padding: 20px 18px !important;
+  }
+  .wx-blog .wx-blog-section h2,
+  .wx-blog .wx-blog-cta h2 {
+    font-size: 1.5rem !important;
+  }
+}
+</style>`;
+
+export function withWordPressBlogChrome(html: string): string {
+  if (!html.trim()) return WORDPRESS_BLOG_CHROME;
+  if (html.includes('.page-header') || html.includes('class="wx-blog"')) {
+    return `${WORDPRESS_BLOG_CHROME}\n${html}`;
+  }
+  return `${WORDPRESS_BLOG_CHROME}\n${html}`;
+}
+
 export class WpError extends Error {
   constructor(
     public readonly status: number,
@@ -610,7 +700,7 @@ export function renderStructuredBlogHtml(input: {
     </section>
   `).join('');
 
-  return `
+  return withWordPressBlogChrome(`
     <article class="wx-blog" data-wx-blog-template="${input.templateKey}" style="${inlineStyle({
       maxWidth: '1180px',
       margin: '0 auto',
@@ -726,7 +816,7 @@ export function renderStructuredBlogHtml(input: {
         </aside>
       </div>
     </article>
-  `;
+  `);
 }
 
 export function injectBodyImageIntoHtml(html: string, imageHtml: string): string {

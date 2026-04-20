@@ -27,6 +27,7 @@ import {
 import { buildExtraParams, extractTrackingId, getVideoPostTitle } from '../modules/posting';
 import { cleanupLegacyInvalidPlatformAttempts, extractPublishedUrl, syncPublishedUrls } from '../modules/published-urls';
 import { translatePostingError } from '../modules/posting-diagnostics';
+import { isBlogAutomationEligible, publishBlogPost } from '../modules/blog-publishing';
 
 const DEFAULT_PUBLIC_MEDIA_PROXY = 'https://marketing.webxni.com/media';
 
@@ -132,6 +133,50 @@ async function processPost(
   const publishDate = post.publish_date ?? 'nodate';
   const sched_time = getScheduledTime(post.publish_date);
   const normalizedContentType = normalizeContentType(post.content_type, post.asset_type);
+
+  if (isBlogAutomationEligible(post) && platforms.includes('website_blog')) {
+    if (dryRun) {
+      console.log(`[DRY-RUN] ${post.title} → website_blog`);
+      console.log(`  endpoint: POST /api/posts/${post.id}/publish-blog`);
+      console.log(`  scheduled: ${sched_time}`);
+      return;
+    }
+
+    try {
+      const result = await publishBlogPost(env as unknown as Parameters<typeof publishBlogPost>[0], post.id, {
+        status: 'publish',
+        defaultStatus: 'publish',
+      });
+
+      await upsertPostPlatform(env.DB, {
+        post_id: post.id,
+        platform: 'website_blog',
+        real_url: result.wpPost.link,
+        tracking_id: result.wpPost.id ? `WP:${result.wpPost.id}` : null,
+        status: result.wpPost.status === 'publish' ? 'posted' : 'sent',
+      });
+      await logPostingAudit(
+        env.DB,
+        post.id,
+        'website_blog',
+        result.wpPost.status === 'publish' ? 'posted' : 'sent',
+        result.wpPost.status === 'publish' ? 'Publicado automáticamente en WordPress.' : 'Blog enviado a WordPress.',
+        { wp_post_id: result.wpPost.id, wp_post_url: result.wpPost.link, warnings: result.warnings },
+      );
+      stats.posted++;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await upsertPostPlatform(env.DB, {
+        post_id: post.id,
+        platform: 'website_blog',
+        status: 'failed',
+        error_message: msg,
+      });
+      await logPostingAudit(env.DB, post.id, 'website_blog', 'failed', msg, msg);
+      stats.failed++;
+    }
+    return;
+  }
 
   // Detect media kind
   let mediaKind: 'image' | 'video' | null = null;

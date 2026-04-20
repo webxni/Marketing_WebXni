@@ -11,6 +11,7 @@ import {
   type WpMediaItem,
   type WpPost,
 } from '../services/wordpress';
+import { isBlogAutomationEligible, isBlogDueForAutomation, publishBlogPost } from '../modules/blog-publishing';
 
 const REPAIR_KEY = 'repair-posts-2026-04-14-webxni';
 
@@ -400,6 +401,19 @@ export async function repairExistingBlogs(env: Env): Promise<BlogRepairStats> {
         didFix = true;
       } catch (err) {
         issues.push(`WordPress update failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    if (wp && !linkedWpPost && isBlogAutomationEligible(post) && isBlogDueForAutomation(post)) {
+      try {
+        const published = await publishBlogPost(env, post.id, {
+          status: 'publish',
+          defaultStatus: 'publish',
+        });
+        issues.push(`Published missing WordPress post automatically (wp_post_id=${published.wpPost.id})`);
+        didFix = true;
+      } catch (err) {
+        issues.push(`WordPress publish failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 

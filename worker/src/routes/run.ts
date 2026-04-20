@@ -225,16 +225,26 @@ runRoutes.get('/queue', async (c) => {
              END AS queue_state
       FROM posts p
       JOIN clients c ON c.id = p.client_id
-      WHERE p.status IN ('ready','approved')
-        AND p.content_type != 'blog'
+      WHERE (
+        (p.content_type = 'blog' AND p.status IN ('ready','approved','scheduled'))
+        OR
+        (p.content_type != 'blog' AND p.status IN ('ready','approved'))
+      )
         AND p.ready_for_automation = 1
         AND p.asset_delivered = 1
         AND p.publish_date IS NOT NULL
-        AND NOT EXISTS (
-          SELECT 1
-          FROM post_platforms pp
-          WHERE pp.post_id = p.id
-            AND pp.status IN ('sent','idempotent','posted')
+        AND (
+          (p.content_type = 'blog' AND (
+            p.wp_post_id IS NULL
+            OR COALESCE(p.wp_post_status, '') != 'publish'
+          ))
+          OR
+          (p.content_type != 'blog' AND NOT EXISTS (
+            SELECT 1
+            FROM post_platforms pp
+            WHERE pp.post_id = p.id
+              AND pp.status IN ('sent','idempotent','posted')
+          ))
         )
       ORDER BY p.publish_date IS NULL ASC, p.publish_date ASC, p.updated_at ASC
       LIMIT 200

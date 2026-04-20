@@ -197,8 +197,12 @@ export async function listReadyPosts(
   // the old two-step flow land here via the 'approved' branch.
   const nowExpr = `strftime('%Y-%m-%dT%H:%M','now','-6 hours')`;
   const statusClause = `(
-    (status = 'ready' AND ready_for_automation = 1 AND asset_delivered = 1)
-    OR status = 'approved'
+    (content_type = 'blog' AND ready_for_automation = 1 AND asset_delivered = 1 AND status IN ('ready','approved','scheduled'))
+    OR
+    (content_type != 'blog' AND (
+      (status = 'ready' AND ready_for_automation = 1 AND asset_delivered = 1)
+      OR status = 'approved'
+    ))
   )`;
   if (postIds && postIds.length > 0) {
     const placeholders = postIds.map(() => '?').join(',');
