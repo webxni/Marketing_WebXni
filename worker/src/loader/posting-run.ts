@@ -270,23 +270,69 @@ async function processPost(
       continue;
     }
 
-    // Anti-duplicate: skip if already posted
-    if (!dryRun) {
-      const existing = await env.DB
-        .prepare('SELECT tracking_id FROM post_platforms WHERE post_id = ? AND platform = ?')
-        .bind(post.id, platform)
-        .first<{ tracking_id: string | null }>();
-      if (existing?.tracking_id) {
-        stats.skipped++;
-        continue;
-      }
-    }
-
     const platCfg = client.platforms.find((p) => normalizePlatform(p.platform) === platform);
     if (!platCfg) continue;
 
-    const extra = buildExtraParams(platform, platCfg, post);
+    const extra   = buildExtraParams(platform, platCfg, post);
     const idemKey = await makeIdempotencyKey(post.id, platform, publishDate);
+
+    // ── Idempotency gate ──────────────────────────────────────────────────────
+    // Check BEFORE attempting to post. Prevents:
+    //  - Re-sends after a successful post (even if UPSERT wiped tracking_id)
+    //  - Race conditions between concurrent cron/manual runs
+    //  - Infinite retry loops on permanently failing platforms
+    if (!dryRun) {
+      const existing = await env.DB
+        .prepare('SELECT status, tracking_id, attempt_count FROM post_platforms WHERE post_id = ? AND platform = ?')
+        .bind(post.id, platform)
+        .first<{ status: string | null; tracking_id: string | null; attempt_count: number | null }>();
+
+      if (existing) {
+        const s = (existing.status ?? '').toLowerCase();
+        const attempts = existing.attempt_count ?? 0;
+
+        if (['sent', 'posted', 'idempotent'].includes(s)) {
+          // Already successfully sent — never retry regardless of tracking_id state
+          stats.skipped++;
+          await logPostingAudit(env.DB, post.id, platform, 'skipped',
+            `Ya enviado (${s}). tracking=${existing.tracking_id ?? 'n/a'}`, null);
+          continue;
+        }
+        if (s === 'processing') {
+          // Another worker claimed this slot — skip to avoid race condition
+          stats.skipped++;
+          continue;
+        }
+        if (s === 'failed' && existing.tracking_id) {
+          // Upload-Post accepted the request (tracking ID exists) but writeback failed.
+          // The content was already scheduled — mark it and skip.
+          await upsertPostPlatform(env.DB, {
+            post_id: post.id, platform,
+            status: 'sent', tracking_id: existing.tracking_id, idempotency_key: idemKey,
+          });
+          stats.skipped++;
+          await logPostingAudit(env.DB, post.id, platform, 'skipped',
+            `Tracking recuperado de intento previo: ${existing.tracking_id}`, null);
+          continue;
+        }
+        if (s === 'failed' && attempts >= 3) {
+          // Hard retry cap — stop hammering platforms that keep failing
+          stats.skipped++;
+          await logPostingAudit(env.DB, post.id, platform, 'skipped',
+            `Límite de reintentos alcanzado (${attempts}/3). Requiere revisión manual.`, null);
+          continue;
+        }
+      }
+
+      // Atomic claim — write 'processing' BEFORE the API call.
+      // The UPSERT auto-increments attempt_count when status transitions to 'processing'.
+      // A concurrent worker checking here will see 'processing' and skip.
+      await upsertPostPlatform(env.DB, {
+        post_id: post.id, platform,
+        status: 'processing',
+        idempotency_key: idemKey,
+      });
+    }
 
     if (mediaKind === 'video' && !videoR2Url) {
       const msg = translatePostingError('Video post is missing a public media URL for Upload-Post.', platform);
@@ -493,15 +539,34 @@ async function postGbpMultiLocation(
       continue;
     }
 
-    // Anti-duplicate check
+    // Idempotency gate (same logic as regular platforms)
     const postedField = getGbpPostedKey(loc);
-    const existing = await env.DB
-      .prepare('SELECT tracking_id FROM post_platforms WHERE post_id = ? AND platform = ?')
-      .bind(post.id, postedField)
-      .first<{ tracking_id: string | null }>();
-    if (existing?.tracking_id) {
-      stats.skipped++;
-      continue;
+    {
+      const existing = await env.DB
+        .prepare('SELECT status, tracking_id, attempt_count FROM post_platforms WHERE post_id = ? AND platform = ?')
+        .bind(post.id, postedField)
+        .first<{ status: string | null; tracking_id: string | null; attempt_count: number | null }>();
+
+      if (existing) {
+        const s = (existing.status ?? '').toLowerCase();
+        const attempts = existing.attempt_count ?? 0;
+        if (['sent', 'posted', 'idempotent'].includes(s)) { stats.skipped++; continue; }
+        if (s === 'processing') { stats.skipped++; continue; }
+        if (s === 'failed' && existing.tracking_id) {
+          await upsertPostPlatform(env.DB, {
+            post_id: post.id, platform: postedField,
+            status: 'sent', tracking_id: existing.tracking_id, idempotency_key: idemKey,
+          });
+          stats.skipped++;
+          continue;
+        }
+        if (s === 'failed' && attempts >= 3) { stats.skipped++; continue; }
+      }
+
+      await upsertPostPlatform(env.DB, {
+        post_id: post.id, platform: postedField,
+        status: 'processing', idempotency_key: idemKey,
+      });
     }
 
     const extra = { gbp_location_id: loc.location_id };

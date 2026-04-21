@@ -411,23 +411,58 @@ export async function getPostPlatform(
   return r ?? null;
 }
 
+// Terminal success states — once a platform reaches one of these, it must never be
+// overwritten by a retry, concurrent run, or any subsequent upsert.
+const TERMINAL_SUCCESS = `('sent','posted','idempotent')`;
+
 export async function upsertPostPlatform(
   db: D1Database,
   data: Partial<PostPlatformRow> & { post_id: string; platform: string },
 ): Promise<void> {
   const id = crypto.randomUUID().replace(/-/g, '').toLowerCase();
+  const isSuccess = ['sent', 'posted', 'idempotent'].includes(data.status ?? '');
+  const publishedAt = isSuccess ? (data.published_at ?? new Date().toISOString()) : (data.published_at ?? null);
+
   await db
     .prepare(
       `INSERT INTO post_platforms (id, post_id, platform, tracking_id, real_url,
-         status, error_message, attempted_at, idempotency_key)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         status, error_message, attempted_at, idempotency_key, attempt_count, published_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(post_id, platform) DO UPDATE SET
-         tracking_id    = excluded.tracking_id,
-         real_url       = COALESCE(excluded.real_url, real_url),
-         status         = excluded.status,
-         error_message  = excluded.error_message,
-         attempted_at   = excluded.attempted_at,
-         idempotency_key = excluded.idempotency_key`,
+         -- Never downgrade a terminal success state
+         tracking_id     = CASE
+                             WHEN post_platforms.status IN ${TERMINAL_SUCCESS} THEN post_platforms.tracking_id
+                             ELSE COALESCE(excluded.tracking_id, post_platforms.tracking_id)
+                           END,
+         real_url        = CASE
+                             WHEN post_platforms.status IN ${TERMINAL_SUCCESS} THEN post_platforms.real_url
+                             ELSE COALESCE(excluded.real_url, post_platforms.real_url)
+                           END,
+         status          = CASE
+                             WHEN post_platforms.status IN ${TERMINAL_SUCCESS} THEN post_platforms.status
+                             ELSE excluded.status
+                           END,
+         error_message   = CASE
+                             WHEN post_platforms.status IN ${TERMINAL_SUCCESS} THEN post_platforms.error_message
+                             ELSE excluded.error_message
+                           END,
+         idempotency_key = CASE
+                             WHEN post_platforms.status IN ${TERMINAL_SUCCESS} THEN post_platforms.idempotency_key
+                             ELSE excluded.idempotency_key
+                           END,
+         -- Increment attempt_count each time we claim ('processing') on a non-terminal record
+         attempt_count   = CASE
+                             WHEN post_platforms.status IN ${TERMINAL_SUCCESS} THEN post_platforms.attempt_count
+                             WHEN excluded.status = 'processing' THEN post_platforms.attempt_count + 1
+                             ELSE post_platforms.attempt_count
+                           END,
+         -- Record when it first succeeded
+         published_at    = CASE
+                             WHEN post_platforms.published_at IS NOT NULL THEN post_platforms.published_at
+                             WHEN excluded.status IN ${TERMINAL_SUCCESS} THEN excluded.published_at
+                             ELSE NULL
+                           END,
+         attempted_at    = excluded.attempted_at`,
     )
     .bind(
       id,
@@ -439,6 +474,8 @@ export async function upsertPostPlatform(
       data.error_message ?? null,
       data.attempted_at ?? new Date().toISOString(),
       data.idempotency_key ?? null,
+      data.attempt_count ?? 0,
+      publishedAt,
     )
     .run();
 }

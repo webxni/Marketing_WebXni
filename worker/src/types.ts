@@ -320,6 +320,8 @@ export interface PostPlatformRow {
   error_message:   string | null;
   attempted_at:    string | null;
   idempotency_key: string | null;
+  attempt_count:   number;
+  published_at:    string | null;
   metrics_json:    string | null;
   metrics_source:  string | null;
   metrics_error:   string | null;
