@@ -738,7 +738,8 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         highQuality: isHighQuality,
       };
 
-      const genTimeoutMs = isHighQuality ? 60_000 : 30_000;
+      const isBlogSlot = normalizeContentType(slot.content_type) === 'blog';
+      const genTimeoutMs = isBlogSlot ? 140_000 : (isHighQuality ? 60_000 : 30_000);
       await log('AI', `OpenAI start: ${postKey} (${slot.content_intent}${isHighQuality ? '/HQ' : ''}) — ${platforms.length} platforms`);
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(new Error(`OpenAI ${genTimeoutMs / 1000}s timeout`)), genTimeoutMs);
@@ -761,6 +762,11 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
       const p = genResult.post as unknown as Record<string, string | undefined>;
       const merged = mergeGeneratedContent(existingPost as unknown as Record<string, string | null | undefined>, p, overwriteExisting);
 
+      // Blog posts get LEARN_MORE GBP CTA pre-set; URL placeholder filled after WordPress publish
+      const blogGbpDefaults = isBlogSlot
+        ? { gbp_cta_type: 'LEARN_MORE' as string, gbp_topic_type: 'STANDARD' as string }
+        : {};
+
       if (existingPost) {
         const nextPlatforms = existingPost.platform_manual_override === 1 && parsePlatforms(existingPost.platforms).length > 0
           ? parsePlatforms(existingPost.platforms)
@@ -774,6 +780,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
           automation_slot_key: slot.slot_key,
           generation_run_id: run_id,
           scheduled_by_automation: 1,
+          ...blogGbpDefaults,
           ...merged,
         });
         slotOutcome = 'updated';
@@ -790,6 +797,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
           platform_manual_override: 0,
           automation_slot_key: slot.slot_key,
           generation_run_id:   run_id,
+          ...blogGbpDefaults,
           ...merged,
         } as Parameters<typeof createPost>[1]);
         slotOutcome = 'created';

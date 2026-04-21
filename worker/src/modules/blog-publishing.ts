@@ -385,15 +385,31 @@ export async function publishBlogPost(env: Env, postId: string, options: Publish
 
   const nextStatus = wpPost.status === 'publish' ? 'posted' : (wpPost.status === 'draft' ? 'draft' : post.status);
   const now = Math.floor(Date.now() / 1000);
+  const blogUrl = wpPost.link;
+
+  // Replace [blog_url] placeholder in distribution captions now that the URL is known
+  const CAPTION_FIELDS = ['cap_google_business', 'cap_linkedin', 'cap_facebook', 'cap_instagram', 'cap_threads', 'master_caption'] as const;
+  const captionUpdates: Partial<Record<typeof CAPTION_FIELDS[number], string>> = {};
+  for (const field of CAPTION_FIELDS) {
+    const current = post[field as keyof typeof post] as string | null | undefined;
+    if (typeof current === 'string' && current.includes('[blog_url]')) {
+      captionUpdates[field] = current.replace(/\[blog_url\]/g, blogUrl);
+    }
+  }
+
   await updatePost(env.DB, post.id, {
     status: nextStatus,
     ready_for_automation: 0,
     wp_post_id: wpPost.id,
-    wp_post_url: wpPost.link,
+    wp_post_url: blogUrl,
     wp_post_status: wpPost.status,
     slug: wpPost.slug ?? post.slug,
     wp_featured_media_id: featuredMediaId ?? wpPost.featured_media ?? null,
     posted_at: wpPost.status === 'publish' ? now : post.posted_at,
+    // GBP: set LEARN_MORE CTA pointing to the live blog URL
+    gbp_cta_type: 'LEARN_MORE',
+    gbp_cta_url: blogUrl,
+    ...captionUpdates,
   });
 
   const refreshed = await getPostById(env.DB, post.id);

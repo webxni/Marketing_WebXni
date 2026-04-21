@@ -71,6 +71,7 @@ export interface StructuredBlogContent {
   intro: string;
   sections: BlogSection[];
   faq: BlogFaqItem[];
+  conclusion?: string;
   ctaHeading: string;
   ctaBody: string;
   ctaButtonLabel: string;
@@ -772,7 +773,7 @@ export function renderStructuredBlogHtml(input: {
             borderTop: '1px solid #d9e1ea',
           })}">
             <strong style="${inlineStyle({ display: 'block', color: '#0f172a', fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '1rem', margin: '0 0 8px' })}">${chrome.footerTitle}</strong>
-            <p style="${inlineStyle({ margin: '0', color: '#5b6678', fontSize: '.95rem', lineHeight: '1.7' })}">${escapeHtml(input.clientName)} provides service-specific guidance focused on informed decisions, clear expectations, and practical next steps.</p>
+            <p style="${inlineStyle({ margin: '0', color: '#5b6678', fontSize: '.95rem', lineHeight: '1.7' })}">${escapeHtml(input.blog.conclusion || `${input.clientName} provides expert guidance focused on informed decisions, clear expectations, and practical next steps.`)}</p>
           </footer>
         </div>
         <aside class="wx-blog-rail" style="${inlineStyle({

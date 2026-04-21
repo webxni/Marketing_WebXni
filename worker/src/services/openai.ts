@@ -397,52 +397,60 @@ function buildBlogPrompt(ctx: GenerationContext): string {
     wp_template_key: ctx.client.wp_template_key,
     industry: ctx.client.industry,
   });
+  const serviceAreasForBlog = (ctx.serviceAreas ?? []).slice(0, 6).join(', ') || (ctx.client.state ?? '');
+
+  const topicLine = ctx.topicResearch
+    ? `Write a long-form blog post about: "${ctx.topicResearch.topic}"\nCustomer search question to answer: "${ctx.topicResearch.searchQuestion}"\nPrimary keyword: "${ctx.topicResearch.targetKeyword}"${ctx.topicResearch.localModifier ? `\nLocal focus: mention "${ctx.topicResearch.localModifier}" naturally at least twice` : ''}\nDo not change the topic.`
+    : `Create one long-form publication-ready blog post for ${ctx.publishDate}.`;
 
   return `You are a senior SEO blog writer for ${ctx.client.canonical_name}.
 
 ${buildSharedContext(ctx, 'blog')}
 
 TASK:
-${ctx.topicResearch
-  ? `Write a blog post about: "${ctx.topicResearch.topic}"\nAnswer this customer question: "${ctx.topicResearch.searchQuestion}"\nPrimary target keyword: "${ctx.topicResearch.targetKeyword}"\n${ctx.topicResearch.localModifier ? `Local modifier: include "${ctx.topicResearch.localModifier}" naturally at least once.\n` : ''}Do not change the topic.`
-  : `Create one publication-ready blog post for ${ctx.publishDate}.`}
-This is BLOG generation only. Do not generate social-platform caption variants.
+${topicLine}
+Generate BOTH the blog content AND three social distribution captions. Use "[blog_url]" as a placeholder wherever the live blog URL belongs — it will be replaced with the real URL after publishing.
+
+SEO RULES (mandatory):
+- Target keyword must appear in: title, intro (within first 80 words), at least 2 H2 headings, and naturally in sections
+- Meta description and SEO title must be distinct from each other and include the keyword + local modifier
+- Secondary keywords must include: local service variants, related questions, city+service combinations
+- Local areas (${serviceAreasForBlog}) must be woven into at least 2 sections naturally — not bolted on
 
 Return ONLY JSON matching the requested schema:
-- "title": keyword-led blog title, 50-65 chars — must include the target keyword
-- "master_caption": short teaser summary for internal/social fallback, 110-180 chars
-- "blog_excerpt": plain-text excerpt, 150-160 chars, no HTML
+- "title": keyword-led title, 55-65 chars — include keyword + local context when natural
+- "master_caption": 120-180 chars — benefit-focused teaser, no fluff, no link
+- "blog_excerpt": 148-160 chars plain text — for WordPress excerpt field, include keyword + location
 - "slug": lowercase hyphenated slug, max 55 chars
-- "seo_title": SEO title, 50-60 chars
-- "meta_description": meta description, 148-155 chars
+- "seo_title": 50-60 chars — optimized differently from title (can include city or service variation)
+- "meta_description": 148-155 chars — benefit-driven, includes keyword and local context, ends with light CTA
 - "target_keyword": primary keyword phrase${ctx.topicResearch?.targetKeyword ? ` (use: "${ctx.topicResearch.targetKeyword}")` : ''}
-- "secondary_keywords": comma-separated secondary keyword phrases, 3-6 items — related long-tail variants
-- "intro": opening section, 80-140 words, plain text — include target keyword within first 80 words
-- "sections": array of 3-4 objects with:
-  - "heading": H2 heading — include keyword or close variant in at least 2 headings
-  - "html": valid HTML for that section body, 2-4 paragraphs and optional ul/ol
-- "faq": array of 3-5 objects with:
-  - "question": real customer question (search-style, not promotional)
-  - "answer": concise, direct answer (2-4 sentences)
-- "cta_heading": CTA heading
-- "cta_body": CTA body copy, 1-2 sentences, no prices
-- "cta_button_label": CTA button text, 2-5 words
-- "ai_image_prompt": image brief for the featured/blog image
+- "secondary_keywords": 5-8 comma-separated phrases — local variants, related searches, service+location combos
+- "intro": 150-200 words plain text — open with a specific problem, question, or fact; include keyword within first 80 words; set the reader's expectations; do NOT repeat the title
+- "sections": array of 4-6 objects, each with:
+  - "heading": H2 heading — use keyword or variant in at least 2; at least 1 heading should mention a location
+  - "html": valid HTML, 200-300 words — 2-4 <p> tags, use <ul> or <ol> where it helps; at least 2 sections must naturally name a city or service area; cover specific, concrete aspects — no generic overviews
+- "faq": array of 5-6 objects — questions MUST be in real Google-search format ("How long does X take in [City]?", "What is the cost of X?", "Can I X without Y?"), answers 3-5 sentences each, direct and specific
+- "conclusion": 90-130 words plain text — reinforce authority, connect back to the service, light call to action, does NOT repeat the intro
+- "cta_heading": 4-8 words, direct and service-focused
+- "cta_body": 1-2 sentences, benefit-driven, no prices
+- "cta_button_label": 2-5 words
+- "cap_google_business": 120-180 chars — 1-2 benefit lines + "[blog_url]". No hashtags. Reads like a GBP update, not an ad.
+- "cap_linkedin": 200-350 chars — professional authority tone; brief insight from the blog + why it matters + "[blog_url]"
+- "cap_facebook": 130-230 chars — conversational, specific hook from the content + "[blog_url]"
+- "ai_image_prompt": MUST BE IN SPANISH — featured image brief, 1080×628px, include brand color context if known
 
-BLOG REQUIREMENTS:
-- Opening paragraph must include the target keyword within the first 80 words.
-- Use 3-4 sections and include the keyword or a close variant in at least 2 headings.
-- Use <ul> or <ol> where it improves clarity.
-- FAQ must answer real questions customers actually search for — specific, helpful, non-promotional.
-- Each FAQ answer must be different and non-repetitive.
-- The blog must read like it was written by an expert practitioner, not an AI copywriter.
-- End with a conclusion paragraph that does not repeat the intro.
-- No prices, no invented stats, no markdown, no code fences.
+CONTENT RULES:
+- Every section must cover a distinct, specific aspect — no padding, no repeat themes across sections
+- Each FAQ question must look like something a real customer types into Google
+- Intro must start with a problem, surprising fact, or customer scenario — not "In today's world" or similar
+- The blog must read like it was written by a field expert explaining to a potential client
+- No invented prices, stats, or percentages
+- No markdown syntax, no code fences, no <html>/<body>/<style> tags
 
 TEMPLATE CONTEXT:
-- Selected business template: ${templateKey}
-- Do NOT generate full-page HTML, CSS, <html>, <body>, <style>, or inline layout markup.
-- Generate structured content only. The app will render the final professional template.`;
+- Business template: ${templateKey}
+- Do NOT generate page-level HTML or CSS — structured content only; the platform renders the layout`;
 }
 
 function buildResponseSchema(ctx: GenerationContext): { name: string; schema: JsonSchema } {
@@ -487,10 +495,15 @@ function buildResponseSchema(ctx: GenerationContext): { name: string; schema: Js
         required: ['question', 'answer'],
       },
     };
+    properties.conclusion = { type: 'string' };
     properties.cta_heading = { type: 'string' };
     properties.cta_body = { type: 'string' };
     properties.cta_button_label = { type: 'string' };
     properties.ai_image_prompt = { type: 'string' };
+    // Distribution captions — generated at blog-creation time with [blog_url] placeholder
+    properties.cap_google_business = { type: 'string' };
+    properties.cap_linkedin       = { type: 'string' };
+    properties.cap_facebook        = { type: 'string' };
     required.push(
       'blog_excerpt',
       'slug',
@@ -501,10 +514,14 @@ function buildResponseSchema(ctx: GenerationContext): { name: string; schema: Js
       'intro',
       'sections',
       'faq',
+      'conclusion',
       'cta_heading',
       'cta_body',
       'cta_button_label',
       'ai_image_prompt',
+      'cap_google_business',
+      'cap_linkedin',
+      'cap_facebook',
     );
   } else {
     if (platforms.includes('facebook')) properties.cap_facebook = { type: 'string' };
@@ -555,9 +572,9 @@ function buildGenerationRequest(ctx: GenerationContext) {
   const plan: GenerationPlan = {
     mode: isBlog ? 'blog' : 'social',
     model: useHighQualityModel ? 'gpt-4o' : 'gpt-4o-mini',
-    requestTimeoutMs: isBlog ? 90_000 : (ctx.highQuality ? 50_000 : 30_000),
-    perPostTimeoutMs: isBlog ? 120_000 : (ctx.highQuality ? 75_000 : 45_000),
-    maxTokens: isBlog ? 4200 : (ctx.highQuality ? 1800 : 1400),
+    requestTimeoutMs: isBlog ? 120_000 : (ctx.highQuality ? 50_000 : 30_000),
+    perPostTimeoutMs: isBlog ? 150_000 : (ctx.highQuality ? 75_000 : 45_000),
+    maxTokens: isBlog ? 5500 : (ctx.highQuality ? 1800 : 1400),
     retryLimit: isBlog ? 2 : 3,
     promptChars: prompt.length,
   };
@@ -612,6 +629,7 @@ function normalizeGeneratedPost(value: unknown, ctx: GenerationContext): Generat
     }
     if (!intro) throw new Error('Generation missing intro');
     if (sections.length < 3) throw new Error('Generation missing blog sections');
+    const conclusionRaw = typeof parsed['conclusion'] === 'string' ? parsed['conclusion'].trim() : '';
     const structured: StructuredBlogContent = {
       title: normalized.title,
       excerpt: normalized.blog_excerpt!,
@@ -623,6 +641,7 @@ function normalizeGeneratedPost(value: unknown, ctx: GenerationContext): Generat
       intro,
       sections,
       faq,
+      conclusion: conclusionRaw || undefined,
       ctaHeading: typeof parsed['cta_heading'] === 'string' ? String(parsed['cta_heading']).trim() : (ctx.client.cta_text ?? 'Talk To Our Team'),
       ctaBody: typeof parsed['cta_body'] === 'string' ? String(parsed['cta_body']).trim() : 'Get expert guidance tailored to your situation and goals.',
       ctaButtonLabel: typeof parsed['cta_button_label'] === 'string' ? String(parsed['cta_button_label']).trim() : (ctx.client.cta_text ?? 'Contact Us Today'),
