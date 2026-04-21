@@ -415,6 +415,75 @@ export async function getPostPlatform(
 // overwritten by a retry, concurrent run, or any subsequent upsert.
 const TERMINAL_SUCCESS = `('sent','posted','idempotent')`;
 
+export type ClaimResult =
+  | { claimed: true }
+  | { claimed: false; reason: 'already_sent' | 'already_processing' | 'tracking_recovered' | 'max_retries' | 'concurrent'; existingTrackingId?: string };
+
+/**
+ * Atomically claim a post_platforms slot before sending.
+ *
+ * Uses INSERT OR IGNORE so that exactly ONE concurrent worker can claim the slot —
+ * SQLite serializes the insert and only one `meta.changes` will be 1.
+ *
+ * For existing failed records the same guarantee is achieved via a conditional
+ * UPDATE WHERE status IN ('failed','skipped','pending'), which only succeeds for
+ * the worker whose UPDATE actually changes the row.
+ */
+export async function claimPostPlatform(
+  db: D1Database,
+  postId: string,
+  platform: string,
+  idemKey: string,
+): Promise<ClaimResult> {
+  const id  = crypto.randomUUID().replace(/-/g, '').toLowerCase();
+  const now = new Date().toISOString();
+
+  // Fast path: try to insert a brand-new 'processing' row.
+  // INSERT OR IGNORE is atomic — concurrent workers see changes=0.
+  const insert = await db
+    .prepare(
+      `INSERT OR IGNORE INTO post_platforms
+         (id, post_id, platform, status, idempotency_key, attempted_at, attempt_count)
+       VALUES (?, ?, ?, 'processing', ?, ?, 1)`,
+    )
+    .bind(id, postId, platform, idemKey, now)
+    .run();
+
+  if (insert.meta.changes === 1) return { claimed: true };
+
+  // Row already exists — read the current state.
+  const row = await db
+    .prepare('SELECT id, status, tracking_id, attempt_count FROM post_platforms WHERE post_id = ? AND platform = ?')
+    .bind(postId, platform)
+    .first<{ id: string; status: string | null; tracking_id: string | null; attempt_count: number | null }>();
+
+  if (!row) return { claimed: true }; // Shouldn't happen but safe default
+
+  const s        = (row.status ?? '').toLowerCase();
+  const attempts = row.attempt_count ?? 0;
+
+  if (['sent', 'posted', 'idempotent'].includes(s)) return { claimed: false, reason: 'already_sent' };
+  if (s === 'processing')                           return { claimed: false, reason: 'already_processing' };
+  if (s === 'failed' && row.tracking_id)            return { claimed: false, reason: 'tracking_recovered', existingTrackingId: row.tracking_id };
+  if (s === 'failed' && attempts >= 3)              return { claimed: false, reason: 'max_retries' };
+
+  // Existing failed/skipped/pending row within retry limit — attempt conditional claim.
+  // The WHERE clause acts as an optimistic lock: only one concurrent worker succeeds.
+  const update = await db
+    .prepare(
+      `UPDATE post_platforms
+       SET status = 'processing', idempotency_key = ?, attempted_at = ?, attempt_count = attempt_count + 1
+       WHERE id = ? AND status IN ('failed', 'skipped', 'pending', 'skip', 'blocked')`,
+    )
+    .bind(idemKey, now, row.id)
+    .run();
+
+  if (update.meta.changes === 1) return { claimed: true };
+
+  // Another worker just claimed this row between our SELECT and UPDATE.
+  return { claimed: false, reason: 'concurrent' };
+}
+
 export async function upsertPostPlatform(
   db: D1Database,
   data: Partial<PostPlatformRow> & { post_id: string; platform: string },
