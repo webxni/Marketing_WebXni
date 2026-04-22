@@ -1,9 +1,10 @@
 <script lang="ts">
+  import { onMount, onDestroy } from 'svelte';
   import { page } from '$app/stores';
   import { sidebarOpen } from '$lib/stores/ui';
   import { can, hasRole } from '$lib/stores/auth';
 
-  // SVG icon paths (20×20 viewBox, Heroicons-style)
+  // SVG icon paths (Heroicons-style, 24×24 viewBox)
   const icons: Record<string, string> = {
     dashboard:  'M2 3h7v7H2V3zm9 0h7v7h-7V3zm-9 9h7v7H2v-7zm9 0h7v7h-7v-7z',
     posts:      'M4 5h12M4 9h12M4 13h8',
@@ -17,6 +18,31 @@
     logs:       'M9 12h6M9 16h6M9 8h6M5 4h10a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z',
     settings:   'M12 15a3 3 0 100-6 3 3 0 000 6zM19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z',
   };
+
+  // ── Auto-hide after 20 s of inactivity ───────────────────────────────────────
+  const INACTIVITY_DELAY = 20_000;
+  let hideTimer: ReturnType<typeof setTimeout> | null = null;
+  let hoveringOverSidebar = false;
+
+  function scheduleAutoHide() {
+    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+    if (!$sidebarOpen || hoveringOverSidebar) return;
+    hideTimer = setTimeout(() => {
+      if ($sidebarOpen && !hoveringOverSidebar) sidebarOpen.set(false);
+    }, INACTIVITY_DELAY);
+  }
+
+  $: $sidebarOpen, scheduleAutoHide();
+
+  onMount(() => {
+    const events = ['mousemove', 'click', 'keydown', 'touchstart', 'scroll'] as const;
+    function handleActivity() { scheduleAutoHide(); }
+    events.forEach(e => window.addEventListener(e, handleActivity, { passive: true }));
+    scheduleAutoHide();
+    return () => events.forEach(e => window.removeEventListener(e, handleActivity));
+  });
+
+  onDestroy(() => { if (hideTimer) clearTimeout(hideTimer); });
 
   // Admin sees everything; designer sees work items; client is redirected to /portal
   const adminNav = [
@@ -46,7 +72,11 @@
 </script>
 
 {#if $sidebarOpen}
-<aside class="w-56 shrink-0 h-screen bg-surface border-r border-border flex flex-col">
+<aside
+  class="w-56 shrink-0 h-screen bg-surface border-r border-border flex flex-col"
+  on:mouseenter={() => { hoveringOverSidebar = true; if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; } }}
+  on:mouseleave={() => { hoveringOverSidebar = false; scheduleAutoHide(); }}
+>
   <!-- Logo -->
   <div class="px-4 py-4 border-b border-border">
     <div class="flex items-center gap-2.5">

@@ -60,7 +60,6 @@
   async function load() {
     loading = true;
     try {
-      // Show only posts submitted for review (pending_approval)
       const r = await postsApi.list({ status: 'pending_approval', limit: 100 });
       posts = r.posts;
     } finally { loading = false; }
@@ -72,7 +71,7 @@
     actionLoading = post.id;
     try {
       await postsApi.approve(post.id);
-      toast.success(`"${post.title ?? 'Post'}" approved`);
+      toast.success(`"${post.title ?? 'Post'}" approved ✓`);
       posts = posts.filter(p => p.id !== post.id);
     } catch { toast.error('Failed to approve'); }
     finally { actionLoading = null; }
@@ -88,7 +87,6 @@
     finally { actionLoading = null; }
   }
 
-  // Readiness indicator
   function readinessFlags(post: Post): { label: string; ok: boolean }[] {
     const flags = [];
     const platforms = parsePlatforms(post.platforms);
@@ -96,9 +94,25 @@
     flags.push({ label: 'Asset', ok: post.asset_delivered === 1 || post.content_type === 'text' || post.content_type === 'blog' });
     flags.push({ label: 'Date', ok: !!post.publish_date });
     if (platforms.includes('website_blog')) {
-      flags.push({ label: 'Blog body', ok: !!(post.blog_content?.trim()) });
+      flags.push({ label: 'Blog', ok: !!(post.blog_content?.trim()) });
     }
     return flags;
+  }
+
+  function isVideo(post: Post): boolean {
+    return post.content_type === 'video' || post.content_type === 'reel' || post.asset_type === 'video';
+  }
+
+  function hideImgOnError(e: Event) {
+    const img = e.target;
+    if (img && 'style' in img) (img as HTMLElement).style.display = 'none';
+  }
+
+  function contentTypeIcon(post: Post): string {
+    if (post.content_type === 'blog') return '📝';
+    if (post.content_type === 'reel') return '🎬';
+    if (post.content_type === 'video') return '▶';
+    return '🖼';
   }
 </script>
 
@@ -134,86 +148,154 @@
     icon="✓"
   />
 {:else}
-  <!-- Bulk select bar -->
+  <!-- Select all bar -->
   {#if posts.length > 1}
-  <div class="flex items-center gap-3 mb-3 text-xs text-muted">
-    <label class="flex items-center gap-2 cursor-pointer">
+  <div class="flex items-center gap-3 mb-4 text-xs text-muted">
+    <label class="flex items-center gap-2 cursor-pointer select-none">
       <input type="checkbox" checked={allSelected} on:change={toggleAll} class="rounded" />
       Select all {posts.length}
     </label>
   </div>
   {/if}
 
-  <div class="space-y-4">
+  <!-- Grid -->
+  <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
     {#each posts as post}
       {@const flags = readinessFlags(post)}
       {@const allReady = flags.every(f => f.ok)}
-      <div class="card p-5" class:ring-1={selected.has(post.id)} class:ring-accent={selected.has(post.id)}>
-        <div class="flex items-start gap-3">
-          <input
-            type="checkbox"
-            checked={selected.has(post.id)}
-            on:change={() => toggleSelect(post.id)}
-            class="rounded mt-1 flex-shrink-0"
-          />
-          <div class="flex-1 min-w-0 flex items-start justify-between gap-4">
-            <div class="flex-1 min-w-0">
-              <div class="flex items-center gap-2 mb-1 flex-wrap">
-                <span class="font-medium text-white text-sm">{post.title ?? '(untitled)'}</span>
-                <Badge status={post.status ?? 'pending_approval'} />
-                <span class="text-xs text-muted capitalize">{post.content_type ?? '—'}</span>
-              </div>
-              <div class="text-xs text-muted mb-3">
-                {post.client_name ?? post.client_slug ?? '—'}
-                {#if post.publish_date}· {formatDate(post.publish_date)}{/if}
-              </div>
+      {@const platformList = parsePlatforms(post.platforms)}
 
-              <!-- Platforms -->
-              <div class="flex flex-wrap gap-1 mb-3">
-                {#each parsePlatforms(post.platforms) as p}
-                  <PlatformBadge platform={p} size="sm" />
-                {/each}
-              </div>
+      <div class="card overflow-hidden flex flex-col transition-shadow hover:shadow-lg
+                  {selected.has(post.id) ? 'ring-1 ring-accent' : ''}">
 
-              <!-- Caption preview -->
-              {#if post.master_caption}
-              <p class="text-xs text-muted line-clamp-3 bg-surface rounded px-3 py-2 mb-3">
-                {post.master_caption}
-              </p>
-              {/if}
+        <!-- ── Media preview ── -->
+        <div class="relative bg-card/60 overflow-hidden" style="aspect-ratio:16/9;">
+          <!-- Checkbox -->
+          <label class="absolute top-2 left-2 z-10 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={selected.has(post.id)}
+              on:change={() => toggleSelect(post.id)}
+              class="rounded"
+            />
+          </label>
 
-              <!-- Readiness flags -->
-              <div class="flex flex-wrap gap-2">
-                {#each flags as flag}
-                  <span class="text-[10px] px-2 py-0.5 rounded-full border
-                    {flag.ok
-                      ? 'border-green-500/30 text-green-400 bg-green-500/5'
-                      : 'border-red-500/30 text-red-400 bg-red-500/5'}">
-                    {flag.ok ? '✓' : '✗'} {flag.label}
-                  </span>
-                {/each}
-                {#if !allReady}
-                  <span class="text-[10px] text-yellow-400">⚠ incomplete — can still approve</span>
-                {/if}
+          {#if post.asset_r2_key}
+            {#if isVideo(post)}
+              <!-- Video: play overlay -->
+              <div class="w-full h-full flex items-center justify-center bg-black/40">
+                <div class="w-10 h-10 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="white"><polygon points="3,1 13,7 3,13"/></svg>
+                </div>
               </div>
+            {:else}
+              <img
+                src="/media/{post.asset_r2_key}"
+                alt={post.title ?? ''}
+                class="w-full h-full object-cover"
+                loading="lazy"
+                on:error={hideImgOnError}
+              />
+            {/if}
+          {:else if post.content_type === 'blog'}
+            <div class="w-full h-full flex items-center justify-center flex-col gap-1">
+              <span class="text-3xl opacity-30">📝</span>
+              <span class="text-[10px] text-muted">Blog post</span>
             </div>
-
-            <!-- Actions -->
-            <div class="flex flex-col gap-2 flex-shrink-0 min-w-[80px]">
-              <a href="/posts/{post.id}" class="btn-ghost btn-sm text-xs text-center">View</a>
-              {#if can('posts.approve')}
-                <button
-                  class="btn-primary btn-sm text-xs"
-                  disabled={actionLoading === post.id}
-                  on:click={() => approve(post)}
-                >Approve</button>
-                <button
-                  class="btn-danger btn-sm text-xs"
-                  disabled={actionLoading === post.id}
-                  on:click={() => reject(post)}
-                >Reject</button>
-              {/if}
+          {:else if post.canva_link}
+            <div class="w-full h-full flex items-center justify-center">
+              <a href={post.canva_link} target="_blank" rel="noopener"
+                 class="text-xs text-accent hover:underline flex items-center gap-1">
+                <span>🎨</span> Canva design
+              </a>
             </div>
+          {:else}
+            <div class="w-full h-full flex items-center justify-center text-3xl opacity-20">
+              {contentTypeIcon(post)}
+            </div>
+          {/if}
+
+          <!-- Content type pill -->
+          <div class="absolute top-2 right-2">
+            <span class="text-[10px] bg-black/60 text-white px-1.5 py-0.5 rounded capitalize font-medium">
+              {post.content_type ?? '—'}
+            </span>
+          </div>
+
+          <!-- Readiness warning dot -->
+          {#if !allReady}
+          <div class="absolute bottom-2 right-2 w-2 h-2 rounded-full bg-yellow-400" title="Incomplete"></div>
+          {/if}
+        </div>
+
+        <!-- ── Card body ── -->
+        <div class="p-4 flex flex-col gap-2.5 flex-1">
+
+          <!-- Title + status -->
+          <div class="flex items-start justify-between gap-2">
+            <span class="font-medium text-white text-sm leading-snug line-clamp-2 flex-1">
+              {post.title ?? '(untitled)'}
+            </span>
+            <Badge status={post.status ?? 'pending_approval'} />
+          </div>
+
+          <!-- Client + date -->
+          <p class="text-xs text-muted">
+            {post.client_name ?? post.client_slug ?? '—'}
+            {#if post.publish_date}
+              <span class="text-border mx-1">·</span>{formatDate(post.publish_date)}
+            {/if}
+          </p>
+
+          <!-- Platform chips -->
+          <div class="flex flex-wrap gap-1">
+            {#each platformList.slice(0, 6) as p}
+              <PlatformBadge platform={p} size="sm" />
+            {/each}
+            {#if platformList.length > 6}
+              <span class="text-[10px] text-muted self-center">+{platformList.length - 6}</span>
+            {/if}
+          </div>
+
+          <!-- Caption preview -->
+          {#if post.master_caption}
+          <p class="text-[11px] text-muted line-clamp-2 italic">
+            "{post.master_caption.slice(0, 120)}{post.master_caption.length > 120 ? '…' : ''}"
+          </p>
+          {/if}
+
+          <!-- Readiness flags -->
+          <div class="flex flex-wrap gap-1 mt-auto pt-1">
+            {#each flags as flag}
+              <span class="text-[10px] px-1.5 py-0.5 rounded-full border
+                {flag.ok
+                  ? 'border-green-500/30 text-green-400 bg-green-500/5'
+                  : 'border-red-500/30 text-red-400 bg-red-500/5'}">
+                {flag.ok ? '✓' : '✗'} {flag.label}
+              </span>
+            {/each}
+          </div>
+
+          <!-- Actions -->
+          <div class="flex gap-2 pt-2 border-t border-border">
+            <a href="/posts/{post.id}" class="btn-ghost btn-sm text-xs flex-1 text-center">
+              View
+            </a>
+            {#if can('posts.approve')}
+              <button
+                class="btn-primary btn-sm text-xs flex-1"
+                disabled={actionLoading === post.id}
+                on:click={() => approve(post)}
+              >
+                {actionLoading === post.id ? '…' : 'Approve'}
+              </button>
+              <button
+                class="btn-danger btn-sm text-xs px-2.5"
+                disabled={actionLoading === post.id}
+                title="Reject"
+                on:click={() => reject(post)}
+              >✗</button>
+            {/if}
           </div>
         </div>
       </div>

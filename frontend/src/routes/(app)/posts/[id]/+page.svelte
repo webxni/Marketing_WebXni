@@ -157,16 +157,39 @@
     catch { toast.error('Failed to submit'); }
   }
 
+  async function goToNextPending(currentId: string) {
+    try {
+      const { posts: pending } = await postsApi.list({ status: 'pending_approval', limit: 5 });
+      const next = pending.find(p => p.id !== currentId);
+      if (next) goto(`/posts/${next.id}`);
+      else goto('/approvals');
+    } catch {
+      goto('/approvals');
+    }
+  }
+
   async function approve() {
     if (!post) return;
-    try { await postsApi.approve(post.id); toast.success('Approved — post is ready for automation'); load(); }
-    catch { toast.error('Failed to approve'); }
+    const currentId = post.id;
+    const wasPending = post.status === 'pending_approval';
+    try {
+      await postsApi.approve(currentId);
+      toast.success('Approved ✓');
+      if (wasPending) await goToNextPending(currentId);
+      else load();
+    } catch { toast.error('Failed to approve'); }
   }
 
   async function reject() {
     if (!post) return;
-    try { await postsApi.reject(post.id); toast.success('Post sent back to draft'); load(); }
-    catch { toast.error('Failed to reject'); }
+    const currentId = post.id;
+    const wasPending = post.status === 'pending_approval';
+    try {
+      await postsApi.reject(currentId);
+      toast.success('Sent back to draft');
+      if (wasPending) await goToNextPending(currentId);
+      else load();
+    } catch { toast.error('Failed to reject'); }
   }
 
   async function retryFailed() {
