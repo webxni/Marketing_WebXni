@@ -81,18 +81,61 @@ assetRoutes.get('/preview', async (c) => {
   });
 });
 
-/** GET /media/* — public media proxy for Upload-Post video fetches */
+/** GET /media/* — public media proxy with Range request support (required for video playback) */
 publicAssetRoutes.get('/*', async (c) => {
   const key = decodeURIComponent(c.req.path.replace(/^\/+media\/?/, ''));
   if (!key) return new Response('Not Found', { status: 404 });
 
+  const rangeHeader = c.req.header('Range');
+
+  // ── Ranged request (video seek / partial load) ────────────────────────────
+  if (rangeHeader) {
+    const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+    if (!match) {
+      return new Response('Range Not Satisfiable', {
+        status: 416,
+        headers: { 'Content-Range': 'bytes */*' },
+      });
+    }
+
+    const requestedStart = parseInt(match[1], 10);
+    const rangeOpts = match[2]
+      ? { offset: requestedStart, length: parseInt(match[2], 10) - requestedStart + 1 }
+      : { offset: requestedStart };
+
+    const obj = await c.env.MEDIA.get(key, { range: rangeOpts });
+    if (!obj) return new Response('Not Found', { status: 404 });
+
+    // obj.size = total object size; obj.range = the actual range returned
+    const total  = obj.size;
+    const result = obj.range as { offset?: number; length?: number } | undefined;
+    const start  = result?.offset  ?? requestedStart;
+    const length = result?.length  ?? (total - start);
+    const end    = start + length - 1;
+
+    return new Response(obj.body, {
+      status: 206,
+      headers: {
+        'Content-Type':               obj.httpMetadata?.contentType ?? 'application/octet-stream',
+        'Content-Range':              `bytes ${start}-${end}/${total}`,
+        'Content-Length':             String(length),
+        'Accept-Ranges':              'bytes',
+        'Cache-Control':              'public, max-age=3600',
+        'Access-Control-Allow-Origin': '*',
+      },
+    });
+  }
+
+  // ── Full object ───────────────────────────────────────────────────────────
   const obj = await c.env.MEDIA.get(key);
   if (!obj) return new Response('Not Found', { status: 404 });
 
   return new Response(obj.body, {
     headers: {
-      'Content-Type': obj.httpMetadata?.contentType ?? 'application/octet-stream',
-      'Cache-Control': 'public, max-age=3600',
+      'Content-Type':               obj.httpMetadata?.contentType ?? 'application/octet-stream',
+      'Content-Length':             String(obj.size),
+      'Accept-Ranges':              'bytes',
+      'Cache-Control':              'public, max-age=3600',
       'Access-Control-Allow-Origin': '*',
     },
   });

@@ -114,9 +114,15 @@
     if (post.content_type === 'video') return '▶';
     return '🖼';
   }
+
+  // ── Image lightbox ────────────────────────────────────────────────────────
+  let lightboxUrl: string | null = null;
+  function openLightbox(url: string) { lightboxUrl = url; }
+  function closeLightbox() { lightboxUrl = null; }
 </script>
 
 <svelte:head><title>Approvals — WebXni</title></svelte:head>
+<svelte:window on:keydown={(e) => lightboxUrl && e.key === 'Escape' && closeLightbox()} />
 
 <div class="page-header">
   <div>
@@ -182,20 +188,32 @@
 
           {#if post.asset_r2_key}
             {#if isVideo(post)}
-              <!-- Video: play overlay -->
-              <div class="w-full h-full flex items-center justify-center bg-black/40">
-                <div class="w-10 h-10 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center">
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="white"><polygon points="3,1 13,7 3,13"/></svg>
-                </div>
-              </div>
-            {:else}
-              <img
+              <!-- Playable video — Range requests now supported by /media proxy -->
+              <video
                 src="/media/{post.asset_r2_key}"
-                alt={post.title ?? ''}
-                class="w-full h-full object-cover"
-                loading="lazy"
-                on:error={hideImgOnError}
+                class="w-full h-full object-contain bg-black"
+                controls
+                preload="metadata"
+                muted
+                playsinline
+                on:click|stopPropagation
               />
+            {:else}
+              <!-- Image thumbnail — click to open full-size lightbox -->
+              <button
+                type="button"
+                class="w-full h-full cursor-zoom-in focus:outline-none"
+                title="Click to view full size"
+                on:click|stopPropagation={() => openLightbox(`/media/${post.asset_r2_key}`)}
+              >
+                <img
+                  src="/media/{post.asset_r2_key}"
+                  alt={post.title ?? ''}
+                  class="w-full h-full object-cover"
+                  loading="lazy"
+                  on:error={hideImgOnError}
+                />
+              </button>
             {/if}
           {:else if post.content_type === 'blog'}
             <div class="w-full h-full flex items-center justify-center flex-col gap-1">
@@ -300,5 +318,31 @@
         </div>
       </div>
     {/each}
+  </div>
+{/if}
+
+<!-- ── Image lightbox ──────────────────────────────────────────────────────── -->
+{#if lightboxUrl}
+  <div
+    class="fixed inset-0 z-50 bg-black/95 flex items-center justify-center p-4"
+    role="dialog"
+    aria-modal="true"
+    tabindex="-1"
+    on:click={closeLightbox}
+  >
+    <!-- Close button -->
+    <button
+      class="absolute top-4 right-4 w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 transition-colors flex items-center justify-center text-white text-base z-10"
+      on:click={closeLightbox}
+      aria-label="Close"
+    >✕</button>
+
+    <!-- Full image — click inside does not close -->
+    <img
+      src={lightboxUrl}
+      alt=""
+      class="max-w-full max-h-[90vh] object-contain rounded shadow-2xl"
+      on:click|stopPropagation
+    />
   </div>
 {/if}
