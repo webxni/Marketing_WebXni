@@ -7,23 +7,24 @@
 
   const colorMap = {
     default: 'text-white',
-    success: 'text-green-400',
-    warning: 'text-yellow-400',
+    success: 'text-emerald-400',
+    warning: 'text-amber-400',
     error:   'text-red-400',
-    info:    'text-blue-400',
+    info:    'text-sky-400',
   };
 </script>
 
 {#if href}
-  <a {href} class="metric-card hover:border-accent/30 cursor-pointer transition-colors block">
-    <div class="metric-label">{label}</div>
-    <div class="metric-value mt-2 {colorMap[color]}">{value}</div>
-    {#if subtext}<div class="text-xs text-muted mt-1">{subtext}</div>{/if}
+  <a {href} class="metric-card hover:border-white/15 cursor-pointer transition-colors block group">
+    <div class="metric-label mb-2">{label}</div>
+    <div class="metric-value {colorMap[color]}">{value}</div>
+    {#if subtext}<div class="text-[11px] text-muted mt-1.5">{subtext}</div>{/if}
+    <div class="mt-2 text-[10px] text-muted/50 group-hover:text-accent/60 transition-colors">View →</div>
   </a>
 {:else}
   <div class="metric-card">
-    <div class="metric-label">{label}</div>
-    <div class="metric-value mt-2 {colorMap[color]}">{value}</div>
-    {#if subtext}<div class="text-xs text-muted mt-1">{subtext}</div>{/if}
+    <div class="metric-label mb-2">{label}</div>
+    <div class="metric-value {colorMap[color]}">{value}</div>
+    {#if subtext}<div class="text-[11px] text-muted mt-1.5">{subtext}</div>{/if}
   </div>
 {/if}

@@ -5,7 +5,7 @@
   import { postsApi, assetsApi, clientsApi } from '$lib/api';
   import Badge from '$lib/components/ui/Badge.svelte';
   import PlatformBadge from '$lib/components/ui/PlatformBadge.svelte';
-  import Spinner from '$lib/components/ui/Spinner.svelte';
+  // Spinner removed — loading state uses inline CSS spinner
   import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
   import { can } from '$lib/stores/auth';
   import { toast } from '$lib/stores/ui';
@@ -442,25 +442,32 @@
 <svelte:head><title>{post?.title ?? 'Post'} — WebXni</title></svelte:head>
 
 {#if loading}
-  <div class="flex justify-center py-20"><Spinner size="lg" /></div>
+  <div class="flex flex-col items-center justify-center py-24 gap-3">
+    <div class="w-6 h-6 border-2 border-accent border-t-transparent rounded-full animate-spin"></div>
+    <p class="text-sm text-muted">Loading post…</p>
+  </div>
 {:else if post}
   <!-- Header -->
   <div class="page-header">
-    <div>
-      <div class="flex items-center gap-2 text-xs text-muted mb-1">
-        <a href="/posts" class="hover:text-white">Posts</a>
-        <span>/</span>
-        <span class="truncate max-w-xs">{post.title ?? post.id}</span>
+    <div class="min-w-0">
+      <div class="flex items-center gap-1.5 text-xs text-muted mb-2">
+        <a href="/posts" class="hover:text-white transition-colors">Posts</a>
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" class="opacity-40"><polyline points="9 18 15 12 9 6"/></svg>
+        <span class="truncate max-w-xs text-muted/70">{post.title ?? post.id}</span>
       </div>
-      <h1 class="page-title">{post.title ?? '(untitled)'}</h1>
-      <div class="flex items-center gap-2 mt-1">
+      <h1 class="page-title truncate">{post.title ?? '(untitled)'}</h1>
+      <div class="flex items-center gap-2 mt-1.5 flex-wrap">
         <Badge status={post.status ?? 'draft'} />
-        <span class="text-xs text-muted capitalize">{post.content_type ?? '—'}</span>
-        <span class="text-xs text-muted">{post.client_name ?? post.client_slug ?? '—'}</span>
+        {#if post.content_type}
+          <span class="text-xs px-2 py-0.5 rounded-full bg-surface border border-border text-muted capitalize">{post.content_type}</span>
+        {/if}
+        {#if post.client_name ?? post.client_slug}
+          <a href="/clients/{post.client_slug}" class="text-xs text-muted hover:text-accent transition-colors">{post.client_name ?? post.client_slug}</a>
+        {/if}
       </div>
     </div>
-    <div class="flex gap-2">
-      <a href="/posts/{post.id}/edit" class="btn-ghost btn-sm">Edit Content</a>
+    <div class="flex gap-2 shrink-0 flex-wrap justify-end">
+      <a href="/posts/{post.id}/edit" class="btn-ghost btn-sm">Edit</a>
       {#if can('automation.trigger')}
         <button class="btn-ghost btn-sm" on:click={duplicateAndRepublish} disabled={duplicatingPost}>
           {duplicatingPost ? 'Duplicating…' : 'Duplicate & Republish'}
@@ -483,7 +490,7 @@
   </div>
 
   <!-- Tabs -->
-  <div class="flex border-b border-border mb-6">
+  <div class="flex items-center gap-1 mb-6 bg-surface border border-border rounded-xl p-1 w-fit">
     {#each [
       { key: 'overview',  label: 'Overview'   },
       { key: 'captions',  label: 'Captions'   },
@@ -492,8 +499,10 @@
       { key: 'diseno',    label: '🎨 Diseño'  },
     ] as tab}
       <button
-        class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors
-               {activeTab === tab.key ? 'border-accent text-white' : 'border-transparent text-muted hover:text-white'}"
+        class="px-3.5 py-1.5 text-sm font-medium rounded-lg transition-all
+               {activeTab === tab.key
+                 ? 'bg-card text-white shadow-sm border border-border'
+                 : 'text-muted hover:text-white'}"
         on:click={() => setTab(tab.key)}
       >{tab.label}</button>
     {/each}
@@ -544,39 +553,39 @@
     <!-- Row 2: Details -->
     <div class="card p-5">
       <h3 class="section-label mb-4">Details</h3>
-      <dl class="space-y-3">
-        <div class="flex justify-between">
-          <dt class="text-xs text-muted">Post ID</dt>
-          <dd class="text-xs font-mono text-white truncate ml-4">{post.id}</dd>
+      <dl class="space-y-0">
+        <div class="info-row">
+          <dt class="info-label">Post ID</dt>
+          <dd class="text-xs font-mono text-muted truncate ml-4 max-w-[200px]">{post.id}</dd>
         </div>
-        <div class="flex justify-between">
-          <dt class="text-xs text-muted">Client</dt>
-          <dd class="text-xs text-white">
-            <a href="/clients/{post.client_slug}" class="hover:text-accent">{post.client_name ?? post.client_slug ?? '—'}</a>
+        <div class="info-row">
+          <dt class="info-label">Client</dt>
+          <dd class="info-value">
+            <a href="/clients/{post.client_slug}" class="hover:text-accent transition-colors">{post.client_name ?? post.client_slug ?? '—'}</a>
           </dd>
         </div>
-        <div class="flex justify-between">
-          <dt class="text-xs text-muted">Publish Date</dt>
-          <dd class="text-xs text-white">{post.publish_date ? formatDate(post.publish_date) : '—'}</dd>
+        <div class="info-row">
+          <dt class="info-label">Publish Date</dt>
+          <dd class="info-value">{post.publish_date ? formatDate(post.publish_date) : '—'}</dd>
         </div>
-        <div class="flex justify-between">
-          <dt class="text-xs text-muted">Created</dt>
-          <dd class="text-xs text-white">{formatDateTime(post.created_at)}</dd>
+        <div class="info-row">
+          <dt class="info-label">Created</dt>
+          <dd class="info-value">{formatDateTime(post.created_at)}</dd>
         </div>
-        <div class="flex justify-between">
-          <dt class="text-xs text-muted">Updated</dt>
-          <dd class="text-xs text-white">{formatDateTime(post.updated_at)}</dd>
+        <div class="info-row">
+          <dt class="info-label">Updated</dt>
+          <dd class="info-value">{formatDateTime(post.updated_at)}</dd>
         </div>
         {#if post.canva_link}
-        <div class="flex justify-between">
-          <dt class="text-xs text-muted">Canva</dt>
-          <dd class="text-xs"><a href={post.canva_link} target="_blank" class="text-accent hover:underline">Open design</a></dd>
+        <div class="info-row">
+          <dt class="info-label">Canva</dt>
+          <dd class="info-value"><a href={post.canva_link} target="_blank" class="text-accent hover:underline">Open design ↗</a></dd>
         </div>
         {/if}
         {#if post.wp_post_url}
-        <div class="flex justify-between">
-          <dt class="text-xs text-muted">WordPress</dt>
-          <dd class="text-xs"><a href={post.wp_post_url} target="_blank" class="text-accent hover:underline">View post</a></dd>
+        <div class="info-row">
+          <dt class="info-label">WordPress</dt>
+          <dd class="info-value"><a href={post.wp_post_url} target="_blank" class="text-accent hover:underline">View post ↗</a></dd>
         </div>
         {/if}
       </dl>
@@ -704,9 +713,9 @@
       {/if}
 
       {#if post.error_log}
-      <div class="mt-4 border-t border-border pt-3">
-        <h4 class="text-xs text-muted mb-2">Error Log</h4>
-        <pre class="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded p-2 overflow-auto max-h-32">{post.error_log}</pre>
+      <div class="mt-4 border-t border-border pt-4">
+        <h4 class="section-label mb-2">Error Log</h4>
+        <pre class="text-xs text-red-400 bg-red-500/8 border border-red-500/20 rounded-lg p-3 overflow-auto max-h-40 leading-relaxed">{post.error_log}</pre>
       </div>
       {/if}
     </div>
@@ -716,12 +725,15 @@
 
   <!-- Captions tab -->
   {#if activeTab === 'captions'}
-  <div class="space-y-4">
+  <div class="space-y-3">
     {#each captionFields as field}
       {#if postField(post, field.key)}
       <div class="card p-4">
-        <h4 class="text-xs font-medium text-muted mb-2">{field.label}</h4>
-        <p class="text-sm text-white whitespace-pre-wrap">{postField(post, field.key)}</p>
+        <div class="flex items-center justify-between mb-3">
+          <h4 class="section-title">{field.label}</h4>
+          <PlatformBadge platform={field.key.replace('cap_', '')} size="sm" />
+        </div>
+        <p class="text-sm text-white whitespace-pre-wrap leading-relaxed">{postField(post, field.key)}</p>
       </div>
       {/if}
     {/each}
