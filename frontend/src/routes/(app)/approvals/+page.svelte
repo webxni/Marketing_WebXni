@@ -115,6 +115,27 @@
     return '🖼';
   }
 
+  // ── Inline publish date auto-save ─────────────────────────────────────────
+  let dateSaving: Record<string, boolean> = {};
+  let dateSaved:  Record<string, boolean> = {};
+
+  async function saveDatetime(post: Post) {
+    if (!post.publish_date) return;
+    dateSaving[post.id] = true;
+    dateSaving = dateSaving;
+    try {
+      await postsApi.update(post.id, { publish_date: post.publish_date });
+      dateSaved[post.id] = true;
+      dateSaved = dateSaved;
+      setTimeout(() => { delete dateSaved[post.id]; dateSaved = dateSaved; }, 1500);
+    } catch {
+      toast.error('Failed to save date');
+    } finally {
+      delete dateSaving[post.id];
+      dateSaving = dateSaving;
+    }
+  }
+
   // ── Image lightbox ────────────────────────────────────────────────────────
   let lightboxUrl: string | null = null;
   function openLightbox(url: string) { lightboxUrl = url; }
@@ -257,13 +278,28 @@
             <Badge status={post.status ?? 'pending_approval'} />
           </div>
 
-          <!-- Client + date -->
-          <p class="text-xs text-muted">
-            {post.client_name ?? post.client_slug ?? '—'}
-            {#if post.publish_date}
-              <span class="text-border mx-1">·</span>{formatDate(post.publish_date)}
-            {/if}
-          </p>
+          <!-- Client + publish date (inline editable, auto-saves on change) -->
+          <div class="flex items-center gap-1 text-xs text-muted flex-wrap">
+            <span class="truncate max-w-[120px]">{post.client_name ?? post.client_slug ?? '—'}</span>
+            <span class="text-border shrink-0">·</span>
+            <div class="flex items-center gap-1 min-w-0">
+              <input
+                type="datetime-local"
+                bind:value={post.publish_date}
+                on:change={() => saveDatetime(post)}
+                class="bg-transparent text-[11px] text-muted border-0 outline-none
+                       cursor-pointer hover:text-white focus:text-white
+                       rounded px-0.5 hover:bg-white/5 transition-colors"
+                style="color-scheme:dark; width:auto;"
+                title="Click to change publish date/time — saves automatically"
+              />
+              {#if dateSaving[post.id]}
+                <span class="text-[9px] text-muted shrink-0">saving…</span>
+              {:else if dateSaved[post.id]}
+                <span class="text-[9px] text-green-400 shrink-0">✓ saved</span>
+              {/if}
+            </div>
+          </div>
 
           <!-- Platform chips -->
           <div class="flex flex-wrap gap-1">
@@ -295,10 +331,9 @@
           </div>
 
           <!-- Actions -->
-          <div class="flex gap-2 pt-2 border-t border-border">
-            <a href="/posts/{post.id}" class="btn-ghost btn-sm text-xs flex-1 text-center">
-              View
-            </a>
+          <div class="flex gap-1.5 pt-2 border-t border-border">
+            <a href="/posts/{post.id}"       class="btn-ghost btn-sm text-xs text-center px-2.5">View</a>
+            <a href="/posts/{post.id}/edit"  class="btn-ghost btn-sm text-xs text-center px-2.5">Edit</a>
             {#if can('posts.approve')}
               <button
                 class="btn-primary btn-sm text-xs flex-1"
