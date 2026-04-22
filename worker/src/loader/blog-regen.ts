@@ -208,9 +208,9 @@ export async function planBlogRegen(
     const now = Math.floor(Date.now() / 1000);
     await db
       .prepare(`UPDATE generation_runs
-                SET post_slots = ?, total_slots = ?, status = 'running', started_at = ?, last_activity_at = ?
+                SET post_slots = ?, total_slots = ?, status = 'running', last_activity_at = ?
                 WHERE id = ?`)
-      .bind(JSON.stringify(slots), slots.length, now, now, runId)
+      .bind(JSON.stringify(slots), slots.length, now, runId)
       .run();
 
     await log('INFO', `${slots.length} blogs queued (${publishedCount} published → WP will also be updated)`);
