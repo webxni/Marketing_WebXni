@@ -17,14 +17,18 @@ export type BlogImageSlot = 1 | 2 | 3;
 export const BLOG_IMAGE_SLOTS: readonly BlogImageSlot[] = [1, 2, 3] as const;
 
 export interface BlogBodyImage {
-  slot:         BlogImageSlot;
-  r2_key:       string | null;
-  prompt:       string;
-  wp_media_id?: number | null;
-  attempts?:    number;
-  status:       'generated' | 'failed' | 'pending';
-  error?:       string;
-  updated_at?:  number;
+  slot:                  BlogImageSlot;
+  r2_key:                string | null;
+  prompt:                string;
+  wp_media_id?:          number | null;
+  attempts?:             number;
+  status:                'generated' | 'failed' | 'pending';
+  error?:                string;
+  updated_at?:           number;
+  prompt_quality_score?: number;
+  prompt_quality_label?: 'Good' | 'Weak';
+  attempts_remaining?:   number;
+  regeneration_reason?:  string;
 }
 
 export function parseBlogBodyImages(raw: string | null | undefined): BlogBodyImage[] {
@@ -39,14 +43,18 @@ export function parseBlogBodyImages(raw: string | null | undefined): BlogBodyIma
         return typeof it.slot === 'number' && [1, 2, 3].includes(it.slot);
       })
       .map((it) => ({
-        slot:         it.slot as BlogImageSlot,
-        r2_key:       it.r2_key ?? null,
-        prompt:       typeof it.prompt === 'string' ? it.prompt : '',
-        wp_media_id:  typeof it.wp_media_id === 'number' ? it.wp_media_id : null,
-        attempts:     typeof it.attempts === 'number' ? it.attempts : 0,
-        status:       (it.status === 'generated' || it.status === 'failed' || it.status === 'pending') ? it.status : 'pending',
-        error:        typeof it.error === 'string' ? it.error : undefined,
-        updated_at:   typeof it.updated_at === 'number' ? it.updated_at : undefined,
+        slot:                  it.slot as BlogImageSlot,
+        r2_key:                it.r2_key ?? null,
+        prompt:                typeof it.prompt === 'string' ? it.prompt : '',
+        wp_media_id:           typeof it.wp_media_id === 'number' ? it.wp_media_id : null,
+        attempts:              typeof it.attempts === 'number' ? it.attempts : 0,
+        status:                (it.status === 'generated' || it.status === 'failed' || it.status === 'pending') ? it.status : 'pending',
+        error:                 typeof it.error === 'string' ? it.error : undefined,
+        updated_at:            typeof it.updated_at === 'number' ? it.updated_at : undefined,
+        prompt_quality_score:  typeof it.prompt_quality_score === 'number' ? it.prompt_quality_score : undefined,
+        prompt_quality_label:  it.prompt_quality_label === 'Good' || it.prompt_quality_label === 'Weak' ? it.prompt_quality_label : undefined,
+        attempts_remaining:    typeof it.attempts_remaining === 'number' ? it.attempts_remaining : undefined,
+        regeneration_reason:   typeof it.regeneration_reason === 'string' ? it.regeneration_reason : undefined,
       }))
       .sort((a, b) => a.slot - b.slot);
   } catch {

@@ -21,7 +21,11 @@ import {
   type BlogImageSlot,
   type BlogBodyImage,
 } from '../modules/blog-body-images';
-import { buildStructuredBlogPrompt } from '../services/stability';
+import {
+  buildStructuredBlogPrompt,
+  validateImagePrompt,
+  MAX_BLOG_IMAGE_ATTEMPTS,
+} from '../services/stability';
 import {
   ensureBlogBodyImagesGenerated,
   extractSectionHeadings,
@@ -41,6 +45,31 @@ function slotHeading(slot: BlogImageSlot, title: string, headings: string[]): st
   return resolveBlogSlotHeading(slot, title, headings);
 }
 
+function enrichImageForUi(
+  img: BlogBodyImage,
+  post: { title: string | null; target_keyword: string | null; blog_content: string | null },
+  client: { industry: string | null; state: string | null; canonical_name: string },
+) {
+  const headings = extractSectionHeadings(post.blog_content ?? '');
+  const audit = validateImagePrompt(img.prompt, {
+    slot: img.slot,
+    blogTitle: post.title ?? '',
+    targetKeyword: post.target_keyword ?? undefined,
+    sectionHeading: slotHeading(img.slot, post.title ?? '', headings),
+    serviceType: post.target_keyword ?? client.industry ?? '',
+    industry: client.industry ?? '',
+    location: client.state ?? '',
+    clientName: client.canonical_name,
+  });
+  const attempts = img.attempts ?? 0;
+  return {
+    ...img,
+    prompt_quality_score: img.prompt_quality_score ?? audit.score,
+    prompt_quality_label: img.prompt_quality_label ?? audit.label,
+    attempts_remaining: Math.max(0, MAX_BLOG_IMAGE_ATTEMPTS - attempts),
+  };
+}
+
 blogImageRoutes.get('/:id/blog-images', async (c) => {
   const post = await getPostById(c.env.DB, c.req.param('id'));
   if (!post) return c.json({ error: 'Not found' }, 404);
@@ -54,7 +83,11 @@ blogImageRoutes.get('/:id/blog-images', async (c) => {
   // *would* be generated without persisting anything.
   const all = BLOG_IMAGE_SLOTS.map((slot) => {
     const existing = stored.find((s) => s.slot === slot);
-    if (existing) return existing;
+    if (existing) return enrichImageForUi(existing, post, {
+      industry: client?.industry ?? '',
+      state: client?.state ?? '',
+      canonical_name: client?.canonical_name ?? '',
+    });
     const prompt = buildStructuredBlogPrompt({
       slot,
       blogTitle:      post.title ?? '',
@@ -62,17 +95,21 @@ blogImageRoutes.get('/:id/blog-images', async (c) => {
       sectionHeading: slotHeading(slot, post.title ?? '', headings),
       serviceType:    post.target_keyword ?? client?.industry ?? '',
       industry:       client?.industry ?? '',
-      location:       '',
+      location:       client?.state ?? '',
       clientName:     client?.canonical_name ?? '',
     });
-    return {
+    return enrichImageForUi({
       slot,
       r2_key: null,
       prompt,
       wp_media_id: null,
       attempts: 0,
       status: 'pending' as const,
-    };
+    }, post, {
+      industry: client?.industry ?? '',
+      state: client?.state ?? '',
+      canonical_name: client?.canonical_name ?? '',
+    });
   });
 
   const publicBase = c.env.R2_MEDIA_PUBLIC_URL?.replace(/\/$/, '') ?? '';
@@ -107,7 +144,6 @@ blogImageRoutes.post('/:id/blog-images/generate', async (c) => {
     clientName: client.canonical_name,
     clientId: client.id,
     existing: parseBlogBodyImages(post.blog_body_images),
-    forceSlots: [...BLOG_IMAGE_SLOTS],
   });
   await updatePost(c.env.DB, post.id, { blog_body_images: serializeBlogBodyImages(updated) });
 
@@ -134,6 +170,11 @@ blogImageRoutes.post('/:id/blog-images/:slot', async (c) => {
 
   const body = await c.req.json().catch(() => ({})) as { prompt?: string };
   const promptOverride = typeof body.prompt === 'string' && body.prompt.trim() ? body.prompt.trim() : undefined;
+  const existing = parseBlogBodyImages(post.blog_body_images);
+  const current = existing.find((entry) => entry.slot === slot);
+  if ((current?.attempts ?? 0) >= MAX_BLOG_IMAGE_ATTEMPTS) {
+    return c.json({ error: 'Attempt limit reached for this image slot' }, 409);
+  }
 
   const { openAiKey, stabilityKey } = await resolveStabilityApiKeys(c.env);
   if (!stabilityKey) return c.json({ error: 'STABILITY_API_KEY not configured' }, 503);
@@ -149,7 +190,7 @@ blogImageRoutes.post('/:id/blog-images/:slot', async (c) => {
     location,
     clientName: client.canonical_name,
     clientId: client.id,
-    existing: parseBlogBodyImages(post.blog_body_images),
+    existing,
     forceSlots: [slot],
     promptOverrides: promptOverride ? { [slot]: promptOverride } : undefined,
   });

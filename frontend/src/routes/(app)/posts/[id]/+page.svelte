@@ -469,6 +469,10 @@
     prompt: string;
     wp_media_id?: number | null;
     attempts?: number;
+    attempts_remaining?: number;
+    prompt_quality_score?: number;
+    prompt_quality_label?: 'Good' | 'Weak';
+    regeneration_reason?: string;
     status: 'generated' | 'failed' | 'pending';
     error?: string;
     url: string | null;
@@ -562,6 +566,10 @@
 
   function blogImageFor(slot: BlogSlot): BlogImg | null {
     return blogImages.find((img) => img.slot === slot) ?? null;
+  }
+
+  function attemptsRemaining(img: BlogImg | null): number {
+    return Math.max(0, img?.attempts_remaining ?? (2 - (img?.attempts ?? 0)));
   }
 
   $: if (post && post.content_type === 'blog' && activeTab === 'blog' && blogImages.length === 0 && !blogImagesLoading) {
@@ -1291,7 +1299,7 @@
           <p class="text-xs text-muted mt-1">Structured Stability Core images placed after the intro, after section two, and before the CTA.</p>
         </div>
         <button class="btn-primary btn-sm" on:click={generateAllBlogImages} disabled={blogImagesLoading || blogImageBusy[1] || blogImageBusy[2] || blogImageBusy[3]}>
-          {(blogImageBusy[1] || blogImageBusy[2] || blogImageBusy[3]) ? 'Generating…' : 'Generate Images'}
+          {(blogImageBusy[1] || blogImageBusy[2] || blogImageBusy[3]) ? 'Generating…' : 'Generate Missing / Weak Images'}
         </button>
       </div>
 
@@ -1328,9 +1336,19 @@
                 </div>
 
                 <div class="text-xs text-muted flex items-center justify-between gap-2">
-                  <span>Attempts: {img?.attempts ?? 0}/3</span>
+                  <span>Attempts: {img?.attempts ?? 0}/2</span>
+                  <span>Remaining: {attemptsRemaining(img)}</span>
                   {#if img?.wp_media_id}
                     <span class="text-green-400/80">WP synced</span>
+                  {/if}
+                </div>
+
+                <div class="text-xs flex items-center justify-between gap-2">
+                  <span class={img?.prompt_quality_label === 'Good' ? 'text-green-400' : 'text-yellow-400'}>
+                    Prompt Quality: {img?.prompt_quality_label ?? 'Weak'}
+                  </span>
+                  {#if typeof img?.prompt_quality_score === 'number'}
+                    <span class="text-muted">{Math.round(img.prompt_quality_score * 100)}%</span>
                   {/if}
                 </div>
 
@@ -1344,12 +1362,15 @@
                 {#if img?.error}
                   <p class="text-xs text-red-400">{img.error}</p>
                 {/if}
+                {#if img?.regeneration_reason}
+                  <p class="text-xs text-muted">Last retry reason: {img.regeneration_reason}</p>
+                {/if}
 
                 <div class="flex items-center gap-2 flex-wrap">
                   <button class="btn-secondary btn-sm text-xs" on:click={() => savePromptOnly(slot)} disabled={blogImageBusy[slot]}>
                     Save Prompt
                   </button>
-                  <button class="btn-primary btn-sm text-xs" on:click={() => generateBlogImage(slot)} disabled={blogImageBusy[slot]}>
+                  <button class="btn-primary btn-sm text-xs" on:click={() => generateBlogImage(slot)} disabled={blogImageBusy[slot] || attemptsRemaining(img) <= 0}>
                     {blogImageBusy[slot] ? 'Generating…' : (img?.url ? 'Replace Image' : 'Generate Image')}
                   </button>
                   {#if img?.url}

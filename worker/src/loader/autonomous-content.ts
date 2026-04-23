@@ -27,11 +27,14 @@ import {
 import {
   buildStabilityPrompt,
   buildStructuredBlogPrompt,
+  validateImagePrompt,
   generateStabilityImage,
   reviewGeneratedImage,
   getAspectRatioForContent,
   base64ToUint8Array,
   BLOG_NEGATIVE_PROMPT,
+  MAX_BLOG_IMAGE_ATTEMPTS,
+  PROMPT_QUALITY_THRESHOLD,
   resolveStabilityApiKeys,
   type BlogImageSlot,
 } from '../services/stability';
@@ -227,32 +230,18 @@ export async function createContentWithImage(
   if (stabKey && contentType === 'blog') {
     const location = serviceAreas[0] ?? client.state ?? '';
     const serviceType = (p.target_keyword ?? '') || serviceNames[0] || client.industry || '';
-    const sectionHeadings = extractSectionHeadings(p.blog_content ?? '');
-
-    const blogImages: BlogBodyImage[] = [];
-    let anyGenerated = false;
-    let anyFailed = false;
-    for (const slot of [1, 2, 3] as const) {
-      const heading =
-        slot === 1 ? (p.title ?? '') :
-        slot === 2 ? (sectionHeadings[1] ?? sectionHeadings[0] ?? p.title ?? '') :
-                     (sectionHeadings[sectionHeadings.length - 1] ?? p.title ?? '');
-
-      const imgResult = await generateBlogSlotImage(env, openAiKey, stabKey, {
-        slot,
-        blogTitle:      p.title ?? topicResearch?.topic ?? '',
-        targetKeyword:  p.target_keyword ?? topicResearch?.targetKeyword,
-        sectionHeading: heading,
-        serviceType,
-        industry:       client.industry ?? '',
-        location,
-        clientName:     client.canonical_name,
-        clientId:       client.id,
-      });
-      blogImages.push(imgResult);
-      if (imgResult.status === 'generated') anyGenerated = true;
-      if (imgResult.status === 'failed')    anyFailed = true;
-    }
+    const blogImages = await ensureBlogBodyImagesGenerated(env, openAiKey, stabKey, {
+      blogTitle: p.title ?? topicResearch?.topic ?? '',
+      blogContent: p.blog_content,
+      targetKeyword: p.target_keyword ?? topicResearch?.targetKeyword,
+      serviceType,
+      industry: client.industry ?? '',
+      location,
+      clientName: client.canonical_name,
+      clientId: client.id,
+    });
+    const anyGenerated = blogImages.some((img) => img.status === 'generated');
+    const anyFailed = blogImages.some((img) => img.status === 'failed');
     blogBodyImagesJson = serializeBlogBodyImages(blogImages);
 
     // Promote slot 1 to the legacy featured/asset slot for backwards-compat.
@@ -417,6 +406,7 @@ export interface BlogSlotGenContext {
   clientId:       string;
   /** Override the auto-built prompt — used by manual regenerate. */
   promptOverride?: string;
+  existing?:      BlogBodyImage | undefined;
 }
 
 export async function generateBlogSlotImage(
@@ -425,7 +415,7 @@ export async function generateBlogSlotImage(
   stabilityKey: string,
   ctx: BlogSlotGenContext,
 ): Promise<BlogBodyImage> {
-  const basePrompt = ctx.promptOverride?.trim() || buildStructuredBlogPrompt({
+  const candidatePrompt = ctx.promptOverride?.trim() || buildStructuredBlogPrompt({
     slot:           ctx.slot,
     blogTitle:      ctx.blogTitle,
     targetKeyword:  ctx.targetKeyword ?? undefined,
@@ -436,14 +426,79 @@ export async function generateBlogSlotImage(
     clientName:     ctx.clientName,
   });
 
-  let prompt = basePrompt;
-  let attempts = 0;
+  const baseContext = {
+    slot: ctx.slot,
+    blogTitle: ctx.blogTitle,
+    targetKeyword: ctx.targetKeyword ?? undefined,
+    sectionHeading: ctx.sectionHeading,
+    serviceType: ctx.serviceType,
+    industry: ctx.industry,
+    location: ctx.location,
+    clientName: ctx.clientName,
+  };
+  const initialValidation = validateImagePrompt(candidatePrompt, baseContext);
+  const basePrompt = initialValidation.valid
+    ? initialValidation.prompt
+    : buildStructuredBlogPrompt(baseContext);
+  const basePromptValidation = validateImagePrompt(basePrompt, baseContext);
+  const previousAttempts = Math.max(0, Math.min(MAX_BLOG_IMAGE_ATTEMPTS, ctx.existing?.attempts ?? 0));
+  const attemptsRemaining = Math.max(0, MAX_BLOG_IMAGE_ATTEMPTS - previousAttempts);
+
+  if (attemptsRemaining <= 0) {
+    return {
+      slot: ctx.slot,
+      r2_key: ctx.existing?.r2_key ?? null,
+      prompt: basePromptValidation.prompt,
+      wp_media_id: ctx.existing?.wp_media_id ?? null,
+      attempts: previousAttempts,
+      attempts_remaining: 0,
+      status: ctx.existing?.status === 'generated' ? 'generated' : 'failed',
+      error: ctx.existing?.status === 'generated' ? undefined : 'Attempt budget exhausted',
+      prompt_quality_score: basePromptValidation.score,
+      prompt_quality_label: basePromptValidation.label,
+      regeneration_reason: 'attempt_budget_exhausted',
+      updated_at: Math.floor(Date.now() / 1000),
+    };
+  }
+
+  if (basePromptValidation.score < PROMPT_QUALITY_THRESHOLD) {
+    console.info('[blog-image] skipped Stability call due to weak prompt', {
+      slot: ctx.slot,
+      title: ctx.blogTitle,
+      score: basePromptValidation.score,
+      reasons: basePromptValidation.reasons,
+    });
+    return {
+      slot: ctx.slot,
+      r2_key: ctx.existing?.r2_key ?? null,
+      prompt: basePromptValidation.prompt,
+      wp_media_id: ctx.existing?.wp_media_id ?? null,
+      attempts: previousAttempts,
+      attempts_remaining: attemptsRemaining,
+      status: ctx.existing?.status === 'generated' ? 'generated' : 'failed',
+      error: `Prompt quality below threshold: ${basePromptValidation.reasons.join('; ')}`,
+      prompt_quality_score: basePromptValidation.score,
+      prompt_quality_label: basePromptValidation.label,
+      regeneration_reason: 'prompt_quality_below_threshold',
+      updated_at: Math.floor(Date.now() / 1000),
+    };
+  }
+
+  let prompt = basePromptValidation.prompt;
+  let attemptsUsed = 0;
   let lastError = '';
+  let regenerationReason: string | undefined;
   const postId_tmp = crypto.randomUUID().replace(/-/g, '').toLowerCase();
 
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    attempts = attempt;
+  for (let attempt = 1; attempt <= attemptsRemaining; attempt++) {
+    attemptsUsed = attempt;
+    const cumulativeAttempts = previousAttempts + attempt;
     try {
+      console.info('[blog-image] Stability generate start', {
+        slot: ctx.slot,
+        attempt: cumulativeAttempts,
+        prompt,
+      });
       const img = await generateStabilityImage(stabilityKey, {
         prompt,
         aspectRatio:    '16:9',
@@ -458,7 +513,8 @@ export async function generateBlogSlotImage(
         clientName: ctx.clientName ?? '',
       });
 
-      if (review.ok || attempt === 3) {
+      const promptRelevance = validateImagePrompt(prompt, baseContext);
+      if (review.ok && promptRelevance.score >= PROMPT_QUALITY_THRESHOLD) {
         const rKey = `${ctx.clientId}/ai-generated/blog-${postId_tmp}-slot${ctx.slot}-a${attempt}.webp`;
         await env.MEDIA.put(rKey, base64ToUint8Array(img.imageBase64), {
           httpMetadata:   { contentType: 'image/webp' },
@@ -470,35 +526,56 @@ export async function generateBlogSlotImage(
         });
 
         return {
-          slot:       ctx.slot,
-          r2_key:     rKey,
+          slot:                  ctx.slot,
+          r2_key:                rKey,
           prompt,
           wp_media_id: null,
-          attempts,
-          status:     'generated',
-          updated_at: Math.floor(Date.now() / 1000),
+          attempts:              cumulativeAttempts,
+          attempts_remaining:    Math.max(0, MAX_BLOG_IMAGE_ATTEMPTS - cumulativeAttempts),
+          status:                'generated',
+          prompt_quality_score:  promptRelevance.score,
+          prompt_quality_label:  promptRelevance.label,
+          regeneration_reason:   regenerationReason,
+          updated_at:            Math.floor(Date.now() / 1000),
         };
       }
 
-      // Auto-review flagged the image — sharpen the prompt for the next attempt.
-      prompt = review.improvedPrompt?.trim()
-        ? `${review.improvedPrompt}. Editorial photograph, photorealistic, 4k, professional photography`
-        : `${prompt}. Tighten framing, emphasize professional quality, sharp focus, documentary photography style`;
+      regenerationReason = review.ok
+        ? `topic_similarity_mismatch${promptRelevance.reasons.length ? `: ${promptRelevance.reasons.join(', ')}` : ''}`
+        : (review.reason || 'image_review_failed');
+      console.info('[blog-image] regeneration requested', {
+        slot: ctx.slot,
+        attempt: cumulativeAttempts,
+        reason: regenerationReason,
+      });
+      const retryPrompt = review.improvedPrompt?.trim()
+        ? `${review.improvedPrompt}. realistic, photographic, service-specific, location-accurate, 4k`
+        : buildStructuredBlogPrompt(baseContext);
+      const retryValidation = validateImagePrompt(retryPrompt, baseContext);
+      if (retryValidation.score < PROMPT_QUALITY_THRESHOLD) {
+        lastError = `Retry prompt below threshold: ${retryValidation.reasons.join('; ')}`;
+        break;
+      }
+      prompt = retryValidation.prompt;
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
-      console.warn(`[autonomous-content] blog slot ${ctx.slot} attempt ${attempt}/3 failed: ${lastError}`);
+      console.warn(`[autonomous-content] blog slot ${ctx.slot} attempt ${previousAttempts + attempt}/${MAX_BLOG_IMAGE_ATTEMPTS} failed: ${lastError}`);
     }
   }
 
   return {
-    slot:       ctx.slot,
-    r2_key:     null,
-    prompt:     basePrompt,
+    slot:                  ctx.slot,
+    r2_key:                ctx.existing?.r2_key ?? null,
+    prompt:                prompt,
     wp_media_id: null,
-    attempts,
-    status:     'failed',
-    error:      lastError || 'generation failed',
-    updated_at: Math.floor(Date.now() / 1000),
+    attempts:              previousAttempts + attemptsUsed,
+    attempts_remaining:    Math.max(0, MAX_BLOG_IMAGE_ATTEMPTS - (previousAttempts + attemptsUsed)),
+    status:                ctx.existing?.status === 'generated' && !ctx.promptOverride ? 'generated' : 'failed',
+    error:                 lastError || 'generation failed',
+    prompt_quality_score:  validateImagePrompt(prompt, baseContext).score,
+    prompt_quality_label:  validateImagePrompt(prompt, baseContext).label,
+    regeneration_reason:   regenerationReason,
+    updated_at:            Math.floor(Date.now() / 1000),
   };
 }
 
@@ -511,10 +588,9 @@ export function resolveBlogSlotHeading(slot: BlogImageSlot, blogTitle: string, h
 export function isWeakBlogImagePrompt(prompt: string | null | undefined): boolean {
   const cleaned = String(prompt ?? '').replace(/\s+/g, ' ').trim();
   if (!cleaned) return true;
-  const commaCount = (cleaned.match(/,/g) ?? []).length;
   if (cleaned.length < 110) return true;
-  if (commaCount < 4) return true;
-  if (!/\b(daylight|lighting|light|composition|wide angle|close-up|editorial|photograph|photography|realistic|detail|4k)\b/i.test(cleaned)) return true;
+  if ((cleaned.match(/,/g) ?? []).length < 5) return true;
+  if (!/\b(service|project|lighting|composition|wide angle|photographic|realistic|detail|4k|residential|professional)\b/i.test(cleaned)) return true;
   return false;
 }
 
@@ -547,14 +623,31 @@ export async function ensureBlogBodyImagesGenerated(
   for (const slot of [1, 2, 3] as const) {
     const current = existingBySlot.get(slot);
     const overriddenPrompt = ctx.promptOverrides?.[slot]?.trim();
+    const sectionHeading = resolveBlogSlotHeading(slot, ctx.blogTitle, headings);
+    const promptAudit = validateImagePrompt(current?.prompt ?? '', {
+      slot,
+      blogTitle: ctx.blogTitle,
+      targetKeyword: ctx.targetKeyword ?? undefined,
+      sectionHeading,
+      serviceType: ctx.serviceType,
+      industry: ctx.industry,
+      location: ctx.location,
+      clientName: ctx.clientName,
+    });
+    const needsPromptRepair = current?.prompt ? promptAudit.score < PROMPT_QUALITY_THRESHOLD : false;
     const shouldGenerate =
       force.has(slot) ||
       !current?.r2_key ||
       Boolean(overriddenPrompt) ||
-      (ctx.regenerateWeakPrompts === true && isWeakBlogImagePrompt(current?.prompt));
+      (ctx.regenerateWeakPrompts === true && (isWeakBlogImagePrompt(current?.prompt) || needsPromptRepair));
 
     if (!shouldGenerate && current) {
-      next.push(current);
+      next.push({
+        ...current,
+        prompt_quality_score: promptAudit.score,
+        prompt_quality_label: promptAudit.label,
+        attempts_remaining: Math.max(0, MAX_BLOG_IMAGE_ATTEMPTS - (current.attempts ?? 0)),
+      });
       continue;
     }
 
@@ -562,15 +655,42 @@ export async function ensureBlogBodyImagesGenerated(
       slot,
       blogTitle: ctx.blogTitle,
       targetKeyword: ctx.targetKeyword,
-      sectionHeading: resolveBlogSlotHeading(slot, ctx.blogTitle, headings),
+      sectionHeading,
       serviceType: ctx.serviceType,
       industry: ctx.industry,
       location: ctx.location,
       clientName: ctx.clientName,
       clientId: ctx.clientId,
       promptOverride: overriddenPrompt || current?.prompt || undefined,
+      existing: current,
     });
     next.push(generated);
+
+    if (slot === 1 && generated.status !== 'generated') {
+      for (const remaining of [2, 3] as const) {
+        const existing = existingBySlot.get(remaining);
+        if (existing && !next.find((item) => item.slot === remaining)) {
+          const fallbackHeading = resolveBlogSlotHeading(remaining, ctx.blogTitle, headings);
+          const fallbackAudit = validateImagePrompt(existing.prompt, {
+            slot: remaining,
+            blogTitle: ctx.blogTitle,
+            targetKeyword: ctx.targetKeyword ?? undefined,
+            sectionHeading: fallbackHeading,
+            serviceType: ctx.serviceType,
+            industry: ctx.industry,
+            location: ctx.location,
+            clientName: ctx.clientName,
+          });
+          next.push({
+            ...existing,
+            prompt_quality_score: fallbackAudit.score,
+            prompt_quality_label: fallbackAudit.label,
+            attempts_remaining: Math.max(0, MAX_BLOG_IMAGE_ATTEMPTS - (existing.attempts ?? 0)),
+          });
+        }
+      }
+      break;
+    }
   }
 
   return next.sort((a, b) => a.slot - b.slot);

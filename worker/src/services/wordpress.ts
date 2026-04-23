@@ -563,6 +563,11 @@ function renderEtbImageBlock(imageHtml: string, prompt: string): string {
     </div>`;
 }
 
+function extractImageSrc(imageHtml: string): string | null {
+  const match = imageHtml.match(/<img\b[^>]*\ssrc="([^"]+)"/i);
+  return match?.[1] ?? null;
+}
+
 function buildEtbImagePrompt(subject: string, locationHint: string): string {
   const location = locationHint || 'Seattle';
   return `Photorealistic high-end residential remodel scene focused on ${subject}, ${location} context, minimalist luxury interior, soft natural light, clean lines, premium porcelain and stone materials, editorial architectural photography, 8k detail`;
@@ -599,6 +604,7 @@ function renderEliteTeamBuildersHtml(input: {
   const slot1Html = input.bodyImages?.slot1 ?? input.bodyImageHtml ?? BLOG_BODY_IMAGE_1_PLACEHOLDER;
   const slot2Html = input.bodyImages?.slot2 ?? BLOG_BODY_IMAGE_2_PLACEHOLDER;
   const slot3Html = input.bodyImages?.slot3 ?? BLOG_BODY_IMAGE_3_PLACEHOLDER;
+  const heroBackgroundUrl = extractImageSrc(slot1Html);
   const imagePrompt1 = buildEtbImagePrompt(input.blog.title, 'Seattle');
   const imagePrompt2 = buildEtbImagePrompt(input.blog.sections[1]?.heading ?? input.blog.sections[0]?.heading ?? input.blog.title, 'Pacific Northwest');
   const imagePrompt3 = buildEtbImagePrompt('finished luxury bathroom remodel with premium tile and balanced lighting', 'West Coast');
@@ -635,7 +641,7 @@ function renderEliteTeamBuildersHtml(input: {
         background: transparent;
       }
       .wx-blog.etb-blog .hero {
-        background: linear-gradient(rgba(19, 32, 51, 0.85), rgba(19, 32, 51, 0.85)), url('https://images.unsplash.com/photo-1552321554-5fefe8c9ef14?auto=format&fit=crop&q=80&w=1600') center/cover;
+        background: linear-gradient(rgba(19, 32, 51, 0.85), rgba(19, 32, 51, 0.85)), url('${escapeHtml(heroBackgroundUrl ?? 'https://images.unsplash.com/photo-1552321554-5fefe8c9ef14?auto=format&fit=crop&q=80&w=1600')}') center/cover;
         border-radius: 24px;
         padding: 80px 40px;
         color: var(--white);

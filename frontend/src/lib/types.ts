@@ -3,14 +3,18 @@
 export type Role = 'admin' | 'designer' | 'client';
 
 export interface BlogBodyImage {
-  slot:          1 | 2 | 3;
-  r2_key:        string | null;
-  prompt:        string;
-  wp_media_id?:  number | null;
-  attempts?:     number;
-  status:        'generated' | 'failed' | 'pending';
-  error?:        string;
-  updated_at?:   number;
+  slot:                  1 | 2 | 3;
+  r2_key:                string | null;
+  prompt:                string;
+  wp_media_id?:          number | null;
+  attempts?:             number;
+  status:                'generated' | 'failed' | 'pending';
+  error?:                string;
+  updated_at?:           number;
+  prompt_quality_score?: number;
+  prompt_quality_label?: 'Good' | 'Weak';
+  attempts_remaining?:   number;
+  regeneration_reason?:  string;
 }
 
 export interface User {

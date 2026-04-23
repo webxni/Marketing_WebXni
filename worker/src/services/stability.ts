@@ -63,6 +63,14 @@ export interface ImageReviewResult {
   improvedPrompt?: string;
 }
 
+export interface PromptValidationResult {
+  valid: boolean;
+  score: number;
+  label: 'Good' | 'Weak';
+  reasons: string[];
+  prompt: string;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -98,6 +106,10 @@ export function getAspectRatioForContent(
 
 export type BlogImageSlot = 1 | 2 | 3;
 
+export const MAX_BLOG_IMAGES = 3;
+export const MAX_BLOG_IMAGE_ATTEMPTS = 2;
+export const PROMPT_QUALITY_THRESHOLD = 0.72;
+
 export interface BlogPromptContext {
   slot:          BlogImageSlot;
   blogTitle:     string;
@@ -107,6 +119,15 @@ export interface BlogPromptContext {
   industry?:     string;     // 'remodeling', 'roofing', 'locksmith', etc.
   location?:     string;     // 'Los Angeles, CA' — derived from service areas
   clientName?:   string;
+}
+
+export interface BuildImagePromptInput {
+  title: string;
+  section?: string;
+  service?: string;
+  location?: string;
+  intent?: string;
+  slot?: BlogImageSlot;
 }
 
 const SLOT_FRAMING: Record<BlogImageSlot, { angle: string; shot: string; intent: string }> = {
@@ -131,42 +152,165 @@ function cleanFragment(value: string | null | undefined): string {
   return (value ?? '').replace(/\s+/g, ' ').trim();
 }
 
+function normalizePhrase(value: string | null | undefined): string {
+  return cleanFragment(value).replace(/[.,;:]+$/g, '');
+}
+
+function uniqueTokens(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const tokens: string[] = [];
+  for (const value of values) {
+    const parts = normalizePhrase(value)
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, ' ')
+      .split(/\s+/)
+      .filter((part) => part.length >= 4)
+      .filter((part) => !['with', 'from', 'into', 'that', 'this', 'your', 'home', 'blog', 'guide', 'tips', 'best', 'right', 'small'].includes(part));
+    for (const part of parts) {
+      if (seen.has(part)) continue;
+      seen.add(part);
+      tokens.push(part);
+    }
+  }
+  return tokens;
+}
+
+function hasAnyToken(haystack: string, tokens: string[]): boolean {
+  const lower = haystack.toLowerCase();
+  return tokens.some((token) => lower.includes(token));
+}
+
+function buildSceneSubject(input: BuildImagePromptInput): string {
+  const section = normalizePhrase(input.section);
+  const service = normalizePhrase(input.service) || 'professional service';
+  const title = normalizePhrase(input.title);
+  const subject = section || title || service;
+
+  if (input.slot === 1) {
+    return `Professional ${service} team illustrating ${title}`;
+  }
+  if (input.slot === 2) {
+    return `Detailed ${service} action scene focused on ${subject}`;
+  }
+  return `Completed ${service} result showcasing ${subject}`;
+}
+
+export function buildImagePrompt(input: BuildImagePromptInput): string {
+  const slot = input.slot ?? 1;
+  const framing = SLOT_FRAMING[slot];
+  const service = normalizePhrase(input.service) || 'professional service';
+  const location = normalizePhrase(input.location);
+  const section = normalizePhrase(input.section);
+  const title = normalizePhrase(input.title);
+  const environment =
+    slot === 1
+      ? 'residential service project with clean materials, human presence, and realistic working context'
+      : slot === 2
+        ? 'on-site working environment with visible craftsmanship, premium finishes, and uncluttered staging'
+        : 'finished residential environment with refined materials, organized styling, and client-ready presentation';
+  const lighting =
+    slot === 3
+      ? 'warm natural golden-hour interior light with balanced highlights and true-to-life color'
+      : 'soft natural lighting with balanced exposure and gentle directional highlights';
+  const camera =
+    slot === 2
+      ? 'medium-wide angle composition, slightly elevated perspective, crisp subject focus'
+      : `${framing.shot}, clean lines, professional editorial composition`;
+  const quality = 'highly detailed, realistic, photographic, sharp focus, professional architectural photography, 4k';
+  const locationContext = location ? `${location} context` : 'local service context';
+
+  return [
+    buildSceneSubject({ ...input, slot }),
+    `${service} project in ${locationContext}`,
+    section || title,
+    environment,
+    lighting,
+    camera,
+    quality,
+    framing.intent,
+  ].filter(Boolean).join(', ');
+}
+
 /** Deterministic structured prompt — no external LLM call required. */
 export function buildStructuredBlogPrompt(ctx: BlogPromptContext): string {
-  const framing = SLOT_FRAMING[ctx.slot];
-  const subject =
-    cleanFragment(ctx.sectionHeading) ||
-    cleanFragment(ctx.targetKeyword) ||
-    cleanFragment(ctx.blogTitle);
-  const service = cleanFragment(ctx.serviceType) || cleanFragment(ctx.industry) || 'professional service';
-  const locationTag = cleanFragment(ctx.location);
-  const locationPhrase = locationTag ? `in ${locationTag}` : '';
+  return buildImagePrompt({
+    title: ctx.blogTitle,
+    section: cleanFragment(ctx.sectionHeading) || cleanFragment(ctx.targetKeyword) || cleanFragment(ctx.blogTitle),
+    service: cleanFragment(ctx.serviceType) || cleanFragment(ctx.industry) || 'professional service',
+    location: cleanFragment(ctx.location),
+    intent: SLOT_FRAMING[ctx.slot].intent,
+    slot: ctx.slot,
+  });
+}
 
-  const parts = [
-    // [scene] + [subject]
-    `Professional editorial photograph depicting ${framing.angle}: ${subject}`,
-    // [location / context]
-    `real ${service} business setting ${locationPhrase}`.trim(),
-    // [style]
-    'clean modern documentary style, realistic human subjects, authentic textures, branded-magazine quality',
-    // [lighting]
-    'soft natural daylight with gentle directional highlights, balanced exposure, no harsh shadows',
-    // [composition]
-    `${framing.shot}, rule-of-thirds composition, uncluttered background, ample negative space for potential text overlay`,
-    // [quality]
-    'ultra-detailed, sharp focus, photographically accurate, 4k, color-graded for print, professional photography',
-    // [framing intent guidance]
-    framing.intent,
-  ];
+export function validateImagePrompt(prompt: string, ctx: BlogPromptContext): PromptValidationResult {
+  const normalized = cleanFragment(prompt);
+  const reasons: string[] = [];
+  let score = 0;
 
-  return parts.filter(Boolean).join('. ');
+  const serviceTokens = uniqueTokens([ctx.serviceType, ctx.industry, ctx.targetKeyword]);
+  const locationTokens = uniqueTokens([ctx.location]);
+  const subjectTokens = uniqueTokens([ctx.sectionHeading, ctx.blogTitle, ctx.targetKeyword]);
+  const lower = normalized.toLowerCase();
+
+  if (normalized.length >= 110) score += 0.12;
+  else reasons.push('Prompt is too short');
+
+  if ((normalized.match(/,/g) ?? []).length >= 5) score += 0.1;
+  else reasons.push('Prompt is not fully structured');
+
+  if (hasAnyToken(lower, serviceTokens)) score += 0.24;
+  else reasons.push('Missing service keyword');
+
+  if (!locationTokens.length || hasAnyToken(lower, locationTokens)) score += locationTokens.length ? 0.18 : 0.08;
+  else reasons.push('Missing location context');
+
+  if (hasAnyToken(lower, subjectTokens)) score += 0.22;
+  else reasons.push('Missing topic subject');
+
+  if (/\b(interior|bathroom|kitchen|roof|locksmith|tile|contractor|service|remodel|repair|installation|home|residential|project)\b/i.test(normalized)) {
+    score += 0.08;
+  } else {
+    reasons.push('Subject feels abstract');
+  }
+
+  if (/\b(soft natural|warm natural|daylight|lighting|wide angle|composition|photographic|realistic|4k|detail)\b/i.test(normalized)) {
+    score += 0.14;
+  } else {
+    reasons.push('Missing visual direction');
+  }
+
+  if (/\b(nice|beautiful|modern)\b/i.test(normalized)) {
+    score -= 0.16;
+    reasons.push('Contains generic adjectives');
+  }
+
+  if (ctx.slot === 1) {
+    const heroKeywordPresent = hasAnyToken(lower, uniqueTokens([ctx.blogTitle, ctx.targetKeyword]));
+    const heroServicePresent = hasAnyToken(lower, serviceTokens);
+    const heroLocationPresent = !locationTokens.length || hasAnyToken(lower, locationTokens);
+    if (heroKeywordPresent) score += 0.08;
+    else reasons.push('Hero prompt missing title keyword');
+    if (!heroServicePresent) reasons.push('Hero prompt missing service keyword');
+    if (!heroLocationPresent) reasons.push('Hero prompt missing location');
+  }
+
+  const boundedScore = Math.max(0, Math.min(1, Number(score.toFixed(2))));
+  return {
+    valid: boundedScore >= PROMPT_QUALITY_THRESHOLD && reasons.filter((reason) => reason.startsWith('Hero prompt')).length === 0,
+    score: boundedScore,
+    label: boundedScore >= PROMPT_QUALITY_THRESHOLD ? 'Good' : 'Weak',
+    reasons,
+    prompt: normalized,
+  };
 }
 
 export const BLOG_NEGATIVE_PROMPT = [
+  'cartoon', 'illustration', 'abstract', 'unrealistic', 'distorted', 'low quality',
   'text', 'watermark', 'logo', 'signage with letters',
   'distorted anatomy', 'extra fingers', 'deformed faces',
-  'blurry', 'low quality', 'low resolution', 'jpeg artifacts',
-  'cartoon', 'anime', 'illustration', '3d render',
+  'blurry', 'low resolution', 'jpeg artifacts',
+  'anime', '3d render',
   'oversaturated', 'harsh lighting', 'cluttered background',
 ].join(', ');
 
