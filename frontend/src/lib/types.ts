@@ -418,6 +418,44 @@ export interface ClientPlatformLinks {
   website?:       string | null;
 }
 
+export interface ContentRequest {
+  id:                string;
+  client_id:         string;
+  request_type:      string;
+  content_type:      string | null;
+  platforms:         string | null;
+  recurrence:        string;
+  day_of_week:       number | null;
+  time_of_day:       string | null;
+  per_run:           number;
+  topic_strategy:    string;
+  fixed_topic:       string | null;
+  next_run_date:     string | null;
+  last_triggered_at: string | null;
+  active:            number;
+  paused:            number;
+  notes:             string | null;
+  created_by:        string | null;
+  created_at:        number;
+  updated_at:        number;
+}
+
+export interface ClientTopic {
+  id:           string;
+  client_id:    string;
+  topic:        string;
+  content_type: string | null;
+  platforms:    string | null;
+  target_date:  string | null;
+  priority:     number;
+  status:       string;
+  used_post_id: string | null;
+  notes:        string | null;
+  created_by:   string | null;
+  created_at:   number;
+  used_at:      number | null;
+}
+
 export interface PostingStats {
   by_status:   { status: string; count: number }[];
   by_platform: { platform: string; status: string; count: number }[];

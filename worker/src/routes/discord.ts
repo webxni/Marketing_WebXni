@@ -229,6 +229,113 @@ async function handleCommand(
     }
     return;
 
+  } else if (commandName === 'batch') {
+    const opts         = interaction.data?.options ?? [];
+    const clientSlug   = (opts.find(o => o.name === 'client')?.value       as string | undefined) ?? '';
+    const count        = (opts.find(o => o.name === 'count')?.value        as number | undefined) ?? null;
+    const topic        = (opts.find(o => o.name === 'topic')?.value        as string | undefined) ?? null;
+    const topicsRaw    = (opts.find(o => o.name === 'topics')?.value       as string | undefined) ?? null;
+    const useQueue     = (opts.find(o => o.name === 'use_queue')?.value    as boolean| undefined) ?? false;
+    const contentType  = (opts.find(o => o.name === 'content_type')?.value as string | undefined) ?? 'image';
+    const platformsRaw = (opts.find(o => o.name === 'platforms')?.value    as string | undefined) ?? '';
+    const startDate    = (opts.find(o => o.name === 'start_date')?.value   as string | undefined) ?? null;
+    const spacing      = (opts.find(o => o.name === 'spacing_days')?.value as number | undefined) ?? null;
+
+    const topics = topicsRaw
+      ? topicsRaw.split(/\||\n/).map(s => s.replace(/^[-*\d.\s]+/, '').trim()).filter(Boolean)
+      : [];
+    const platforms = platformsRaw
+      ? platformsRaw.split(',').map(p => p.trim().toLowerCase()).filter(Boolean)
+      : [];
+
+    const parts: string[] = [`client: ${clientSlug}`];
+    if (topics.length) parts.push(`${topics.length} topics`);
+    else if (useQueue) parts.push('from queue');
+    else if (topic)    parts.push(`topic: "${topic}"`);
+    if (count && !topics.length) parts.push(`count=${count}`);
+    if (contentType && contentType !== 'image') parts.push(contentType);
+    if (platforms.length) parts.push(`platforms=${platforms.join(',')}`);
+
+    agentMessage = `Use batch_create_content to create posts: ${parts.join(', ')}.` +
+      ` Build it as: batch_create_content {\n` +
+      `  "client": "${clientSlug}",\n` +
+      (topics.length ? `  "topics": ${JSON.stringify(topics)},\n` : '') +
+      (useQueue && !topics.length ? `  "use_queue": true,\n` : '') +
+      (topic && !topics.length && !useQueue ? `  "topic": ${JSON.stringify(topic)},\n` : '') +
+      (count && !topics.length ? `  "count": ${count},\n` : '') +
+      `  "content_type": "${contentType}"` +
+      (platforms.length ? `,\n  "platforms": ${JSON.stringify(platforms)}` : '') +
+      (startDate ? `,\n  "start_date": "${startDate}"` : '') +
+      (spacing != null ? `,\n  "spacing_days": ${spacing}` : '') +
+      `\n}`;
+
+  } else if (commandName === 'schedule') {
+    const opts = interaction.data?.options ?? [];
+    const clientSlug    = (opts.find(o => o.name === 'client')?.value         as string | undefined) ?? '';
+    const recurrence    = (opts.find(o => o.name === 'recurrence')?.value     as string | undefined) ?? 'weekly';
+    const dayOfWeek     = (opts.find(o => o.name === 'day_of_week')?.value    as number | undefined) ?? null;
+    const timeOfDay     = (opts.find(o => o.name === 'time_of_day')?.value    as string | undefined) ?? null;
+    const contentType   = (opts.find(o => o.name === 'content_type')?.value   as string | undefined) ?? null;
+    const platformsRaw  = (opts.find(o => o.name === 'platforms')?.value      as string | undefined) ?? '';
+    const perRun        = (opts.find(o => o.name === 'per_run')?.value        as number | undefined) ?? null;
+    const topicStrategy = (opts.find(o => o.name === 'topic_strategy')?.value as string | undefined) ?? null;
+    const fixedTopic    = (opts.find(o => o.name === 'fixed_topic')?.value    as string | undefined) ?? null;
+    const nextRunDate   = (opts.find(o => o.name === 'next_run_date')?.value  as string | undefined) ?? null;
+
+    const platforms = platformsRaw
+      ? platformsRaw.split(',').map(p => p.trim().toLowerCase()).filter(Boolean)
+      : [];
+
+    const toolArgs: Record<string, unknown> = {
+      client: clientSlug,
+      recurrence,
+    };
+    if (dayOfWeek   != null) toolArgs.day_of_week    = dayOfWeek;
+    if (timeOfDay)           toolArgs.time_of_day    = timeOfDay;
+    if (contentType)         toolArgs.content_type   = contentType;
+    if (platforms.length)    toolArgs.platforms      = platforms;
+    if (perRun      != null) toolArgs.per_run        = perRun;
+    if (topicStrategy)       toolArgs.topic_strategy = topicStrategy;
+    if (fixedTopic)          toolArgs.fixed_topic    = fixedTopic;
+    if (nextRunDate)         toolArgs.next_run_date  = nextRunDate;
+    if (contentType === 'blog' && !toolArgs.request_type) toolArgs.request_type = 'blog';
+
+    agentMessage = `Call create_content_request with exactly these arguments: ${JSON.stringify(toolArgs)}`;
+
+  } else if (commandName === 'topics') {
+    const opts = interaction.data?.options ?? [];
+    const clientSlug  = (opts.find(o => o.name === 'client')?.value       as string | undefined) ?? '';
+    const listRaw     = (opts.find(o => o.name === 'list')?.value         as string | undefined) ?? '';
+    const contentType = (opts.find(o => o.name === 'content_type')?.value as string | undefined) ?? null;
+    const priority    = (opts.find(o => o.name === 'priority')?.value     as number | undefined) ?? null;
+
+    const topics = listRaw
+      .split(/\||\n/)
+      .map(s => s.replace(/^[-*\d.\s]+/, '').trim())
+      .filter(Boolean);
+
+    if (!clientSlug || topics.length === 0) {
+      await discordPatchInteraction({ applicationId: appId, token, botToken, content: '❌ Provide client and at least one topic.' });
+      return;
+    }
+
+    const toolArgs: Record<string, unknown> = { client: clientSlug, topics };
+    if (contentType)     toolArgs.content_type = contentType;
+    if (priority != null) toolArgs.priority    = priority;
+
+    agentMessage = `Call add_client_topics with exactly these arguments: ${JSON.stringify(toolArgs)}`;
+
+  } else if (commandName === 'schedules') {
+    const opts        = interaction.data?.options ?? [];
+    const clientSlug  = (opts.find(o => o.name === 'client')?.value      as string | undefined) ?? '';
+    const activeOnly  = (opts.find(o => o.name === 'active_only')?.value as boolean | undefined) ?? false;
+
+    const toolArgs: Record<string, unknown> = {};
+    if (clientSlug) toolArgs.client = clientSlug;
+    if (activeOnly) toolArgs.active_only = true;
+
+    agentMessage = `Call list_content_requests with exactly these arguments: ${JSON.stringify(toolArgs)}`;
+
   } else if (commandName === 'weekly-content') {
     const opts      = interaction.data?.options ?? [];
     const clientArg = (opts.find(o => o.name === 'client')?.value  as string | undefined) ?? '';
@@ -440,7 +547,7 @@ discordInternalRoute.post('/register', async (c) => {
 
   try {
     await registerSlashCommands(appId, botToken);
-    return c.json({ ok: true, message: 'Slash commands registered: /ask, /status, /queue, /failed, /create-post, /create-blog, /weekly-content' });
+    return c.json({ ok: true, message: 'Slash commands registered: /ask, /status, /queue, /failed, /create-post, /create-blog, /weekly-content, /batch, /schedule, /schedules, /topics' });
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }

@@ -330,6 +330,90 @@ export const SLASH_COMMANDS = [
       },
     ],
   },
+  {
+    name:        'batch',
+    description: 'Create N posts for a client (about a topic, from a topic list, or from the queue)',
+    options: [
+      { name: 'client',       description: 'Client slug',                                                        type: 3, required: true },
+      { name: 'count',        description: 'Number of posts (1-20)',                                              type: 4, required: false },
+      { name: 'topic',        description: 'Single topic shared across all posts (optional)',                    type: 3, required: false },
+      { name: 'topics',       description: 'Explicit topic list (separate by | or newline). Overrides count.',   type: 3, required: false },
+      { name: 'use_queue',    description: 'Consume from the client topic queue in priority order',              type: 5, required: false },
+      { name: 'content_type', description: 'image (default), reel, video, or blog',                              type: 3, required: false,
+        choices: [
+          { name: 'image', value: 'image' },
+          { name: 'reel',  value: 'reel'  },
+          { name: 'video', value: 'video' },
+          { name: 'blog',  value: 'blog'  },
+        ],
+      },
+      { name: 'platforms',    description: 'Comma-separated platforms (default: all client platforms)',          type: 3, required: false },
+      { name: 'start_date',   description: 'YYYY-MM-DD — first publish date (default: today)',                   type: 3, required: false },
+      { name: 'spacing_days', description: 'Days between posts (default 1)',                                     type: 4, required: false },
+    ],
+  },
+  {
+    name:        'schedule',
+    description: 'Create a recurring content schedule (e.g. every Monday 9am)',
+    options: [
+      { name: 'client',      description: 'Client slug', type: 3, required: true },
+      { name: 'recurrence',  description: 'daily, weekdays, weekly, biweekly, monthly, once', type: 3, required: true,
+        choices: [
+          { name: 'daily',    value: 'daily'    },
+          { name: 'weekdays', value: 'weekdays' },
+          { name: 'weekly',   value: 'weekly'   },
+          { name: 'biweekly', value: 'biweekly' },
+          { name: 'monthly',  value: 'monthly'  },
+          { name: 'once',     value: 'once'     },
+        ],
+      },
+      { name: 'day_of_week',  description: '0=Sun..6=Sat (for weekly/biweekly)', type: 4, required: false,
+        choices: [
+          { name: 'Sun', value: 0 }, { name: 'Mon', value: 1 }, { name: 'Tue', value: 2 }, { name: 'Wed', value: 3 },
+          { name: 'Thu', value: 4 }, { name: 'Fri', value: 5 }, { name: 'Sat', value: 6 },
+        ],
+      },
+      { name: 'time_of_day',   description: 'UTC HH:MM, e.g. 09:00',                                              type: 3, required: false },
+      { name: 'content_type',  description: 'image (default), reel, video, blog',                                 type: 3, required: false,
+        choices: [
+          { name: 'image', value: 'image' }, { name: 'reel', value: 'reel' },
+          { name: 'video', value: 'video' }, { name: 'blog', value: 'blog' },
+        ],
+      },
+      { name: 'platforms',      description: 'Comma-separated platforms (default: all client platforms)',         type: 3, required: false },
+      { name: 'per_run',        description: 'Posts per firing (1-10, default 1)',                                type: 4, required: false },
+      { name: 'topic_strategy', description: 'queue (default), auto, or fixed',                                   type: 3, required: false,
+        choices: [
+          { name: 'queue', value: 'queue' }, { name: 'auto', value: 'auto' }, { name: 'fixed', value: 'fixed' },
+        ],
+      },
+      { name: 'fixed_topic',    description: 'Required when topic_strategy=fixed',                               type: 3, required: false },
+      { name: 'next_run_date',  description: 'YYYY-MM-DD first firing (default: today)',                         type: 3, required: false },
+    ],
+  },
+  {
+    name:        'topics',
+    description: 'Add a list of topics to a client\'s topic queue',
+    options: [
+      { name: 'client',       description: 'Client slug',                                                type: 3, required: true },
+      { name: 'list',         description: 'Topics separated by | or newline',                            type: 3, required: true },
+      { name: 'content_type', description: 'Optional: tag all topics with this content type',            type: 3, required: false,
+        choices: [
+          { name: 'image', value: 'image' }, { name: 'reel', value: 'reel' },
+          { name: 'video', value: 'video' }, { name: 'blog', value: 'blog' },
+        ],
+      },
+      { name: 'priority',     description: 'Higher = consumed first (default 0)',                        type: 4, required: false },
+    ],
+  },
+  {
+    name:        'schedules',
+    description: 'List recurring content schedules',
+    options: [
+      { name: 'client',      description: 'Client slug (optional)', type: 3, required: false },
+      { name: 'active_only', description: 'Show only active + not-paused',      type: 5, required: false },
+    ],
+  },
 ];
 
 export async function registerSlashCommands(applicationId: string, botToken: string): Promise<void> {

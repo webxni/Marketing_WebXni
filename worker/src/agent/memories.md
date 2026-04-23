@@ -25,6 +25,29 @@
 - bulk_update_posts defaults to dry_run=true — always confirm before real execution
 - Never delete posts without explicit user confirmation
 - Publishing blog to WordPress is irreversible without manual WP editing
+- Never create more than 20 posts in a single `batch_create_content` call without explicit user confirmation
+
+## Recurring Content Requests
+- Separate from GBP offers/events (which only drive Google Business)
+- Lives in content_requests table; processed by the hourly cron
+- Recurrence: daily | weekdays | weekly | biweekly | monthly | once
+- "Every Monday at 9am" = recurrence='weekly' day_of_week=1 time_of_day='09:00'
+- "Every weekday" = recurrence='weekdays' (skips Sat/Sun)
+- "Every other Tuesday" = recurrence='biweekly' day_of_week=2
+- time_of_day is UTC HH:MM; the request won't fire until the current UTC hour ≥ that hour
+- Recurrence='once' deactivates itself after first firing
+
+## Topic Queue
+- client_topics is a per-client topic backlog
+- Consumed by recurring schedules (priority DESC, FIFO) and by batch_create_content(use_queue=true)
+- Empty queue falls through to auto research — NOT an error
+- When user pastes a list without naming a client, ask for the client slug before inserting
+
+## Client Expertise (load on demand)
+- Always call get_client_details before writing for an unfamiliar client
+- Match client.industry against the playbook headings in the prompt (locksmith, builder, roofing, marketing agency, default)
+- Use buyer-persona framing to pick the hook + CTA
+- Platform caption rules apply AFTER the industry playbook — layer them
 
 ## Dates
 - Always normalize dates to YYYY-MM-DD

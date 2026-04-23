@@ -10,6 +10,8 @@ import type {
   PostRow,
   PostPlatformRow,
   PostingJobRow,
+  ContentRequestRow,
+  ClientTopicRow,
 } from '../types';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -856,4 +858,171 @@ export async function writeAuditLog(
       )
       .run();
   } catch { /* audit logs are non-fatal — never block business operations */ }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONTENT REQUESTS (recurring schedules) — migration 0026
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function listContentRequests(
+  db: D1Database,
+  filters: { clientId?: string; activeOnly?: boolean } = {},
+): Promise<ContentRequestRow[]> {
+  const conds: string[] = [];
+  const binds: unknown[] = [];
+  if (filters.clientId)  { conds.push('client_id = ?'); binds.push(filters.clientId); }
+  if (filters.activeOnly) { conds.push('active = 1 AND paused = 0'); }
+  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+  const rows = await db
+    .prepare(`SELECT * FROM content_requests ${where} ORDER BY COALESCE(next_run_date, '9999-12-31') ASC LIMIT 200`)
+    .bind(...binds)
+    .all<ContentRequestRow>();
+  return rows.results;
+}
+
+export async function getContentRequestById(
+  db: D1Database,
+  id: string,
+): Promise<ContentRequestRow | null> {
+  const row = await db
+    .prepare('SELECT * FROM content_requests WHERE id = ?')
+    .bind(id)
+    .first<ContentRequestRow>();
+  return row ?? null;
+}
+
+export async function createContentRequest(
+  db: D1Database,
+  data: Partial<ContentRequestRow> & { client_id: string },
+): Promise<ContentRequestRow> {
+  const id = crypto.randomUUID().replace(/-/g, '').toLowerCase();
+  const now = Math.floor(Date.now() / 1000);
+  const record: Record<string, unknown> = { id, created_at: now, updated_at: now, ...data };
+  const cols = Object.keys(record);
+  const vals = Object.values(record);
+  const placeholders = cols.map(() => '?').join(', ');
+  await db
+    .prepare(`INSERT INTO content_requests (${cols.join(', ')}) VALUES (${placeholders})`)
+    .bind(...vals)
+    .run();
+  const row = await getContentRequestById(db, id);
+  if (!row) throw new Error('Failed to create content request');
+  return row;
+}
+
+export async function updateContentRequest(
+  db: D1Database,
+  id: string,
+  fields: Partial<ContentRequestRow>,
+): Promise<void> {
+  const entries = Object.entries(fields).filter(([k]) => k !== 'id' && k !== 'client_id' && k !== 'created_at');
+  if (entries.length === 0) return;
+  const now = Math.floor(Date.now() / 1000);
+  const sets = [...entries.map(([k]) => `${k} = ?`), 'updated_at = ?'];
+  const vals = [...entries.map(([, v]) => v), now, id];
+  await db.prepare(`UPDATE content_requests SET ${sets.join(', ')} WHERE id = ?`).bind(...vals).run();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CLIENT TOPIC QUEUE — migration 0026
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function listClientTopics(
+  db: D1Database,
+  clientId: string,
+  status: 'pending' | 'used' | 'skipped' | 'all' = 'pending',
+  limit = 50,
+): Promise<ClientTopicRow[]> {
+  const conds = ['client_id = ?'];
+  const binds: unknown[] = [clientId];
+  if (status !== 'all') { conds.push('status = ?'); binds.push(status); }
+  const rows = await db
+    .prepare(
+      `SELECT * FROM client_topics
+       WHERE ${conds.join(' AND ')}
+       ORDER BY priority DESC, created_at ASC
+       LIMIT ?`,
+    )
+    .bind(...binds, limit)
+    .all<ClientTopicRow>();
+  return rows.results;
+}
+
+export async function addClientTopics(
+  db: D1Database,
+  clientId: string,
+  topics: Array<{
+    topic:        string;
+    content_type?: string | null;
+    platforms?:    string | null;
+    target_date?:  string | null;
+    priority?:     number;
+    notes?:        string | null;
+  }>,
+  createdBy: string | null = null,
+): Promise<{ inserted: number }> {
+  let inserted = 0;
+  const now = Math.floor(Date.now() / 1000);
+  for (const t of topics) {
+    const topic = (t.topic ?? '').trim();
+    if (!topic) continue;
+    const id = crypto.randomUUID().replace(/-/g, '').toLowerCase();
+    try {
+      await db
+        .prepare(
+          `INSERT INTO client_topics
+             (id, client_id, topic, content_type, platforms, target_date, priority, status, notes, created_by, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+        )
+        .bind(
+          id, clientId, topic,
+          t.content_type ?? null, t.platforms ?? null,
+          t.target_date ?? null, t.priority ?? 0,
+          t.notes ?? null, createdBy, now,
+        )
+        .run();
+      inserted++;
+    } catch { /* skip duplicate / bad row */ }
+  }
+  return { inserted };
+}
+
+/** Fetch-and-return the next pending topic for a client (caller must mark used). */
+export async function peekNextClientTopic(
+  db: D1Database,
+  clientId: string,
+  contentType: string | null = null,
+): Promise<ClientTopicRow | null> {
+  const conds = ['client_id = ?', "status = 'pending'"];
+  const binds: unknown[] = [clientId];
+  if (contentType) {
+    conds.push('(content_type IS NULL OR content_type = ?)');
+    binds.push(contentType);
+  }
+  const row = await db
+    .prepare(
+      `SELECT * FROM client_topics
+       WHERE ${conds.join(' AND ')}
+       ORDER BY priority DESC, created_at ASC
+       LIMIT 1`,
+    )
+    .bind(...binds)
+    .first<ClientTopicRow>();
+  return row ?? null;
+}
+
+export async function markClientTopicUsed(
+  db: D1Database,
+  topicId: string,
+  postId: string | null,
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await db
+    .prepare("UPDATE client_topics SET status = 'used', used_post_id = ?, used_at = ? WHERE id = ?")
+    .bind(postId, now, topicId)
+    .run();
+}
+
+export async function deleteClientTopic(db: D1Database, topicId: string): Promise<void> {
+  await db.prepare('DELETE FROM client_topics WHERE id = ?').bind(topicId).run();
 }

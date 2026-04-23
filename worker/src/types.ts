@@ -346,3 +346,43 @@ export interface PostingJobRow {
   created_at:      number;
   completed_at:    number | null;
 }
+
+// ─── Recurring content requests (migration 0026) ─────────────────────────────
+export interface ContentRequestRow {
+  id:                string;
+  client_id:         string;
+  request_type:      string;         // 'social'|'blog'|'mixed'
+  content_type:      string | null;  // 'image'|'reel'|'video'|'blog'
+  platforms:         string | null;  // JSON array
+  recurrence:        string;         // 'daily'|'weekdays'|'weekly'|'biweekly'|'monthly'|'once'
+  day_of_week:       number | null;  // 0=Sun..6=Sat
+  time_of_day:       string | null;  // HH:MM UTC
+  per_run:           number;
+  topic_strategy:    string;         // 'queue'|'auto'|'fixed'
+  fixed_topic:       string | null;
+  next_run_date:     string | null;
+  last_triggered_at: string | null;
+  active:            number;
+  paused:            number;
+  notes:             string | null;
+  created_by:        string | null;
+  created_at:        number;
+  updated_at:        number;
+}
+
+// ─── Per-client topic queue (migration 0026) ─────────────────────────────────
+export interface ClientTopicRow {
+  id:           string;
+  client_id:    string;
+  topic:        string;
+  content_type: string | null;
+  platforms:    string | null;   // JSON array
+  target_date:  string | null;   // YYYY-MM-DD
+  priority:     number;
+  status:       string;          // 'pending'|'used'|'skipped'
+  used_post_id: string | null;
+  notes:        string | null;
+  created_by:   string | null;
+  created_at:   number;
+  used_at:      number | null;
+}

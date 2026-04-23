@@ -86,8 +86,21 @@ app.all('/*', async (c) => {
 // ─── Scheduled cron handler ───────────────────────────────────────────────────
 import { runPosting } from './loader/posting-run';
 import { runRecurringGbp } from './loader/recurring-gbp-run';
+import { runContentRequests } from './loader/content-request-run';
 import { runFetchUrls } from './routes/run';
 import { notifyPostingComplete, discordDM } from './services/discord';
+
+async function resolveOpenAiKeyCron(env: Env): Promise<string> {
+  let key = env.OPENAI_API_KEY || '';
+  if (!key) {
+    try {
+      const raw = await env.KV_BINDING.get('settings:system');
+      const s: Record<string, string> = raw ? JSON.parse(raw) as Record<string, string> : {};
+      key = s['ai_api_key'] || '';
+    } catch { /* ignore */ }
+  }
+  return key;
+}
 
 export default {
   fetch: app.fetch,
@@ -108,13 +121,25 @@ export default {
         }
       })());
     } else if (event.cron === '0 * * * *') {
-      // Top of every hour — recurring GBP offers/events only
+      // Top of every hour — recurring GBP offers/events + recurring content requests
       ctx.waitUntil((async () => {
         try {
           const gbpStats = await runRecurringGbp(env as any);
           if (gbpStats.offers_posted > 0 || gbpStats.events_posted > 0) console.log('Recurring GBP stats:', gbpStats);
         } catch (err) {
           console.error('Recurring GBP error:', err);
+        }
+      })());
+      ctx.waitUntil((async () => {
+        try {
+          const key = await resolveOpenAiKeyCron(env);
+          if (!key) { console.log('Content requests skipped — no OpenAI key'); return; }
+          const stats = await runContentRequests(env, key);
+          if (stats.posts_created > 0 || stats.errors > 0) {
+            console.log('Content request stats:', stats);
+          }
+        } catch (err) {
+          console.error('Content request run error:', err);
         }
       })());
     } else if (event.cron === '*/1 * * * *') {

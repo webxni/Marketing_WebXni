@@ -16,11 +16,16 @@ import {
   listPosts, getPostById, updatePost, setPostStatus,
   createPost, createGenerationRun, createPostingJob, getGenerationRunById,
   writeAuditLog,
+  listContentRequests, getContentRequestById, createContentRequest, updateContentRequest,
+  listClientTopics, addClientTopics, markClientTopicUsed,
 } from '../db/queries';
 import { runPosting }    from '../loader/posting-run';
 import { planGeneration, resumeGenerationRun } from '../loader/generation-run';
 import { createContentWithImage } from '../loader/autonomous-content';
-import { AGENT_SKILLS, AGENT_MEMORY, RESPONSE_RULES } from '../agent/context';
+import {
+  AGENT_SKILLS, AGENT_MEMORY, RESPONSE_RULES,
+  CLIENT_EXPERTISE, BUYER_PERSONAS, NL_INTENT_MAP,
+} from '../agent/context';
 
 export const aiRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -577,6 +582,152 @@ If no topic is specified, the system researches the best topic automatically.`,
           publish_date:  { type: 'string',  description: 'YYYY-MM-DD or YYYY-MM-DDTHH:MM. Default: today at 10:00.' },
           status:        { type: 'string',  description: 'pending_approval (default) or draft' },
           notify_discord:{ type: 'boolean', description: 'Send Discord notification on creation (default: true)' },
+        },
+        required: ['client'],
+      },
+    },
+  },
+
+  // ── BATCH CONTENT CREATION ────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'batch_create_content',
+      description: `Create multiple posts for a client in one call. Each post runs full content+image generation in the background.
+Use for: "Create 5 posts about bathroom remodeling this week", "Create 10 blog posts from this topic list", "Generate content from this question list".
+Pass either:
+  • topics[] — one post per topic (count = topics.length)
+  • use_queue: true — consumes pending topics from client_topics (priority DESC)
+  • topic + count — single topic, N posts with slight angle variation
+  • count only — auto-researches each post independently
+Max 20 per call.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          client:        { type: 'string',  description: 'Client slug (required)' },
+          count:         { type: 'number',  description: 'Number of posts to create (1-20). Ignored when topics[] is provided.' },
+          content_type:  { type: 'string',  description: 'image|reel|video|blog (default: image)' },
+          platforms:     { type: 'array',   items: { type: 'string' }, description: 'Platforms array. Empty = all client platforms.' },
+          topic:         { type: 'string',  description: 'A single topic shared across all posts (each gets a different angle).' },
+          topics:        { type: 'array',   items: { type: 'string' }, description: 'Explicit list of topics. One post per topic.' },
+          use_queue:     { type: 'boolean', description: 'Consume from client_topics queue in priority order. Ignored if topics[] is set.' },
+          start_date:    { type: 'string',  description: 'YYYY-MM-DD. Default: today.' },
+          spacing_days:  { type: 'number',  description: 'Days between consecutive posts (default: 1).' },
+          status:        { type: 'string',  description: 'pending_approval (default) or draft' },
+        },
+        required: ['client'],
+      },
+    },
+  },
+
+  // ── RECURRING CONTENT REQUESTS ────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'create_content_request',
+      description: `Schedule recurring content generation.
+Use for: "Schedule a Google Business post every Monday at 9am for Golden Touch Roofing", "Every weekday, create one Instagram post for Unlocked Pros".
+The hourly cron fires eligible requests; each firing creates per_run posts via the same content+image pipeline as create_content_with_image.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          client:         { type: 'string',  description: 'Client slug (required)' },
+          request_type:   { type: 'string',  description: "'social' (default), 'blog', or 'mixed'" },
+          content_type:   { type: 'string',  description: 'image|reel|video|blog (overrides request_type default)' },
+          platforms:      { type: 'array',   items: { type: 'string' }, description: 'Target platforms. Empty = all client platforms.' },
+          recurrence:     { type: 'string',  description: 'daily|weekdays|weekly|biweekly|monthly|once' },
+          day_of_week:    { type: 'number',  description: '0=Sun..6=Sat (for weekly/biweekly). 1=Mon, 2=Tue, etc.' },
+          time_of_day:    { type: 'string',  description: 'UTC HH:MM, e.g. "09:00". Request only fires after this hour.' },
+          per_run:        { type: 'number',  description: 'Posts per firing, 1-10. Default 1.' },
+          topic_strategy: { type: 'string',  description: "'queue' (default — use client_topics backlog), 'fixed' (use fixed_topic every run), 'auto' (research fresh topic)" },
+          fixed_topic:    { type: 'string',  description: "Required when topic_strategy='fixed'" },
+          next_run_date:  { type: 'string',  description: 'YYYY-MM-DD — first firing date. Default: today.' },
+          notes:          { type: 'string' },
+        },
+        required: ['client', 'recurrence'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_content_requests',
+      description: 'List recurring content schedules. Filter by client or active-only.',
+      parameters: {
+        type: 'object',
+        properties: {
+          client:      { type: 'string' },
+          active_only: { type: 'boolean', description: 'Default: false (show all)' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_content_request',
+      description: 'Update a recurring content request (pause, resume, change recurrence, platforms, etc.).',
+      parameters: {
+        type: 'object',
+        properties: {
+          request_id: { type: 'string' },
+          fields: {
+            type: 'object',
+            description: 'request_type, content_type, platforms (JSON string), recurrence, day_of_week, time_of_day, per_run, topic_strategy, fixed_topic, next_run_date, active (0/1), paused (0/1), notes',
+          },
+        },
+        required: ['request_id', 'fields'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'cancel_content_request',
+      description: 'Deactivate a recurring content request (active=0). Does not delete history.',
+      parameters: {
+        type: 'object',
+        properties: {
+          request_id: { type: 'string' },
+        },
+        required: ['request_id'],
+      },
+    },
+  },
+
+  // ── TOPIC QUEUE ───────────────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'add_client_topics',
+      description: `Add a list of topics to a client's topic queue.
+Use for: "Here are 20 blog topics for Elite Team Builders: ...", "Add these questions to Unlocked Pros".
+Topics are consumed in priority DESC, FIFO order by recurring schedules and by batch_create_content(use_queue=true).`,
+      parameters: {
+        type: 'object',
+        properties: {
+          client:       { type: 'string', description: 'Client slug (required)' },
+          topics:       { type: 'array',  items: { type: 'string' }, description: 'List of topic strings (most common shape).' },
+          content_type: { type: 'string', description: "Applies to all topics added: 'image'|'blog'|'reel'|'video' (optional)" },
+          platforms:    { type: 'array',  items: { type: 'string' }, description: 'Optional target platforms (JSON-stringified by the tool).' },
+          priority:     { type: 'number', description: 'Default 0. Higher = consumed first.' },
+          target_date:  { type: 'string', description: 'Optional YYYY-MM-DD hint for when the topic should run.' },
+        },
+        required: ['client', 'topics'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_client_topics',
+      description: 'Show the topic queue for a client.',
+      parameters: {
+        type: 'object',
+        properties: {
+          client: { type: 'string' },
+          status: { type: 'string', description: "'pending' (default), 'used', 'skipped', or 'all'" },
+          limit:  { type: 'number', description: 'Default 50.' },
         },
         required: ['client'],
       },
@@ -1760,6 +1911,388 @@ Return JSON: { "caption": "..." }`;
         };
       }
 
+      // ── BATCH CONTENT CREATION ─────────────────────────────────────────────
+      case 'batch_create_content': {
+        const slug = typeof args.client === 'string' ? args.client : '';
+        const client = await getClientBySlug(env.DB, slug);
+        if (!client)    return { success: false, error: `Client not found: ${slug}` };
+        if (!openAiKey) return { success: false, error: 'OpenAI API key not configured' };
+
+        const contentType = (typeof args.content_type === 'string' ? args.content_type : 'image') as
+          'image' | 'reel' | 'video' | 'blog';
+        const platforms = Array.isArray(args.platforms) && args.platforms.length > 0
+          ? (args.platforms as string[])
+          : undefined;
+        const statusArg = typeof args.status === 'string' ? args.status : 'pending_approval';
+        const explicitTopics = Array.isArray(args.topics) ? (args.topics as string[]).filter(Boolean) : [];
+        const useQueue = args.use_queue === true;
+        const singleTopic = typeof args.topic === 'string' && args.topic.trim() ? args.topic.trim() : null;
+        const requestedCount = typeof args.count === 'number' ? Math.max(1, Math.min(20, Math.floor(args.count))) : null;
+
+        const startDate = typeof args.start_date === 'string' ? args.start_date : new Date().toISOString().slice(0, 10);
+        const spacing   = typeof args.spacing_days === 'number' ? Math.max(0, Math.min(30, args.spacing_days)) : 1;
+
+        // Build the slot list: { topic, topicRow?, publishDate }
+        type Slot = { topic: string | undefined; topicId: string | null; publishDate: string };
+        const slots: Slot[] = [];
+
+        const addDays = (ymd: string, d: number) => {
+          const t = new Date(ymd + 'T00:00:00Z');
+          t.setUTCDate(t.getUTCDate() + d);
+          return t.toISOString().slice(0, 10);
+        };
+
+        if (explicitTopics.length > 0) {
+          const limit = Math.min(20, explicitTopics.length);
+          for (let i = 0; i < limit; i++) {
+            slots.push({ topic: explicitTopics[i], topicId: null, publishDate: `${addDays(startDate, i * spacing)}T10:00` });
+          }
+        } else if (useQueue) {
+          const pending = await listClientTopics(env.DB, client.id, 'pending', Math.min(20, requestedCount ?? 20));
+          const limit = Math.min(20, requestedCount ?? pending.length);
+          for (let i = 0; i < Math.min(limit, pending.length); i++) {
+            slots.push({ topic: pending[i].topic, topicId: pending[i].id, publishDate: `${addDays(startDate, i * spacing)}T10:00` });
+          }
+          if (slots.length === 0) {
+            return { success: false, error: 'Topic queue is empty for this client — add_client_topics first or pass topics[] directly' };
+          }
+        } else if (singleTopic) {
+          const n = requestedCount ?? 1;
+          for (let i = 0; i < n; i++) {
+            slots.push({ topic: singleTopic, topicId: null, publishDate: `${addDays(startDate, i * spacing)}T10:00` });
+          }
+        } else if (requestedCount) {
+          for (let i = 0; i < requestedCount; i++) {
+            slots.push({ topic: undefined, topicId: null, publishDate: `${addDays(startDate, i * spacing)}T10:00` });
+          }
+        } else {
+          return { success: false, error: 'Provide topics[] OR use_queue:true OR topic+count OR count' };
+        }
+
+        if (slots.length === 0) return { success: false, error: 'No slots resolved' };
+
+        // Fire in background, sequentially (respect OpenAI + Stability rate limits)
+        ctx.waitUntil((async () => {
+          for (const slot of slots) {
+            try {
+              const result = await createContentWithImage(env, {
+                clientSlug:    slug,
+                platforms,
+                contentType,
+                topicOverride: slot.topic,
+                publishDate:   slot.publishDate,
+                status:        statusArg as 'draft' | 'pending_approval',
+                notifyDiscord: true,
+                triggeredBy:   `agent:batch:${user.email}`,
+              }, openAiKey);
+              if (slot.topicId) {
+                try { await markClientTopicUsed(env.DB, slot.topicId, result.postId); }
+                catch { /* non-fatal */ }
+              }
+            } catch (err) {
+              console.error('[agent] batch_create_content slot failed:', err);
+            }
+          }
+        })());
+
+        await writeAuditLog(env.DB, {
+          user_id: user.userId, action: 'agent_batch_create_content',
+          entity_type: 'client', entity_id: client.id,
+          new_value: { slots: slots.length, content_type: contentType, start_date: startDate, spacing },
+        });
+
+        return {
+          success: true,
+          summary: {
+            client:       slug,
+            count:        slots.length,
+            content_type: contentType,
+            start_date:   startDate,
+            spacing_days: spacing,
+            source:       explicitTopics.length ? 'explicit' : useQueue ? 'queue' : singleTopic ? 'shared_topic' : 'auto',
+            platforms:    platforms ?? 'all client platforms',
+          },
+          suggestions: [
+            `Background job created ${slots.length} post${slots.length !== 1 ? 's' : ''} — check /approvals when ready.`,
+          ],
+          action_summary: `Batch of ${slots.length} ${contentType} post${slots.length !== 1 ? 's' : ''} queued for ${client.canonical_name}`,
+        };
+      }
+
+      // ── CREATE CONTENT REQUEST ─────────────────────────────────────────────
+      case 'create_content_request': {
+        const slug = typeof args.client === 'string' ? args.client : '';
+        const client = await getClientBySlug(env.DB, slug);
+        if (!client) return { success: false, error: `Client not found: ${slug}` };
+
+        const recurrence = typeof args.recurrence === 'string' ? args.recurrence : '';
+        const VALID_REC = new Set(['daily', 'weekdays', 'weekly', 'biweekly', 'monthly', 'once']);
+        if (!VALID_REC.has(recurrence)) {
+          return { success: false, error: `Invalid recurrence. Use one of: ${[...VALID_REC].join(', ')}` };
+        }
+
+        const requestType   = typeof args.request_type   === 'string' ? args.request_type   : 'social';
+        const contentType   = typeof args.content_type   === 'string' ? args.content_type   : null;
+        const platformsArr  = Array.isArray(args.platforms) ? (args.platforms as string[]) : null;
+        const platformsStr  = platformsArr && platformsArr.length > 0 ? JSON.stringify(platformsArr) : null;
+        const dayOfWeek     = typeof args.day_of_week    === 'number' ? args.day_of_week    : null;
+        const timeOfDay     = typeof args.time_of_day    === 'string' ? args.time_of_day    : null;
+        const perRun        = typeof args.per_run        === 'number' ? Math.max(1, Math.min(10, args.per_run)) : 1;
+        const topicStrategy = typeof args.topic_strategy === 'string' ? args.topic_strategy : 'queue';
+        const fixedTopic    = typeof args.fixed_topic    === 'string' ? args.fixed_topic    : null;
+        const nextRunDate   = typeof args.next_run_date  === 'string' ? args.next_run_date  : new Date().toISOString().slice(0, 10);
+        const notes         = typeof args.notes          === 'string' ? args.notes          : null;
+
+        if (topicStrategy === 'fixed' && !fixedTopic) {
+          return { success: false, error: 'topic_strategy=fixed requires fixed_topic' };
+        }
+
+        const row = await createContentRequest(env.DB, {
+          client_id:      client.id,
+          request_type:   requestType,
+          content_type:   contentType,
+          platforms:      platformsStr,
+          recurrence,
+          day_of_week:    dayOfWeek,
+          time_of_day:    timeOfDay,
+          per_run:        perRun,
+          topic_strategy: topicStrategy,
+          fixed_topic:    fixedTopic,
+          next_run_date:  nextRunDate,
+          active:         1,
+          paused:         0,
+          notes,
+          created_by:     user.userId,
+        });
+
+        await writeAuditLog(env.DB, {
+          user_id: user.userId, action: 'agent_create_content_request',
+          entity_type: 'content_request', entity_id: row.id,
+          new_value: { client: slug, recurrence, day_of_week: dayOfWeek, time_of_day: timeOfDay, per_run: perRun },
+        });
+
+        return {
+          success: true,
+          items: [row],
+          summary: {
+            request_id:    row.id,
+            client:        slug,
+            recurrence,
+            day_of_week:   dayOfWeek,
+            time_of_day:   timeOfDay,
+            per_run:       perRun,
+            next_run_date: nextRunDate,
+          },
+          action_summary: `Recurring ${recurrence} schedule created for ${client.canonical_name}${dayOfWeek != null ? ` on day ${dayOfWeek}` : ''}${timeOfDay ? ` at ${timeOfDay} UTC` : ''}`,
+        };
+      }
+
+      // ── LIST CONTENT REQUESTS ──────────────────────────────────────────────
+      case 'list_content_requests': {
+        let clientId: string | undefined;
+        if (typeof args.client === 'string' && args.client) {
+          const c = await resolveClientSlug(env.DB, args.client);
+          if (!c) return { success: false, error: `Client not found: ${args.client}` };
+          clientId = c.id;
+        }
+        const rows = await listContentRequests(env.DB, {
+          clientId,
+          activeOnly: args.active_only === true,
+        });
+
+        // Enrich with client slug for display
+        const clientIds = [...new Set(rows.map(r => r.client_id))];
+        const nameMap = new Map<string, string>();
+        if (clientIds.length) {
+          const ph = clientIds.map(() => '?').join(',');
+          const cl = await env.DB
+            .prepare(`SELECT id, canonical_name, slug FROM clients WHERE id IN (${ph})`)
+            .bind(...clientIds).all<{ id: string; canonical_name: string; slug: string }>();
+          for (const c of cl.results) nameMap.set(c.id, `${c.canonical_name} (${c.slug})`);
+        }
+
+        const items = rows.map(r => ({
+          id:             r.id,
+          client:         nameMap.get(r.client_id) ?? r.client_id,
+          request_type:   r.request_type,
+          content_type:   r.content_type,
+          platforms:      r.platforms,
+          recurrence:     r.recurrence,
+          day_of_week:    r.day_of_week,
+          time_of_day:    r.time_of_day,
+          per_run:        r.per_run,
+          topic_strategy: r.topic_strategy,
+          next_run_date:  r.next_run_date,
+          last_triggered_at: r.last_triggered_at,
+          active:         r.active,
+          paused:         r.paused,
+        }));
+
+        return {
+          success: true,
+          items,
+          summary: { total: items.length, active: items.filter(i => i.active && !i.paused).length },
+          action_summary: `${items.length} content request${items.length !== 1 ? 's' : ''} found`,
+        };
+      }
+
+      // ── UPDATE CONTENT REQUEST ─────────────────────────────────────────────
+      case 'update_content_request': {
+        const requestId = typeof args.request_id === 'string' ? args.request_id : null;
+        if (!requestId) return { success: false, error: 'request_id is required' };
+
+        const before = await getContentRequestById(env.DB, requestId);
+        if (!before) return { success: false, error: `Content request not found: ${requestId}` };
+
+        const fields = (args.fields ?? {}) as Record<string, unknown>;
+        const ALLOWED = new Set([
+          'request_type', 'content_type', 'platforms', 'recurrence', 'day_of_week',
+          'time_of_day', 'per_run', 'topic_strategy', 'fixed_topic',
+          'next_run_date', 'active', 'paused', 'notes',
+        ]);
+        const safe: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(fields)) {
+          if (!ALLOWED.has(k)) continue;
+          // Normalize platforms array to JSON
+          if (k === 'platforms' && Array.isArray(v)) safe[k] = JSON.stringify(v);
+          else if (typeof v === 'boolean') safe[k] = v ? 1 : 0;
+          else safe[k] = v;
+        }
+        if (Object.keys(safe).length === 0) {
+          return { success: false, error: 'No valid fields to update' };
+        }
+
+        await updateContentRequest(env.DB, requestId, safe);
+        await writeAuditLog(env.DB, {
+          user_id: user.userId, action: 'agent_update_content_request',
+          entity_type: 'content_request', entity_id: requestId,
+          new_value: safe,
+        });
+
+        const after = await getContentRequestById(env.DB, requestId);
+        return {
+          success: true,
+          items: after ? [after] : [],
+          summary: { request_id: requestId, updated_fields: Object.keys(safe) },
+          action_summary: `Content request ${requestId} updated: ${Object.keys(safe).join(', ')}`,
+        };
+      }
+
+      // ── CANCEL CONTENT REQUEST ─────────────────────────────────────────────
+      case 'cancel_content_request': {
+        const requestId = typeof args.request_id === 'string' ? args.request_id : null;
+        if (!requestId) return { success: false, error: 'request_id is required' };
+
+        const before = await getContentRequestById(env.DB, requestId);
+        if (!before) return { success: false, error: `Content request not found: ${requestId}` };
+
+        await updateContentRequest(env.DB, requestId, { active: 0 });
+        await writeAuditLog(env.DB, {
+          user_id: user.userId, action: 'agent_cancel_content_request',
+          entity_type: 'content_request', entity_id: requestId,
+          new_value: { active: 0 },
+        });
+
+        return {
+          success: true,
+          summary: { request_id: requestId },
+          action_summary: `Content request ${requestId} cancelled (active=0)`,
+        };
+      }
+
+      // ── ADD CLIENT TOPICS ──────────────────────────────────────────────────
+      case 'add_client_topics': {
+        const slug = typeof args.client === 'string' ? args.client : '';
+        const client = await getClientBySlug(env.DB, slug);
+        if (!client) return { success: false, error: `Client not found: ${slug}` };
+
+        const rawTopics = Array.isArray(args.topics) ? args.topics : [];
+        const defaultContentType = typeof args.content_type === 'string' ? args.content_type : null;
+        const defaultPlatforms = Array.isArray(args.platforms) && args.platforms.length > 0
+          ? JSON.stringify(args.platforms as string[])
+          : null;
+        const defaultPriority = typeof args.priority === 'number' ? args.priority : 0;
+        const defaultTargetDate = typeof args.target_date === 'string' ? args.target_date : null;
+
+        // Accept either string[] or {topic, priority?, ...}[]
+        const normalized: Array<{
+          topic: string; content_type?: string | null; platforms?: string | null;
+          target_date?: string | null; priority?: number; notes?: string | null;
+        }> = [];
+        for (const raw of rawTopics) {
+          if (typeof raw === 'string') {
+            if (raw.trim()) normalized.push({
+              topic: raw.trim(),
+              content_type: defaultContentType,
+              platforms: defaultPlatforms,
+              target_date: defaultTargetDate,
+              priority: defaultPriority,
+            });
+          } else if (raw && typeof raw === 'object') {
+            const r = raw as Record<string, unknown>;
+            const t = typeof r['topic'] === 'string' ? (r['topic'] as string).trim() : '';
+            if (!t) continue;
+            normalized.push({
+              topic: t,
+              content_type: typeof r['content_type'] === 'string' ? (r['content_type'] as string) : defaultContentType,
+              platforms:    Array.isArray(r['platforms']) ? JSON.stringify(r['platforms']) : defaultPlatforms,
+              target_date:  typeof r['target_date'] === 'string' ? (r['target_date'] as string) : defaultTargetDate,
+              priority:     typeof r['priority'] === 'number' ? (r['priority'] as number) : defaultPriority,
+              notes:        typeof r['notes'] === 'string' ? (r['notes'] as string) : null,
+            });
+          }
+        }
+
+        if (normalized.length === 0) return { success: false, error: 'No valid topics in input' };
+
+        const result = await addClientTopics(env.DB, client.id, normalized, user.userId);
+        await writeAuditLog(env.DB, {
+          user_id: user.userId, action: 'agent_add_client_topics',
+          entity_type: 'client', entity_id: client.id,
+          new_value: { inserted: result.inserted, content_type: defaultContentType },
+        });
+
+        return {
+          success: true,
+          summary: { client: slug, inserted: result.inserted, attempted: normalized.length, content_type: defaultContentType },
+          suggestions: [
+            `Call batch_create_content { client: "${slug}", use_queue: true, count: ${result.inserted} } to generate posts now.`,
+            `Or call create_content_request { client: "${slug}", recurrence: "weekly", topic_strategy: "queue" } to drip them over time.`,
+          ],
+          action_summary: `Added ${result.inserted} topic${result.inserted !== 1 ? 's' : ''} to ${client.canonical_name}'s queue`,
+        };
+      }
+
+      // ── LIST CLIENT TOPICS ─────────────────────────────────────────────────
+      case 'list_client_topics': {
+        const slug = typeof args.client === 'string' ? args.client : '';
+        const client = await getClientBySlug(env.DB, slug);
+        if (!client) return { success: false, error: `Client not found: ${slug}` };
+
+        const statusRaw = typeof args.status === 'string' ? args.status : 'pending';
+        const VALID_STATUS = new Set(['pending', 'used', 'skipped', 'all']);
+        const status = VALID_STATUS.has(statusRaw) ? statusRaw : 'pending';
+        const limit  = typeof args.limit === 'number' ? Math.max(1, Math.min(200, args.limit)) : 50;
+
+        const rows = await listClientTopics(env.DB, client.id, status as 'pending' | 'used' | 'skipped' | 'all', limit);
+
+        return {
+          success: true,
+          items: rows.map(r => ({
+            id:           r.id,
+            topic:        r.topic,
+            content_type: r.content_type,
+            platforms:    r.platforms,
+            target_date:  r.target_date,
+            priority:     r.priority,
+            status:       r.status,
+            used_post_id: r.used_post_id,
+          })),
+          summary: { client: slug, total: rows.length, status },
+          action_summary: `${rows.length} ${status} topic${rows.length !== 1 ? 's' : ''} for ${client.canonical_name}`,
+        };
+      }
+
       default:
         return { success: false, error: `Unknown tool: ${name}` };
     }
@@ -1789,7 +2322,10 @@ TODAY'S DATE: ${today}
 ${clientList}
 
 ${AGENT_SKILLS}
+${NL_INTENT_MAP}
 ${AGENT_MEMORY}
+${CLIENT_EXPERTISE}
+${BUYER_PERSONAS}
 ${RESPONSE_RULES}`;
 }
 
@@ -1836,7 +2372,10 @@ export async function runAgent(opts: {
   let   finalMessage                    = '';
   let   jobId:           string | undefined;
 
-  for (let iter = 0; iter < 2; iter++) {
+  // Up to 4 iterations so the agent can chain tools from a single natural-language
+  // request (e.g. "add these topics then generate 5 posts" → add_client_topics +
+  // batch_create_content + final message).
+  for (let iter = 0; iter < 4; iter++) {
     console.log(`[agent] OpenAI call iter ${iter + 1}`);
 
     let resp: Response;
@@ -1854,7 +2393,7 @@ export async function runAgent(opts: {
             tools: AGENT_TOOLS,
             tool_choice: 'auto',
             temperature: 0.1,
-            max_tokens: 800,
+            max_tokens: 1200,
           }),
         });
       } finally { clearTimeout(to); }
