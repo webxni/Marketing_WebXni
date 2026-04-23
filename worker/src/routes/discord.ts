@@ -21,6 +21,7 @@ import {
 import { runAgent } from './ai';
 import { createGenerationRun } from '../db/queries';
 import { planGeneration } from '../loader/generation-run';
+import { createContentWithImage } from '../loader/autonomous-content';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -149,6 +150,70 @@ async function handleCommand(
     agentMessage = 'Show me the current posting queue with overdue/due-soon counts.';
   } else if (commandName === 'failed') {
     agentMessage = 'Show me all failed posts grouped by client.';
+  } else if (commandName === 'create-post' || commandName === 'create-blog') {
+    const opts         = interaction.data?.options ?? [];
+    const clientSlug   = (opts.find(o => o.name === 'client')?.value       as string | undefined) ?? '';
+    const platformsRaw = (opts.find(o => o.name === 'platforms')?.value    as string | undefined) ?? '';
+    const contentType  = commandName === 'create-blog'
+      ? 'blog'
+      : ((opts.find(o => o.name === 'content_type')?.value as string | undefined) ?? 'image');
+    const topic        = (opts.find(o => o.name === 'topic')?.value        as string | undefined)
+                      ?? (opts.find(o => o.name === 'question')?.value     as string | undefined);
+    const publishDate  = (opts.find(o => o.name === 'publish_date')?.value as string | undefined)
+                      ?? (opts.find(o => o.name === 'date')?.value         as string | undefined);
+
+    if (!clientSlug) {
+      await discordPatchInteraction({ applicationId: appId, token, botToken, content: '❌ `client` is required.' });
+      return;
+    }
+
+    const openAiKey = await resolveOpenAiKey(env);
+    if (!openAiKey) {
+      await discordPatchInteraction({ applicationId: appId, token, botToken, content: '❌ OpenAI API key not configured.' });
+      return;
+    }
+
+    const platforms = platformsRaw
+      ? platformsRaw.split(',').map(p => p.trim().toLowerCase()).filter(Boolean)
+      : [];
+
+    // Acknowledge immediately — creation takes 20-60 seconds
+    const typeLabel = contentType === 'blog' ? 'blog post' : `${contentType} post`;
+    await discordPatchInteraction({
+      applicationId: appId, token, botToken,
+      content: `⏳ Creating ${typeLabel} for **${clientSlug}**${topic ? ` about "${topic}"` : ' (auto-researched topic)'}…\nThis takes ~30 seconds. A new notification will appear when ready.`,
+    });
+
+    // Run full orchestration (deferred — already ack'd above)
+    try {
+      const result = await createContentWithImage(env, {
+        clientSlug,
+        platforms: platforms.length > 0 ? platforms : undefined,
+        contentType: contentType as 'image' | 'reel' | 'video' | 'blog',
+        topicOverride: topic,
+        publishDate,
+        status:        'pending_approval',
+        notifyDiscord: true,
+        triggeredBy:   `discord:${username}`,
+      }, openAiKey);
+
+      const imageNote = result.imageStatus === 'generated'
+        ? `🖼️ Image generated (${result.imageAttempts} attempt${result.imageAttempts !== 1 ? 's' : ''})`
+        : result.imageStatus === 'no_key'
+          ? '⚠️ No STABILITY_API_KEY — no image'
+          : `⚠️ Image generation failed after ${result.imageAttempts} attempts`;
+
+      const platformStr = result.platforms.join(', ') || '—';
+      await discordPatchInteraction({
+        applicationId: appId, token, botToken,
+        content: `✅ **${result.title}** created for **${clientSlug}**\n${imageNote}\n📱 ${platformStr}\n🔗 https://marketing.webxni.com/posts/${result.postId}`,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await discordPatchInteraction({ applicationId: appId, token, botToken, content: `❌ Content creation failed: ${msg.slice(0, 200)}` });
+    }
+    return;
+
   } else if (commandName === 'weekly-content') {
     const opts      = interaction.data?.options ?? [];
     const clientArg = (opts.find(o => o.name === 'client')?.value  as string | undefined) ?? '';
@@ -360,7 +425,7 @@ discordInternalRoute.post('/register', async (c) => {
 
   try {
     await registerSlashCommands(appId, botToken);
-    return c.json({ ok: true, message: 'Slash commands registered: /ask, /status, /queue, /failed, /weekly-content' });
+    return c.json({ ok: true, message: 'Slash commands registered: /ask, /status, /queue, /failed, /create-post, /create-blog, /weekly-content' });
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }

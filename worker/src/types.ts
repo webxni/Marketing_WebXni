@@ -22,6 +22,8 @@ export interface Env {
   DISCORD_APPLICATION_ID?: string; // wrangler var — App ID from Developer Portal
   DISCORD_CHANNEL_ID?:     string; // wrangler var — target notification channel
   DISCORD_OWNER_ID?:       string; // wrangler var — owner's user ID for DMs
+  // Stability AI (wrangler secret put STABILITY_API_KEY)
+  STABILITY_API_KEY?:      string;
 }
 
 /** LOADER worker bindings (no SESSION / ASSETS) */

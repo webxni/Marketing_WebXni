@@ -283,6 +283,26 @@ export const SLASH_COMMANDS = [
     description: 'Show all failed posts',
   },
   {
+    name:        'create-post',
+    description: 'Create a post with AI content + Stability image for a client',
+    options: [
+      { name: 'client',        description: 'Client slug', type: 3, required: true },
+      { name: 'platforms',     description: 'Comma-separated: facebook,instagram,google_business,linkedin,etc.', type: 3, required: false },
+      { name: 'content_type',  description: 'image (default), reel, video', type: 3, required: false },
+      { name: 'topic',         description: 'Specific topic or question (optional — auto-researched if blank)', type: 3, required: false },
+      { name: 'publish_date',  description: 'YYYY-MM-DD or YYYY-MM-DDTHH:MM (default: today)', type: 3, required: false },
+    ],
+  },
+  {
+    name:        'create-blog',
+    description: 'Create a long-form SEO blog post with AI image for a client',
+    options: [
+      { name: 'client',   description: 'Client slug', type: 3, required: true },
+      { name: 'question', description: 'Blog question or topic to answer (optional)', type: 3, required: false },
+      { name: 'date',     description: 'Publish date YYYY-MM-DD (default: today)', type: 3, required: false },
+    ],
+  },
+  {
     name:        'weekly-content',
     description: 'Trigger AI content generation for a week',
     options: [

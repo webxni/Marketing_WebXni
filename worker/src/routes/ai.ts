@@ -19,6 +19,7 @@ import {
 } from '../db/queries';
 import { runPosting }    from '../loader/posting-run';
 import { planGeneration, resumeGenerationRun } from '../loader/generation-run';
+import { createContentWithImage } from '../loader/autonomous-content';
 import { AGENT_SKILLS, AGENT_MEMORY, RESPONSE_RULES } from '../agent/context';
 
 export const aiRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
@@ -554,6 +555,30 @@ const AGENT_TOOLS = [
           dry_run: { type: 'boolean', description: 'Default false. Set true to simulate without sending.' },
         },
         required: ['post_id'],
+      },
+    },
+  },
+  // ── AUTONOMOUS CONTENT + IMAGE ────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'create_content_with_image',
+      description: `Autonomously create a post: write content (OpenAI) + generate image (Stability AI) + save as pending_approval + notify Discord.
+Use for: "Create content for X about Y", "Make an Instagram post for Z", "Create a Google Business post with image", "Create a blog post answering Q".
+Runs image generation in the background — returns the post ID immediately.
+If no topic is specified, the system researches the best topic automatically.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          client:        { type: 'string',  description: 'Client slug (required)' },
+          platforms:     { type: 'array',   items: { type: 'string' }, description: 'facebook|instagram|linkedin|google_business|x|threads|tiktok|pinterest|bluesky|youtube. Empty = all client platforms.' },
+          content_type:  { type: 'string',  description: 'image|reel|video|blog (default: image)' },
+          topic:         { type: 'string',  description: 'Specific topic, question, or angle to write about. Leave empty for automatic research.' },
+          publish_date:  { type: 'string',  description: 'YYYY-MM-DD or YYYY-MM-DDTHH:MM. Default: today at 10:00.' },
+          status:        { type: 'string',  description: 'pending_approval (default) or draft' },
+          notify_discord:{ type: 'boolean', description: 'Send Discord notification on creation (default: true)' },
+        },
+        required: ['client'],
       },
     },
   },
@@ -1680,6 +1705,58 @@ Return JSON: { "caption": "..." }`;
           job_id: job.id,
           summary: { post_id: postId, job_id: job.id, mode: dryRun ? 'dry_run' : 'real', platforms: post.platforms },
           action_summary: `${dryRun ? '[DRY RUN] ' : ''}Approved and posting "${post.title || postId}" — job ${job.id}`,
+        };
+      }
+
+      // ── AUTONOMOUS CONTENT + IMAGE ─────────────────────────────────────────
+      case 'create_content_with_image': {
+        const clientSlug   = typeof args.client        === 'string'  ? args.client       : null;
+        const platforms    = Array.isArray(args.platforms)            ? (args.platforms as string[]) : [];
+        const contentType  = typeof args.content_type  === 'string'  ? args.content_type : 'image';
+        const topic        = typeof args.topic         === 'string'  ? args.topic        : undefined;
+        const publishDate  = typeof args.publish_date  === 'string'  ? args.publish_date : undefined;
+        const statusArg    = typeof args.status        === 'string'  ? args.status       : 'pending_approval';
+        const notifyDc     = args.notify_discord !== false;
+
+        if (!clientSlug) return { success: false, error: 'client is required' };
+        if (!openAiKey)  return { success: false, error: 'OpenAI API key not configured' };
+
+        // Run content creation in background — Stability image gen can take 20-60s
+        ctx.waitUntil((async () => {
+          try {
+            const result = await createContentWithImage(env, {
+              clientSlug,
+              platforms: platforms.length > 0 ? platforms : undefined,
+              contentType: contentType as 'image' | 'reel' | 'video' | 'blog',
+              topicOverride: topic,
+              publishDate,
+              status: statusArg as 'draft' | 'pending_approval',
+              notifyDiscord: notifyDc,
+              triggeredBy: `agent:${user.email}`,
+            }, openAiKey);
+            console.log(`[agent] create_content_with_image done: postId=${result.postId} imageStatus=${result.imageStatus}`);
+          } catch (err) {
+            console.error('[agent] create_content_with_image error:', err);
+          }
+        })());
+
+        return {
+          success:        true,
+          action_summary: `Content creation started for "${clientSlug}" — running in background`,
+          summary: {
+            client:       clientSlug,
+            platforms:    platforms.length > 0 ? platforms : 'all client platforms',
+            content_type: contentType,
+            topic:        topic ?? 'auto-researched',
+            publish_date: publishDate ?? 'today at 10:00',
+            status:       statusArg,
+          },
+          suggestions: [
+            'Content is being written and image is being generated.',
+            notifyDc
+              ? 'You will receive a Discord notification with preview when ready.'
+              : 'Check /approvals in a moment to review the created post.',
+          ],
         };
       }
 
