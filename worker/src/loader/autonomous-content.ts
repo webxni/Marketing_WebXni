@@ -25,11 +25,13 @@ import {
   type TopicResearch,
 } from '../services/openai';
 import {
-  buildStabilityPrompt,
   buildStructuredBlogPrompt,
+  buildSocialImagePrompt,
   validateImagePrompt,
+  validateSocialImagePrompt,
   generateStabilityImage,
   reviewGeneratedImage,
+  shouldRetrySocialImage,
   getAspectRatioForContent,
   base64ToUint8Array,
   BLOG_NEGATIVE_PROMPT,
@@ -254,21 +256,52 @@ export async function createContentWithImage(
     imageStatus = 'failed';
     const aspectRatio = getAspectRatioForContent(contentType, platforms);
     const postId_tmp  = crypto.randomUUID().replace(/-/g, '').toLowerCase();
+    const location = serviceAreas[0] ?? client.state ?? '';
+    const serviceType = serviceNames[0] || p.target_keyword || client.industry || '';
+    const intent = inferSocialPostIntent({ title: p.title, master_caption: p.master_caption });
+    const socialContext = {
+      title: topicResearch?.topic ?? p.title ?? '',
+      businessType: client.industry ?? '',
+      service: serviceType,
+      location,
+      intent,
+      clientName: client.canonical_name,
+      spanishBrief: p.ai_image_prompt,
+    } as const;
 
-    // Translate Spanish brief → English Stability prompt (once, then refine per attempt)
-    let stabilityPrompt = await buildStabilityPrompt(openAiKey, p.ai_image_prompt, {
-      topic:    topicResearch?.topic ?? p.title ?? '',
-      industry: client.industry ?? '',
-    });
+    let stabilityPrompt = buildSocialImagePrompt(socialContext);
+    let promptAudit = validateSocialImagePrompt(stabilityPrompt, socialContext);
+    if (!promptAudit.valid) {
+      const rebuilt = buildSocialImagePrompt({
+        ...socialContext,
+        title: p.title ?? topicResearch?.topic ?? serviceType,
+      });
+      stabilityPrompt = rebuilt;
+      promptAudit = validateSocialImagePrompt(stabilityPrompt, socialContext);
+    }
 
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    if (!promptAudit.valid) {
+      console.info('[autonomous-content] social image skipped due to weak prompt', {
+        client: client.canonical_name,
+        title: p.title,
+        score: promptAudit.score,
+        reasons: promptAudit.reasons,
+      });
+      imageStatus = 'failed';
+    } else for (let attempt = 1; attempt <= 2; attempt++) {
       imageAttempts = attempt;
       try {
+        console.info('[autonomous-content] social Stability generate start', {
+          attempt,
+          prompt: stabilityPrompt,
+          client: client.canonical_name,
+        });
         const imgResult = await generateStabilityImage(stabKey, {
           prompt:       stabilityPrompt,
           aspectRatio,
           outputFormat: 'webp',
-          negativePrompt: 'text, watermark, blurry, distorted, low quality, cartoon, ugly',
+          stylePreset: 'photographic',
+          negativePrompt: 'cartoon, illustration, abstract, fake, distorted, low quality, stock photo',
         });
 
         // Review the generated image
@@ -278,7 +311,7 @@ export async function createContentWithImage(
           clientName: client.canonical_name,
         });
 
-        if (review.ok || attempt === 3) {
+        if (review.ok) {
           // Store in R2
           const ext   = 'webp';
           const rKey  = `${client.id}/ai-generated/${postId_tmp}-${attempt}.${ext}`;
@@ -291,15 +324,36 @@ export async function createContentWithImage(
           break;
         }
 
-        // Image failed review — improve prompt for next attempt
-        if (review.improvedPrompt) {
-          stabilityPrompt = review.improvedPrompt;
-        } else {
-          stabilityPrompt = `${stabilityPrompt}, photorealistic, high quality, professional photography`;
+        const shouldRetry = shouldRetrySocialImage(review);
+        console.info('[autonomous-content] social image review result', {
+          attempt,
+          ok: review.ok,
+          reason: review.reason ?? '',
+          shouldRetry,
+        });
+        if (!shouldRetry || attempt === 2) {
+          imageStatus = 'failed';
+          break;
         }
+        const retryPrompt = review.improvedPrompt?.trim()
+          ? review.improvedPrompt
+          : buildSocialImagePrompt({
+            ...socialContext,
+            title: `${socialContext.title} ${serviceType}`.trim(),
+          });
+        const retryAudit = validateSocialImagePrompt(retryPrompt, socialContext);
+        if (!retryAudit.valid) {
+          console.info('[autonomous-content] social retry skipped due to weak prompt', {
+            score: retryAudit.score,
+            reasons: retryAudit.reasons,
+          });
+          imageStatus = 'failed';
+          break;
+        }
+        stabilityPrompt = retryAudit.prompt;
       } catch (err) {
-        console.warn(`[autonomous-content] Stability attempt ${attempt}/3 failed: ${str(err)}`);
-        if (attempt === 3) {
+        console.warn(`[autonomous-content] Stability attempt ${attempt}/2 failed: ${str(err)}`);
+        if (attempt === 2) {
           imageStatus = 'failed';
           imageAttempts = attempt;
         }
@@ -407,6 +461,16 @@ export interface BlogSlotGenContext {
   /** Override the auto-built prompt — used by manual regenerate. */
   promptOverride?: string;
   existing?:      BlogBodyImage | undefined;
+}
+
+function inferSocialPostIntent(post: {
+  master_caption?: string | null;
+  title?: string | null;
+}): 'educational' | 'promo' | 'cta' {
+  const raw = `${post.title ?? ''} ${post.master_caption ?? ''}`.toLowerCase();
+  if (/\b(call|contact|book|schedule|estimate|quote|today|now)\b/.test(raw)) return 'cta';
+  if (/\b(save|offer|promo|sale|discount|special|limited)\b/.test(raw)) return 'promo';
+  return 'educational';
 }
 
 export async function generateBlogSlotImage(

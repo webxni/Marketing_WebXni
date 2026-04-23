@@ -130,6 +130,16 @@ export interface BuildImagePromptInput {
   slot?: BlogImageSlot;
 }
 
+export interface SocialImagePromptContext {
+  title: string;
+  businessType?: string | null;
+  service?: string | null;
+  location?: string | null;
+  intent?: 'educational' | 'promo' | 'cta';
+  clientName?: string | null;
+  spanishBrief?: string | null;
+}
+
 const SLOT_FRAMING: Record<BlogImageSlot, { angle: string; shot: string; intent: string }> = {
   1: {
     angle:  'a hero establishing shot introducing the topic',
@@ -193,6 +203,111 @@ function buildSceneSubject(input: BuildImagePromptInput): string {
     return `Detailed ${service} action scene focused on ${subject}`;
   }
   return `Completed ${service} result showcasing ${subject}`;
+}
+
+function inferServiceAction(businessType: string, service: string, intent: 'educational' | 'promo' | 'cta'): string {
+  const raw = `${businessType} ${service}`.toLowerCase();
+  if (/roof/.test(raw)) return intent === 'promo' ? 'repairing and inspecting residential roofing materials' : 'repairing shingles on a residential roof';
+  if (/lock|key|locksmith/.test(raw)) return intent === 'cta' ? 'installing and testing a new residential lockset' : 'rekeying and installing secure residential door hardware';
+  if (/bath|tile|shower/.test(raw)) return 'installing bathroom tile during an active remodel';
+  if (/kitchen|cabinet/.test(raw)) return 'installing cabinetry and finish materials during a kitchen remodel';
+  if (/paint/.test(raw)) return 'painting and finishing interior residential walls';
+  if (/remodel|renovat|construction|builder/.test(raw)) return 'completing a residential remodeling project with visible craftsmanship';
+  return `performing ${service || businessType || 'professional service'} work on site`;
+}
+
+function inferSocialEnvironment(businessType: string, service: string): string {
+  const raw = `${businessType} ${service}`.toLowerCase();
+  if (/roof/.test(raw)) return 'real residential job site, visible roofline, tools and materials in active use';
+  if (/lock|key|locksmith/.test(raw)) return 'real residential entryway, front door hardware, clean exterior home setting';
+  if (/bath|tile|shower/.test(raw)) return 'small residential bathroom remodel, premium tile, glass shower, clean construction staging';
+  if (/kitchen|cabinet/.test(raw)) return 'residential kitchen job site, modern cabinetry, stone surfaces, organized workspace';
+  return 'real residential service environment, in-progress work area, authentic materials, clean staging';
+}
+
+export function buildSocialImagePrompt(ctx: SocialImagePromptContext): string {
+  const businessType = normalizePhrase(ctx.businessType) || 'professional service';
+  const service = normalizePhrase(ctx.service) || businessType;
+  const location = normalizePhrase(ctx.location);
+  const intent = ctx.intent ?? 'educational';
+  const action = inferServiceAction(businessType, service, intent);
+  const environment = inferSocialEnvironment(businessType, service);
+  const intentDetail =
+    intent === 'promo'
+      ? 'showing a polished finished result suitable for a promotional social post'
+      : intent === 'cta'
+        ? 'showing trustworthy service execution that supports a direct response call-to-action'
+        : 'showing hands-on professional work that teaches what the service looks like in real life';
+  const locationContext = location ? `${location} residential context` : 'local residential context';
+  const briefHint = normalizePhrase(ctx.spanishBrief)
+    .replace(/[.!?].*$/g, '')
+    .slice(0, 120);
+
+  return [
+    `Professional ${businessType} team ${action}`,
+    `${service} service in progress`,
+    locationContext,
+    environment,
+    intentDetail,
+    'natural daylight with clean balanced exposure',
+    'wide-angle professional documentary camera style, real job site perspective',
+    'clean, modern, high-end look, realistic, high detail, photorealistic, 4k',
+    briefHint,
+  ].filter(Boolean).join(', ');
+}
+
+export function validateSocialImagePrompt(prompt: string, ctx: SocialImagePromptContext): PromptValidationResult {
+  const normalized = cleanFragment(prompt);
+  const businessTokens = uniqueTokens([ctx.businessType]);
+  const serviceTokens = uniqueTokens([ctx.service, ctx.title]);
+  const locationTokens = uniqueTokens([ctx.location]);
+  const lower = normalized.toLowerCase();
+  const reasons: string[] = [];
+  let score = 0;
+
+  if (normalized.length >= 110) score += 0.12;
+  else reasons.push('Prompt is too short');
+
+  if ((normalized.match(/,/g) ?? []).length >= 6) score += 0.12;
+  else reasons.push('Prompt is not fully structured');
+
+  if (hasAnyToken(lower, businessTokens)) score += 0.2;
+  else reasons.push('Missing business type');
+
+  if (hasAnyToken(lower, serviceTokens)) score += 0.22;
+  else reasons.push('Missing service keyword');
+
+  if (!locationTokens.length || hasAnyToken(lower, locationTokens)) score += locationTokens.length ? 0.14 : 0.08;
+  else reasons.push('Missing location context');
+
+  if (/\b(installing|repairing|rekeying|painting|inspecting|completing|working|testing|replacing)\b/i.test(normalized)) score += 0.12;
+  else reasons.push('Missing real-world service action');
+
+  if (/\b(job site|residential|entryway|roof|bathroom|kitchen|door|tile|materials|tools)\b/i.test(normalized)) score += 0.1;
+  else reasons.push('Missing professional context');
+
+  if (/\b(realistic|photorealistic|high detail|4k|daylight|wide-angle|camera style|modern|high-end)\b/i.test(normalized)) score += 0.12;
+  else reasons.push('Missing quality or camera direction');
+
+  if (/\b(nice|beautiful|modern scene|service business|professional scene)\b/i.test(normalized)) {
+    score -= 0.18;
+    reasons.push('Contains generic wording');
+  }
+
+  const boundedScore = Math.max(0, Math.min(1, Number(score.toFixed(2))));
+  return {
+    valid: boundedScore >= PROMPT_QUALITY_THRESHOLD,
+    score: boundedScore,
+    label: boundedScore >= PROMPT_QUALITY_THRESHOLD ? 'Good' : 'Weak',
+    reasons,
+    prompt: normalized,
+  };
+}
+
+export function shouldRetrySocialImage(review: ImageReviewResult): boolean {
+  if (review.ok) return false;
+  const reason = String(review.reason ?? '').toLowerCase();
+  return /\birrelevant|unrelated|wrong|mismatch|service|industry|topic\b/.test(reason);
 }
 
 export function buildImagePrompt(input: BuildImagePromptInput): string {
