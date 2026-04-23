@@ -17,6 +17,7 @@ import { parseBlogBodyImages, serializeBlogBodyImages } from '../modules/blog-bo
 import { resolveStabilityApiKeys } from '../services/stability';
 
 const REPAIR_KEY = 'repair-posts-2026-04-14-webxni';
+const DEFAULT_PUBLIC_MEDIA_PROXY = 'https://marketing.webxni.com/media';
 
 export interface BlogAuditItem {
   post_id: string;
@@ -171,6 +172,20 @@ function buildBodyImageHtml(media: WpMediaItem | null, caption: string): string 
   if (!media?.source_url) return '';
   const alt = (media.alt_text || caption).replace(/"/g, '&quot;');
   return `<img src="${media.source_url}" alt="${alt}" /><figcaption>${caption.replace(/</g, '&lt;')}</figcaption>`;
+}
+
+function buildStoredBodyImageHtml(
+  env: Env,
+  r2Key: string | null | undefined,
+  caption: string,
+  altText?: string | null,
+): string {
+  if (!r2Key) return '';
+  const publicBase = (env as Env & { R2_MEDIA_PUBLIC_URL?: string }).R2_MEDIA_PUBLIC_URL?.trim()
+    || DEFAULT_PUBLIC_MEDIA_PROXY;
+  const src = `${publicBase.replace(/\/$/, '')}/${r2Key}`;
+  const alt = (altText || caption).replace(/"/g, '&quot;');
+  return `<img src="${src}" alt="${alt}" /><figcaption>${caption.replace(/</g, '&lt;')}</figcaption>`;
 }
 
 function chooseCanonicalWpPost(posts: WpPost[], slug: string): WpPost | null {
@@ -332,6 +347,22 @@ export async function repairExistingBlogs(env: Env): Promise<BlogRepairStats> {
       wp_template_key: client.wp_template_key,
       industry: client.industry,
     });
+    const latestImages = parseBlogBodyImages(nextBlogBodyImages);
+    const slotHtml: { slot1?: string; slot2?: string; slot3?: string } = {};
+    for (const image of latestImages) {
+      if (!image.r2_key) continue;
+      const html = buildStoredBodyImageHtml(
+        env,
+        image.r2_key,
+        post.title ?? client.canonical_name,
+        `${structuredBlog.focusKeyword || post.title || client.canonical_name} | slot ${image.slot}`,
+      );
+      if (!html) continue;
+      if (image.slot === 1) slotHtml.slot1 = html;
+      if (image.slot === 2) slotHtml.slot2 = html;
+      if (image.slot === 3) slotHtml.slot3 = html;
+    }
+
     const storedHtml = renderStructuredBlogHtml({
       templateKey,
       primaryColor: client.brand_json ? (() => {
@@ -345,7 +376,8 @@ export async function repairExistingBlogs(env: Env): Promise<BlogRepairStats> {
       clientName: client.canonical_name,
       phone: client.phone,
       ctaDefault: client.cta_text,
-      bodyImageHtml: hasImageCandidate ? undefined : '',
+      bodyImageHtml: slotHtml.slot1 ?? (hasImageCandidate ? undefined : ''),
+      bodyImages: slotHtml,
       blog: structuredBlog,
     });
 
