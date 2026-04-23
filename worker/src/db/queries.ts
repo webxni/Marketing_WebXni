@@ -172,9 +172,16 @@ export async function listPosts(
 
   const [data, countRow] = await Promise.all([
     db
-      .prepare(`SELECT * FROM posts ${where} ORDER BY publish_date ${order} LIMIT ? OFFSET ?`)
+      .prepare(
+        // asset_count is a computed column used by list views (approvals card,
+        // calendar, etc.) to show a "+N more" indicator for multi-image posts.
+        `SELECT posts.*, (
+           SELECT COUNT(*) FROM assets WHERE assets.post_id = posts.id
+         ) AS asset_count
+         FROM posts ${where} ORDER BY publish_date ${order} LIMIT ? OFFSET ?`,
+      )
       .bind(...binds, limit, offset)
-      .all<PostRow>(),
+      .all<PostRow & { asset_count: number }>(),
     db
       .prepare(`SELECT COUNT(*) as n FROM posts ${where}`)
       .bind(...binds)
@@ -858,6 +865,175 @@ export async function writeAuditLog(
       )
       .run();
   } catch { /* audit logs are non-fatal — never block business operations */ }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST ASSETS (multi-image carousel support — migration 0027)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface PostAssetRow {
+  id:           string;
+  post_id:      string | null;
+  client_id:    string;
+  r2_key:       string;
+  r2_bucket:    string;
+  filename:     string | null;
+  content_type: string | null;
+  size_bytes:   number | null;
+  source:       string | null;
+  sort_order:   number;
+  created_at:   number;
+}
+
+/** List explicitly-attached assets for a post, ordered. Empty list if none. */
+export async function listPostAssetsRows(
+  db: D1Database,
+  postId: string,
+): Promise<PostAssetRow[]> {
+  const rows = await db
+    .prepare(
+      `SELECT id, post_id, client_id, r2_key, r2_bucket, filename, content_type, size_bytes, source, sort_order, created_at
+       FROM assets
+       WHERE post_id = ?
+       ORDER BY sort_order ASC, created_at ASC`,
+    )
+    .bind(postId)
+    .all<PostAssetRow>();
+  return rows.results;
+}
+
+/**
+ * Unified media read for a post: returns explicitly-attached assets when any
+ * exist, otherwise synthesizes a single-item list from the legacy
+ * posts.asset_r2_key column. Callers should use this everywhere they need
+ * the ordered image set for a post.
+ */
+export async function listPostMedia(
+  db: D1Database,
+  post: Pick<PostRow, 'id' | 'asset_r2_key' | 'asset_r2_bucket' | 'asset_type'>,
+): Promise<Array<{
+  id:           string | null;
+  r2_key:       string;
+  r2_bucket:    string;
+  filename:     string | null;
+  content_type: string | null;
+  sort_order:   number;
+}>> {
+  const rows = await listPostAssetsRows(db, post.id);
+  if (rows.length > 0) {
+    return rows.map(r => ({
+      id:           r.id,
+      r2_key:       r.r2_key,
+      r2_bucket:    r.r2_bucket,
+      filename:     r.filename,
+      content_type: r.content_type,
+      sort_order:   r.sort_order,
+    }));
+  }
+  if (post.asset_r2_key) {
+    const filename = post.asset_r2_key.split('/').pop() ?? null;
+    const isVideo  = post.asset_type === 'video' || post.asset_type === 'reel' ||
+                     (filename ? /\.(mp4|mov|webm|avi)$/i.test(filename) : false);
+    return [{
+      id:           null,
+      r2_key:       post.asset_r2_key,
+      r2_bucket:    post.asset_r2_bucket ?? 'MEDIA',
+      filename,
+      content_type: isVideo ? 'video/mp4' : 'image/jpeg',
+      sort_order:   0,
+    }];
+  }
+  return [];
+}
+
+/** Insert a new asset row — used by upload + agent image generation paths. */
+export async function insertPostAsset(
+  db: D1Database,
+  a: {
+    id?:          string;
+    post_id:      string | null;
+    client_id:    string;
+    r2_key:       string;
+    r2_bucket:    string;
+    filename?:    string | null;
+    content_type?: string | null;
+    size_bytes?:  number | null;
+    source?:      string | null;
+    sort_order?:  number;
+  },
+): Promise<PostAssetRow> {
+  const id  = a.id ?? crypto.randomUUID().replace(/-/g, '').toLowerCase();
+  const now = Math.floor(Date.now() / 1000);
+  const sortOrder = a.sort_order ?? 0;
+  await db
+    .prepare(
+      `INSERT INTO assets (id, post_id, client_id, r2_key, r2_bucket, filename,
+                           content_type, size_bytes, source, sort_order, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      id, a.post_id, a.client_id, a.r2_key, a.r2_bucket,
+      a.filename ?? null, a.content_type ?? null, a.size_bytes ?? null,
+      a.source ?? 'upload', sortOrder, now,
+    )
+    .run();
+  return {
+    id, post_id: a.post_id, client_id: a.client_id,
+    r2_key: a.r2_key, r2_bucket: a.r2_bucket,
+    filename: a.filename ?? null, content_type: a.content_type ?? null,
+    size_bytes: a.size_bytes ?? null, source: a.source ?? 'upload',
+    sort_order: sortOrder, created_at: now,
+  };
+}
+
+/** Attach previously-uploaded unattached assets (post_id=NULL) to a new post. */
+export async function attachAssetsToPost(
+  db: D1Database,
+  postId: string,
+  assetIds: string[],
+): Promise<number> {
+  if (assetIds.length === 0) return 0;
+  const now = Math.floor(Date.now() / 1000);
+  let attached = 0;
+  for (let i = 0; i < assetIds.length; i++) {
+    const res = await db
+      .prepare(`UPDATE assets SET post_id = ?, sort_order = ? WHERE id = ?`)
+      .bind(postId, i, assetIds[i])
+      .run();
+    if (res.meta?.changes) attached++;
+  }
+  await db.prepare('UPDATE posts SET updated_at = ? WHERE id = ?').bind(now, postId).run();
+  return attached;
+}
+
+/** Rewrite the sort_order for all of a post's attached assets. */
+export async function reorderPostAssets(
+  db: D1Database,
+  postId: string,
+  orderedAssetIds: string[],
+): Promise<void> {
+  for (let i = 0; i < orderedAssetIds.length; i++) {
+    await db
+      .prepare('UPDATE assets SET sort_order = ? WHERE id = ? AND post_id = ?')
+      .bind(i, orderedAssetIds[i], postId)
+      .run();
+  }
+}
+
+/** Delete every asset row + R2 object attached to a post. */
+export async function deleteAllPostAssets(
+  db: D1Database,
+  deleteR2: (r2_key: string, bucket: string) => Promise<void>,
+  postId: string,
+): Promise<number> {
+  const rows = await listPostAssetsRows(db, postId);
+  let deleted = 0;
+  for (const r of rows) {
+    try { await deleteR2(r.r2_key, r.r2_bucket); } catch { /* non-fatal */ }
+    await db.prepare('DELETE FROM assets WHERE id = ?').bind(r.id).run();
+    deleted++;
+  }
+  return deleted;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

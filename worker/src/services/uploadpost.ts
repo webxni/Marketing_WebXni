@@ -69,13 +69,23 @@ export interface PostTextParams {
   [key: string]: string | undefined;
 }
 
+/** One image to include in a photos[] multipart upload. */
+export interface PhotoUploadItem {
+  bytes:       ArrayBuffer;  // raw bytes from R2
+  filename:    string;
+  contentType: string;
+}
+
 export interface PostPhotoParams {
   user: string;
   platform: string;
   title: string;
-  photoBytes: ArrayBuffer;       // raw bytes from R2 — File() accepts ArrayBuffer
-  photoFilename: string;
-  photoContentType: string;
+  /**
+   * Ordered list of images. Single-image posts pass a 1-length array; carousels
+   * pass up to the platform's max. Upload-Post accepts this as repeated
+   * `photos[]` multipart parts.
+   */
+  photos: PhotoUploadItem[];
   scheduled_date?: string;
   idempotency_key?: string;
   facebook_page_id?: string;
@@ -135,10 +145,14 @@ export class UploadPostClient {
   }
 
   /**
-   * POST /api/upload_photos — image posts (multipart)
-   * Streams from R2 — does NOT buffer into memory to avoid Worker limits.
+   * POST /api/upload_photos — image posts (multipart).
+   * Accepts 1..N photos appended as repeated `photos[]` parts for native
+   * carousel / multi-image support on platforms that allow it.
    */
   async postPhoto(params: PostPhotoParams): Promise<UploadPostResponse> {
+    if (!Array.isArray(params.photos) || params.photos.length === 0) {
+      throw new Error('postPhoto requires at least one photo in photos[]');
+    }
     const fd = new FormData();
     fd.append('user', params.user);
     fd.append('platform[]', params.platform);
@@ -159,10 +173,12 @@ export class UploadPostClient {
     if (params.gbp_coupon_code)   fd.append('gbp_coupon_code',     params.gbp_coupon_code);
     if (params.gbp_redeem_url)    fd.append('gbp_redeem_url',      params.gbp_redeem_url);
     if (params.gbp_terms)         fd.append('gbp_terms',           params.gbp_terms);
-    fd.append(
-      'photos[]',
-      new File([params.photoBytes], params.photoFilename, { type: params.photoContentType }),
-    );
+    for (const photo of params.photos) {
+      fd.append(
+        'photos[]',
+        new File([photo.bytes], photo.filename, { type: photo.contentType }),
+      );
+    }
     return this._call('/api/upload_photos', fd, params.idempotency_key);
   }
 

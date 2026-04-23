@@ -1,9 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
-  import { postsApi, clientsApi, assetsApi } from '$lib/api';
+  import { postsApi, clientsApi, type PostAsset } from '$lib/api';
   import PlatformBadge from '$lib/components/ui/PlatformBadge.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
+  import MediaGallery from '$lib/components/ui/MediaGallery.svelte';
   import { toast } from '$lib/stores/ui';
   import { getCompatiblePlatforms, getDefaultPlatforms, getIncompatiblePlatforms, normalizeContentType } from '$lib/platforms';
   import type { Client } from '$lib/types';
@@ -11,7 +12,6 @@
   let clients: Client[] = [];
   let loading = true;
   let submitting = false;
-  let uploading = false;
 
   // Form state
   let clientSlug = '';
@@ -22,10 +22,10 @@
   let clientConfiguredPlatforms: string[] = [];
   let allowPlatformOverride = false;
   let masterCaption = '';
-  let assetFile: FileList | null = null;
-  let assetPreviewUrl = '';
-  let assetR2Key = '';
+  let assets: PostAsset[] = [];  // Multi-image: uploaded but unattached — linked to the post on create via asset_ids
   let dryRun = false;
+
+  $: currentClientId = clients.find(c => c.slug === clientSlug)?.id ?? null;
 
   // Content fields — shown based on contentType
   let blog_content = '';
@@ -87,21 +87,6 @@
     for (const p of selectedPlatforms) if (!captions[p]) captions[p] = masterCaption;
   }
 
-  async function uploadAsset() {
-    if (!assetFile || !assetFile[0]) return;
-    if (!clientSlug) { toast.error('Select a client before uploading a file'); return; }
-    const clientRecord = clients.find(c => c.slug === clientSlug);
-    if (!clientRecord) { toast.error('Client not found'); return; }
-    uploading = true;
-    try {
-      const r = await assetsApi.upload(assetFile[0], clientRecord.id);
-      assetR2Key = r.r2_key;
-      assetPreviewUrl = r.url ?? '';
-      toast.success('Asset uploaded');
-    } catch { toast.error('Upload failed'); }
-    finally { uploading = false; }
-  }
-
   async function submit(action: 'draft' | 'publish') {
     if (!clientSlug) { toast.error('Select a client'); return; }
     if (selectedPlatforms.length === 0) { toast.error('Select at least one platform'); return; }
@@ -146,6 +131,7 @@
         ai_image_prompt:     isImage   ? (ai_image_prompt || null)     : null,
         ai_video_prompt:     isVideo   ? (ai_video_prompt || null)     : null,
       };
+      const primaryAsset = assets[0];
       const r = await postsApi.create({
         client_slug:      clientSlug,
         title:            title || null,
@@ -153,7 +139,8 @@
         platforms:        JSON.stringify(selectedPlatforms),
         publish_date:     publishDate || null,
         master_caption:   masterCaption,
-        asset_r2_key:     assetR2Key || null,
+        asset_r2_key:     primaryAsset?.r2_key ?? null,
+        asset_ids:        assets.length > 0 ? assets.map(a => a.id) : undefined,
         dry_run:          dryRun,
         status:           action === 'draft' ? 'draft' : 'pending_approval',
         allow_platform_override: allowPlatformOverride,
@@ -177,8 +164,6 @@
       if (dateParam && !publishDate) publishDate = `${dateParam}T09:00`;
     } finally { loading = false; }
   });
-
-  $: if (assetFile && assetFile[0]) uploadAsset();
 
   // Auto-populate platforms when client changes
   let prevClientSlug = '';
@@ -267,32 +252,23 @@
       </div>
     </div>
 
-    <!-- Asset Upload -->
+    <!-- Media Upload (multi-image carousel support for image posts) -->
     {#if contentType !== 'text' && contentType !== 'blog'}
     <div class="card p-5">
-      <h3 class="section-label mb-4">Asset</h3>
-      {#if assetPreviewUrl}
-        <div class="mb-3">
-          {#if contentType === 'video' || contentType === 'reel'}
-            <video src={assetPreviewUrl} controls class="w-full rounded-lg max-h-48 bg-surface"></video>
-          {:else}
-            <img src={assetPreviewUrl} alt="Preview" class="w-full rounded-lg max-h-48 object-contain bg-surface" />
-          {/if}
-          <p class="text-xs text-muted mt-1">{assetR2Key}</p>
-        </div>
-      {/if}
-      <label class="block">
-        <span class="btn-secondary btn-sm cursor-pointer inline-flex items-center gap-2">
-          {#if uploading}<Spinner size="sm" />{/if}
-          {uploading ? 'Uploading…' : assetR2Key ? 'Replace file' : 'Upload file'}
-        </span>
-        <input
-          type="file"
-          accept="image/*,video/*"
-          class="hidden"
-          on:change={(e) => { assetFile = e.currentTarget.files; }}
-        />
-      </label>
+      <div class="flex items-baseline justify-between mb-4">
+        <h3 class="section-label">
+          {contentType === 'image' ? 'Images' : contentType === 'reel' ? 'Reel video' : contentType === 'video' ? 'Video' : 'Media'}
+        </h3>
+        {#if contentType === 'image'}
+          <span class="text-xs text-muted">Multiple images become a carousel where supported</span>
+        {/if}
+      </div>
+      <MediaGallery
+        bind:value={assets}
+        clientId={currentClientId}
+        postId={null}
+        accept={contentType === 'video' || contentType === 'reel' ? 'video/*' : 'image/*'}
+      />
     </div>
     {/if}
 

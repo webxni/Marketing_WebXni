@@ -1,1 +1,0 @@
-import{a as t}from"./rHFc9lY3.js";const o={upload:(e,p,s,d="MEDIA")=>{const a=new FormData;return a.append("file",e),a.append("bucket",d),p&&a.append("client_id",p),s&&a.append("post_id",s),t.upload("/api/assets/upload",a)},delete:e=>t.delete(`/api/assets/${e}`)};export{o as a};

@@ -2,19 +2,21 @@
   import { page } from '$app/stores';
   import { onDestroy, onMount } from 'svelte';
   import { goto } from '$app/navigation';
-  import { postsApi, assetsApi, clientsApi } from '$lib/api';
+  import { postsApi, clientsApi } from '$lib/api';
   import Badge from '$lib/components/ui/Badge.svelte';
   import PlatformBadge from '$lib/components/ui/PlatformBadge.svelte';
+  import MediaGallery from '$lib/components/ui/MediaGallery.svelte';
   // Spinner removed — loading state uses inline CSS spinner
   import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
   import { can } from '$lib/stores/auth';
   import { toast } from '$lib/stores/ui';
   import { formatDate, formatDateTime, parsePlatforms } from '$lib/utils';
   import { getCompatiblePlatforms, getIncompatiblePlatforms, normalizeContentType } from '$lib/platforms';
-  import type { ConnectionHealth, Post, PostPlatform } from '$lib/types';
+  import type { ConnectionHealth, Post, PostPlatform, PostAsset } from '$lib/types';
 
   let post: Post | null = null;
   let platforms: PostPlatform[] = [];
+  let assets: PostAsset[] = [];
   let loading = true;
   let activeTab: 'overview' | 'captions' | 'platforms' | 'blog' | 'diseno' = 'overview';
   let showApproveConfirm = false;
@@ -38,12 +40,14 @@
       let r = await postsApi.get(postId);
       post = r.post;
       platforms = r.platforms ?? [];
+      assets = r.assets ?? [];
       if (post?.content_type === 'blog' && post.wp_post_id) {
         try {
           await postsApi.syncBlog(post.id);
           r = await postsApi.get(postId);
           post = r.post;
           platforms = r.platforms ?? [];
+          assets = r.assets ?? [];
         } catch {
           // Keep rendering the local state if WP sync fails.
         }
@@ -54,6 +58,7 @@
         r = await postsApi.get(postId);
         post = r.post;
         platforms = r.platforms ?? [];
+        assets = r.assets ?? [];
       }
       blogPreviewSrcDoc = post?.blog_content
         ? `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1" /><style>body{margin:0;padding:24px;background:#ffffff;color:#132033;font-family:Arial,sans-serif;} img{max-width:100%;height:auto;} a{color:#1a73e8;}</style></head><body>${post.blog_content}</body></html>`
@@ -238,8 +243,7 @@
     } catch { toast.error('Failed to save'); }
   }
 
-  let uploadingAsset = false;
-  let assetFile: FileList | null = null;
+  // Media upload is now handled by the MediaGallery component; see onGalleryChange below.
   let translating = false;
   let translations: Record<string, string> | null = null;
 
@@ -349,17 +353,13 @@
     } finally { translating = false; }
   }
 
-  async function uploadAsset() {
-    if (!post || !assetFile || !assetFile[0]) return;
-    uploadingAsset = true;
-    try {
-      const r = await assetsApi.upload(assetFile[0], post.client_id ?? undefined, post.id);
-      await postsApi.update(post.id, { asset_r2_key: r.r2_key, asset_r2_bucket: r.bucket, asset_delivered: 1 });
-      assetFile = null;
-      toast.success('Asset uploaded and marked as delivered');
-      load();
-    } catch { toast.error('Upload failed'); }
-    finally { uploadingAsset = false; }
+  // MediaGallery dispatches 'change' with the updated assets list after every
+  // upload / remove / reorder. We keep local state in sync and reload the post
+  // so asset_delivered + primary thumbnail stay fresh.
+  function onGalleryChange(ev: CustomEvent<{ assets: PostAsset[] }>) {
+    assets = ev.detail.assets;
+    // Light refresh — pull the post again so asset_r2_key + asset_delivered reflect server state.
+    load();
   }
 
   async function deletePost() {
@@ -652,9 +652,14 @@
 
     <!-- Row 1: Media Asset + Master Caption side by side -->
     <div class="card p-4 flex flex-col">
-      <h3 class="section-label mb-3">Media Asset</h3>
-      {#if post.asset_r2_key}
-        {#if post.content_type === 'video' || post.content_type === 'reel' || post.asset_type === 'video'}
+      <div class="flex items-baseline justify-between mb-3">
+        <h3 class="section-label">Media {assets.length > 1 ? `(${assets.length} images)` : 'Asset'}</h3>
+        {#if assets.length > 1}
+          <span class="text-[10px] text-muted">Carousel — first image is primary</span>
+        {/if}
+      </div>
+      {#if assets.length > 0 || post.asset_r2_key}
+        {#if (post.content_type === 'video' || post.content_type === 'reel' || post.asset_type === 'video') && post.asset_r2_key}
           <video
             src="/api/assets/preview?key={encodeURIComponent(post.asset_r2_key)}"
             controls
@@ -663,15 +668,10 @@
           >
             <track kind="captions" />
           </video>
+          <p class="text-xs text-muted mt-2 font-mono truncate">{post.asset_r2_key}</p>
         {:else}
-          <img
-            src="/api/assets/preview?key={encodeURIComponent(post.asset_r2_key)}"
-            alt="Post asset"
-            class="w-full rounded-lg object-contain bg-surface"
-            style="max-height: 360px;"
-          />
+          <MediaGallery value={assets} readonly={true} showUploader={false} />
         {/if}
-        <p class="text-xs text-muted mt-2 font-mono truncate">{post.asset_r2_key}</p>
       {:else}
         <div class="flex-1 flex items-center justify-center rounded-lg bg-surface border border-border" style="min-height: 180px;">
           <p class="text-xs text-muted">No asset uploaded</p>
@@ -1075,34 +1075,21 @@
       </div>
     </div>
 
-    <!-- Asset upload for designer -->
+    <!-- Asset upload for designer — multi-image support -->
     <div class="card p-5">
       <div class="flex items-center gap-2 mb-3">
         <span class="text-lg">📎</span>
-        <h3 class="text-sm font-semibold text-white">Subir Archivo de Diseño</h3>
+        <h3 class="text-sm font-semibold text-white">Subir Archivos de Diseño</h3>
       </div>
-      {#if post.asset_r2_key}
-      <div class="flex items-center gap-3 p-3 bg-green-500/10 border border-green-500/30 rounded-lg mb-3">
-        <span class="text-green-400 text-lg">✓</span>
-        <div class="flex-1">
-          <p class="text-xs text-green-400 font-medium">Archivo entregado</p>
-          <p class="text-xs text-muted font-mono truncate">{post.asset_r2_key}</p>
-        </div>
-      </div>
-      {/if}
-      <label class="block">
-        <span class="text-xs text-muted block mb-2">Sube la imagen o video terminado (JPG, PNG, MP4, MOV)</span>
-        <input
-          type="file"
-          accept="image/*,video/*"
-          class="block w-full text-sm text-muted file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:font-medium file:bg-accent file:text-white hover:file:bg-blue-600 cursor-pointer"
-          disabled={uploadingAsset}
-          on:change={(e) => { assetFile = e.currentTarget.files; uploadAsset(); }}
-        />
-      </label>
-      {#if uploadingAsset}
-      <p class="text-xs text-accent mt-2">Subiendo archivo...</p>
-      {/if}
+      <p class="text-xs text-muted mb-3">Sube imágenes o videos (JPG, PNG, MP4, MOV). Múltiples imágenes crean un carrusel donde la plataforma lo soporta.</p>
+      <MediaGallery
+        value={assets}
+        clientId={post.client_id}
+        postId={post.id}
+        accept={post.content_type === 'video' || post.content_type === 'reel' ? 'video/*' : 'image/*,video/*'}
+        on:change={onGalleryChange}
+        on:reorder={onGalleryChange}
+      />
     </div>
 
     {#if post.ai_image_prompt}

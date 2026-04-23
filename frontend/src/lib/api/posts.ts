@@ -1,5 +1,5 @@
 import { api } from './client';
-import type { Post, PostPlatform, BlogBodyImage } from '../types';
+import type { Post, PostPlatform, BlogBodyImage, PostAsset } from '../types';
 
 export interface BlogBodyImageWithUrl extends BlogBodyImage {
   url: string | null;
@@ -27,7 +27,7 @@ export const postsApi = {
   },
 
   get: (id: string) =>
-    api.get<{ post: Post; platforms: PostPlatform[] }>(`/api/posts/${id}`),
+    api.get<{ post: Post; platforms: PostPlatform[]; assets: PostAsset[] }>(`/api/posts/${id}`),
 
   create: (data: Record<string, unknown>) =>
     api.post<{ post: Post }>('/api/posts', data),

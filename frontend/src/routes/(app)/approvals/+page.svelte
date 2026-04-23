@@ -224,7 +224,7 @@
               <button
                 type="button"
                 class="w-full h-full cursor-zoom-in focus:outline-none"
-                title="Click to view full size"
+                title={(post.asset_count ?? 1) > 1 ? `Carousel of ${post.asset_count} images — click to view` : 'Click to view full size'}
                 on:click|stopPropagation={() => openLightbox(`/media/${post.asset_r2_key}`)}
               >
                 <img
@@ -234,6 +234,15 @@
                   loading="lazy"
                   on:error={hideImgOnError}
                 />
+                {#if (post.asset_count ?? 1) > 1}
+                  <span class="absolute bottom-2 left-2 text-[10px] bg-black/75 text-white px-1.5 py-0.5 rounded font-semibold flex items-center gap-1">
+                    <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                      <rect x="3" y="3" width="10" height="10" rx="1.5" stroke="currentColor" stroke-width="1" fill="none"/>
+                      <rect x="1" y="1" width="10" height="10" rx="1.5" stroke="currentColor" stroke-width="1" fill="none"/>
+                    </svg>
+                    {post.asset_count} images
+                  </span>
+                {/if}
               </button>
             {/if}
           {:else if post.content_type === 'blog'}

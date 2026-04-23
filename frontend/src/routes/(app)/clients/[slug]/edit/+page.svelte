@@ -129,8 +129,8 @@
     uploadingLogo = true;
     try {
       const r = await assetsApi.upload(logoFile[0]);
-      logo_r2_key = r.r2_key;
-      logo_url = r.url ?? '';
+      logo_r2_key = r.r2_key ?? r.assets?.[0]?.r2_key ?? '';
+      logo_url = r.url ?? r.assets?.[0]?.url ?? '';
       toast.success('Logo uploaded');
     } catch { toast.error('Logo upload failed'); }
     finally { uploadingLogo = false; }

@@ -12,6 +12,8 @@ import {
   getPostPlatforms,
   writeAuditLog,
   getClientWithConfig,
+  listPostAssetsRows,
+  attachAssetsToPost,
 } from '../db/queries';
 import { normalizeContentType, parsePlatforms, resolvePlatformSelection } from '../modules/platform-compatibility';
 import { cleanupLegacyInvalidPlatformAttempts, syncPublishedUrls } from '../modules/published-urls';
@@ -92,7 +94,25 @@ postRoutes.get('/:id', async (c) => {
     .prepare('SELECT slug, canonical_name FROM clients WHERE id = ?')
     .bind(post.client_id)
     .first<{ slug: string; canonical_name: string }>();
-  return c.json({ post: { ...post, client_slug: cl?.slug, client_name: cl?.canonical_name }, platforms });
+  // Ordered attached media (multi-image carousel support).
+  const assetRows = await listPostAssetsRows(c.env.DB, post.id);
+  const mediaBase = (c.env.R2_MEDIA_PUBLIC_URL?.trim() || 'https://marketing.webxni.com/media').replace(/\/$/, '');
+  const assets = assetRows.map(r => ({
+    id:           r.id,
+    r2_key:       r.r2_key,
+    r2_bucket:    r.r2_bucket,
+    filename:     r.filename,
+    content_type: r.content_type,
+    size_bytes:   r.size_bytes,
+    sort_order:   r.sort_order,
+    url:          r.r2_bucket === 'IMAGES' ? null : `${mediaBase}/${r.r2_key}`,
+    created_at:   r.created_at,
+  }));
+  return c.json({
+    post: { ...post, client_slug: cl?.slug, client_name: cl?.canonical_name },
+    platforms,
+    assets,
+  });
 });
 
 /** POST /api/posts */
@@ -187,6 +207,29 @@ postRoutes.post('/', async (c) => {
     platform_manual_override: allowPlatformOverride ? 1 : 0,
     created_by:          user.userId,
   } as Parameters<typeof createPost>[1]);
+
+  // If the caller uploaded one or more images before the post existed
+  // (via POST /api/assets/upload with no post_id), they pass asset_ids here
+  // and we attach them in order. The first image becomes post.asset_r2_key.
+  const assetIds = Array.isArray(body['asset_ids']) ? (body['asset_ids'] as string[]) : [];
+  if (assetIds.length > 0) {
+    await attachAssetsToPost(c.env.DB, post.id, assetIds);
+    // Refresh primary asset pointer
+    const first = await c.env.DB
+      .prepare(`SELECT r2_key, r2_bucket, content_type
+                FROM assets WHERE post_id = ? ORDER BY sort_order ASC, created_at ASC LIMIT 1`)
+      .bind(post.id)
+      .first<{ r2_key: string; r2_bucket: string; content_type: string | null }>();
+    if (first) {
+      const isVideo = (first.content_type ?? '').startsWith('video/');
+      await c.env.DB
+        .prepare(`UPDATE posts
+                  SET asset_r2_key = ?, asset_r2_bucket = ?, asset_type = ?, asset_delivered = 1, updated_at = ?
+                  WHERE id = ?`)
+        .bind(first.r2_key, first.r2_bucket, isVideo ? 'video' : 'image', Math.floor(Date.now() / 1000), post.id)
+        .run();
+    }
+  }
 
   await writeAuditLog(c.env.DB, {
     user_id: user.userId,

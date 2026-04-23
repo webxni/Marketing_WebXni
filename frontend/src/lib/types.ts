@@ -2,6 +2,18 @@
 
 export type Role = 'admin' | 'designer' | 'client';
 
+export interface PostAsset {
+  id:           string;
+  r2_key:       string;
+  r2_bucket:    string;
+  filename:     string | null;
+  content_type: string | null;
+  size_bytes:   number | null;
+  sort_order:   number;
+  url:          string | null;
+  created_at?:  number;
+}
+
 export interface BlogBodyImage {
   slot:                  1 | 2 | 3;
   r2_key:                string | null;
@@ -242,6 +254,8 @@ export interface Post {
   asset_r2_key:         string | null;
   asset_r2_bucket:      string | null;
   asset_type:           string | null;
+  /** Count of assets attached to the post (added by listPosts query). */
+  asset_count?:         number;
   canva_link:           string | null;
   wp_post_url:          string | null;
   wp_post_id:           number | null;

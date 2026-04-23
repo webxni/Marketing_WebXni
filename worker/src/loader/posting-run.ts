@@ -13,12 +13,15 @@ import {
   upsertPostPlatform,
   setPostStatus,
   writeAuditLog,
+  listPostMedia,
+  deleteAllPostAssets,
 } from '../db/queries';
-import { UploadPostClient, UploadPostError } from '../services/uploadpost';
+import { UploadPostClient, UploadPostError, type PhotoUploadItem } from '../services/uploadpost';
 import { preflight } from '../modules/preflight';
 import { makeIdempotencyKey } from '../modules/idempotency';
 import { getCaption, normalizePlatform, SKIP_PLATFORMS } from '../modules/captions';
 import { getGbpCaptionField, getGbpPostedKey, normalizeContentType } from '../modules/platform-compatibility';
+import { maxPhotosForPlatform, selectPhotosForPlatform } from '../modules/platform-media';
 import {
   getScheduledTime,
   isVideoUrl,
@@ -179,16 +182,18 @@ async function processPost(
     return;
   }
 
-  // Detect media kind
+  // Load the ordered media set for this post (multi-image carousel support).
+  // Returns attached assets in sort_order; falls back to legacy asset_r2_key.
+  const media = await listPostMedia(env.DB, post);
+
+  // Detect media kind from the first item OR from content_type.
   let mediaKind: 'image' | 'video' | null = null;
-  let mediaUrl: string | null = null;
+  const firstKey = media[0]?.r2_key ?? post.asset_r2_key ?? null;
 
   if (normalizedContentType === 'reel' || normalizedContentType === 'video') {
     mediaKind = 'video';
-    mediaUrl = post.asset_r2_key;
-  } else if (post.asset_r2_key) {
-    mediaUrl = post.asset_r2_key; // Will be resolved to R2 URL or Drive URL below
-    if (isVideoUrl(post.asset_r2_key)) {
+  } else if (firstKey) {
+    if (isVideoUrl(firstKey) || media[0]?.content_type?.startsWith('video/')) {
       mediaKind = 'video';
     } else {
       mediaKind = inferMediaTypeFromAssetType(post.asset_type) ?? 'image';
@@ -196,7 +201,7 @@ async function processPost(
   }
 
   // Guard: image/video posts require an asset
-  if (!post.asset_r2_key && requiresMedia(post.content_type ?? '')) {
+  if (!firstKey && requiresMedia(post.content_type ?? '')) {
     const msg =
       'Image/video post requires Asset URL — upload to R2 then set asset_r2_key in DB.';
     if (!dryRun) await writeError(env.DB, post.id, msg);
@@ -204,18 +209,19 @@ async function processPost(
     return;
   }
 
-  // Download image bytes once (reused across platforms)
-  // Videos are passed as URL — never buffered
-  let photoBytes: ArrayBuffer | null = null;
-  let photoContentType = 'image/jpeg';
-  let photoFilename = 'image.jpg';
-
-  if (mediaUrl && mediaKind === 'image' && !dryRun) {
-    const obj = await env.MEDIA.get(post.asset_r2_key!);
-    if (obj) {
-      photoBytes = await obj.arrayBuffer();
-      photoContentType = obj.httpMetadata?.contentType ?? 'image/jpeg';
-      photoFilename = post.asset_r2_key!.split('/').pop() ?? 'image.jpg';
+  // Download image bytes once per attached image (reused across platforms).
+  // Videos are passed as URL — never buffered.
+  const photoItems: PhotoUploadItem[] = [];
+  if (mediaKind === 'image' && !dryRun) {
+    for (const m of media) {
+      const bucket = m.r2_bucket === 'IMAGES' ? env.IMAGES : env.MEDIA;
+      const obj = await bucket.get(m.r2_key);
+      if (!obj) continue;
+      photoItems.push({
+        bytes:       await obj.arrayBuffer(),
+        filename:    m.filename ?? m.r2_key.split('/').pop() ?? 'image.jpg',
+        contentType: obj.httpMetadata?.contentType ?? m.content_type ?? 'image/jpeg',
+      });
     }
   }
 
@@ -223,9 +229,9 @@ async function processPost(
   // Set R2_MEDIA_PUBLIC_URL in wrangler.toml [vars] after enabling public access
   // in Cloudflare R2 dashboard (format: https://pub-<hash>.r2.dev or custom domain).
   let videoR2Url: string | null = null;
-  if (mediaKind === 'video' && post.asset_r2_key) {
+  if (mediaKind === 'video' && firstKey) {
     const mediaBase = env.R2_MEDIA_PUBLIC_URL?.trim() || DEFAULT_PUBLIC_MEDIA_PROXY;
-    videoR2Url = `${mediaBase.replace(/\/$/, '')}/${post.asset_r2_key}`;
+    videoR2Url = `${mediaBase.replace(/\/$/, '')}/${firstKey}`;
   }
 
   for (const notionPlatform of platforms) {
@@ -241,12 +247,12 @@ async function processPost(
       continue;
     }
 
-    // Multi-location GBP (ETB has LA/WA/OR)
+    // Multi-location GBP (ETB has LA/WA/OR). GBP is single-photo per post,
+    // so we always send the first attached image.
     if (platform === 'google_business' && client.gbp_locations.length > 0) {
       await postGbpMultiLocation(
         env, up, post, client, sched_time, publishDate,
-        photoBytes, photoContentType, photoFilename,
-        videoR2Url, mediaKind, dryRun, stats, jobId,
+        photoItems, videoR2Url, mediaKind, dryRun, stats, jobId,
       );
       continue;
     }
@@ -320,12 +326,30 @@ async function processPost(
       continue;
     }
 
+    // Image platforms: slice the ordered photo set down to this platform's cap.
+    // If cap is 0 (e.g. YouTube) the platform doesn't accept image posts.
+    const platformPhotos = mediaKind === 'image'
+      ? selectPhotosForPlatform(photoItems, platform)
+      : [];
+    if (mediaKind === 'image' && platformPhotos.length === 0 && maxPhotosForPlatform(platform) === 0) {
+      if (!dryRun) {
+        const msg = translatePostingError(`${platform} does not support image posts.`, platform);
+        await upsertPostPlatform(env.DB, {
+          post_id: post.id, platform, status: 'skipped',
+          error_message: msg, idempotency_key: idemKey,
+        });
+        await logPostingAudit(env.DB, post.id, platform, 'skipped', msg, null);
+      }
+      stats.skipped++;
+      continue;
+    }
+
     if (dryRun) {
       const endpoint =
         mediaKind === 'video'
           ? 'POST /api/upload (video)'
           : mediaKind === 'image'
-            ? 'POST /api/upload_photos (photo)'
+            ? `POST /api/upload_photos (photos×${platformPhotos.length || 1})`
             : 'POST /api/upload_text (text)';
       console.log(`[DRY-RUN] ${post.title} → ${platform}`);
       console.log(`  endpoint: ${endpoint}`);
@@ -351,14 +375,12 @@ async function processPost(
           idempotency_key: idemKey,
           ...extra,
         });
-      } else if (mediaKind === 'image' && photoBytes) {
+      } else if (mediaKind === 'image' && platformPhotos.length > 0) {
         response = await up.postPhoto({
           user: client.upload_post_profile!,
           platform,
           title: caption!,
-          photoBytes,
-          photoFilename,
-          photoContentType,
+          photos: platformPhotos,
           scheduled_date: sched_time,
           idempotency_key: idemKey,
           ...extra,
@@ -436,11 +458,20 @@ async function processPost(
     if (thisPosted > 0) {
       await setPostStatus(env.DB, post.id, 'scheduled', 'Posted');
 
-      // Clean up R2 asset only when ALL platforms for this post succeeded
-      if (thisFailed === 0 && post.asset_r2_key) {
+      // Clean up R2 assets only when ALL platforms for this post succeeded.
+      // Removes every attached asset (carousel-aware) plus the legacy single key.
+      if (thisFailed === 0) {
         try {
-          const bucket = post.asset_r2_bucket === 'IMAGES' ? env.IMAGES : env.MEDIA;
-          await bucket.delete(post.asset_r2_key);
+          await deleteAllPostAssets(env.DB, async (key, bucket) => {
+            const b = bucket === 'IMAGES' ? env.IMAGES : env.MEDIA;
+            await b.delete(key);
+          }, post.id);
+          if (post.asset_r2_key) {
+            try {
+              const bucket = post.asset_r2_bucket === 'IMAGES' ? env.IMAGES : env.MEDIA;
+              await bucket.delete(post.asset_r2_key);
+            } catch { /* already removed */ }
+          }
           await env.DB
             .prepare('UPDATE posts SET asset_r2_key = NULL, asset_r2_bucket = NULL WHERE id = ?')
             .bind(post.id)
@@ -468,9 +499,7 @@ async function postGbpMultiLocation(
   client: Awaited<ReturnType<typeof getClientWithConfig>>,
   schedTime: string,
   publishDate: string,
-  photoBytes: ArrayBuffer | null,
-  photoContentType: string,
-  photoFilename: string,
+  photoItems: PhotoUploadItem[],
   videoR2Url: string | null,
   mediaKind: 'image' | 'video' | null,
   dryRun: boolean,
@@ -539,14 +568,13 @@ async function postGbpMultiLocation(
           idempotency_key: idemKey,
           ...extra,
         });
-      } else if (mediaKind === 'image' && photoBytes) {
+      } else if (mediaKind === 'image' && photoItems.length > 0) {
+        // GBP only accepts one image per post — always send the first.
         response = await up.postPhoto({
           user: profile,
           platform: 'google_business',
           title: caption,
-          photoBytes,
-          photoFilename,
-          photoContentType,
+          photos: [photoItems[0]],
           scheduled_date: schedTime,
           idempotency_key: idemKey,
           ...extra,
