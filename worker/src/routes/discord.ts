@@ -96,6 +96,21 @@ discordInteractRoute.post('/interact', async (c) => {
     const discordUser = (interaction.member?.user ?? interaction.user);
     const username    = discordUser?.global_name ?? discordUser?.username ?? 'Discord user';
 
+    // Idempotency — Discord retries interactions if our endpoint is slow,
+    // which could cause duplicate post creation for /create-post, /create-blog, etc.
+    // Key by interaction.id (unique per user-triggered command); skip on replay.
+    const idemKey = `discord:interact:${interaction.id}`;
+    try {
+      const existing = await c.env.KV_BINDING.get(idemKey);
+      if (existing) {
+        console.log(`[discord] duplicate interaction ${interaction.id} — skipping`);
+        return c.json({ type: 5 });
+      }
+      await c.env.KV_BINDING.put(idemKey, '1', { expirationTtl: 900 });
+    } catch (err) {
+      console.warn(`[discord] idempotency check failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     console.log(`[discord] /${commandName} from ${username}`);
 
     // Defer immediately — we have max 3s before Discord times out
