@@ -32,6 +32,7 @@ import {
   getAspectRatioForContent,
   base64ToUint8Array,
   BLOG_NEGATIVE_PROMPT,
+  resolveStabilityApiKeys,
   type BlogImageSlot,
 } from '../services/stability';
 import { serializeBlogBodyImages, type BlogBodyImage } from '../modules/blog-body-images';
@@ -95,19 +96,6 @@ function today(): string {
 
 function str(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
-}
-
-async function resolveStabilityKey(env: Env): Promise<string> {
-  const direct = (env as Env & { STABILITY_API_KEY?: string }).STABILITY_API_KEY ?? '';
-  if (direct) return direct;
-  try {
-    const raw = await env.KV_BINDING.get('settings:system');
-    if (!raw) return '';
-    const s = JSON.parse(raw) as Record<string, string>;
-    return s['stability_api_key'] || s['STABILITY_API_KEY'] || '';
-  } catch {
-    return '';
-  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -229,7 +217,7 @@ export async function createContentWithImage(
   const p = genResult.post;
 
   // ── 7. Stability image generation (3-attempt loop) ──────────────────────────
-  const stabKey = await resolveStabilityKey(env);
+  const { stabilityKey: stabKey } = await resolveStabilityApiKeys(env);
   let imageStatus: CreateContentResult['imageStatus'] = 'skipped';
   let imageAttempts = 0;
   let r2Key: string | null = null;

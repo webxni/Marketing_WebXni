@@ -14,6 +14,7 @@ import {
 import { isBlogAutomationEligible, isBlogDueForAutomation, publishBlogPost } from '../modules/blog-publishing';
 import { ensureBlogBodyImagesGenerated } from './autonomous-content';
 import { parseBlogBodyImages, serializeBlogBodyImages } from '../modules/blog-body-images';
+import { resolveStabilityApiKeys } from '../services/stability';
 
 const REPAIR_KEY = 'repair-posts-2026-04-14-webxni';
 
@@ -229,24 +230,8 @@ async function uploadFeaturedMediaIfNeeded(env: Env, post: PostRow, client: Clie
   return { mediaId: uploaded.id, media: uploaded, uploaded: true };
 }
 
-async function resolveImageApiKeys(env: Env): Promise<{ openAiKey: string; stabilityKey: string }> {
-  let openAiKey = env.OPENAI_API_KEY || '';
-  let stabilityKey = (env as Env & { STABILITY_API_KEY?: string }).STABILITY_API_KEY || '';
-  if (!openAiKey || !stabilityKey) {
-    try {
-      const raw = await env.KV_BINDING.get('settings:system');
-      const settings = raw ? (JSON.parse(raw) as Record<string, string>) : {};
-      if (!openAiKey) openAiKey = settings['ai_api_key'] || '';
-      if (!stabilityKey) stabilityKey = settings['stability_api_key'] || settings['STABILITY_API_KEY'] || '';
-    } catch {
-      // best effort only
-    }
-  }
-  return { openAiKey, stabilityKey };
-}
-
 export async function repairExistingBlogs(env: Env): Promise<BlogRepairStats> {
-  const { openAiKey, stabilityKey } = await resolveImageApiKeys(env);
+  const { openAiKey, stabilityKey } = await resolveStabilityApiKeys(env);
   const [posts, clientMap] = await Promise.all([
     listBlogPosts(env.DB),
     listBlogClients(env.DB),

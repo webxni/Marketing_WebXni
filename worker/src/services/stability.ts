@@ -1,3 +1,5 @@
+import type { Env } from '../types';
+
 /**
  * Stability AI image generation service.
  *
@@ -167,6 +169,40 @@ export const BLOG_NEGATIVE_PROMPT = [
   'cartoon', 'anime', 'illustration', '3d render',
   'oversaturated', 'harsh lighting', 'cluttered background',
 ].join(', ');
+
+export async function resolveStabilityApiKeys(env: Env): Promise<{ openAiKey: string; stabilityKey: string }> {
+  let openAiKey = env.OPENAI_API_KEY || '';
+  let stabilityKey = env.STABILITY_API_KEY || '';
+
+  // Some runtimes under nodejs_compat expose bindings through process.env.
+  try {
+    const procEnv = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
+    if (!openAiKey) openAiKey = procEnv?.OPENAI_API_KEY || '';
+    if (!stabilityKey) stabilityKey = procEnv?.STABILITY_API_KEY || '';
+  } catch {
+    // ignore
+  }
+
+  if (!openAiKey || !stabilityKey) {
+    try {
+      const raw = await env.KV_BINDING.get('settings:system');
+      const settings = raw ? (JSON.parse(raw) as Record<string, string>) : {};
+      if (!openAiKey) openAiKey = settings['ai_api_key'] || settings['OPENAI_API_KEY'] || '';
+      if (!stabilityKey) stabilityKey = settings['stability_api_key'] || settings['STABILITY_API_KEY'] || '';
+    } catch {
+      // ignore malformed KV settings
+    }
+  }
+
+  if (!stabilityKey) {
+    console.warn('[stability] STABILITY_API_KEY missing at runtime', {
+      hasEnvBinding: Boolean(env.STABILITY_API_KEY),
+      hasOpenAiBinding: Boolean(env.OPENAI_API_KEY),
+    });
+  }
+
+  return { openAiKey, stabilityKey };
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Prompt translation (Spanish brief → English Stability prompt)

@@ -16,6 +16,7 @@ import {
 } from '../services/wordpress';
 import { parseBlogBodyImages, serializeBlogBodyImages } from './blog-body-images';
 import { ensureBlogBodyImagesGenerated } from '../loader/autonomous-content';
+import { resolveStabilityApiKeys } from '../services/stability';
 
 export interface BlogPreflightResult {
   ok: boolean;
@@ -189,22 +190,6 @@ function buildBodyImageHtml(media: WpMediaItem | null, caption: string): string 
   return `<img src="${media.source_url}" alt="${alt}" /><figcaption>${caption.replace(/</g, '&lt;')}</figcaption>`;
 }
 
-async function resolveImageApiKeys(env: Env): Promise<{ openAiKey: string; stabilityKey: string }> {
-  let openAiKey = env.OPENAI_API_KEY || '';
-  let stabilityKey = (env as Env & { STABILITY_API_KEY?: string }).STABILITY_API_KEY || '';
-  if (!openAiKey || !stabilityKey) {
-    try {
-      const raw = await env.KV_BINDING.get('settings:system');
-      const settings = raw ? (JSON.parse(raw) as Record<string, string>) : {};
-      if (!openAiKey) openAiKey = settings['ai_api_key'] || '';
-      if (!stabilityKey) stabilityKey = settings['stability_api_key'] || settings['STABILITY_API_KEY'] || '';
-    } catch {
-      // best effort only
-    }
-  }
-  return { openAiKey, stabilityKey };
-}
-
 async function ensurePostBodyImages(
   env: Env,
   post: PostRow,
@@ -213,7 +198,7 @@ async function ensurePostBodyImages(
 ): Promise<PostRow> {
   if (post.content_type !== 'blog') return post;
 
-  const { openAiKey, stabilityKey } = await resolveImageApiKeys(env);
+  const { openAiKey, stabilityKey } = await resolveStabilityApiKeys(env);
   if (!stabilityKey) {
     if (parseBlogBodyImages(post.blog_body_images).length === 0) {
       warnings.push('Body images not generated: STABILITY_API_KEY not configured');

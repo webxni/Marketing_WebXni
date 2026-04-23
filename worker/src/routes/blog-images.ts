@@ -27,22 +27,9 @@ import {
   extractSectionHeadings,
   resolveBlogSlotHeading,
 } from '../loader/autonomous-content';
+import { resolveStabilityApiKeys } from '../services/stability';
 
 export const blogImageRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
-
-async function resolveKeys(env: Env): Promise<{ openAiKey: string; stabilityKey: string }> {
-  let openAiKey = env.OPENAI_API_KEY || '';
-  let stabilityKey = (env as Env & { STABILITY_API_KEY?: string }).STABILITY_API_KEY || '';
-  if (!openAiKey || !stabilityKey) {
-    try {
-      const raw = await env.KV_BINDING.get('settings:system');
-      const s = raw ? (JSON.parse(raw) as Record<string, string>) : {};
-      if (!openAiKey)    openAiKey    = s['ai_api_key'] || '';
-      if (!stabilityKey) stabilityKey = s['stability_api_key'] || s['STABILITY_API_KEY'] || '';
-    } catch { /* ignore */ }
-  }
-  return { openAiKey, stabilityKey };
-}
 
 function parseSlot(raw: string): BlogImageSlot | null {
   const n = Number(raw);
@@ -105,7 +92,7 @@ blogImageRoutes.post('/:id/blog-images/generate', async (c) => {
   const client = await getClientWithConfig(c.env.DB, post.client_id);
   if (!client) return c.json({ error: 'Client not found' }, 404);
 
-  const { openAiKey, stabilityKey } = await resolveKeys(c.env);
+  const { openAiKey, stabilityKey } = await resolveStabilityApiKeys(c.env);
   if (!stabilityKey) return c.json({ error: 'STABILITY_API_KEY not configured' }, 503);
 
   const serviceType = post.target_keyword ?? client.industry ?? '';
@@ -148,7 +135,7 @@ blogImageRoutes.post('/:id/blog-images/:slot', async (c) => {
   const body = await c.req.json().catch(() => ({})) as { prompt?: string };
   const promptOverride = typeof body.prompt === 'string' && body.prompt.trim() ? body.prompt.trim() : undefined;
 
-  const { openAiKey, stabilityKey } = await resolveKeys(c.env);
+  const { openAiKey, stabilityKey } = await resolveStabilityApiKeys(c.env);
   if (!stabilityKey) return c.json({ error: 'STABILITY_API_KEY not configured' }, 503);
 
   const serviceType = post.target_keyword ?? client.industry ?? '';
