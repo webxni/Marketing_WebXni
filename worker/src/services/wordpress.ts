@@ -78,7 +78,14 @@ export interface StructuredBlogContent {
   imagePrompt?: string;
 }
 
-export const BLOG_BODY_IMAGE_PLACEHOLDER = '<!-- BLOG_BODY_IMAGE -->';
+export const BLOG_BODY_IMAGE_PLACEHOLDER   = '<!-- BLOG_BODY_IMAGE -->';
+export const BLOG_BODY_IMAGE_1_PLACEHOLDER = '<!-- BLOG_BODY_IMAGE_1 -->';
+export const BLOG_BODY_IMAGE_2_PLACEHOLDER = '<!-- BLOG_BODY_IMAGE_2 -->';
+export const BLOG_BODY_IMAGE_3_PLACEHOLDER = '<!-- BLOG_BODY_IMAGE_3 -->';
+
+export interface BlogBodyImageSlot {
+  html?: string;  // <figure>...</figure> or '' when no image available
+}
 
 const WORDPRESS_BLOG_CHROME = `<style>
 .page-header,
@@ -664,22 +671,38 @@ export function renderStructuredBlogHtml(input: {
   clientName: string;
   phone?: string | null;
   ctaDefault?: string | null;
+  /** Legacy single-slot body image (slot 1 equivalent). Prefer bodyImages. */
   bodyImageHtml?: string;
+  /**
+   * Multi-slot body images.
+   *   slot 1 — after intro (hero)
+   *   slot 2 — middle of content (after 2nd section)
+   *   slot 3 — before CTA / footer
+   */
+  bodyImages?: { slot1?: string; slot2?: string; slot3?: string };
   blog: StructuredBlogContent;
 }): string {
   const chrome = getTemplateChrome(input.templateKey);
   const ctaHref = input.phone ? `tel:${input.phone}` : '#contact';
   const primaryColor = normalizePrimaryColor(input.primaryColor);
-  const bodyImageHtml = input.bodyImageHtml ?? BLOG_BODY_IMAGE_PLACEHOLDER;
-  const bodyImageSection = bodyImageHtml
-    ? `<figure class="wx-blog-body-image" style="${inlineStyle({
+
+  const slot1Html = input.bodyImages?.slot1 ?? input.bodyImageHtml ?? BLOG_BODY_IMAGE_1_PLACEHOLDER;
+  const slot2Html = input.bodyImages?.slot2 ?? BLOG_BODY_IMAGE_2_PLACEHOLDER;
+  const slot3Html = input.bodyImages?.slot3 ?? BLOG_BODY_IMAGE_3_PLACEHOLDER;
+
+  const wrapFigure = (imageHtml: string): string => {
+    if (!imageHtml) return '';
+    return `<figure class="wx-blog-body-image" style="${inlineStyle({
       margin: '0 0 24px',
       border: '1px solid #d9e1ea',
       borderRadius: '16px',
       overflow: 'hidden',
       background: '#ffffff',
-    })}">${bodyImageHtml}</figure>`
-    : '';
+    })}">${imageHtml}</figure>`;
+  };
+  const slot1Section = wrapFigure(slot1Html);
+  const slot2Section = wrapFigure(slot2Html);
+  const slot3Section = wrapFigure(slot3Html);
   const faqHtml = input.blog.faq.length
     ? `
       <section class="wx-blog-faq" style="${inlineStyle({ margin: '32px 0 0' })}">
@@ -694,12 +717,17 @@ export function renderStructuredBlogHtml(input: {
     `
     : '';
 
-  const sectionHtml = input.blog.sections.map((section) => `
+  const renderSection = (section: BlogSection): string => `
     <section class="wx-blog-section" style="${inlineStyle({ margin: '0 0 28px' })}">
       <h2 style="${inlineStyle({ color: '#0f172a', fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '1.8rem', lineHeight: '1.15', margin: '0 0 14px', letterSpacing: '-0.02em' })}">${escapeHtml(section.heading)}</h2>
       <div class="wx-blog-section-body" style="${inlineStyle({ color: '#132033', fontSize: '1rem', lineHeight: '1.75' })}">${sanitizeHtmlBlock(section.html)}</div>
     </section>
-  `).join('');
+  `;
+  const midInsertIndex = Math.max(1, Math.min(input.blog.sections.length - 1, 2));
+  const sectionHtml = input.blog.sections.map((section, idx) => {
+    const html = renderSection(section);
+    return idx === midInsertIndex ? `${html}${slot2Section}` : html;
+  }).join('');
 
   return withWordPressBlogChrome(`
     <article class="wx-blog" data-wx-blog-template="${input.templateKey}" style="${inlineStyle({
@@ -764,9 +792,10 @@ export function renderStructuredBlogHtml(input: {
           })}">
             <p style="${inlineStyle({ margin: '0', fontSize: '1.08rem', lineHeight: '1.9', color: '#132033' })}">${escapeHtml(input.blog.intro)}</p>
           </section>
-          ${bodyImageSection}
+          ${slot1Section}
           ${sectionHtml}
           ${faqHtml}
+          ${slot3Section}
           <footer class="wx-blog-footer" style="${inlineStyle({
             marginTop: '36px',
             paddingTop: '20px',
@@ -822,6 +851,9 @@ export function renderStructuredBlogHtml(input: {
 
 export function injectBodyImageIntoHtml(html: string, imageHtml: string): string {
   if (!imageHtml) return html;
+  if (html.includes(BLOG_BODY_IMAGE_1_PLACEHOLDER)) {
+    return html.replace(BLOG_BODY_IMAGE_1_PLACEHOLDER, imageHtml);
+  }
   if (html.includes(BLOG_BODY_IMAGE_PLACEHOLDER)) {
     return html.replace(BLOG_BODY_IMAGE_PLACEHOLDER, imageHtml);
   }
@@ -830,6 +862,21 @@ export function injectBodyImageIntoHtml(html: string, imageHtml: string): string
     return `${html.slice(0, introClose + 10)}\n${imageHtml}\n${html.slice(introClose + 10)}`;
   }
   return `${imageHtml}\n${html}`;
+}
+
+/**
+ * Inject up to three body images at their numbered placeholders.
+ * Missing images resolve to empty string so placeholders never leak to WP.
+ */
+export function injectBodyImagesIntoHtml(
+  html: string,
+  images: { slot1?: string; slot2?: string; slot3?: string },
+): string {
+  return html
+    .replace(BLOG_BODY_IMAGE_1_PLACEHOLDER, images.slot1 ?? '')
+    .replace(BLOG_BODY_IMAGE_2_PLACEHOLDER, images.slot2 ?? '')
+    .replace(BLOG_BODY_IMAGE_3_PLACEHOLDER, images.slot3 ?? '')
+    .replace(BLOG_BODY_IMAGE_PLACEHOLDER,   images.slot1 ?? '');
 }
 
 function stripRestPath(wpUrl: string): string {

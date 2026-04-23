@@ -25,6 +25,7 @@ import { wordpressRoutes }   from './routes/wordpress';
 import { notionRoutes }      from './routes/notion';
 import { portalRoutes }      from './routes/portal';
 import { blogRoutes }        from './routes/blog';
+import { blogImageRoutes }   from './routes/blog-images';
 import { gbpRoutes }         from './routes/gbp';
 import { internalRoutes }    from './routes/internal';
 import { aiRoutes }          from './routes/ai';
@@ -52,7 +53,8 @@ app.route('/api/clients',   intelligenceRoutes); // /api/clients/:slug/intellige
 app.route('/api/clients',   wordpressRoutes);    // /api/clients/:slug/wordpress/*
 app.route('/api/clients',   gbpRoutes);          // /api/clients/:slug/gbp/*
 app.route('/api/posts',     postRoutes);
-app.route('/api/posts',     blogRoutes);    // /api/posts/:id/publish-blog, /unpublish-blog
+app.route('/api/posts',     blogRoutes);      // /api/posts/:id/publish-blog, /unpublish-blog
+app.route('/api/posts',     blogImageRoutes); // /api/posts/:id/blog-images/*
 app.route('/api/assets',    assetRoutes);
 app.route('/api/run',       runRoutes);
 app.route('/api/users',     userRoutes);

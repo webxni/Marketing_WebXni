@@ -21,11 +21,32 @@ export type StabilityAspectRatio =
   | '5:4'
   | '21:9';
 
+export type StabilityStylePreset =
+  | 'photographic'
+  | 'cinematic'
+  | 'digital-art'
+  | 'enhance'
+  | 'anime'
+  | 'comic-book'
+  | 'fantasy-art'
+  | 'line-art'
+  | 'analog-film'
+  | 'neon-punk'
+  | 'isometric'
+  | 'low-poly'
+  | 'origami'
+  | 'modeling-compound'
+  | 'pixel-art'
+  | '3d-model'
+  | 'tile-texture';
+
 export interface StabilityParams {
   prompt:          string;
   negativePrompt?: string;
   aspectRatio?:    StabilityAspectRatio;
   outputFormat?:   'webp' | 'jpeg' | 'png';
+  stylePreset?:    StabilityStylePreset;
+  seed?:           number;
 }
 
 export interface StabilityResult {
@@ -62,6 +83,90 @@ export function getAspectRatioForContent(
   if (platforms.includes('instagram') && !platforms.includes('facebook') && !platforms.includes('linkedin')) return '1:1';
   return '16:9'; // default — widest platform compatibility
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Structured blog prompt builder
+//
+// Builds prompts following: [scene] + [subject] + [location/context] + [style]
+//   + [lighting] + [composition] + [quality]
+//
+// Each slot emphasizes a different visual angle so the three blog images feel
+// complementary rather than repetitive.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type BlogImageSlot = 1 | 2 | 3;
+
+export interface BlogPromptContext {
+  slot:          BlogImageSlot;
+  blogTitle:     string;
+  targetKeyword?:string;
+  sectionHeading?: string;   // heading used to anchor mid-content image
+  serviceType?:  string;     // 'interior repainting', 'roof replacement', etc.
+  industry?:     string;     // 'remodeling', 'roofing', 'locksmith', etc.
+  location?:     string;     // 'Los Angeles, CA' — derived from service areas
+  clientName?:   string;
+}
+
+const SLOT_FRAMING: Record<BlogImageSlot, { angle: string; shot: string; intent: string }> = {
+  1: {
+    angle:  'a hero establishing shot introducing the topic',
+    shot:   'wide angle, eye-level, editorial magazine cover framing',
+    intent: 'sets the visual tone — must be inviting, trustworthy and professional',
+  },
+  2: {
+    angle:  'a process / close-up action view reinforcing the main point',
+    shot:   'medium close-up, slightly elevated perspective, shallow depth of field',
+    intent: 'shows craftsmanship or detail — draws the reader deeper into the story',
+  },
+  3: {
+    angle:  'a finished-result / satisfied-client style shot',
+    shot:   'wide angle, warm natural light, welcoming composition',
+    intent: 'closes the narrative — suggests success and outcome before the CTA',
+  },
+};
+
+function cleanFragment(value: string | null | undefined): string {
+  return (value ?? '').replace(/\s+/g, ' ').trim();
+}
+
+/** Deterministic structured prompt — no external LLM call required. */
+export function buildStructuredBlogPrompt(ctx: BlogPromptContext): string {
+  const framing = SLOT_FRAMING[ctx.slot];
+  const subject =
+    cleanFragment(ctx.sectionHeading) ||
+    cleanFragment(ctx.targetKeyword) ||
+    cleanFragment(ctx.blogTitle);
+  const service = cleanFragment(ctx.serviceType) || cleanFragment(ctx.industry) || 'professional service';
+  const locationTag = cleanFragment(ctx.location);
+  const locationPhrase = locationTag ? `in ${locationTag}` : '';
+
+  const parts = [
+    // [scene] + [subject]
+    `Professional editorial photograph depicting ${framing.angle}: ${subject}`,
+    // [location / context]
+    `real ${service} business setting ${locationPhrase}`.trim(),
+    // [style]
+    'clean modern documentary style, realistic human subjects, authentic textures, branded-magazine quality',
+    // [lighting]
+    'soft natural daylight with gentle directional highlights, balanced exposure, no harsh shadows',
+    // [composition]
+    `${framing.shot}, rule-of-thirds composition, uncluttered background, ample negative space for potential text overlay`,
+    // [quality]
+    'ultra-detailed, sharp focus, photographically accurate, 4k, color-graded for print, professional photography',
+    // [framing intent guidance]
+    framing.intent,
+  ];
+
+  return parts.filter(Boolean).join('. ');
+}
+
+export const BLOG_NEGATIVE_PROMPT = [
+  'text', 'watermark', 'logo', 'signage with letters',
+  'distorted anatomy', 'extra fingers', 'deformed faces',
+  'blurry', 'low quality', 'low resolution', 'jpeg artifacts',
+  'cartoon', 'anime', 'illustration', '3d render',
+  'oversaturated', 'harsh lighting', 'cluttered background',
+].join(', ');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Prompt translation (Spanish brief → English Stability prompt)
@@ -113,8 +218,10 @@ export async function generateStabilityImage(
   const form = new FormData();
   form.append('prompt',        params.prompt);
   form.append('output_format', params.outputFormat ?? 'webp');
-  if (params.aspectRatio)   form.append('aspect_ratio',   params.aspectRatio);
+  if (params.aspectRatio)    form.append('aspect_ratio',   params.aspectRatio);
   if (params.negativePrompt) form.append('negative_prompt', params.negativePrompt);
+  if (params.stylePreset)    form.append('style_preset',   params.stylePreset);
+  if (typeof params.seed === 'number' && params.seed > 0) form.append('seed', String(params.seed));
 
   const res = await fetch(
     'https://api.stability.ai/v2beta/stable-image/generate/core',

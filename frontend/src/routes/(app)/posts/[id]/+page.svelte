@@ -460,6 +460,113 @@
     } catch (e) { toast.error(`WordPress sync error: ${e instanceof Error ? e.message : String(e)}`); }
     finally { syncingBlog = false; }
   }
+
+  // ── Blog body images (Stability AI — 3 slots) ────────────────────────────────
+  type BlogSlot = 1 | 2 | 3;
+  interface BlogImg {
+    slot: BlogSlot;
+    r2_key: string | null;
+    prompt: string;
+    wp_media_id?: number | null;
+    attempts?: number;
+    status: 'generated' | 'failed' | 'pending';
+    error?: string;
+    url: string | null;
+  }
+  let blogImages: BlogImg[] = [];
+  let blogImagesLoading = false;
+  let blogImageBusy: Record<BlogSlot, boolean> = { 1: false, 2: false, 3: false };
+  let blogImagePromptDraft: Record<BlogSlot, string> = { 1: '', 2: '', 3: '' };
+  const blogSlots: BlogSlot[] = [1, 2, 3];
+  const blogSlotLabels: Record<BlogSlot, string> = {
+    1: 'After intro',
+    2: 'After 2nd section',
+    3: 'Before CTA',
+  };
+
+  async function loadBlogImages() {
+    if (!post || post.content_type !== 'blog') return;
+    blogImagesLoading = true;
+    try {
+      const r = await postsApi.listBlogImages(post.id);
+      blogImages = r.images.map((i) => ({ ...i, slot: i.slot as BlogSlot }));
+      for (const img of blogImages) {
+        blogImagePromptDraft[img.slot] = img.prompt;
+      }
+    } catch (e) {
+      toast.error(`Blog images load failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      blogImagesLoading = false;
+    }
+  }
+
+  async function generateBlogImage(slot: BlogSlot) {
+    if (!post) return;
+    blogImageBusy[slot] = true;
+    blogImageBusy = { ...blogImageBusy };
+    try {
+      const customPrompt = blogImagePromptDraft[slot]?.trim();
+      const r = await postsApi.generateBlogImageSlot(post.id, slot, customPrompt);
+      toast.success(`Image ${slot} ${r.image.status === 'generated' ? 'generated' : 'attempted'}`);
+      await loadBlogImages();
+    } catch (e) {
+      toast.error(`Slot ${slot} generation failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      blogImageBusy[slot] = false;
+      blogImageBusy = { ...blogImageBusy };
+    }
+  }
+
+  async function generateAllBlogImages() {
+    if (!post) return;
+    blogImageBusy = { 1: true, 2: true, 3: true };
+    try {
+      await postsApi.generateAllBlogImages(post.id);
+      toast.success('All 3 blog images generated');
+      await loadBlogImages();
+    } catch (e) {
+      toast.error(`Generation failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      blogImageBusy = { 1: false, 2: false, 3: false };
+    }
+  }
+
+  async function savePromptOnly(slot: BlogSlot) {
+    if (!post) return;
+    const prompt = blogImagePromptDraft[slot]?.trim();
+    if (!prompt) { toast.error('Prompt is required'); return; }
+    try {
+      await postsApi.updateBlogImagePrompt(post.id, slot, prompt);
+      toast.success(`Slot ${slot} prompt saved`);
+      await loadBlogImages();
+    } catch (e) {
+      toast.error(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  async function clearBlogImage(slot: BlogSlot) {
+    if (!post) return;
+    blogImageBusy[slot] = true;
+    blogImageBusy = { ...blogImageBusy };
+    try {
+      await postsApi.deleteBlogImageSlot(post.id, slot);
+      toast.success(`Slot ${slot} cleared`);
+      await loadBlogImages();
+    } catch (e) {
+      toast.error(`Clear failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      blogImageBusy[slot] = false;
+      blogImageBusy = { ...blogImageBusy };
+    }
+  }
+
+  function blogImageFor(slot: BlogSlot): BlogImg | null {
+    return blogImages.find((img) => img.slot === slot) ?? null;
+  }
+
+  $: if (post && post.content_type === 'blog' && activeTab === 'blog' && blogImages.length === 0 && !blogImagesLoading) {
+    loadBlogImages();
+  }
 </script>
 
 <svelte:head><title>{post?.title ?? 'Post'} — WebXni</title></svelte:head>
@@ -1173,6 +1280,89 @@
           {/if}
         {/if}
       </div>
+    </div>
+    {/if}
+
+    {#if post.content_type === 'blog'}
+    <div class="card p-4">
+      <div class="flex items-center justify-between gap-3 mb-4 flex-wrap">
+        <div>
+          <h3 class="section-label">Body Images</h3>
+          <p class="text-xs text-muted mt-1">Structured Stability Core images placed after the intro, after section two, and before the CTA.</p>
+        </div>
+        <button class="btn-primary btn-sm" on:click={generateAllBlogImages} disabled={blogImagesLoading || blogImageBusy[1] || blogImageBusy[2] || blogImageBusy[3]}>
+          {(blogImageBusy[1] || blogImageBusy[2] || blogImageBusy[3]) ? 'Generating…' : 'Generate Images'}
+        </button>
+      </div>
+
+      {#if blogImagesLoading}
+        <p class="text-xs text-muted">Loading image slots…</p>
+      {:else}
+        <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+          {#each blogSlots as slot}
+            {@const img = blogImageFor(slot)}
+            <div class="rounded-xl border border-border bg-surface/40 overflow-hidden">
+              <div class="aspect-[16/9] bg-surface border-b border-border flex items-center justify-center overflow-hidden">
+                {#if img?.url}
+                  <img src={img.url} alt={`Blog slot ${slot}`} class="w-full h-full object-cover" />
+                {:else}
+                  <div class="text-center px-4">
+                    <p class="text-xs text-muted uppercase tracking-wide">Slot {slot}</p>
+                    <p class="text-xs text-muted/80 mt-1">{blogSlotLabels[slot]}</p>
+                  </div>
+                {/if}
+              </div>
+
+              <div class="p-4 space-y-3">
+                <div class="flex items-center justify-between gap-2">
+                  <div>
+                    <p class="text-sm text-white font-medium">Slot {slot}</p>
+                    <p class="text-xs text-muted">{blogSlotLabels[slot]}</p>
+                  </div>
+                  <span class="text-[11px] uppercase tracking-wide px-2 py-1 rounded border
+                    {img?.status === 'generated' ? 'border-green-500/30 text-green-400 bg-green-500/10' :
+                     img?.status === 'failed' ? 'border-red-500/30 text-red-400 bg-red-500/10' :
+                     'border-border text-muted bg-surface'}">
+                    {img?.status ?? 'pending'}
+                  </span>
+                </div>
+
+                <div class="text-xs text-muted flex items-center justify-between gap-2">
+                  <span>Attempts: {img?.attempts ?? 0}/3</span>
+                  {#if img?.wp_media_id}
+                    <span class="text-green-400/80">WP synced</span>
+                  {/if}
+                </div>
+
+                <textarea
+                  bind:value={blogImagePromptDraft[slot]}
+                  rows="7"
+                  class="input w-full text-xs leading-relaxed"
+                  placeholder="Structured image prompt"
+                ></textarea>
+
+                {#if img?.error}
+                  <p class="text-xs text-red-400">{img.error}</p>
+                {/if}
+
+                <div class="flex items-center gap-2 flex-wrap">
+                  <button class="btn-secondary btn-sm text-xs" on:click={() => savePromptOnly(slot)} disabled={blogImageBusy[slot]}>
+                    Save Prompt
+                  </button>
+                  <button class="btn-primary btn-sm text-xs" on:click={() => generateBlogImage(slot)} disabled={blogImageBusy[slot]}>
+                    {blogImageBusy[slot] ? 'Generating…' : (img?.url ? 'Replace Image' : 'Generate Image')}
+                  </button>
+                  {#if img?.url}
+                    <button class="btn-ghost btn-sm text-xs text-red-400" on:click={() => clearBlogImage(slot)} disabled={blogImageBusy[slot]}>
+                      Clear
+                    </button>
+                  {/if}
+                </div>
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
     </div>
     {/if}
 

@@ -12,6 +12,8 @@ import {
   type WpPost,
 } from '../services/wordpress';
 import { isBlogAutomationEligible, isBlogDueForAutomation, publishBlogPost } from '../modules/blog-publishing';
+import { ensureBlogBodyImagesGenerated } from './autonomous-content';
+import { parseBlogBodyImages, serializeBlogBodyImages } from '../modules/blog-body-images';
 
 const REPAIR_KEY = 'repair-posts-2026-04-14-webxni';
 
@@ -227,7 +229,24 @@ async function uploadFeaturedMediaIfNeeded(env: Env, post: PostRow, client: Clie
   return { mediaId: uploaded.id, media: uploaded, uploaded: true };
 }
 
+async function resolveImageApiKeys(env: Env): Promise<{ openAiKey: string; stabilityKey: string }> {
+  let openAiKey = env.OPENAI_API_KEY || '';
+  let stabilityKey = (env as Env & { STABILITY_API_KEY?: string }).STABILITY_API_KEY || '';
+  if (!openAiKey || !stabilityKey) {
+    try {
+      const raw = await env.KV_BINDING.get('settings:system');
+      const settings = raw ? (JSON.parse(raw) as Record<string, string>) : {};
+      if (!openAiKey) openAiKey = settings['ai_api_key'] || '';
+      if (!stabilityKey) stabilityKey = settings['stability_api_key'] || settings['STABILITY_API_KEY'] || '';
+    } catch {
+      // best effort only
+    }
+  }
+  return { openAiKey, stabilityKey };
+}
+
 export async function repairExistingBlogs(env: Env): Promise<BlogRepairStats> {
+  const { openAiKey, stabilityKey } = await resolveImageApiKeys(env);
   const [posts, clientMap] = await Promise.all([
     listBlogPosts(env.DB),
     listBlogClients(env.DB),
@@ -255,6 +274,10 @@ export async function repairExistingBlogs(env: Env): Promise<BlogRepairStats> {
     if (!stringValue(post.slug)) issues.push('Missing slug');
     if (!stringValue(post.ai_image_prompt) && !stringValue((post as PostRow & { featured_image_prompt?: string | null }).featured_image_prompt)) {
       issues.push('Missing image prompt');
+    }
+    const storedImages = parseBlogBodyImages(post.blog_body_images);
+    if (storedImages.filter((img) => img.r2_key).length < 3) {
+      issues.push('Missing structured body images');
     }
     if (client.wp_template_key && !structured) {
       issues.push(`Configured template key "${client.wp_template_key}" has no reusable WP template fallback stored locally`);
@@ -292,6 +315,33 @@ export async function repairExistingBlogs(env: Env): Promise<BlogRepairStats> {
     }
 
     const structuredBlog = buildStructuredBlog(post, client);
+    let nextBlogBodyImages = post.blog_body_images;
+    if (stabilityKey) {
+      try {
+        const generatedImages = await ensureBlogBodyImagesGenerated(env, openAiKey, stabilityKey, {
+          blogTitle: structuredBlog.title,
+          blogContent: post.blog_content,
+          targetKeyword: structuredBlog.focusKeyword,
+          serviceType: structuredBlog.focusKeyword || client.industry || '',
+          industry: client.industry ?? '',
+          location: client.state ?? '',
+          clientName: client.canonical_name,
+          clientId: client.id,
+          existing: storedImages,
+          regenerateWeakPrompts: true,
+        });
+        const serialized = serializeBlogBodyImages(generatedImages);
+        if (serialized !== (post.blog_body_images ?? null)) {
+          nextBlogBodyImages = serialized;
+          didFix = true;
+        }
+      } catch (err) {
+        issues.push(`Body image generation failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    } else if (storedImages.filter((img) => img.r2_key).length < 3) {
+      issues.push('Structured body images skipped because STABILITY_API_KEY is not configured');
+    }
+
     const hasImageCandidate = Boolean(post.asset_r2_key || mediaId || linkedWpPost?.featured_media);
     const templateKey = inferBusinessTemplateKey({
       wp_template_key: client.wp_template_key,
@@ -345,6 +395,7 @@ export async function repairExistingBlogs(env: Env): Promise<BlogRepairStats> {
       secondary_keywords: structuredBlog.secondaryKeywords ?? null,
       slug: structuredBlog.slug,
       ai_image_prompt: structuredBlog.imagePrompt ?? null,
+      blog_body_images: nextBlogBodyImages,
     };
 
     if (mediaId) nextFields.wp_featured_media_id = mediaId;
@@ -357,6 +408,7 @@ export async function repairExistingBlogs(env: Env): Promise<BlogRepairStats> {
       nextFields.secondary_keywords !== post.secondary_keywords ||
       nextFields.slug !== post.slug ||
       nextFields.ai_image_prompt !== post.ai_image_prompt ||
+      nextFields.blog_body_images !== post.blog_body_images ||
       nextFields.wp_featured_media_id !== (post.wp_featured_media_id ?? undefined)
     ) {
       await updatePost(env.DB, post.id, nextFields);

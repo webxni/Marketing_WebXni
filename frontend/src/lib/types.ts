@@ -2,6 +2,17 @@
 
 export type Role = 'admin' | 'designer' | 'client';
 
+export interface BlogBodyImage {
+  slot:          1 | 2 | 3;
+  r2_key:        string | null;
+  prompt:        string;
+  wp_media_id?:  number | null;
+  attempts?:     number;
+  status:        'generated' | 'failed' | 'pending';
+  error?:        string;
+  updated_at?:   number;
+}
+
 export interface User {
   id:           string;
   email:        string;
@@ -233,6 +244,7 @@ export interface Post {
   wp_post_status:       string | null;
   blog_excerpt:         string | null;
   wp_featured_media_id: number | null;
+  blog_body_images:     string | null;  // JSON-serialized BlogBodyImage[]
   // GBP advanced fields
   gbp_location_id:      string | null;  // per-post location override (migration 0009)
   gbp_topic_type:       string | null;

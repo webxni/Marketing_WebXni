@@ -15,7 +15,7 @@
  */
 
 import type { Env, ClientRow } from '../types';
-import { createPost, getClientBySlug, getClientPlatforms } from '../db/queries';
+import { createPost, getClientBySlug, getClientPlatforms, updatePost } from '../db/queries';
 import {
   generatePostContent,
   researchTopic,
@@ -26,11 +26,15 @@ import {
 } from '../services/openai';
 import {
   buildStabilityPrompt,
+  buildStructuredBlogPrompt,
   generateStabilityImage,
   reviewGeneratedImage,
   getAspectRatioForContent,
   base64ToUint8Array,
+  BLOG_NEGATIVE_PROMPT,
+  type BlogImageSlot,
 } from '../services/stability';
+import { serializeBlogBodyImages, type BlogBodyImage } from '../modules/blog-body-images';
 import { discordSend, DISCORD_COLORS } from '../services/discord';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -229,8 +233,47 @@ export async function createContentWithImage(
   let imageStatus: CreateContentResult['imageStatus'] = 'skipped';
   let imageAttempts = 0;
   let r2Key: string | null = null;
+  let blogBodyImagesJson: string | null = null;
 
-  if (stabKey && contentType !== 'blog' && p.ai_image_prompt) {
+  // Blog content gets a dedicated 3-image path (hero + mid + pre-CTA).
+  if (stabKey && contentType === 'blog') {
+    const location = serviceAreas[0] ?? client.state ?? '';
+    const serviceType = (p.target_keyword ?? '') || serviceNames[0] || client.industry || '';
+    const sectionHeadings = extractSectionHeadings(p.blog_content ?? '');
+
+    const blogImages: BlogBodyImage[] = [];
+    let anyGenerated = false;
+    let anyFailed = false;
+    for (const slot of [1, 2, 3] as const) {
+      const heading =
+        slot === 1 ? (p.title ?? '') :
+        slot === 2 ? (sectionHeadings[1] ?? sectionHeadings[0] ?? p.title ?? '') :
+                     (sectionHeadings[sectionHeadings.length - 1] ?? p.title ?? '');
+
+      const imgResult = await generateBlogSlotImage(env, openAiKey, stabKey, {
+        slot,
+        blogTitle:      p.title ?? topicResearch?.topic ?? '',
+        targetKeyword:  p.target_keyword ?? topicResearch?.targetKeyword,
+        sectionHeading: heading,
+        serviceType,
+        industry:       client.industry ?? '',
+        location,
+        clientName:     client.canonical_name,
+        clientId:       client.id,
+      });
+      blogImages.push(imgResult);
+      if (imgResult.status === 'generated') anyGenerated = true;
+      if (imgResult.status === 'failed')    anyFailed = true;
+    }
+    blogBodyImagesJson = serializeBlogBodyImages(blogImages);
+
+    // Promote slot 1 to the legacy featured/asset slot for backwards-compat.
+    const slot1 = blogImages.find((i) => i.slot === 1);
+    if (slot1?.r2_key) r2Key = slot1.r2_key;
+
+    imageStatus = anyGenerated ? 'generated' : (anyFailed ? 'failed' : 'skipped');
+    imageAttempts = Math.max(0, ...blogImages.map((i) => i.attempts ?? 0));
+  } else if (stabKey && contentType !== 'blog' && p.ai_image_prompt) {
     imageStatus = 'failed';
     const aspectRatio = getAspectRatioForContent(contentType, platforms);
     const postId_tmp  = crypto.randomUUID().replace(/-/g, '').toLowerCase();
@@ -332,6 +375,10 @@ export async function createContentWithImage(
     generation_run_id:       null,
   });
 
+  if (blogBodyImagesJson) {
+    await updatePost(db, newPost.id, { blog_body_images: blogBodyImagesJson });
+  }
+
   // ── 9. Discord notification ──────────────────────────────────────────────────
   if (params.notifyDiscord !== false) {
     try {
@@ -363,6 +410,194 @@ export async function createContentWithImage(
     wpCaptionGbp: p.cap_google_business ?? null,
     wpCaptionLi:  p.cap_linkedin ?? null,
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Blog image slot generator — used for each of the 3 body images.
+// Returns a BlogBodyImage entry regardless of outcome (status tracks failure).
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface BlogSlotGenContext {
+  slot:           BlogImageSlot;
+  blogTitle:      string;
+  targetKeyword?: string | null;
+  sectionHeading?: string;
+  serviceType?:   string;
+  industry?:      string;
+  location?:      string;
+  clientName?:    string;
+  clientId:       string;
+  /** Override the auto-built prompt — used by manual regenerate. */
+  promptOverride?: string;
+}
+
+export async function generateBlogSlotImage(
+  env: Env,
+  openAiKey: string,
+  stabilityKey: string,
+  ctx: BlogSlotGenContext,
+): Promise<BlogBodyImage> {
+  const basePrompt = ctx.promptOverride?.trim() || buildStructuredBlogPrompt({
+    slot:           ctx.slot,
+    blogTitle:      ctx.blogTitle,
+    targetKeyword:  ctx.targetKeyword ?? undefined,
+    sectionHeading: ctx.sectionHeading,
+    serviceType:    ctx.serviceType,
+    industry:       ctx.industry,
+    location:       ctx.location,
+    clientName:     ctx.clientName,
+  });
+
+  let prompt = basePrompt;
+  let attempts = 0;
+  let lastError = '';
+  const postId_tmp = crypto.randomUUID().replace(/-/g, '').toLowerCase();
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    attempts = attempt;
+    try {
+      const img = await generateStabilityImage(stabilityKey, {
+        prompt,
+        aspectRatio:    '16:9',
+        outputFormat:   'webp',
+        stylePreset:    'photographic',
+        negativePrompt: BLOG_NEGATIVE_PROMPT,
+      });
+
+      const review = await reviewGeneratedImage(openAiKey, img.imageBase64, {
+        topic:      ctx.sectionHeading || ctx.blogTitle,
+        industry:   ctx.industry ?? '',
+        clientName: ctx.clientName ?? '',
+      });
+
+      if (review.ok || attempt === 3) {
+        const rKey = `${ctx.clientId}/ai-generated/blog-${postId_tmp}-slot${ctx.slot}-a${attempt}.webp`;
+        await env.MEDIA.put(rKey, base64ToUint8Array(img.imageBase64), {
+          httpMetadata:   { contentType: 'image/webp' },
+          customMetadata: {
+            source: 'stability-blog',
+            slot:   String(ctx.slot),
+            prompt: prompt.slice(0, 500),
+          },
+        });
+
+        return {
+          slot:       ctx.slot,
+          r2_key:     rKey,
+          prompt,
+          wp_media_id: null,
+          attempts,
+          status:     'generated',
+          updated_at: Math.floor(Date.now() / 1000),
+        };
+      }
+
+      // Auto-review flagged the image — sharpen the prompt for the next attempt.
+      prompt = review.improvedPrompt?.trim()
+        ? `${review.improvedPrompt}. Editorial photograph, photorealistic, 4k, professional photography`
+        : `${prompt}. Tighten framing, emphasize professional quality, sharp focus, documentary photography style`;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      console.warn(`[autonomous-content] blog slot ${ctx.slot} attempt ${attempt}/3 failed: ${lastError}`);
+    }
+  }
+
+  return {
+    slot:       ctx.slot,
+    r2_key:     null,
+    prompt:     basePrompt,
+    wp_media_id: null,
+    attempts,
+    status:     'failed',
+    error:      lastError || 'generation failed',
+    updated_at: Math.floor(Date.now() / 1000),
+  };
+}
+
+export function resolveBlogSlotHeading(slot: BlogImageSlot, blogTitle: string, headings: string[]): string {
+  if (slot === 1) return blogTitle;
+  if (slot === 2) return headings[1] ?? headings[0] ?? blogTitle;
+  return headings[headings.length - 1] ?? blogTitle;
+}
+
+export function isWeakBlogImagePrompt(prompt: string | null | undefined): boolean {
+  const cleaned = String(prompt ?? '').replace(/\s+/g, ' ').trim();
+  if (!cleaned) return true;
+  const commaCount = (cleaned.match(/,/g) ?? []).length;
+  if (cleaned.length < 110) return true;
+  if (commaCount < 4) return true;
+  if (!/\b(daylight|lighting|light|composition|wide angle|close-up|editorial|photograph|photography|realistic|detail|4k)\b/i.test(cleaned)) return true;
+  return false;
+}
+
+export interface EnsureBlogBodyImagesContext {
+  blogTitle: string;
+  blogContent?: string | null;
+  targetKeyword?: string | null;
+  serviceType?: string;
+  industry?: string;
+  location?: string;
+  clientName?: string;
+  clientId: string;
+  existing?: BlogBodyImage[];
+  forceSlots?: BlogImageSlot[];
+  regenerateWeakPrompts?: boolean;
+  promptOverrides?: Partial<Record<BlogImageSlot, string>>;
+}
+
+export async function ensureBlogBodyImagesGenerated(
+  env: Env,
+  openAiKey: string,
+  stabilityKey: string,
+  ctx: EnsureBlogBodyImagesContext,
+): Promise<BlogBodyImage[]> {
+  const headings = extractSectionHeadings(ctx.blogContent ?? '');
+  const existingBySlot = new Map((ctx.existing ?? []).map((img) => [img.slot, img]));
+  const force = new Set(ctx.forceSlots ?? []);
+  const next: BlogBodyImage[] = [];
+
+  for (const slot of [1, 2, 3] as const) {
+    const current = existingBySlot.get(slot);
+    const overriddenPrompt = ctx.promptOverrides?.[slot]?.trim();
+    const shouldGenerate =
+      force.has(slot) ||
+      !current?.r2_key ||
+      Boolean(overriddenPrompt) ||
+      (ctx.regenerateWeakPrompts === true && isWeakBlogImagePrompt(current?.prompt));
+
+    if (!shouldGenerate && current) {
+      next.push(current);
+      continue;
+    }
+
+    const generated = await generateBlogSlotImage(env, openAiKey, stabilityKey, {
+      slot,
+      blogTitle: ctx.blogTitle,
+      targetKeyword: ctx.targetKeyword,
+      sectionHeading: resolveBlogSlotHeading(slot, ctx.blogTitle, headings),
+      serviceType: ctx.serviceType,
+      industry: ctx.industry,
+      location: ctx.location,
+      clientName: ctx.clientName,
+      clientId: ctx.clientId,
+      promptOverride: overriddenPrompt || current?.prompt || undefined,
+    });
+    next.push(generated);
+  }
+
+  return next.sort((a, b) => a.slot - b.slot);
+}
+
+export function extractSectionHeadings(html: string): string[] {
+  if (!html) return [];
+  const out: string[] = [];
+  const re = /<h2\b[^>]*>([\s\S]*?)<\/h2>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    const text = m[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+    if (text) out.push(text);
+  }
+  return out;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

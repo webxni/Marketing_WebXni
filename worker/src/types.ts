@@ -267,6 +267,7 @@ export interface PostRow {
   wp_post_status:         string | null;
   blog_excerpt:           string | null;
   wp_featured_media_id:   number | null;
+  blog_body_images:       string | null;  // JSON array — see migration 0025
   // GBP advanced fields (migration 0004 + 0009)
   gbp_location_id:        string | null;  // per-post location override (migration 0009)
   gbp_topic_type:         string | null;  // 'STANDARD'|'EVENT'|'OFFER'

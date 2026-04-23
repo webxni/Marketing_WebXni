@@ -1,5 +1,9 @@
 import { api } from './client';
-import type { Post, PostPlatform } from '../types';
+import type { Post, PostPlatform, BlogBodyImage } from '../types';
+
+export interface BlogBodyImageWithUrl extends BlogBodyImage {
+  url: string | null;
+}
 
 export interface ListPostsParams {
   client?:    string;
@@ -78,4 +82,20 @@ export const postsApi = {
 
   delete: (id: string) =>
     api.delete(`/api/posts/${id}`),
+
+  // ── Blog body images ────────────────────────────────────────────────────────
+  listBlogImages: (id: string) =>
+    api.get<{ images: BlogBodyImageWithUrl[] }>(`/api/posts/${id}/blog-images`),
+
+  generateAllBlogImages: (id: string) =>
+    api.post<{ ok: boolean; images: BlogBodyImage[] }>(`/api/posts/${id}/blog-images/generate`, {}),
+
+  generateBlogImageSlot: (id: string, slot: 1 | 2 | 3, prompt?: string) =>
+    api.post<{ ok: boolean; image: BlogBodyImage }>(`/api/posts/${id}/blog-images/${slot}`, prompt ? { prompt } : {}),
+
+  updateBlogImagePrompt: (id: string, slot: 1 | 2 | 3, prompt: string) =>
+    api.put<{ ok: boolean; image: BlogBodyImage }>(`/api/posts/${id}/blog-images/${slot}`, { prompt }),
+
+  deleteBlogImageSlot: (id: string, slot: 1 | 2 | 3) =>
+    api.delete(`/api/posts/${id}/blog-images/${slot}`),
 };

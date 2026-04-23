@@ -6,6 +6,7 @@ import {
   extractStructuredBlogContent,
   inferBusinessTemplateKey,
   injectBodyImageIntoHtml,
+  injectBodyImagesIntoHtml,
   renderStructuredBlogHtml,
   renderTemplate,
   withWordPressBlogChrome,
@@ -13,6 +14,8 @@ import {
   type WpMediaItem,
   type WpPost,
 } from '../services/wordpress';
+import { parseBlogBodyImages, serializeBlogBodyImages } from './blog-body-images';
+import { ensureBlogBodyImagesGenerated } from '../loader/autonomous-content';
 
 export interface BlogPreflightResult {
   ok: boolean;
@@ -186,51 +189,161 @@ function buildBodyImageHtml(media: WpMediaItem | null, caption: string): string 
   return `<img src="${media.source_url}" alt="${alt}" /><figcaption>${caption.replace(/</g, '&lt;')}</figcaption>`;
 }
 
+async function resolveImageApiKeys(env: Env): Promise<{ openAiKey: string; stabilityKey: string }> {
+  let openAiKey = env.OPENAI_API_KEY || '';
+  let stabilityKey = (env as Env & { STABILITY_API_KEY?: string }).STABILITY_API_KEY || '';
+  if (!openAiKey || !stabilityKey) {
+    try {
+      const raw = await env.KV_BINDING.get('settings:system');
+      const settings = raw ? (JSON.parse(raw) as Record<string, string>) : {};
+      if (!openAiKey) openAiKey = settings['ai_api_key'] || '';
+      if (!stabilityKey) stabilityKey = settings['stability_api_key'] || settings['STABILITY_API_KEY'] || '';
+    } catch {
+      // best effort only
+    }
+  }
+  return { openAiKey, stabilityKey };
+}
+
+async function ensurePostBodyImages(
+  env: Env,
+  post: PostRow,
+  client: ClientRow,
+  warnings: string[],
+): Promise<PostRow> {
+  if (post.content_type !== 'blog') return post;
+
+  const { openAiKey, stabilityKey } = await resolveImageApiKeys(env);
+  if (!stabilityKey) {
+    if (parseBlogBodyImages(post.blog_body_images).length === 0) {
+      warnings.push('Body images not generated: STABILITY_API_KEY not configured');
+    }
+    return post;
+  }
+
+  const existing = parseBlogBodyImages(post.blog_body_images);
+  const next = await ensureBlogBodyImagesGenerated(env, openAiKey, stabilityKey, {
+    blogTitle: post.title ?? '',
+    blogContent: post.blog_content,
+    targetKeyword: post.target_keyword,
+    serviceType: post.target_keyword ?? client.industry ?? '',
+    industry: client.industry ?? '',
+    location: client.state ?? '',
+    clientName: client.canonical_name,
+    clientId: client.id,
+    existing,
+  });
+
+  const changed = JSON.stringify(existing) !== JSON.stringify(next);
+  if (!changed) return post;
+
+  await updatePost(env.DB, post.id, { blog_body_images: serializeBlogBodyImages(next) });
+  return { ...post, blog_body_images: serializeBlogBodyImages(next) };
+}
+
 async function ensureFeaturedMedia(env: Env, post: PostRow, client: ClientRow, warnings: string[]): Promise<{
   featuredMediaId: number | null;
   bodyImageHtml: string;
+  slotHtml: { slot1?: string; slot2?: string; slot3?: string };
 }> {
   const wp = buildWordPressClient(client);
-  if (!wp) return { featuredMediaId: post.wp_featured_media_id ?? null, bodyImageHtml: post.asset_r2_key ? BLOG_BODY_IMAGE_PLACEHOLDER : '' };
+  if (!wp) return {
+    featuredMediaId: post.wp_featured_media_id ?? null,
+    bodyImageHtml: post.asset_r2_key ? BLOG_BODY_IMAGE_PLACEHOLDER : '',
+    slotHtml: {},
+  };
 
+  const imageMode = (client as ClientRow & { wp_featured_image_mode?: string | null }).wp_featured_image_mode ?? 'upload';
   let featuredMediaId = post.wp_featured_media_id ?? null;
-  let media: WpMediaItem | null = null;
+  let legacyMedia: WpMediaItem | null = null;
 
-  if (!featuredMediaId && post.asset_r2_key) {
-    const imageMode = (client as ClientRow & { wp_featured_image_mode?: string | null }).wp_featured_image_mode ?? 'upload';
-    if (imageMode !== 'none') {
-      try {
-        const bucket = post.asset_r2_bucket === 'IMAGES' ? env.IMAGES : env.MEDIA;
-        const r2Obj = await bucket.get(post.asset_r2_key);
-        if (r2Obj) {
-          const blob = await new Response(r2Obj.body).blob();
-          const ext = post.asset_r2_key.split('.').pop() ?? 'jpg';
-          const fname = `${(post.slug ?? post.id).replace(/[^a-z0-9-]/gi, '-')}.${ext}`;
-          const altText = `${post.target_keyword ?? post.title ?? client.canonical_name} | ${client.canonical_name}`;
-          media = await wp.uploadMediaBlob(blob, fname, altText, post.title ?? '');
-          featuredMediaId = media.id;
-          await updatePost(env.DB, post.id, { wp_featured_media_id: featuredMediaId });
-        }
-      } catch (err) {
-        warnings.push(`Featured image upload failed: ${err instanceof Error ? err.message : String(err)}`);
+  // Upload legacy single-asset if present — this remains the default featured-media source.
+  if (!featuredMediaId && post.asset_r2_key && imageMode !== 'none') {
+    try {
+      const bucket = post.asset_r2_bucket === 'IMAGES' ? env.IMAGES : env.MEDIA;
+      const r2Obj = await bucket.get(post.asset_r2_key);
+      if (r2Obj) {
+        const blob = await new Response(r2Obj.body).blob();
+        const ext = post.asset_r2_key.split('.').pop() ?? 'jpg';
+        const fname = `${(post.slug ?? post.id).replace(/[^a-z0-9-]/gi, '-')}.${ext}`;
+        const altText = `${post.target_keyword ?? post.title ?? client.canonical_name} | ${client.canonical_name}`;
+        legacyMedia = await wp.uploadMediaBlob(blob, fname, altText, post.title ?? '');
+        featuredMediaId = legacyMedia.id;
+        await updatePost(env.DB, post.id, { wp_featured_media_id: featuredMediaId });
       }
+    } catch (err) {
+      warnings.push(`Featured image upload failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   } else if (featuredMediaId) {
     try {
-      media = await wp.getMedia(featuredMediaId);
+      legacyMedia = await wp.getMedia(featuredMediaId);
     } catch (err) {
       warnings.push(`Featured image lookup failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  if (!post.asset_r2_key) return { featuredMediaId, bodyImageHtml: '' };
-  return {
-    featuredMediaId,
-    bodyImageHtml: media ? buildBodyImageHtml(media, post.title ?? client.canonical_name) : BLOG_BODY_IMAGE_PLACEHOLDER,
-  };
+  // Per-slot body images from posts.blog_body_images JSON.
+  const slotHtml: { slot1?: string; slot2?: string; slot3?: string } = {};
+  const stored = parseBlogBodyImages(post.blog_body_images);
+  let mutatedStored = false;
+
+  for (const img of stored) {
+    if (!img.r2_key) continue;
+    let mediaId = img.wp_media_id ?? null;
+    let media: WpMediaItem | null = null;
+
+    if (!mediaId && imageMode !== 'none') {
+      try {
+        const r2Obj = await env.MEDIA.get(img.r2_key);
+        if (r2Obj) {
+          const blob = await new Response(r2Obj.body).blob();
+          const ext = img.r2_key.split('.').pop() ?? 'webp';
+          const base = (post.slug ?? post.id).replace(/[^a-z0-9-]/gi, '-');
+          const fname = `${base}-body-${img.slot}.${ext}`;
+          const altText = `${post.target_keyword ?? post.title ?? client.canonical_name} | slot ${img.slot}`;
+          media = await wp.uploadMediaBlob(blob, fname, altText, post.title ?? '');
+          mediaId = media.id;
+          img.wp_media_id = mediaId;
+          mutatedStored = true;
+        }
+      } catch (err) {
+        warnings.push(`Body image slot ${img.slot} upload failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    } else if (mediaId && !media) {
+      try { media = await wp.getMedia(mediaId); } catch { /* best effort */ }
+    }
+
+    if (media) {
+      const caption = post.title ?? client.canonical_name;
+      const html = buildBodyImageHtml(media, caption);
+      if (img.slot === 1) slotHtml.slot1 = html;
+      if (img.slot === 2) slotHtml.slot2 = html;
+      if (img.slot === 3) slotHtml.slot3 = html;
+    }
+  }
+
+  if (mutatedStored) {
+    await updatePost(env.DB, post.id, { blog_body_images: serializeBlogBodyImages(stored) });
+  }
+
+  // Backfill slot1 from legacy featured media if no per-slot slot1 was uploaded yet.
+  if (!slotHtml.slot1 && legacyMedia) {
+    slotHtml.slot1 = buildBodyImageHtml(legacyMedia, post.title ?? client.canonical_name);
+  }
+
+  const bodyImageHtml =
+    slotHtml.slot1 ?? (legacyMedia ? buildBodyImageHtml(legacyMedia, post.title ?? client.canonical_name) : '');
+
+  return { featuredMediaId, bodyImageHtml, slotHtml };
 }
 
-async function buildPublishHtml(env: Env, post: PostRow, client: ClientRow, bodyImageHtml: string): Promise<string> {
+async function buildPublishHtml(
+  env: Env,
+  post: PostRow,
+  client: ClientRow,
+  bodyImageHtml: string,
+  slotHtml: { slot1?: string; slot2?: string; slot3?: string },
+): Promise<string> {
   let htmlContent = post.blog_content ?? '';
   const templateKey = (client as ClientRow & { wp_template_key?: string | null }).wp_template_key;
   let appliedCustomTemplate = false;
@@ -275,6 +388,7 @@ async function buildPublishHtml(env: Env, post: PostRow, client: ClientRow, body
       phone: client.phone,
       ctaDefault: client.cta_text,
       bodyImageHtml,
+      bodyImages: slotHtml,
       blog: extractStructuredBlogContent(post.blog_content, {
         title: post.title ?? '',
         excerpt: post.blog_excerpt ?? post.master_caption ?? '',
@@ -294,7 +408,16 @@ async function buildPublishHtml(env: Env, post: PostRow, client: ClientRow, body
     });
   }
 
-  return injectBodyImageIntoHtml(htmlContent, bodyImageHtml);
+  // Fill any numbered placeholders that survived from stored HTML (older posts
+  // were rendered with only the generic placeholder — newer ones carry the
+  // numbered placeholders). The single-placeholder fallback keeps slot 1
+  // populated for legacy posts that don't have per-slot data yet.
+  const withSlots = injectBodyImagesIntoHtml(htmlContent, {
+    slot1: slotHtml.slot1 ?? bodyImageHtml,
+    slot2: slotHtml.slot2,
+    slot3: slotHtml.slot3,
+  });
+  return injectBodyImageIntoHtml(withSlots, slotHtml.slot1 ?? bodyImageHtml);
 }
 
 export async function publishBlogPost(env: Env, postId: string, options: PublishBlogOptions = {}): Promise<PublishBlogResult> {
@@ -319,7 +442,8 @@ export async function publishBlogPost(env: Env, postId: string, options: Publish
     ?? ((client as ClientRow & { wp_default_post_status?: string | null }).wp_default_post_status === 'publish' ? 'publish' : 'draft');
 
   const warnings = [...check.warnings];
-  const { featuredMediaId, bodyImageHtml } = await ensureFeaturedMedia(env, post, client, warnings);
+  const postWithImages = await ensurePostBodyImages(env, post, client, warnings);
+  const { featuredMediaId, bodyImageHtml, slotHtml } = await ensureFeaturedMedia(env, postWithImages, client, warnings);
 
   let categoryIds: number[] = [];
   try {
@@ -351,14 +475,14 @@ export async function publishBlogPost(env: Env, postId: string, options: Publish
   }
   if (secondaryKeywords) rankMathMeta.rank_math_secondary_keywords = secondaryKeywords;
 
-  const htmlContent = await buildPublishHtml(env, post, client, bodyImageHtml);
-  const excerpt = post.blog_excerpt ?? post.master_caption ?? '';
+  const htmlContent = await buildPublishHtml(env, postWithImages, client, bodyImageHtml, slotHtml);
+  const excerpt = postWithImages.blog_excerpt ?? postWithImages.master_caption ?? '';
 
   let existingWpId = post.wp_post_id ?? null;
-  if (!existingWpId && post.slug) {
+  if (!existingWpId && postWithImages.slug) {
     try {
-      const matches = await wp.findPostsBySlug(post.slug);
-      const linked = chooseCanonicalWpPost(matches, post.slug);
+      const matches = await wp.findPostsBySlug(postWithImages.slug);
+      const linked = chooseCanonicalWpPost(matches, postWithImages.slug);
       if (linked) existingWpId = linked.id;
     } catch (err) {
       warnings.push(`WordPress slug lookup failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -366,11 +490,11 @@ export async function publishBlogPost(env: Env, postId: string, options: Publish
   }
 
   const payload = {
-    title: post.title ?? '',
+    title: postWithImages.title ?? '',
     content: htmlContent,
     excerpt,
     status: wpStatus,
-    slug: post.slug ?? undefined,
+    slug: postWithImages.slug ?? undefined,
     featured_media: featuredMediaId ?? undefined,
     meta: Object.keys(rankMathMeta).length > 0 ? rankMathMeta : undefined,
   };
