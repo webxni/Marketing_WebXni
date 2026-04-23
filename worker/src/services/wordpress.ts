@@ -542,6 +542,323 @@ function stripWxBlogChrome(value: string): string {
     .replace(/<\/(?:section|article|aside|header|footer|figure)>/gi, '');
 }
 
+function inferEtbEyebrow(blog: StructuredBlogContent): string {
+  const raw = `${blog.focusKeyword} ${blog.title}`.toLowerCase();
+  if (/\bkitchen\b/.test(raw)) return 'KITCHEN DESIGN';
+  if (/\bbath(room)?\b|tile|shower|vanity/.test(raw)) return 'BATHROOM DESIGN';
+  if (/\badu\b|addition|extension/.test(raw)) return 'HOME ADDITIONS';
+  if (/\boutdoor\b|deck|patio/.test(raw)) return 'OUTDOOR LIVING';
+  return 'LUXURY REMODELS';
+}
+
+function renderEtbImageBlock(imageHtml: string, prompt: string): string {
+  if (imageHtml) {
+    return `<!-- Image Prompt: ${escapeHtml(prompt)} -->
+      <figure class="wx-blog-body-image image-block image-block--filled">${imageHtml}</figure>`;
+  }
+  return `<!-- Image Prompt: ${escapeHtml(prompt)} -->
+    <div class="image-block">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+      <p><strong>Image Prompt:</strong> ${escapeHtml(prompt)}</p>
+    </div>`;
+}
+
+function buildEtbImagePrompt(subject: string, locationHint: string): string {
+  const location = locationHint || 'Seattle';
+  return `Photorealistic high-end residential remodel scene focused on ${subject}, ${location} context, minimalist luxury interior, soft natural light, clean lines, premium porcelain and stone materials, editorial architectural photography, 8k detail`;
+}
+
+function buildEtbTestimonials(blog: StructuredBlogContent): Array<{ text: string; name: string; location: string }> {
+  const subject = blog.focusKeyword || blog.title;
+  return [
+    {
+      text: `“Elite Team Builders helped us make smart design decisions around ${subject.toLowerCase()}. The finished space feels brighter, larger, and much more refined than we thought possible.”`,
+      name: 'Sarah & David M.',
+      location: 'Seattle, WA',
+    },
+    {
+      text: `“We wanted a remodel that looked elevated but still functioned for daily life. Their guidance on layout, materials, and long-term durability made all the difference.”`,
+      name: 'Robert T.',
+      location: 'Portland, OR',
+    },
+    {
+      text: `“Their team balanced aesthetics, craftsmanship, and practicality from the start. Every finish feels intentional, and the room now looks custom instead of cramped.”`,
+      name: 'Amanda G.',
+      location: 'Los Angeles, CA',
+    },
+  ];
+}
+
+function renderEliteTeamBuildersHtml(input: {
+  clientName: string;
+  phone?: string | null;
+  blog: StructuredBlogContent;
+  bodyImages?: { slot1?: string; slot2?: string; slot3?: string };
+  bodyImageHtml?: string;
+}): string {
+  const slot1Html = input.bodyImages?.slot1 ?? input.bodyImageHtml ?? BLOG_BODY_IMAGE_1_PLACEHOLDER;
+  const slot2Html = input.bodyImages?.slot2 ?? BLOG_BODY_IMAGE_2_PLACEHOLDER;
+  const slot3Html = input.bodyImages?.slot3 ?? BLOG_BODY_IMAGE_3_PLACEHOLDER;
+  const imagePrompt1 = buildEtbImagePrompt(input.blog.title, 'Seattle');
+  const imagePrompt2 = buildEtbImagePrompt(input.blog.sections[1]?.heading ?? input.blog.sections[0]?.heading ?? input.blog.title, 'Pacific Northwest');
+  const imagePrompt3 = buildEtbImagePrompt('finished luxury bathroom remodel with premium tile and balanced lighting', 'West Coast');
+  const testimonials = buildEtbTestimonials(input.blog);
+  const ctaHref = 'https://eliteteambuildersinc.com/contact-us/';
+  const sectionHtml = input.blog.sections.map((section, idx) => {
+    const html = `
+      <section class="wx-blog-section etb-topic-section">
+        <h2>${escapeHtml(section.heading)}</h2>
+        <div class="wx-blog-section-body">${sanitizeHtmlBlock(section.html)}</div>
+      </section>`;
+    if (idx === 1) return `${html}\n${renderEtbImageBlock(slot2Html, imagePrompt2)}`;
+    return html;
+  }).join('\n');
+
+  return withWordPressBlogChrome(`
+    <style>
+      :root {
+        --brand-teal: #007a7a;
+        --brand-gold: #f2b824;
+        --brand-dark: #132033;
+        --text-main: #334155;
+        --bg-light: #f8fafc;
+        --border-color: #e2e8f0;
+        --white: #ffffff;
+      }
+      .wx-blog.etb-blog, .wx-blog.etb-blog * { box-sizing: border-box; }
+      .wx-blog.etb-blog {
+        max-width: 1200px;
+        margin: 40px auto;
+        padding: 0 20px 40px;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        color: var(--text-main);
+        background: transparent;
+      }
+      .wx-blog.etb-blog .hero {
+        background: linear-gradient(rgba(19, 32, 51, 0.85), rgba(19, 32, 51, 0.85)), url('https://images.unsplash.com/photo-1552321554-5fefe8c9ef14?auto=format&fit=crop&q=80&w=1600') center/cover;
+        border-radius: 24px;
+        padding: 80px 40px;
+        color: var(--white);
+        text-align: center;
+        margin-bottom: 40px;
+        box-shadow: 0 20px 25px -5px rgba(0,0,0,.1);
+      }
+      .wx-blog.etb-blog .eyebrow {
+        text-transform: uppercase;
+        letter-spacing: 2px;
+        font-size: .75rem;
+        font-weight: 700;
+        color: var(--brand-gold);
+        margin-bottom: 16px;
+      }
+      .wx-blog.etb-blog .hero h1 {
+        font-size: clamp(2rem, 5vw, 3.5rem);
+        line-height: 1.1;
+        max-width: 900px;
+        margin: 0 auto 24px;
+        font-weight: 800;
+        color: #fff;
+      }
+      .wx-blog.etb-blog .hero-excerpt {
+        font-size: 1.25rem;
+        max-width: 700px;
+        margin: 0 auto;
+        opacity: .92;
+        color: #fff;
+      }
+      .wx-blog.etb-blog .article-content {
+        background: var(--white);
+        border-radius: 20px;
+        padding: 40px;
+        box-shadow: 0 4px 6px -1px rgba(0,0,0,.05);
+        margin-bottom: 40px;
+      }
+      .wx-blog.etb-blog .intro-box {
+        background: #f1f5f9;
+        border-left: 4px solid var(--brand-teal);
+        padding: 24px;
+        border-radius: 0 12px 12px 0;
+        margin-bottom: 32px;
+        font-style: italic;
+        font-size: 1.1rem;
+      }
+      .wx-blog.etb-blog h2 {
+        color: var(--brand-dark);
+        font-size: 1.85rem;
+        margin: 40px 0 20px;
+        font-weight: 700;
+      }
+      .wx-blog.etb-blog .wx-blog-section-body p,
+      .wx-blog.etb-blog .wx-blog-section-body ul,
+      .wx-blog.etb-blog .wx-blog-section-body ol {
+        margin-bottom: 24px;
+        font-size: 1.05rem;
+        line-height: 1.8;
+      }
+      .wx-blog.etb-blog .wx-blog-section-body ul,
+      .wx-blog.etb-blog .wx-blog-section-body ol { padding-left: 1.25rem; }
+      .wx-blog.etb-blog .image-block {
+        margin: 40px 0;
+        border-radius: 16px;
+        overflow: hidden;
+        background: #eef2f6;
+        aspect-ratio: 16/9;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        border: 2px dashed #cbd5e1;
+        color: #64748b;
+        padding: 20px;
+        text-align: center;
+      }
+      .wx-blog.etb-blog .image-block svg { width: 48px; height: 48px; margin-bottom: 12px; opacity: .5; }
+      .wx-blog.etb-blog .image-block--filled {
+        aspect-ratio: auto;
+        display: block;
+        padding: 0;
+        background: #eef2f6;
+        border: 0;
+      }
+      .wx-blog.etb-blog .testimonial-slider {
+        position: relative;
+        background: #f1f5f9;
+        border-radius: 20px;
+        padding: 40px;
+        margin: 40px 0;
+        overflow: hidden;
+      }
+      .wx-blog.etb-blog .slider-title { text-align: center; margin-bottom: 30px !important; font-size: 1.5rem !important; }
+      .wx-blog.etb-blog .slide { min-width: 100%; display: none; flex-direction: column; align-items: center; text-align: center; animation: etbFadeIn .5s ease; }
+      .wx-blog.etb-blog .slide.active { display: flex; }
+      @keyframes etbFadeIn { from { opacity:0; transform:translateY(10px);} to { opacity:1; transform:translateY(0);} }
+      .wx-blog.etb-blog .testimonial-text { font-size: 1.2rem; color: var(--brand-dark); font-style: italic; margin-bottom: 20px; max-width: 600px; }
+      .wx-blog.etb-blog .client-info { display:flex; flex-direction:column; align-items:center; gap:4px; }
+      .wx-blog.etb-blog .client-name { font-weight:700; color:var(--brand-teal); }
+      .wx-blog.etb-blog .client-location { font-size:.85rem; color:#64748b; text-transform:uppercase; letter-spacing:1px; }
+      .wx-blog.etb-blog .slider-nav { display:flex; justify-content:center; gap:12px; margin-top:24px; }
+      .wx-blog.etb-blog .dot { width:10px; height:10px; background:#cbd5e1; border-radius:50%; cursor:pointer; transition:background .3s; }
+      .wx-blog.etb-blog .dot.active { background:var(--brand-teal); width:24px; border-radius:10px; }
+      .wx-blog.etb-blog .faq-section { margin-top:60px; padding-top:40px; border-top:2px solid var(--bg-light); }
+      .wx-blog.etb-blog .faq-item { margin-bottom:24px; padding:20px; background:#f8fafc; border-radius:12px; }
+      .wx-blog.etb-blog .faq-item h3 { font-size:1.1rem; color:var(--brand-dark); margin-bottom:8px; }
+      .wx-blog.etb-blog .etb-cta { margin-top:40px; padding-top:30px; border-top:1px solid var(--border-color); }
+      .wx-blog.etb-blog .info-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:20px; margin-top:40px; }
+      .wx-blog.etb-blog .info-card { background:var(--white); border:1px solid var(--border-color); border-radius:20px; padding:24px; box-shadow:0 4px 6px -1px rgba(0,0,0,.05); display:flex; flex-direction:column; justify-content:space-between; }
+      .wx-blog.etb-blog .office-name { font-size:1.25rem; font-weight:800; color:var(--brand-dark); margin-bottom:8px; }
+      .wx-blog.etb-blog .license-tag { font-size:.75rem; font-weight:700; color:var(--brand-gold); text-transform:uppercase; margin-bottom:16px; display:block; }
+      .wx-blog.etb-blog .office-detail { font-size:.9rem; color:var(--text-main); margin-bottom:12px; line-height:1.5; }
+      .wx-blog.etb-blog .office-detail strong { color:var(--brand-dark); display:block; margin-bottom:2px; }
+      .wx-blog.etb-blog .btn { display:block; width:100%; padding:12px 20px; background:var(--brand-teal); color:#fff; text-align:center; text-decoration:none; border-radius:12px; font-weight:700; font-size:.9rem; transition:all .3s ease; margin-top:20px; }
+      .wx-blog.etb-blog .btn:hover { background:#009999; transform:translateY(-2px); box-shadow:0 4px 12px rgba(0,122,122,.2); }
+      @media (max-width:1024px) { .wx-blog.etb-blog .info-grid { grid-template-columns:1fr 1fr; } }
+      @media (max-width:768px) {
+        .wx-blog.etb-blog .info-grid { grid-template-columns:1fr; }
+        .wx-blog.etb-blog .hero { padding:60px 24px; }
+        .wx-blog.etb-blog .article-content { padding:24px; }
+      }
+    </style>
+    <article class="wx-blog etb-blog" data-wx-blog-template="builders-remodeling">
+      <!-- Hero Background Image Prompt: ${escapeHtml(buildEtbImagePrompt(input.blog.title, 'Seattle luxury residential remodel context'))} -->
+      <header class="wx-blog-hero hero">
+        <div class="wx-blog-eyebrow eyebrow">${inferEtbEyebrow(input.blog)}</div>
+        <h1>${escapeHtml(input.blog.title)}</h1>
+        <p class="wx-blog-excerpt hero-excerpt">${escapeHtml(input.blog.excerpt)}</p>
+      </header>
+      <main class="article-content">
+        <section class="wx-blog-intro intro-box">
+          <p>${escapeHtml(input.blog.intro)}</p>
+        </section>
+        ${renderEtbImageBlock(slot1Html, imagePrompt1)}
+        ${sectionHtml}
+        <section class="testimonial-slider">
+          <h2 class="slider-title">Recent Success Stories</h2>
+          <div class="slides-container">
+            ${testimonials.map((item, idx) => `
+              <div class="slide${idx === 0 ? ' active' : ''}">
+                <div class="testimonial-text">${escapeHtml(item.text)}</div>
+                <div class="client-info">
+                  <span class="client-name">${escapeHtml(item.name)}</span>
+                  <span class="client-location">${escapeHtml(item.location)}</span>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+          <div class="slider-nav">
+            ${testimonials.map((_, idx) => `<div class="dot${idx === 0 ? ' active' : ''}" onclick="setSlide(${idx})"></div>`).join('')}
+          </div>
+        </section>
+        <section class="wx-blog-faq faq-section">
+          <h2>Frequently Asked Questions</h2>
+          ${input.blog.faq.map((item) => `
+            <div class="wx-blog-faq-item faq-item">
+              <h3>${escapeHtml(item.question)}</h3>
+              <p>${escapeHtml(item.answer)}</p>
+            </div>
+          `).join('')}
+        </section>
+        ${renderEtbImageBlock(slot3Html, imagePrompt3)}
+        <section class="wx-blog-cta etb-cta">
+          <p><strong>${escapeHtml(input.blog.ctaHeading)}</strong> ${escapeHtml(input.blog.ctaBody)}</p>
+        </section>
+      </main>
+      <div class="info-grid">
+        <div class="info-card">
+          <div>
+            <div class="office-name">Seattle Office</div>
+            <span class="license-tag">Lic# ELITETB750CC</span>
+            <div class="office-detail"><strong>Address:</strong>701 5th Ave, Seattle, WA, US</div>
+            <div class="office-detail"><strong>Phone:</strong>+1 888-521-3549</div>
+          </div>
+          <a href="${ctaHref}" class="btn">Get a Free Estimate</a>
+        </div>
+        <div class="info-card">
+          <div>
+            <div class="office-name">Portland Office</div>
+            <span class="license-tag">Lic# 257266</span>
+            <div class="office-detail"><strong>Address:</strong>555 SE MLK Blvd, Portland, OR, US</div>
+            <div class="office-detail"><strong>Phone:</strong>+1 888-521-3548</div>
+          </div>
+          <a href="${ctaHref}" class="btn">Get a Free Estimate</a>
+        </div>
+        <div class="info-card">
+          <div>
+            <div class="office-name">Los Angeles Office</div>
+            <span class="license-tag">Lic# 1126980</span>
+            <div class="office-detail"><strong>Address:</strong>640 S San Vicente Blvd, Los Angeles, CA</div>
+            <div class="office-detail"><strong>Phone:</strong>+1 888-521-0559</div>
+          </div>
+          <a href="${ctaHref}" class="btn">Get a Free Estimate</a>
+        </div>
+      </div>
+      <script>
+        (function() {
+          let currentSlide = 0;
+          const root = document.currentScript && document.currentScript.closest('.etb-blog');
+          if (!root) return;
+          const slides = root.querySelectorAll('.slide');
+          const dots = root.querySelectorAll('.dot');
+          function setSlide(index) {
+            if (!slides.length || !dots.length) return;
+            slides[currentSlide].classList.remove('active');
+            dots[currentSlide].classList.remove('active');
+            currentSlide = index;
+            slides[currentSlide].classList.add('active');
+            dots[currentSlide].classList.add('active');
+          }
+          root.querySelectorAll('.dot').forEach((dot, index) => {
+            dot.addEventListener('click', () => setSlide(index));
+          });
+          setInterval(() => {
+            if (!slides.length) return;
+            setSlide((currentSlide + 1) % slides.length);
+          }, 6000);
+        })();
+      </script>
+    </article>
+  `);
+}
+
 function cleanExtractedText(value: string, removals: string[] = []): string {
   let cleaned = stripHtml(removeCssArtifactText(value));
   for (const removal of removals.filter(Boolean)) {
@@ -657,7 +974,7 @@ export function inferBusinessTemplateKey(client: {
   industry?: string | null;
 }): BusinessTemplateKey {
   const raw = `${client.wp_template_key ?? ''} ${client.industry ?? ''}`.toLowerCase();
-  if (/builder|remodel|renovat|construction|kitchen|bathroom/.test(raw)) return 'builders-remodeling';
+  if (/etb|elite team builders|builder|remodel|renovat|construction|kitchen|bathroom/.test(raw)) return 'builders-remodeling';
   if (/roof/.test(raw)) return 'roofing';
   if (/locksmith|lock|key/.test(raw)) return 'locksmith';
   if (/account|tax|bookkeep|cpa|finance/.test(raw)) return 'accounting';
@@ -682,6 +999,10 @@ export function renderStructuredBlogHtml(input: {
   bodyImages?: { slot1?: string; slot2?: string; slot3?: string };
   blog: StructuredBlogContent;
 }): string {
+  if (input.templateKey === 'builders-remodeling' && /elite team builders/i.test(input.clientName)) {
+    return renderEliteTeamBuildersHtml(input);
+  }
+
   const chrome = getTemplateChrome(input.templateKey);
   const ctaHref = input.phone ? `tel:${input.phone}` : '#contact';
   const primaryColor = normalizePrimaryColor(input.primaryColor);
