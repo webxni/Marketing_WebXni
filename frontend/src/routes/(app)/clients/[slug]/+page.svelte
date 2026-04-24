@@ -8,6 +8,7 @@
   import { can } from '$lib/stores/auth';
   import { toast } from '$lib/stores/ui';
   import type { Client, ClientPlatform, ClientIntelligence, ClientOffer, ClientEvent } from '$lib/types';
+  import type { PlatformConfigWarning } from '$lib/api/clients';
 
   type Svc   = { id: string; name: string; category_name: string | null; active: number };
   type Area  = { id: string; city: string; state: string | null; zip: string | null; primary_area: number };
@@ -71,12 +72,41 @@
     savingPlatform = true;
     try {
       const { platform, ...data } = editingPlatform;
-      await clientsApi.updatePlatform(client.slug, platform, data as Record<string, unknown>);
-      toast.success(`${platform} saved`);
+      const result = await clientsApi.updatePlatform(client.slug, platform, data as Record<string, unknown>);
+      if (result.warnings?.length) {
+        toast.error(result.warnings.map((warning) => warning.message).join(' '));
+      } else {
+        toast.success(`${platform} saved`);
+      }
       showPlatformForm = false;
       load();
     } catch (e) { toast.error(`Failed to save: ${e instanceof Error ? e.message : String(e)}`); }
     finally { savingPlatform = false; }
+  }
+
+  function hasMappedValue(value: string | null | undefined): boolean {
+    return !!value && !['', 'NOT_LINKED', 'PENDING_SETUP', 'PENDING_LINKEDIN_PAGE_ID'].includes(value.trim());
+  }
+
+  function platformWarnings(platform: Partial<ClientPlatform> & { platform: string }): PlatformConfigWarning[] {
+    const warnings: PlatformConfigWarning[] = [];
+
+    if (platform.platform === 'linkedin') {
+      if (!hasMappedValue(client?.upload_post_profile ?? null)) {
+        warnings.push({
+          code: 'LINKEDIN_NO_UPLOAD_POST_PROFILE',
+          message: 'Upload-Post profile is missing for this LinkedIn mapping.',
+        });
+      }
+      if (!hasMappedValue(platform.page_id ?? null)) {
+        warnings.push({
+          code: 'LINKEDIN_NO_PAGE_MAPPING',
+          message: 'LinkedIn is enabled but no LinkedIn page/account is mapped. Set the LinkedIn page ID before posting.',
+        });
+      }
+    }
+
+    return warnings;
   }
 
   let services: Svc[]         = [];
@@ -654,6 +684,13 @@
         <input type="text" bind:value={editingPlatform.linkedin_urn} class="input w-full text-sm font-mono" placeholder="urn:li:organization:…" />
       </div>
       {/if}
+      {#if platformWarnings(editingPlatform).length > 0}
+      <div class="md:col-span-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-200">
+        {#each platformWarnings(editingPlatform) as warning}
+          <div>{warning.message}</div>
+        {/each}
+      </div>
+      {/if}
       <div class="md:col-span-3">
         <label class="block text-xs text-muted mb-1">Notes</label>
         <input type="text" bind:value={editingPlatform.notes} class="input w-full text-sm" placeholder="Internal notes…" />
@@ -691,7 +728,14 @@
           {#each platforms as p}
             <tr>
               <td><PlatformBadge platform={p.platform} /></td>
-              <td class="font-mono text-xs text-muted">{p.username ?? p.page_id ?? '—'}</td>
+              <td class="text-xs">
+                <div class="font-mono text-xs text-muted">{p.username ?? p.page_id ?? '—'}</div>
+                {#if platformWarnings(p).length > 0}
+                  <div class="mt-1 text-[11px] text-yellow-300">
+                    {platformWarnings(p)[0].message}
+                  </div>
+                {/if}
+              </td>
               <td class="text-xs">
                 {#if p.profile_url}
                   <a href={p.profile_url} target="_blank" rel="noopener noreferrer" class="text-accent hover:underline truncate max-w-[200px] block">

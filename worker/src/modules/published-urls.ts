@@ -22,7 +22,9 @@ interface SyncCandidateRow {
   id: string;
   post_id: string;
   platform: string;
-  tracking_id: string;
+  tracking_id: string | null;
+  platform_post_id: string | null;
+  upload_post_profile: string | null;
   status: string | null;
 }
 
@@ -157,7 +159,11 @@ export async function syncPublishedUrls(
 ): Promise<{ matched: number; posts_promoted: number }> {
   const db = env.DB;
   const up = new UploadPostClient(env.UPLOAD_POST_API_KEY);
-  const filters: string[] = ["tracking_id IS NOT NULL", "real_url IS NULL", "status IN ('sent','idempotent','posted')"];
+  const filters: string[] = [
+    'real_url IS NULL',
+    "status IN ('sent','idempotent','posted')",
+    '(tracking_id IS NOT NULL OR platform_post_id IS NOT NULL)',
+  ];
   const binds: unknown[] = [];
   if (options.postIds && options.postIds.length > 0) {
     filters.push(`post_id IN (${options.postIds.map(() => '?').join(',')})`);
@@ -165,8 +171,11 @@ export async function syncPublishedUrls(
   }
 
   const rows = await db
-    .prepare(`SELECT id, post_id, platform, tracking_id, status
-              FROM post_platforms
+    .prepare(`SELECT pp.id, pp.post_id, pp.platform, pp.tracking_id, pp.platform_post_id, pp.status,
+                     c.upload_post_profile
+              FROM post_platforms pp
+              JOIN posts p ON p.id = pp.post_id
+              JOIN clients c ON c.id = p.client_id
               WHERE ${filters.join(' AND ')}`)
     .bind(...binds)
     .all<SyncCandidateRow>();
@@ -208,6 +217,27 @@ export async function syncPublishedUrls(
     }
   }
 
+  const platformPostUrlMap = new Map<string, string>();
+  for (const row of rows.results) {
+    if (!row.platform_post_id || !row.upload_post_profile) continue;
+    const key = `${row.platform}|${row.platform_post_id}`;
+    if (platformPostUrlMap.has(key)) continue;
+
+    try {
+      const analytics = await up.getPostAnalyticsByPlatformPostId({
+        platformPostId: row.platform_post_id,
+        platform: basePlatform(row.platform),
+        user: row.upload_post_profile,
+      });
+      const direct = extractPublishedUrl(analytics, row.platform);
+      if (direct) {
+        platformPostUrlMap.set(key, direct);
+      }
+    } catch {
+      // continue
+    }
+  }
+
   if (urlMap.size < rowByTracking.size) {
     try {
       const { history } = await up.getHistory(300);
@@ -228,8 +258,11 @@ export async function syncPublishedUrls(
   const affectedPosts = new Set<string>();
   for (const row of rows.results) {
     const rawId = trackingIdRaw(row.tracking_id);
-    if (!rawId) continue;
-    const realUrl = urlMap.get(rawId);
+    const byTracking = rawId ? urlMap.get(rawId) : null;
+    const byPlatformPostId = row.platform_post_id
+      ? platformPostUrlMap.get(`${row.platform}|${row.platform_post_id}`)
+      : null;
+    const realUrl = byTracking ?? byPlatformPostId ?? null;
     if (!realUrl) continue;
     await db
       .prepare(`UPDATE post_platforms

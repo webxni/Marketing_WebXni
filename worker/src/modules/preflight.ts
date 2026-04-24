@@ -10,6 +10,7 @@
 import type { ClientPlatformRow, ClientRow, PostRow } from '../types';
 import { normalizePlatform } from './captions';
 import { normalizeContentType } from './platform-compatibility';
+import { getPlatformConfigWarnings, hasMappedValue } from './platform-config';
 
 export interface PreflightResult {
   ok:     boolean;
@@ -126,6 +127,14 @@ export async function preflight(
     };
   }
 
+  if (normalizedPlatform === 'linkedin' && !hasMappedValue(platCfg.page_id)) {
+    return {
+      ok: false,
+      tag: 'SKIP',
+      reason: `LinkedIn page/account mapping not configured for '${client.slug}'`,
+    };
+  }
+
   // 8. GBP: CTA URL required when a CTA type is set
   if (normalizedPlatform === 'google_business' && post) {
     if (post.gbp_cta_type && post.gbp_cta_type !== 'CALL' && !post.gbp_cta_url?.trim()) {
@@ -221,8 +230,8 @@ export function preflightWarnings(
       warnings.push({ code: 'MISSING_PAGE_ID', message: 'Facebook page_id not set' });
     }
 
-    if (norm === 'linkedin' && !cfg.page_id) {
-      warnings.push({ code: 'MISSING_PAGE_ID', message: 'LinkedIn page_id not set' });
+    if (norm === 'linkedin') {
+      warnings.push(...getPlatformConfigWarnings(client, norm, cfg));
     }
 
     if (norm === 'pinterest' && !cfg.upload_post_board_id) {

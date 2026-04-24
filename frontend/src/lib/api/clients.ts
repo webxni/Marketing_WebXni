@@ -1,6 +1,11 @@
 import { api } from './client';
 import type { Client, ClientPlatform, ConnectionHealth } from '../types';
 
+export interface PlatformConfigWarning {
+  code: string;
+  message: string;
+}
+
 export interface WpTestResult {
   ok:     boolean;
   user?:  { id: number; name: string; email: string };
@@ -32,7 +37,7 @@ export const clientsApi = {
     api.put<{ client: Client }>(`/api/clients/${slug}`, data),
 
   updatePlatform: (slug: string, platform: string, data: Record<string, unknown>) =>
-    api.put<{ platform: ClientPlatform }>(`/api/clients/${slug}/platforms/${platform}`, data),
+    api.put<{ platform: ClientPlatform; warnings?: PlatformConfigWarning[] }>(`/api/clients/${slug}/platforms/${platform}`, data),
 
   // WordPress integration
   wpStatus: (slug: string) =>

@@ -22,6 +22,7 @@ import {
 } from '../db/queries';
 import { UploadPostClient, UploadPostError } from '../services/uploadpost';
 import { getConnectionHealth, type UploadPostProfileResponse } from '../modules/posting-diagnostics';
+import { getPlatformConfigWarnings } from '../modules/platform-config';
 
 export const clientRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -354,7 +355,8 @@ clientRoutes.put('/:slug/platforms/:platform', async (c) => {
 
   const platforms = await getClientPlatforms(c.env.DB, client.id);
   const updated = platforms.find(p => p.platform === platform);
-  return c.json({ platform: updated ?? null });
+  const warnings = updated ? getPlatformConfigWarnings(client, platform, updated) : [];
+  return c.json({ platform: updated ?? null, warnings });
 });
 
 /** POST /api/clients/:slug/platforms/:platform/pause */
