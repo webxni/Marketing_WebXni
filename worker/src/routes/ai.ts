@@ -15,12 +15,13 @@ import {
   listClients, getClientBySlug,
   listPosts, getPostById, updatePost, setPostStatus,
   createPost, createGenerationRun, createPostingJob, getGenerationRunById,
+  createApprovedCommandJob, appendGenerationLog,
   writeAuditLog,
   listContentRequests, getContentRequestById, createContentRequest, updateContentRequest,
   listClientTopics, addClientTopics, markClientTopicUsed,
 } from '../db/queries';
 import { runPosting }    from '../loader/posting-run';
-import { planGeneration, resumeGenerationRun } from '../loader/generation-run';
+import { planGeneration, prepareGenerationPlan, resumeGenerationRun } from '../loader/generation-run';
 import { createContentWithImage } from '../loader/autonomous-content';
 import { getProviderDisplayName, normalizeContentProvider } from '../services/content-provider';
 import {
@@ -43,6 +44,17 @@ export interface AgentStructuredResponse {
   errors:        string[];
   tools_used?:   string[];
   job_id?:       string;
+}
+
+interface ApprovedClaudeJobArgs {
+  run_id: string;
+  client_slugs: string[];
+  period_start: string;
+  period_end: string;
+  content_only: true;
+  generate_images: false;
+  provider: 'claude';
+  requested_in: 'agent';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1042,6 +1054,64 @@ async function executeTool(
           client_filter: clientSlugs.length > 0 ? JSON.stringify(clientSlugs) : null,
           overwrite_existing: args.overwrite_existing === true,
         });
+
+        if (provider === 'claude') {
+          const params = {
+            run_id: run.id, client_slugs: clientSlugs,
+            period_start: dates[0], period_end: dates[dates.length - 1],
+            triggered_by: user.userId, publish_time: null,
+            overwrite_existing: args.overwrite_existing === true,
+            high_quality: true,
+            provider,
+          } as const;
+          const { slots, clients } = await prepareGenerationPlan(env, params);
+          await env.DB.prepare(
+            `UPDATE generation_runs
+             SET post_slots = ?, total_slots = ?, current_slot_idx = 0, publish_time = ?, progress_json = ?, last_activity_at = ?
+             WHERE id = ?`,
+          ).bind(
+            JSON.stringify(slots),
+            slots.length,
+            '10:00',
+            JSON.stringify({
+              current_client: clients[0]?.canonical_name ?? '',
+              current_post: slots[0] ? `${slots[0].date} / ${slots[0].content_type}` : '',
+              completed: 0,
+              total_estimated: slots.length,
+              errors: 0,
+              clients_done: 0,
+              clients_total: clients.length,
+            }),
+            Math.floor(Date.now() / 1000),
+            run.id,
+          ).run();
+          await appendGenerationLog(env.DB, run.id, 'START', `Claude terminal job queued from agent — ${dates[0]} → ${dates[dates.length - 1]}`);
+
+          const approvedArgs: ApprovedClaudeJobArgs = {
+            run_id: run.id,
+            client_slugs: clientSlugs,
+            period_start: dates[0],
+            period_end: dates[dates.length - 1],
+            content_only: true,
+            generate_images: false,
+            provider: 'claude',
+            requested_in: 'agent',
+          };
+          await createApprovedCommandJob(env.DB, {
+            generation_run_id: run.id,
+            command_name: 'weekly_content_claude',
+            provider: 'claude',
+            requested_by: user.userId,
+            args_json: JSON.stringify(approvedArgs),
+          });
+
+          return {
+            success: true,
+            job_id: run.id,
+            summary: { job_id: run.id, date_range: `${dates[0]} → ${dates[dates.length - 1]}`, clients: clientSlugs.length > 0 ? clientSlugs.join(', ') : 'all active', days: dates.length, provider, mode: 'approved_terminal_job' },
+            action_summary: `Generation job ${run.id} queued with Claude Code — ${clientSlugs.length > 0 ? clientSlugs.join(', ') : 'all clients'} for ${dates.length} days`,
+          };
+        }
 
         ctx.waitUntil(planGeneration(env, {
           run_id: run.id, client_slugs: clientSlugs,
@@ -2330,7 +2400,12 @@ ${NL_INTENT_MAP}
 ${AGENT_MEMORY}
 ${CLIENT_EXPERTISE}
 ${BUYER_PERSONAS}
-${RESPONSE_RULES}`;
+${RESPONSE_RULES}
+
+Discord-specific interpretation rules:
+- If the user sends plain text like "/weekly-content client:all provider:claude", treat it as a weekly content generation request.
+- For slash-like weekly content messages without an explicit date range, default to this week.
+- If the user explicitly asks for Claude, route generation as provider=claude.`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

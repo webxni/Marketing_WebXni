@@ -383,6 +383,18 @@ client.on(Events.MessageCreate, async (message) => {
 
   // Augment the message with attachment context for the agent
   let agentMessage = text;
+  const pseudoWeekly = text.match(/^\/weekly-content\b([\s\S]*)/i);
+  if (pseudoWeekly) {
+    const rawArgs = pseudoWeekly[1] ?? '';
+    const clientMatch = rawArgs.match(/\bclient:([^\s]+)/i);
+    const providerMatch = rawArgs.match(/\bprovider:([^\s]+)/i);
+    const rangeMatch = rawArgs.match(/\bdate_range:([^\s]+)/i);
+    const clientArg = (clientMatch?.[1] ?? 'all').trim();
+    const providerArg = (providerMatch?.[1] ?? 'openai').trim().toLowerCase();
+    const rangeArg = (rangeMatch?.[1] ?? 'this_week').trim().toLowerCase();
+    const clientPhrase = clientArg === 'all' ? 'all active clients' : clientArg;
+    agentMessage = `Generate weekly content for ${clientPhrase} using ${providerArg === 'claude' ? 'Claude' : 'OpenAI'} for ${rangeArg.replace(/_/g, ' ')}. Content only, no image generation unless explicitly requested.`;
+  }
   if (uploadedAssets.length > 0) {
     const attContext = uploadedAssets
       .map(a => `[Media uploaded to R2: key="${a.r2_key}", url="${a.url}", type="${a.asset_type}"]`)

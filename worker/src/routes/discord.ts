@@ -366,7 +366,7 @@ async function handleCommand(
     const clientArg = (opts.find(o => o.name === 'client')?.value  as string | undefined) ?? '';
     const weekArg   = ((opts.find(o => o.name === 'date_range')?.value as string | undefined)
                     ?? (opts.find(o => o.name === 'week')?.value       as string | undefined)
-                    ?? 'next_week');
+                    ?? 'this_week');
     const modeArg   = (opts.find(o => o.name === 'mode')?.value    as string | undefined) ?? 'standard';
     const provider  = normalizeContentProvider((opts.find(o => o.name === 'provider')?.value as string | undefined) ?? 'openai');
     const isHQ      = modeArg === 'high-quality';
@@ -881,7 +881,7 @@ Response rules for Discord:
 - Bold (**text**) is fine in Discord for emphasis
 - Be direct and operational
 - For weekly content requests, default provider to openai unless the user explicitly asks for Claude
-- For weekly content requests without a date range, default to next week`;
+- For weekly content requests without a date range, default to this week`;
 }
 
 async function requireDiscordBotSecret(c: { req: { header(name: string): string | undefined }; env: Env }): Promise<string | null> {
