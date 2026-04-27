@@ -442,7 +442,11 @@ curl -X POST https://marketing.webxni.com/api/clients/elite-team-builders/wordpr
 
 ## Deployment — FULL sequence every time
 
-**GitHub push does NOT deploy to Cloudflare.** Both must be done separately after every change.
+**GitHub push to `main` DOES deploy to Cloudflare via `.github/workflows/deploy.yml`.**
+That workflow builds the frontend, deploys the LOADER worker first, then deploys the main worker.
+What it does **not** do:
+- run D1 migrations
+- restart the local `discord-bot` process if you host it outside GitHub Actions
 
 ```bash
 # 1. TypeScript check (must pass — zero errors)
@@ -451,21 +455,19 @@ cd worker && npx tsc --noEmit && cd ..
 # 2. Build frontend
 cd frontend && npm run build && cd ..
 
-# 3. Deploy to Cloudflare (frontend assets + worker)
-npx wrangler deploy
-
-# 4. Run pending DB migrations (only if schema changed)
+# 3. Run pending DB migrations (only if schema changed)
 npx wrangler d1 execute webxni-db --file=db/migrations/XXXX_description.sql --remote
 
-# 5. Commit your changes
+# 4. Commit your changes
 git add <changed files>
 git commit -m "Description of what changed"
 
-# 6. Push to GitHub
+# 5. Push to GitHub (this triggers the Cloudflare deploy workflow)
 git push
 ```
 
-Do steps 1–3 first (deploy), then 5–6 (commit + push).
-If wrangler fails, nothing gets committed as shipped.
+Do steps 1–2 first, then commit + push, and run D1 migrations for any schema changes.
+If the GitHub Actions deploy fails, the code is pushed but not live.
+If the D1 migration is skipped, the new runtime may deploy successfully but fail at runtime on missing schema.
 
-Or: `bash deploy.sh` (runs steps 1–3 only — still commit/push manually after)
+Or: `bash deploy.sh` for a manual local deploy when CI is not being used.

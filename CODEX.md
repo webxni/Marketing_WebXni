@@ -455,8 +455,17 @@ See "Migration rules" above — always migrations, never schema.sql edits.
 
 ## How to deploy — FULL sequence every time
 
-GitHub push does NOT deploy to Cloudflare. You must run wrangler manually.
-Always follow this exact order:
+GitHub push to `main` deploys to Cloudflare through `.github/workflows/deploy.yml`.
+That workflow:
+- builds `frontend`
+- deploys the LOADER worker
+- deploys the main worker with static assets
+
+It does **not**:
+- run D1 migrations
+- restart the separately hosted `discord-bot`
+
+Always follow this order:
 
 ```bash
 # Step 1 — TypeScript check (must pass, zero errors)
@@ -465,27 +474,24 @@ cd worker && npx tsc --noEmit && cd ..
 # Step 2 — Build frontend (must pass)
 cd frontend && npm run build && cd ..
 
-# Step 3 — Deploy to Cloudflare (uploads frontend assets + worker code)
-npx wrangler deploy
-
-# Step 4 — Run any pending DB migrations (only if schema changed)
-npx wrangler d1 execute webxni-db --file=db/migrations/XXXX_description.sql --remote
-
-# Step 5 — Commit all changes to git
+# Step 3 — Commit all changes to git
 git add <changed files>
 git commit -m "Short description of what changed"
 
-# Step 6 — Push to GitHub
+# Step 4 — Push to GitHub (triggers the Cloudflare deploy workflow)
 git push
+
+# Step 5 — Run any pending DB migrations (only if schema changed)
+npx wrangler d1 execute webxni-db --file=db/migrations/XXXX_description.sql --remote
 ```
 
 **Why this order matters:**
-- Deploy before commit — if wrangler fails, nothing is committed as "done"
 - TypeScript and build checks catch errors before they reach production
-- GitHub is source of truth for code history, Cloudflare is the live runtime
-- They are independent — both must be done after every change
+- GitHub is source of truth for code history, and CI deploys the live worker/pages runtime
+- D1 schema changes remain separate from worker deploys and must still be applied explicitly
+- The Discord bot runner can still be out of date even when the worker deploy succeeds
 
-Or use the deploy script (does steps 1-3 only — still commit/push manually):
+Or use the deploy script for a manual local deploy if needed:
 ```bash
 bash deploy.sh
 ```
