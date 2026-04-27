@@ -71,6 +71,7 @@
   // Publish time — applies to all generated posts
   let publishTime = '10:00';  // default 10:00 AM
   let overwriteExisting = false;
+  let contentProvider: 'openai' | 'claude' = 'openai';
 
   // Custom
   let customStart = todayStr;
@@ -201,10 +202,10 @@
       try {
         const { runs } = await runApi.listGenerationRuns();
         genRuns = runs;
-        const running = runs.find(r => r.status === 'running');
-        if (running) {
-          progressRunId = running.id;
-          activeProgress = parseProgress(running);
+        const activeRun = runs.find(r => r.status === 'running') ?? runs.find(r => r.status === 'queued');
+        if (activeRun) {
+          progressRunId = activeRun.id;
+          activeProgress = parseProgress(activeRun);
         } else {
           // Run finished
           activeProgress = null;
@@ -235,10 +236,13 @@
           : [],
         date_from:    periodStart,
         date_to:      periodEnd,
+        provider:     contentProvider,
         publish_time: publishTime || '10:00',
         overwrite_existing: overwriteExisting,
       });
-      toast.success(`Generation started — ~${totalEstimated} drafts queued`);
+      toast.success(contentProvider === 'claude'
+        ? `Claude Code queued — ~${totalEstimated} reviewed drafts planned`
+        : `Generation started — ~${totalEstimated} drafts queued`);
       historyTab = 'generation';
       startProgressPolling();
     } catch (e) { toast.error(String(e)); generating = false; }
@@ -647,6 +651,27 @@
 
       <!-- ── Publish Time ──────────────────────────────────────────────────── -->
       <div class="mt-4 pt-4 border-t border-border">
+        <p class="text-xs text-muted uppercase tracking-wider mb-2">Provider</p>
+        <div class="grid grid-cols-2 gap-2 mb-4">
+          <button
+            class="text-xs py-2 px-3 rounded-md border transition-colors text-left {contentProvider === 'openai' ? 'border-accent bg-accent/10 text-accent' : 'border-border text-muted hover:text-white hover:border-white/30'}"
+            on:click={() => { contentProvider = 'openai'; }}
+          >OpenAI
+          </button>
+          <button
+            class="text-xs py-2 px-3 rounded-md border transition-colors text-left {contentProvider === 'claude' ? 'border-accent bg-accent/10 text-accent' : 'border-border text-muted hover:text-white hover:border-white/30'}"
+            on:click={() => { contentProvider = 'claude'; }}
+          >Claude Code
+          </button>
+        </div>
+        <p class="text-xs text-muted mb-4">
+          {#if contentProvider === 'claude'}
+            Reviewed terminal workflow. Better quality, self-review, content only, no image generation by default.
+          {:else}
+            Faster standard workflow using the existing generation path.
+          {/if}
+        </p>
+
         <p class="text-xs text-muted uppercase tracking-wider mb-2">Default Publish Time</p>
         <div class="flex items-center gap-2">
           <input

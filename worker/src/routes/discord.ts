@@ -657,6 +657,16 @@ discordInternalRoute.post('/approved-jobs/:id/start', async (c) => {
   let body: { command_line?: string } = {};
   try { body = await c.req.json(); } catch { /* optional */ }
   await markApprovedCommandJobRunning(c.env.DB, c.req.param('id'), body.command_line ?? '');
+  const job = await getApprovedCommandJobById(c.env.DB, c.req.param('id'));
+  const runId = job ? (JSON.parse(job.args_json) as Partial<ApprovedClaudeJobArgs>).run_id ?? job.generation_run_id ?? null : null;
+  if (runId) {
+    const now = Math.floor(Date.now() / 1000);
+    await c.env.DB.prepare(
+      `UPDATE generation_runs
+       SET status = 'running', completed_at = NULL, last_activity_at = ?
+       WHERE id = ?`,
+    ).bind(now, runId).run();
+  }
   return c.json({ ok: true });
 });
 
