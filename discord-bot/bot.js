@@ -57,6 +57,35 @@ function pushHistory(userId, role, content) {
   if (h.length > 12) h.splice(0, h.length - 12); // keep last 6 turns
 }
 
+function resolveWeeklyDateRange(rangeRaw) {
+  const normalized = String(rangeRaw || 'this_week').trim().toLowerCase();
+  const today = new Date();
+  const dayOfWeek = today.getUTCDay(); // 0=Sun, 1=Mon ... 6=Sat
+  const monday = new Date(today);
+  monday.setUTCHours(12, 0, 0, 0);
+
+  if (normalized === 'next_week' || normalized === 'next-week') {
+    const daysUntilNextMonday = dayOfWeek === 0 ? 1 : (8 - dayOfWeek);
+    monday.setUTCDate(today.getUTCDate() + daysUntilNextMonday);
+  } else if (normalized === 'this_week' || normalized === 'this-week') {
+    const daysToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+    monday.setUTCDate(today.getUTCDate() + daysToMonday);
+  } else if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    monday.setTime(new Date(`${normalized}T12:00:00Z`).getTime());
+  } else {
+    const daysToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+    monday.setUTCDate(today.getUTCDate() + daysToMonday);
+  }
+
+  const sunday = new Date(monday);
+  sunday.setUTCDate(monday.getUTCDate() + 6);
+
+  return {
+    start: monday.toISOString().split('T')[0],
+    end: sunday.toISOString().split('T')[0],
+  };
+}
+
 // ── Upload a Discord attachment to the WebXni worker ─────────────────────────
 async function uploadAttachmentToWorker(attachment) {
   try {
@@ -392,8 +421,15 @@ client.on(Events.MessageCreate, async (message) => {
     const clientArg = (clientMatch?.[1] ?? 'all').trim();
     const providerArg = (providerMatch?.[1] ?? 'openai').trim().toLowerCase();
     const rangeArg = (rangeMatch?.[1] ?? 'this_week').trim().toLowerCase();
+    const { start, end } = resolveWeeklyDateRange(rangeArg);
     const clientPhrase = clientArg === 'all' ? 'all active clients' : clientArg;
-    agentMessage = `Generate weekly content for ${clientPhrase} using ${providerArg === 'claude' ? 'Claude' : 'OpenAI'} for ${rangeArg.replace(/_/g, ' ')}. Content only, no image generation unless explicitly requested.`;
+    agentMessage = `Call generate_content with exactly these arguments: ${JSON.stringify({
+      client_slugs: clientArg === 'all' ? [] : [clientArg],
+      date_from: start,
+      date_to: end,
+      provider: providerArg === 'claude' ? 'claude' : 'openai',
+      overwrite_existing: false,
+    })}. Content only, no image generation unless explicitly requested.`;
   }
   if (uploadedAssets.length > 0) {
     const attContext = uploadedAssets
