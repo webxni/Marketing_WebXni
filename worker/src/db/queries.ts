@@ -10,6 +10,7 @@ import type {
   PostRow,
   PostPlatformRow,
   PostingJobRow,
+  ApprovedCommandJobRow,
   ContentRequestRow,
   ClientTopicRow,
 } from '../types';
@@ -821,6 +822,113 @@ export async function healStuckGenerationRuns(db: D1Database, thresholdSeconds =
                 AND ((last_activity_at IS NULL AND created_at < ?) OR last_activity_at < ?)`)
     .bind(now, `${new Date(now * 1000).toISOString().slice(0, 19)}Z [ERROR] Worker timed out — run auto-cancelled after ${thresholdSeconds}s of inactivity`, cutoff, cutoff)
     .run();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// APPROVED COMMAND JOBS
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function createApprovedCommandJob(
+  db: D1Database,
+  data: {
+    generation_run_id: string | null;
+    command_name: string;
+    provider: string;
+    requested_by: string;
+    args_json: string;
+  },
+): Promise<ApprovedCommandJobRow> {
+  const id = crypto.randomUUID().replace(/-/g, '').toLowerCase();
+  const now = Math.floor(Date.now() / 1000);
+  await db.prepare(
+    `INSERT INTO approved_command_jobs
+     (id, generation_run_id, command_name, provider, requested_by, args_json, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
+  ).bind(id, data.generation_run_id, data.command_name, data.provider, data.requested_by, data.args_json, now, now).run();
+  return (await getApprovedCommandJobById(db, id))!;
+}
+
+export async function getApprovedCommandJobById(
+  db: D1Database,
+  id: string,
+): Promise<ApprovedCommandJobRow | null> {
+  const row = await db.prepare('SELECT * FROM approved_command_jobs WHERE id = ?').bind(id).first<ApprovedCommandJobRow>();
+  return row ?? null;
+}
+
+export async function listApprovedCommandJobs(
+  db: D1Database,
+  limit = 30,
+): Promise<ApprovedCommandJobRow[]> {
+  const rows = await db
+    .prepare('SELECT * FROM approved_command_jobs ORDER BY created_at DESC LIMIT ?')
+    .bind(limit)
+    .all<ApprovedCommandJobRow>();
+  return rows.results;
+}
+
+export async function claimNextApprovedCommandJob(
+  db: D1Database,
+  runnerId: string,
+): Promise<ApprovedCommandJobRow | null> {
+  const next = await db
+    .prepare(`SELECT id FROM approved_command_jobs
+              WHERE status = 'queued'
+              ORDER BY created_at ASC
+              LIMIT 1`)
+    .first<{ id: string }>();
+  if (!next?.id) return null;
+
+  const now = Math.floor(Date.now() / 1000);
+  const claimed = await db.prepare(
+    `UPDATE approved_command_jobs
+     SET status = 'claimed', claimed_by = ?, claimed_at = ?, updated_at = ?
+     WHERE id = ? AND status = 'queued'`,
+  ).bind(runnerId, now, now, next.id).run();
+
+  if (claimed.meta.changes !== 1) return null;
+  return await getApprovedCommandJobById(db, next.id);
+}
+
+export async function markApprovedCommandJobRunning(
+  db: D1Database,
+  id: string,
+  commandLine: string,
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await db.prepare(
+    `UPDATE approved_command_jobs
+     SET status = 'running', command_line = ?, started_at = COALESCE(started_at, ?), updated_at = ?
+     WHERE id = ?`,
+  ).bind(commandLine, now, now, id).run();
+}
+
+export async function updateApprovedCommandJobProgress(
+  db: D1Database,
+  id: string,
+  message: string,
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await db.prepare(
+    `UPDATE approved_command_jobs
+     SET progress_message = ?, updated_at = ?
+     WHERE id = ?`,
+  ).bind(message, now, id).run();
+}
+
+export async function completeApprovedCommandJob(
+  db: D1Database,
+  id: string,
+  status: 'completed' | 'failed' | 'cancelled',
+  result_json: string | null,
+  error_log: string | null,
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await db.prepare(
+    `UPDATE approved_command_jobs
+     SET status = ?, result_json = ?, error_log = ?, completed_at = ?, updated_at = ?
+     WHERE id = ?`,
+  ).bind(status, result_json, error_log, now, now, id).run();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

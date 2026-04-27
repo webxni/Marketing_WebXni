@@ -157,11 +157,11 @@ function line(condition: unknown, text: string): string {
   return condition ? `\n${text}` : '';
 }
 
-type JsonSchema = Record<string, unknown>;
+export type JsonSchema = Record<string, unknown>;
 
 export interface GenerationPlan {
   mode: 'social' | 'blog';
-  model: 'gpt-4o-mini' | 'gpt-4o';
+  model: string;
   requestTimeoutMs: number;
   perPostTimeoutMs: number;
   maxTokens: number;
@@ -169,11 +169,22 @@ export interface GenerationPlan {
   promptChars: number;
 }
 
+export interface GenerationRequestSchema {
+  name: string;
+  schema: JsonSchema;
+}
+
+export interface GenerationRequest {
+  prompt: string;
+  schema: GenerationRequestSchema;
+  plan: GenerationPlan;
+}
+
 export interface GeneratePostResult {
   post: GeneratedPost;
   meta: {
     mode: 'social' | 'blog';
-    model: 'gpt-4o-mini' | 'gpt-4o';
+    model: string;
     attempts: number;
     promptChars: number;
     elapsedMs: number;
@@ -229,7 +240,7 @@ export function detectFormatFromTitle(title: string): ContentFormat | null {
   return null;
 }
 
-function buildGenerationSystemMessage(mode: 'social' | 'blog' | 'gbp'): string {
+export function buildGenerationSystemMessage(mode: 'social' | 'blog' | 'gbp'): string {
   const role =
     mode === 'blog'
       ? 'You are an expert SEO blog writer.'
@@ -453,7 +464,7 @@ TEMPLATE CONTEXT:
 - Do NOT generate page-level HTML or CSS — structured content only; the platform renders the layout`;
 }
 
-function buildResponseSchema(ctx: GenerationContext): { name: string; schema: JsonSchema } {
+function buildResponseSchema(ctx: GenerationContext): GenerationRequestSchema {
   const isBlog = ctx.contentType === 'blog';
   const isVideo = ctx.contentType === 'video' || ctx.contentType === 'reel';
   const platforms = ctx.platforms.filter(p => p !== 'website_blog');
@@ -564,7 +575,7 @@ function buildResponseSchema(ctx: GenerationContext): { name: string; schema: Js
   };
 }
 
-function buildGenerationRequest(ctx: GenerationContext) {
+export function buildGenerationRequest(ctx: GenerationContext): GenerationRequest {
   const isBlog = ctx.contentType === 'blog';
   const prompt = isBlog ? buildBlogPrompt(ctx) : buildSocialPrompt(ctx);
   const schema = buildResponseSchema(ctx);
@@ -585,7 +596,7 @@ export function describeGenerationPlan(ctx: GenerationContext): GenerationPlan {
   return buildGenerationRequest(ctx).plan;
 }
 
-function normalizeGeneratedPost(value: unknown, ctx: GenerationContext): GeneratedPost {
+export function normalizeGeneratedPost(value: unknown, ctx: GenerationContext): GeneratedPost {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('OpenAI returned a non-object payload');
   }

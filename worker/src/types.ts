@@ -14,6 +14,7 @@ export interface Env {
   SELF: Fetcher;   // Service binding — self-call without going through public network
   UPLOAD_POST_API_KEY: string;
   OPENAI_API_KEY: string;
+  ANTHROPIC_API_KEY?: string;
   R2_MEDIA_PUBLIC_URL: string;
   NOTION_API_TOKEN?: string;       // optional — only needed for Notion import
   // Discord
@@ -33,6 +34,7 @@ export interface LoaderEnv {
   IMAGES: R2Bucket;
   UPLOAD_POST_API_KEY: string;
   OPENAI_API_KEY: string;
+  ANTHROPIC_API_KEY?: string;
   R2_MEDIA_PUBLIC_URL: string;
 }
 
@@ -345,6 +347,26 @@ export interface PostingJobRow {
   stats_json:      string | null;
   created_at:      number;
   completed_at:    number | null;
+}
+
+export interface ApprovedCommandJobRow {
+  id:                string;
+  generation_run_id: string | null;
+  command_name:      string;
+  provider:          string;
+  requested_by:      string;
+  args_json:         string;
+  status:            string;
+  claimed_by:        string | null;
+  command_line:      string | null;
+  progress_message:  string | null;
+  result_json:       string | null;
+  error_log:         string | null;
+  created_at:        number;
+  claimed_at:        number | null;
+  started_at:        number | null;
+  completed_at:      number | null;
+  updated_at:        number;
 }
 
 // ─── Recurring content requests (migration 0026) ─────────────────────────────

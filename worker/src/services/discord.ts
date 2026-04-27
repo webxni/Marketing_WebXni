@@ -313,18 +313,28 @@ export const SLASH_COMMANDS = [
         required:    false,
       },
       {
-        name:        'week',
-        description: 'Which week: this-week, next-week, or YYYY-MM-DD (Monday)',
+        name:        'date_range',
+        description: 'Which week: this_week, next_week, or YYYY-MM-DD (Monday)',
         type:        3,
         required:    false,
       },
       {
-        name:        'mode',
-        description: 'Generation mode: standard (default) or high-quality',
+        name:        'provider',
+        description: 'Content provider: openai (default) or claude',
         type:        3,
         required:    false,
         choices: [
-          { name: 'standard',     value: 'standard' },
+          { name: 'openai', value: 'openai' },
+          { name: 'claude', value: 'claude' },
+        ],
+      },
+      {
+        name:        'mode',
+        description: 'Legacy quality mode. Use provider=claude for reviewed high-quality content.',
+        type:        3,
+        required:    false,
+        choices: [
+          { name: 'standard', value: 'standard' },
           { name: 'high-quality', value: 'high-quality' },
         ],
       },

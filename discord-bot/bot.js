@@ -15,6 +15,9 @@
 
 require('dotenv').config();
 const { Client, GatewayIntentBits, Events, ActivityType } = require('discord.js');
+const { spawn } = require('node:child_process');
+const path = require('node:path');
+const os = require('node:os');
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 const BOT_TOKEN    = process.env.DISCORD_BOT_TOKEN;
@@ -22,6 +25,8 @@ const BOT_SECRET   = process.env.DISCORD_BOT_SECRET;    // matches KV settings:s
 const OWNER_ID     = process.env.DISCORD_OWNER_ID    || '1468394932837552248';
 const CHANNEL_ID   = process.env.DISCORD_CHANNEL_ID  || '1242943323828916234';
 const API_BASE_URL = process.env.API_BASE_URL         || 'https://marketing.webxni.com';
+const RUNNER_ID    = process.env.DISCORD_RUNNER_ID    || `${os.hostname()}:discord-bot`;
+const PROJECT_ROOT = path.resolve(__dirname, '..');
 
 if (!BOT_TOKEN)  { console.error('DISCORD_BOT_TOKEN is required'); process.exit(1); }
 if (!BOT_SECRET) { console.error('DISCORD_BOT_SECRET is required'); process.exit(1); }
@@ -250,7 +255,84 @@ const client = new Client({
 client.once(Events.ClientReady, (c) => {
   console.log(`[bot] Ready as ${c.user.tag}`);
   c.user.setActivity('WebXni Platform', { type: ActivityType.Watching });
+  startApprovedJobPoller().catch((err) => console.error('[jobs] poller init error:', err));
 });
+
+let approvedJobBusy = false;
+
+async function postInternal(pathname, body) {
+  const res = await fetch(`${API_BASE_URL}${pathname}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${BOT_SECRET}`,
+    },
+    body: JSON.stringify(body ?? {}),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`${pathname} ${res.status}: ${text.slice(0, 200)}`);
+  }
+  return res.json();
+}
+
+async function runApprovedJob(job) {
+  const allowed = {
+    weekly_content_claude: ['scripts/run-approved-claude-job.mjs'],
+    regenerate_content_claude: ['scripts/run-approved-claude-job.mjs'],
+  };
+  const scriptPathParts = allowed[job.command_name];
+  if (!scriptPathParts) throw new Error(`Unapproved command: ${job.command_name}`);
+
+  const scriptPath = path.join(PROJECT_ROOT, ...scriptPathParts);
+  const args = [
+    scriptPath,
+    '--job-id', job.id,
+    '--runner-id', RUNNER_ID,
+    '--api-base-url', API_BASE_URL,
+    '--bot-secret', BOT_SECRET,
+  ];
+  const commandLine = `node ${path.relative(PROJECT_ROOT, scriptPath)} --job-id ${job.id}`;
+
+  await postInternal(`/internal/discord/approved-jobs/${job.id}/start`, { command_line: commandLine });
+
+  const child = spawn(process.execPath, args, {
+    cwd: PROJECT_ROOT,
+    stdio: 'inherit',
+    shell: false,
+    env: {
+      ...process.env,
+      API_BASE_URL,
+      DISCORD_BOT_SECRET: BOT_SECRET,
+      DISCORD_RUNNER_ID: RUNNER_ID,
+    },
+  });
+
+  return new Promise((resolve, reject) => {
+    child.on('error', reject);
+    child.on('exit', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`Approved job exited with code ${code ?? 'unknown'}`));
+    });
+  });
+}
+
+async function startApprovedJobPoller() {
+  setInterval(async () => {
+    if (approvedJobBusy) return;
+    approvedJobBusy = true;
+    try {
+      const claimed = await postInternal('/internal/discord/approved-jobs/claim', { runner_id: RUNNER_ID });
+      if (!claimed.job) return;
+      console.log(`[jobs] claimed ${claimed.job.id} (${claimed.job.command_name})`);
+      await runApprovedJob(claimed.job);
+    } catch (err) {
+      console.error('[jobs] runner error:', err.message);
+    } finally {
+      approvedJobBusy = false;
+    }
+  }, 10000);
+}
 
 client.on(Events.MessageCreate, async (message) => {
   // Ignore other bots

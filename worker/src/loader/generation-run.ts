@@ -42,14 +42,23 @@ import {
   type GenerationProgress,
 } from '../db/queries';
 import {
-  generatePostContent,
-  researchTopic,
+  buildGenerationRequest,
   validateGeneratedContent,
   detectFormatFromTitle,
   type GenerationContext,
   type ContentFormat,
+  type GeneratedPost,
   type TopicResearch,
 } from '../services/openai';
+import {
+  generateWithProvider,
+  getProviderDisplayName,
+  normalizeContentProvider,
+  researchTopicWithProvider,
+  resolveProviderApiKey,
+  type ContentProviderName,
+} from '../services/content-provider';
+import { discordSend, DISCORD_COLORS } from '../services/discord';
 import {
   getAutomationSlotKey,
   getGbpCaptionField,
@@ -72,6 +81,7 @@ export interface GenerationParams {
   publish_time: string | null;
   overwrite_existing?: boolean;
   high_quality?: boolean;
+  provider?: ContentProviderName;
 }
 
 interface PostSlot {
@@ -82,6 +92,16 @@ interface PostSlot {
   content_intent: 'educational' | 'sales';
   slot_key:       string;
   high_quality?:  boolean;
+  provider?:      ContentProviderName;
+}
+
+export interface SlotGenerationRequest {
+  runId: string;
+  slotIdx: number;
+  slot: PostSlot;
+  clientName: string;
+  provider: ContentProviderName;
+  request: ReturnType<typeof buildGenerationRequest>;
 }
 
 interface PackageRow {
@@ -244,6 +264,159 @@ async function loadSystemSettings(env: Env): Promise<Record<string, string>> {
     const raw = await env.KV_BINDING.get('settings:system');
     return raw ? JSON.parse(raw) as Record<string, string> : {};
   } catch { return {}; }
+}
+
+async function notifyDiscordGenerationSummary(
+  env: Env,
+  runId: string,
+  provider: ContentProviderName,
+  triggeredBy: string | null,
+): Promise<void> {
+  if (!triggeredBy?.startsWith('discord:')) return;
+
+  const channelId = env.DISCORD_CHANNEL_ID ?? '';
+  const botToken = env.DISCORD_BOT_TOKEN ?? '';
+  if (!channelId || !botToken) return;
+
+  const posts = await env.DB
+    .prepare(`SELECT p.title, p.publish_date, c.canonical_name AS client_name
+              FROM posts p
+              JOIN clients c ON c.id = p.client_id
+              WHERE p.generation_run_id = ?
+              ORDER BY p.publish_date ASC, p.created_at ASC
+              LIMIT 12`)
+    .bind(runId)
+    .all<{ title: string | null; publish_date: string | null; client_name: string }>();
+
+  const lines = posts.results.slice(0, 8).map((post) => {
+    const title = (post.title ?? '(untitled)').slice(0, 90);
+    const date = post.publish_date?.slice(0, 10) ?? 'no date';
+    return `• ${date} — ${post.client_name}: ${title}`;
+  });
+
+  await discordSend({
+    channelId,
+    token: botToken,
+    content: `✅ Weekly content run complete with ${getProviderDisplayName(provider)}\nRun ID: \`${runId}\`\n${lines.join('\n') || 'No posts were created.'}${posts.results.length > lines.length ? `\n…+${posts.results.length - lines.length} more` : ''}`,
+    embeds: [{
+      title: 'Weekly Content Complete',
+      description: `${getProviderDisplayName(provider)} generation finished. Images were not auto-generated; only content and design prompts were saved.`,
+      color: DISCORD_COLORS.success,
+      timestamp: new Date().toISOString(),
+    }],
+  });
+}
+
+async function finalizeSlotProgress(
+  db: D1Database,
+  env: Env,
+  runId: string,
+  nextCompletedIdx: number,
+  outcome: 'created' | 'updated' | 'skipped',
+  clientName: string,
+  slots: PostSlot[],
+  log: (level: Parameters<typeof appendGenerationLog>[2], msg: string) => Promise<void>,
+): Promise<SlotWorkResult> {
+  const now = Math.floor(Date.now() / 1000);
+  await db
+    .prepare(`UPDATE generation_runs
+              SET current_slot_idx = ?,
+                  posts_created    = posts_created + ?,
+                  posts_updated    = posts_updated + ?,
+                  last_activity_at = ?
+              WHERE id = ?`)
+    .bind(nextCompletedIdx, outcome === 'created' ? 1 : 0, outcome === 'updated' ? 1 : 0, now, runId)
+    .run();
+
+  const updated = await db
+    .prepare('SELECT current_slot_idx, total_slots, posts_created, posts_updated, error_log FROM generation_runs WHERE id = ?')
+    .bind(runId)
+    .first<{ current_slot_idx: number; total_slots: number; posts_created: number; posts_updated: number; error_log: string | null }>();
+
+  if (!updated) return { outcome: 'skipped' };
+
+  const progress: GenerationProgress = {
+    current_client: clientName,
+    current_post: updated.current_slot_idx < updated.total_slots
+      ? `${slots[updated.current_slot_idx]?.date ?? ''} / ${slots[updated.current_slot_idx]?.content_type ?? ''}`.trim()
+      : '',
+    completed: updated.current_slot_idx,
+    total_estimated: updated.total_slots,
+    errors: updated.error_log ? updated.error_log.split('\n').filter(Boolean).length : 0,
+    clients_done: 0,
+    clients_total: 0,
+  };
+  try { await updateGenerationProgress(db, runId, progress); } catch { /* ignore */ }
+
+  if (updated.current_slot_idx >= updated.total_slots) {
+    const totalTouched = (updated.posts_created ?? 0) + (updated.posts_updated ?? 0);
+    const finalStatus = totalTouched > 0 ? (updated.error_log ? 'completed_with_errors' : 'completed') : 'failed';
+    await finalizeGenerationRun(db, runId, finalStatus, updated.posts_created, updated.error_log ?? null);
+    await log('DONE', `Run complete: created=${updated.posts_created}, updated=${updated.posts_updated}, total=${updated.total_slots}, status=${finalStatus}`);
+    try {
+      const run = await getGenerationRunById(db, runId);
+      await notifyDiscordGenerationSummary(env, runId, normalizeContentProvider(slots[0]?.provider), run?.triggered_by ?? null);
+    } catch (err) {
+      await log('WARN', `Discord completion notify failed: ${str(err)}`);
+    }
+    return { outcome: 'completed', totalSlots: updated.total_slots };
+  }
+
+  return { outcome: 'continue', nextSlot: updated.current_slot_idx, totalSlots: updated.total_slots };
+}
+
+export async function prepareGenerationPlan(env: Env, params: GenerationParams): Promise<{ slots: PostSlot[]; clients: ClientRow[] }> {
+  const db = env.DB;
+  const allClients = await listClients(db, 'active');
+  const clients = params.client_slugs.length > 0
+    ? allClients.filter((client) => params.client_slugs.includes(client.slug))
+    : allClients;
+  if (clients.length === 0) throw new Error('No matching active clients found');
+
+  const provider = normalizeContentProvider(params.provider);
+  const slots: PostSlot[] = [];
+  let intentEduc = 0;
+  let intentSales = 0;
+
+  for (const client of clients) {
+    let pkg = DEFAULT_PACKAGE;
+    if (client.package) {
+      const row = await db.prepare('SELECT * FROM packages WHERE slug = ? AND active = 1').bind(client.package).first<PackageRow>();
+      if (row) pkg = row;
+    }
+
+    const weeklySchedule = parseWeeklySchedule(pkg.weekly_schedule ?? null);
+    const dates = buildDates(params.period_start, params.period_end, pkg.posting_frequency, pkg.posting_days ?? null, pkg.weekly_schedule ?? null);
+    const sequence = buildContentSequence(pkg);
+    let seqIdx = 0;
+
+    for (const date of dates) {
+      const dayName = getDayName(date);
+      const contentTypes = weeklySchedule
+        ? (weeklySchedule[dayName] ?? ['image'])
+        : [sequence[seqIdx++ % sequence.length]];
+
+      for (const [dailyIndex, contentType] of contentTypes.entries()) {
+        const totalSoFar = intentEduc + intentSales;
+        const salesRatio = totalSoFar === 0 ? 0 : intentSales / totalSoFar;
+        const intent: 'educational' | 'sales' = salesRatio < 0.30 ? 'sales' : 'educational';
+        slots.push({
+          client_id: client.id,
+          client_slug: client.slug,
+          date,
+          content_type: normalizeContentType(contentType),
+          content_intent: intent,
+          slot_key: getAutomationSlotKey(client.id, date, contentType, dailyIndex),
+          high_quality: params.high_quality ?? false,
+          provider,
+        });
+        if (intent === 'sales') intentSales++; else intentEduc++;
+      }
+    }
+  }
+
+  if (slots.length === 0) throw new Error('No posts to generate for this period and client selection');
+  return { slots, clients };
 }
 
 function str(err: unknown): string {
@@ -416,60 +589,9 @@ export async function planGeneration(env: Env, params: GenerationParams, baseUrl
 
   try {
     await log('START', `Planning started — ${params.period_start} → ${params.period_end}`);
-
-    const settings     = await loadSystemSettings(env);
-    const openAiApiKey = env.OPENAI_API_KEY || settings.ai_api_key || '';
-    if (!openAiApiKey) throw new Error('Missing OpenAI API key: set OPENAI_API_KEY secret or settings:system.ai_api_key');
-
-    const allClients = await listClients(db, 'active');
-    const clients = params.client_slugs.length > 0
-      ? allClients.filter(c => params.client_slugs.includes(c.slug))
-      : allClients;
-    if (clients.length === 0) throw new Error('No matching active clients found');
+    const { slots, clients } = await prepareGenerationPlan(env, params);
 
     await log('INFO', `${clients.length} client(s): ${clients.map(c => c.slug).join(', ')}`);
-
-    const slots: PostSlot[] = [];
-    let intentEduc = 0;
-    let intentSales = 0;
-
-    for (const client of clients) {
-      let pkg = DEFAULT_PACKAGE;
-      if (client.package) {
-        const p = await db.prepare('SELECT * FROM packages WHERE slug = ? AND active = 1').bind(client.package).first<PackageRow>();
-        if (p) pkg = p;
-      }
-
-      const weeklySchedule = parseWeeklySchedule(pkg.weekly_schedule ?? null);
-      const dates = buildDates(params.period_start, params.period_end, pkg.posting_frequency, pkg.posting_days ?? null, pkg.weekly_schedule ?? null);
-      const sequence = buildContentSequence(pkg);
-      let seqIdx = 0;
-
-      for (const date of dates) {
-        const dayName      = getDayName(date);
-        const contentTypes = weeklySchedule
-          ? (weeklySchedule[dayName] ?? ['image'])
-          : [sequence[seqIdx++ % sequence.length]];
-
-        for (const [dailyIndex, contentType] of contentTypes.entries()) {
-          const totalSoFar = intentEduc + intentSales;
-          const salesRatio = totalSoFar === 0 ? 0 : intentSales / totalSoFar;
-          const intent: 'educational' | 'sales' = salesRatio < 0.30 ? 'sales' : 'educational';
-          slots.push({
-            client_id:      client.id,
-            client_slug:    client.slug,
-            date,
-            content_type:   normalizeContentType(contentType),
-            content_intent: intent,
-            slot_key:       getAutomationSlotKey(client.id, date, contentType, dailyIndex),
-            high_quality:   params.high_quality ?? false,
-          });
-          if (intent === 'sales') intentSales++; else intentEduc++;
-        }
-      }
-    }
-
-    if (slots.length === 0) throw new Error('No posts to generate for this period and client selection');
 
     await storeGenerationPlan(db, params.run_id, slots, params.publish_time);
 
@@ -494,6 +616,207 @@ export async function planGeneration(env: Env, params: GenerationParams, baseUrl
     await log('ERROR', msg);
     await finalizeGenerationRun(db, params.run_id, 'failed', 0, msg);
   }
+}
+
+export async function buildSlotGenerationRequest(env: Env, runId: string, slotIdx: number): Promise<SlotGenerationRequest> {
+  const db = env.DB;
+  const run = await getGenerationRunById(db, runId);
+  if (!run) throw new Error('Generation run not found');
+  const slots = JSON.parse(run.post_slots ?? '[]') as PostSlot[];
+  if (slotIdx < 0 || slotIdx >= slots.length) throw new Error('Slot out of range');
+
+  const slot = slots[slotIdx];
+  const provider = normalizeContentProvider(slot.provider);
+  const client = await db.prepare('SELECT * FROM clients WHERE id = ?').bind(slot.client_id).first<ClientRow>();
+  if (!client) throw new Error(`Client not found: ${slot.client_slug}`);
+
+  let pkg = DEFAULT_PACKAGE;
+  if (client.package) {
+    const row = await db.prepare('SELECT * FROM packages WHERE slug = ? AND active = 1').bind(client.package).first<PackageRow>();
+    if (row) pkg = row;
+  }
+
+  const clientPlatforms = await getClientPlatforms(db, client.id);
+  let packagePlatforms: string[] = [];
+  try { packagePlatforms = JSON.parse(pkg.platforms_included); } catch { /* */ }
+  const platformSelection = resolvePlatformSelection({
+    contentType: slot.content_type,
+    packagePlatforms,
+    clientPlatforms,
+  });
+  const platforms = platformSelection.selected;
+  if (platforms.length === 0) throw new Error('No compatible platforms for slot');
+
+  const [intel, fbRows, recRows, svcAreaRows, svcNameRows, gbpLocations] = await Promise.all([
+    db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then((row) => row ?? null),
+    db.prepare('SELECT sentiment, message AS note FROM client_feedback WHERE client_id = ? ORDER BY created_at DESC LIMIT 10').bind(client.id).all<FeedbackRow>(),
+    db.prepare(`SELECT title, master_caption, content_type FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`).bind(client.id).all<{title:string|null;master_caption:string|null;content_type:string|null}>(),
+    db.prepare('SELECT city FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 8').bind(client.id).all<{city:string}>(),
+    db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC LIMIT 12').bind(client.id).all<{name:string}>(),
+    getClientGbpLocations(db, client.id),
+  ]);
+
+  const recentTitles  = recRows.results.map((row) => row.title ?? row.master_caption?.slice(0, 80) ?? '').filter(Boolean) as string[];
+  const serviceAreas  = svcAreaRows.results.map((row) => row.city);
+  const serviceNames  = svcNameRows.results.map((row) => row.name);
+  const recentFormats = recRows.results
+    .map((row) => detectFormatFromTitle(row.title ?? row.master_caption ?? ''))
+    .filter((format): format is ContentFormat => format !== null);
+
+  const settings = await loadSystemSettings(env);
+  const apiKey = resolveProviderApiKey(env, settings, provider);
+  let topicResearch: TopicResearch | null = null;
+  if (apiKey) {
+    topicResearch = await researchTopicWithProvider(provider, apiKey, {
+      client: {
+        canonical_name: client.canonical_name,
+        industry: client.industry,
+        state: client.state,
+        language: client.language,
+      },
+      intelligence: intel ? {
+        service_priorities: intel.service_priorities,
+        seasonal_notes: intel.seasonal_notes,
+        local_seo_themes: intel.local_seo_themes,
+      } : null,
+      contentType: slot.content_type,
+      contentIntent: slot.content_intent,
+      platforms,
+      publishDate: slot.date,
+      recentTitles,
+      recentFormats,
+      serviceAreas,
+      serviceNames,
+    }, settings).catch(() => null);
+  }
+
+  const ctx: GenerationContext = {
+    client: {
+      canonical_name: client.canonical_name,
+      notes: client.notes,
+      brand_json: client.brand_json,
+      brand_primary_color: (client as unknown as {brand_primary_color?: string|null}).brand_primary_color ?? null,
+      language: client.language,
+      phone: client.phone,
+      cta_text: client.cta_text,
+      industry: client.industry,
+      state: client.state,
+      owner_name: client.owner_name,
+      wp_template_key: client.wp_template_key ?? client.wp_template ?? null,
+    },
+    intelligence: intel,
+    recentTitles,
+    feedback: fbRows.results,
+    publishDate: slot.date,
+    contentType: slot.content_type,
+    platforms,
+    contentIntent: slot.content_intent,
+    gbpLocations: gbpLocations
+      .filter((location) => location.paused !== 1)
+      .map((location) => ({ label: location.label, captionField: getGbpCaptionField(location) }))
+      .filter((location) => Boolean(location.captionField)),
+    topicResearch,
+    serviceAreas,
+    serviceNames,
+    recentFormats,
+    highQuality: slot.high_quality ?? false,
+  };
+
+  return {
+    runId,
+    slotIdx,
+    slot,
+    clientName: client.canonical_name,
+    provider,
+    request: buildGenerationRequest(ctx),
+  };
+}
+
+export async function saveGeneratedSlotResult(
+  env: Env,
+  runId: string,
+  slotIdx: number,
+  generatedPost: GeneratedPost,
+): Promise<SlotWorkResult> {
+  const db = env.DB;
+  const run = await getGenerationRunById(db, runId);
+  if (!run) throw new Error('Generation run not found');
+  const slots = JSON.parse(run.post_slots ?? '[]') as PostSlot[];
+  if (slotIdx < 0 || slotIdx >= slots.length) throw new Error('Slot out of range');
+  const slot = slots[slotIdx];
+  const postTime = run.publish_time ?? '10:00';
+  const client = await db.prepare('SELECT * FROM clients WHERE id = ?').bind(slot.client_id).first<ClientRow>();
+  if (!client) throw new Error(`Client not found: ${slot.client_slug}`);
+
+  const clientPlatforms = await getClientPlatforms(db, client.id);
+  let pkg = DEFAULT_PACKAGE;
+  if (client.package) {
+    const row = await db.prepare('SELECT * FROM packages WHERE slug = ? AND active = 1').bind(client.package).first<PackageRow>();
+    if (row) pkg = row;
+  }
+  let packagePlatforms: string[] = [];
+  try { packagePlatforms = JSON.parse(pkg.platforms_included); } catch { /* */ }
+  const platformSelection = resolvePlatformSelection({
+    contentType: slot.content_type,
+    packagePlatforms,
+    clientPlatforms,
+  });
+  const platforms = platformSelection.selected;
+  if (platforms.length === 0) {
+    return finalizeSlotProgress(db, env, runId, slotIdx + 1, 'skipped', client.canonical_name, slots, async () => undefined);
+  }
+
+  const existingPost = await getPostByAutomationSlot(
+    db,
+    client.id,
+    slot.slot_key,
+    slot.date,
+    normalizeContentType(slot.content_type),
+  );
+  const overwriteExisting = run.overwrite_existing === 1;
+  const merged = mergeGeneratedContent(existingPost as unknown as Record<string, string | null | undefined>, generatedPost as unknown as Record<string, string | undefined>, overwriteExisting);
+  const isBlogSlot = normalizeContentType(slot.content_type) === 'blog';
+  const blogGbpDefaults = isBlogSlot
+    ? { gbp_cta_type: 'LEARN_MORE' as string, gbp_topic_type: 'STANDARD' as string }
+    : {};
+
+  let outcome: 'created' | 'updated' | 'skipped' = 'skipped';
+  if (existingPost) {
+    const nextPlatforms = existingPost.platform_manual_override === 1 && parsePlatforms(existingPost.platforms).length > 0
+      ? parsePlatforms(existingPost.platforms)
+      : platforms;
+    await updatePost(db, existingPost.id, {
+      title: merged.title,
+      content_type: normalizeContentType(slot.content_type),
+      platforms: JSON.stringify(nextPlatforms),
+      publish_date: existingPost.publish_date ?? `${slot.date}T${postTime}`,
+      platform_manual_override: existingPost.platform_manual_override ?? 0,
+      automation_slot_key: slot.slot_key,
+      generation_run_id: runId,
+      scheduled_by_automation: 1,
+      ...blogGbpDefaults,
+      ...merged,
+    });
+    outcome = 'updated';
+  } else {
+    await createPost(db, {
+      client_id: client.id,
+      title: merged.title ?? `${client.canonical_name} — ${slot.date}`,
+      status: 'draft',
+      content_type: normalizeContentType(slot.content_type),
+      platforms: JSON.stringify(platforms),
+      publish_date: `${slot.date}T${postTime}`,
+      scheduled_by_automation: 1,
+      platform_manual_override: 0,
+      automation_slot_key: slot.slot_key,
+      generation_run_id: runId,
+      ...blogGbpDefaults,
+      ...merged,
+    } as Parameters<typeof createPost>[1]);
+    outcome = 'created';
+  }
+
+  return finalizeSlotProgress(db, env, runId, slotIdx + 1, outcome, client.canonical_name, slots, async () => undefined);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -522,46 +845,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
     clientName: string,
     slots: PostSlot[],
   ): Promise<SlotWorkResult> {
-    const now = Math.floor(Date.now() / 1000);
-    await db
-      .prepare(`UPDATE generation_runs
-                SET current_slot_idx = ?,
-                    posts_created    = posts_created + ?,
-                    posts_updated    = posts_updated + ?,
-                    last_activity_at = ?
-                WHERE id = ?`)
-      .bind(nextCompletedIdx, outcome === 'created' ? 1 : 0, outcome === 'updated' ? 1 : 0, now, run_id)
-      .run();
-
-    const updated = await db
-      .prepare('SELECT current_slot_idx, total_slots, posts_created, posts_updated, error_log FROM generation_runs WHERE id = ?')
-      .bind(run_id)
-      .first<{ current_slot_idx: number; total_slots: number; posts_created: number; posts_updated: number; error_log: string | null }>();
-
-    if (!updated) return { outcome: 'skipped' };
-
-    const progress: GenerationProgress = {
-      current_client: clientName,
-      current_post: updated.current_slot_idx < updated.total_slots
-        ? `${slots[updated.current_slot_idx]?.date ?? ''} / ${slots[updated.current_slot_idx]?.content_type ?? ''}`.trim()
-        : '',
-      completed: updated.current_slot_idx,
-      total_estimated: updated.total_slots,
-      errors: updated.error_log ? updated.error_log.split('\n').filter(Boolean).length : 0,
-      clients_done: 0,
-      clients_total: 0,
-    };
-    try { await updateGenerationProgress(db, run_id, progress); } catch { /* ignore */ }
-
-    if (updated.current_slot_idx >= updated.total_slots) {
-      const totalTouched = (updated.posts_created ?? 0) + (updated.posts_updated ?? 0);
-      const finalStatus = totalTouched > 0 ? (updated.error_log ? 'completed_with_errors' : 'completed') : 'failed';
-      await finalizeGenerationRun(db, run_id, finalStatus, updated.posts_created, updated.error_log ?? null);
-      await log('DONE', `Run complete: created=${updated.posts_created}, updated=${updated.posts_updated}, total=${updated.total_slots}, status=${finalStatus}`);
-      return { outcome: 'completed', totalSlots: updated.total_slots };
-    }
-
-    return { outcome: 'continue', nextSlot: updated.current_slot_idx, totalSlots: updated.total_slots };
+    return finalizeSlotProgress(db, env, run_id, nextCompletedIdx, outcome, clientName, slots, log);
   }
 
   let slots: PostSlot[] = [];
@@ -600,15 +884,16 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
     const slot = slots[slot_idx];
     const postKey = `${slot.client_slug} / ${slot.date} / ${slot.content_type}`;
     clientName = slot.client_slug;
+    const provider = normalizeContentProvider(slot.provider);
 
-    await log('INFO', `Step ${slot_idx + 1}/${slots.length}: ${postKey}`);
+    await log('INFO', `Step ${slot_idx + 1}/${slots.length}: ${postKey} [${provider}]`);
 
     let slotOutcome: 'created' | 'updated' | 'skipped' = 'skipped';
     const settings = await loadSystemSettings(env);
-    const apiKey = env.OPENAI_API_KEY || settings.ai_api_key || '';
+    const apiKey = resolveProviderApiKey(env, settings, provider);
 
     try {
-      if (!apiKey) throw new Error('Missing OpenAI API key');
+      if (!apiKey) throw new Error(provider === 'claude' ? 'Missing Claude API key' : 'Missing OpenAI API key');
 
       const client = await db.prepare('SELECT * FROM clients WHERE id = ?').bind(slot.client_id).first<ClientRow>();
       if (!client) throw new Error(`Client not found: ${slot.client_slug}`);
@@ -675,7 +960,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
       // Topic research — directs this post to a specific, non-repetitive, SEO-aware topic
       let topicResearch: TopicResearch | null = null;
       try {
-        topicResearch = await researchTopic(apiKey, {
+        topicResearch = await researchTopicWithProvider(provider, apiKey, {
           client: {
             canonical_name: client.canonical_name,
             industry:       client.industry,
@@ -695,7 +980,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
           recentFormats,
           serviceAreas,
           serviceNames,
-        });
+        }, settings);
         if (topicResearch) {
           await log('AI', `Topic: "${topicResearch.topic}" [${topicResearch.format}] kw: "${topicResearch.targetKeyword}"`);
         }
@@ -740,16 +1025,16 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
 
       const isBlogSlot = normalizeContentType(slot.content_type) === 'blog';
       const genTimeoutMs = isBlogSlot ? 140_000 : (isHighQuality ? 60_000 : 30_000);
-      await log('AI', `OpenAI start: ${postKey} (${slot.content_intent}${isHighQuality ? '/HQ' : ''}) — ${platforms.length} platforms`);
+      await log('AI', `${getProviderDisplayName(provider)} start: ${postKey} (${slot.content_intent}${isHighQuality ? '/HQ' : ''}) — ${platforms.length} platforms`);
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(new Error(`OpenAI ${genTimeoutMs / 1000}s timeout`)), genTimeoutMs);
-      let genResult: Awaited<ReturnType<typeof generatePostContent>>;
+      const timer = setTimeout(() => controller.abort(new Error(`${getProviderDisplayName(provider)} ${genTimeoutMs / 1000}s timeout`)), genTimeoutMs);
+      let genResult: Awaited<ReturnType<typeof generateWithProvider>>;
       try {
-        genResult = await generatePostContent(apiKey, ctx, { signal: controller.signal });
+        genResult = await generateWithProvider(provider, apiKey, ctx, settings, { signal: controller.signal });
       } finally {
         clearTimeout(timer);
       }
-      await log('AI', `OpenAI done: ${postKey} (${genResult.meta.elapsedMs}ms, attempts=${genResult.meta.attempts}, model=${genResult.meta.model})`);
+      await log('AI', `${getProviderDisplayName(provider)} done: ${postKey} (${genResult.meta.elapsedMs}ms, attempts=${genResult.meta.attempts}, model=${genResult.meta.model})`);
 
       // Quality validation — soft check, log warnings but never block saves
       const qualityResult = validateGeneratedContent(genResult.post, ctx);

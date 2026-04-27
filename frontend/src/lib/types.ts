@@ -357,6 +357,26 @@ export interface GenerationProgress {
   clients_total:    number;
 }
 
+export interface ApprovedCommandJob {
+  id: string;
+  generation_run_id: string | null;
+  command_name: string;
+  provider: string;
+  requested_by: string;
+  args_json: string;
+  status: string;
+  claimed_by: string | null;
+  command_line: string | null;
+  progress_message: string | null;
+  result_json: string | null;
+  error_log: string | null;
+  created_at: number;
+  claimed_at: number | null;
+  started_at: number | null;
+  completed_at: number | null;
+  updated_at: number;
+}
+
 export interface OverviewStats {
   clients:           number;
   total_posts:       number;

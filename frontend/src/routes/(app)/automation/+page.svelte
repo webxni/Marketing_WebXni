@@ -8,18 +8,20 @@
   import { can } from '$lib/stores/auth';
   import { toast } from '$lib/stores/ui';
   import { timeAgo, parseStats } from '$lib/utils';
-  import type { PostingJob, GenerationRun, GenerationProgress, Client, Package, Post } from '$lib/types';
+  import type { PostingJob, GenerationRun, GenerationProgress, Client, Package, Post, ApprovedCommandJob } from '$lib/types';
 
   // ── Data ─────────────────────────────────────────────────────────────────────
   let clients:  Client[]  = [];
   let packages: Package[] = [];
   let genRuns:  GenerationRun[] = [];
   let jobs:     PostingJob[]    = [];
+  let approvedJobs: ApprovedCommandJob[] = [];
   let loadingGen  = true;
   let loadingJobs = true;
+  let loadingApprovedJobs = true;
   let generating  = false;
   let triggering  = false;
-  let historyTab: 'generation' | 'posting' = 'generation';
+  let historyTab: 'generation' | 'posting' | 'approved' = 'generation';
 
   // ── Client selection ──────────────────────────────────────────────────────────
   let clientMode: 'all' | 'select' | 'by-package' = 'all';
@@ -373,7 +375,8 @@
 
   // ── Loaders ───────────────────────────────────────────────────────────────────
   async function loadGenRuns() { loadingGen  = true; try { genRuns = (await runApi.listGenerationRuns()).runs; } finally { loadingGen  = false; } }
-  async function loadJobs()    { loadingJobs = true; try { jobs    = (await runApi.listJobs()).jobs;           } finally { loadingJobs = false; } }
+  async function loadJobs()    { loadingJobs = true; try { jobs    = (await runApi.listJobs()).jobs; } finally { loadingJobs = false; } }
+  async function loadApprovedJobs() { loadingApprovedJobs = true; try { approvedJobs = (await runApi.listApprovedJobs()).jobs; } finally { loadingApprovedJobs = false; } }
 
   // ── Execution log expand/collapse ─────────────────────────────────────────────
   let expandedLogs = new Set<string>();
@@ -416,7 +419,7 @@
     const [cr, pkr] = await Promise.all([clientsApi.list('active'), packagesApi.listAll()]);
     clients  = cr.clients;
     packages = pkr.packages;
-    await Promise.all([loadGenRuns(), loadJobs(), loadScheduledPosts()]);
+    await Promise.all([loadGenRuns(), loadJobs(), loadApprovedJobs(), loadScheduledPosts()]);
     // Resume polling if a run is already in progress (e.g. page reload during generation)
     if (genRuns.some(r => r.status === 'running')) { generating = true; startProgressPolling(); }
   });
@@ -437,6 +440,24 @@
     if (!pkg) return '8 posts';
     return `${pkg.posts_per_month}/mo`;
   }
+
+  function approvedJobArgs(job: ApprovedCommandJob): Record<string, unknown> | null {
+    try { return JSON.parse(job.args_json) as Record<string, unknown>; } catch { return null; }
+  }
+  function approvedJobResult(job: ApprovedCommandJob): Record<string, unknown> | null {
+    try { return job.result_json ? JSON.parse(job.result_json) as Record<string, unknown> : null; } catch { return null; }
+  }
+  function approvedJobRange(job: ApprovedCommandJob): string {
+    const args = approvedJobArgs(job);
+    const from = typeof args?.period_start === 'string' ? args.period_start : null;
+    const to = typeof args?.period_end === 'string' ? args.period_end : null;
+    return from && to ? `${from} → ${to}` : '—';
+  }
+  function approvedJobClients(job: ApprovedCommandJob): string {
+    const args = approvedJobArgs(job);
+    const slugs = Array.isArray(args?.client_slugs) ? args.client_slugs.filter((v): v is string => typeof v === 'string') : [];
+    return slugs.length ? slugs.join(', ') : 'All clients';
+  }
 </script>
 
 <svelte:head><title>Automation — WebXni</title></svelte:head>
@@ -446,7 +467,7 @@
     <h1 class="page-title">Automation</h1>
     <p class="page-subtitle">Generate content &amp; manage posting</p>
   </div>
-  <button class="btn-ghost btn-sm" on:click={() => { loadGenRuns(); loadJobs(); loadScheduledPosts(); }}>Refresh</button>
+  <button class="btn-ghost btn-sm" on:click={() => { loadGenRuns(); loadJobs(); loadApprovedJobs(); loadScheduledPosts(); }}>Refresh</button>
 </div>
 
 <!-- ═══ CONTENT GENERATION ════════════════════════════════════════════════════ -->
@@ -871,6 +892,9 @@
     class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors {historyTab === 'generation' ? 'border-accent text-white' : 'border-transparent text-muted hover:text-white'}"
     on:click={() => { historyTab = 'generation'; }}>Generation Runs</button>
   <button
+    class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors {historyTab === 'approved' ? 'border-accent text-white' : 'border-transparent text-muted hover:text-white'}"
+    on:click={() => { historyTab = 'approved'; }}>Approved Claude Jobs</button>
+  <button
     class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors {historyTab === 'posting' ? 'border-accent text-white' : 'border-transparent text-muted hover:text-white'}"
     on:click={() => { historyTab = 'posting'; }}>Posting Jobs</button>
 </div>
@@ -969,6 +993,62 @@
             </div>
           {:else if run.error_log}
             <pre class="text-[10px] text-red-400 bg-red-500/10 border border-red-500/20 rounded p-2 overflow-auto max-h-20 whitespace-pre-wrap mt-2">{run.error_log}</pre>
+          {/if}
+        </div>
+      {/each}
+    </div>
+  {/if}
+{/if}
+
+{#if historyTab === 'approved'}
+  {#if loadingApprovedJobs}
+    <div class="flex justify-center py-12"><Spinner size="lg" /></div>
+  {:else if approvedJobs.length === 0}
+    <EmptyState title="No approved backend jobs yet" detail="Claude terminal jobs will appear here when queued from Discord." icon="⌘" />
+  {:else}
+    <div class="space-y-3">
+      {#each approvedJobs as job}
+        {@const result = approvedJobResult(job)}
+        <div class="card p-4">
+          <div class="flex items-start justify-between gap-4 mb-2">
+            <div class="min-w-0">
+              <div class="flex items-center gap-3 flex-wrap">
+                <span class="font-mono text-xs text-muted">{job.id.slice(0, 10)}…</span>
+                <span class="badge {job.status === 'completed' ? 'badge-posted' : job.status === 'running' || job.status === 'claimed' ? 'badge-running' : job.status === 'queued' ? 'badge-draft' : 'badge-failed'}">{job.status}</span>
+                <span class="text-xs text-white">{job.command_name}</span>
+                <span class="text-xs text-muted">provider: {job.provider}</span>
+              </div>
+              <div class="flex gap-4 text-xs text-muted mt-2 flex-wrap">
+                <span>Clients: <span class="text-white">{approvedJobClients(job)}</span></span>
+                <span>Range: <span class="text-white">{approvedJobRange(job)}</span></span>
+                <span>Requested by: <span class="text-white">{job.requested_by}</span></span>
+                {#if job.generation_run_id}
+                  <span>Run: <span class="font-mono text-white">{job.generation_run_id.slice(0, 10)}…</span></span>
+                {/if}
+              </div>
+            </div>
+            <div class="text-right text-xs text-muted flex-shrink-0">
+              <div>{timeAgo(job.created_at)}</div>
+              {#if job.claimed_by}<div>Runner: <span class="text-white">{job.claimed_by}</span></div>{/if}
+            </div>
+          </div>
+
+          {#if job.progress_message}
+            <div class="text-xs text-accent bg-accent/10 border border-accent/20 rounded p-2 mb-2">{job.progress_message}</div>
+          {/if}
+
+          {#if job.command_line}
+            <div class="text-[11px] font-mono text-muted bg-surface rounded p-2 mb-2 overflow-x-auto">{job.command_line}</div>
+          {/if}
+
+          {#if result}
+            <div class="text-xs text-muted mb-2">
+              Completed slots: <span class="text-white">{String(result.completed_slots ?? '—')}</span> / {String(result.requested_slots ?? '—')}
+            </div>
+          {/if}
+
+          {#if job.error_log}
+            <pre class="text-[10px] text-red-400 bg-red-500/10 border border-red-500/20 rounded p-2 overflow-auto max-h-32 whitespace-pre-wrap">{job.error_log}</pre>
           {/if}
         </div>
       {/each}

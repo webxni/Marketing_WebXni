@@ -7,12 +7,14 @@ import type { Env, SessionData } from '../types';
 import {
   createPostingJob, listPostingJobs, getPostingJobById,
   createGenerationRun, listGenerationRuns, getGenerationRunById,
+  listApprovedCommandJobs,
   healStuckGenerationRuns,
 } from '../db/queries';
 import { runPosting } from '../loader/posting-run';
 import { planGeneration, resumeGenerationRun } from '../loader/generation-run';
 import { cleanupLegacyInvalidPlatformAttempts, repairOrphanScheduledPosts, syncPublishedUrls } from '../modules/published-urls';
 import { syncPostPlatformMetrics } from '../modules/reporting-metrics';
+import { normalizeContentProvider } from '../services/content-provider';
 
 /**
  * Fetch published URLs from Upload-Post history.
@@ -125,6 +127,7 @@ runRoutes.post('/generate', async (c) => {
 
   const periodStart = dates[0];
   const periodEnd   = dates[dates.length - 1];
+  const provider = normalizeContentProvider(body.provider);
 
   const run = await createGenerationRun(c.env.DB, {
     triggered_by:  c.get('user').userId,
@@ -149,6 +152,7 @@ runRoutes.post('/generate', async (c) => {
       publish_time:       publishTime,
       overwrite_existing: body.overwrite_existing === true,
       high_quality:       body.high_quality === true,
+      provider,
     }, baseUrl),
   );
 
@@ -194,6 +198,12 @@ runRoutes.get('/generate/runs/:id', async (c) => {
   const run = await getGenerationRunById(c.env.DB, c.req.param('id'));
   if (!run) return c.json({ error: 'Not found' }, 404);
   return c.json({ run });
+});
+
+/** GET /api/run/approved-jobs — list recent approved backend command jobs */
+runRoutes.get('/approved-jobs', async (c) => {
+  const jobs = await listApprovedCommandJobs(c.env.DB, 40);
+  return c.json({ jobs });
 });
 
 /** POST /api/run/generate/runs/:id/resume — resume a partial/timed_out/failed run from current_slot_idx */

@@ -270,6 +270,27 @@ CREATE TABLE IF NOT EXISTS generation_runs (
   completed_at      INTEGER
 );
 
+-- Approved backend command jobs (Discord-safe terminal execution queue)
+CREATE TABLE IF NOT EXISTS approved_command_jobs (
+  id                TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  generation_run_id TEXT REFERENCES generation_runs(id) ON DELETE SET NULL,
+  command_name      TEXT NOT NULL,          -- 'weekly_content_claude'|'regenerate_content_claude'
+  provider          TEXT NOT NULL,          -- 'claude'|'openai'
+  requested_by      TEXT NOT NULL,
+  args_json         TEXT NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'queued', -- queued|claimed|running|completed|failed|cancelled
+  claimed_by        TEXT,
+  command_line      TEXT,
+  progress_message  TEXT,
+  result_json       TEXT,
+  error_log         TEXT,
+  created_at        INTEGER NOT NULL DEFAULT (unixepoch()),
+  claimed_at        INTEGER,
+  started_at        INTEGER,
+  completed_at      INTEGER,
+  updated_at        INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
 -- ══════════════════════════════════════════
 -- AUDIT LOGS
 -- ══════════════════════════════════════════
@@ -299,3 +320,4 @@ CREATE INDEX IF NOT EXISTS idx_assets_post         ON assets(post_id);
 CREATE INDEX IF NOT EXISTS idx_assets_client       ON assets(client_id);
 CREATE INDEX IF NOT EXISTS idx_client_platforms    ON client_platforms(client_id, platform);
 CREATE INDEX IF NOT EXISTS idx_gbp_locations       ON client_gbp_locations(client_id);
+CREATE INDEX IF NOT EXISTS idx_approved_jobs_status_created ON approved_command_jobs(status, created_at);

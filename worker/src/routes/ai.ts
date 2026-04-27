@@ -22,6 +22,7 @@ import {
 import { runPosting }    from '../loader/posting-run';
 import { planGeneration, resumeGenerationRun } from '../loader/generation-run';
 import { createContentWithImage } from '../loader/autonomous-content';
+import { getProviderDisplayName, normalizeContentProvider } from '../services/content-provider';
 import {
   AGENT_SKILLS, AGENT_MEMORY, RESPONSE_RULES,
   CLIENT_EXPERTISE, BUYER_PERSONAS, NL_INTENT_MAP,
@@ -119,13 +120,14 @@ const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'generate_content',
-      description: 'Trigger AI content generation for clients over a date range.',
+      description: 'Trigger AI content generation for clients over a date range. Default provider is openai unless the user explicitly asks for Claude.',
       parameters: {
         type: 'object',
         properties: {
           client_slugs:       { type: 'array', items: { type: 'string' }, description: 'Empty = all active' },
           date_from:          { type: 'string', description: 'YYYY-MM-DD' },
           date_to:            { type: 'string', description: 'YYYY-MM-DD' },
+          provider:           { type: 'string', description: 'openai or claude' },
           overwrite_existing: { type: 'boolean' },
         },
         required: ['date_from', 'date_to'],
@@ -1027,6 +1029,7 @@ async function executeTool(
         const dateFrom = typeof args.date_from === 'string' ? args.date_from : null;
         const dateTo   = typeof args.date_to   === 'string' ? args.date_to   : dateFrom;
         if (!dateFrom) return { success: false, error: 'date_from is required' };
+        const provider = normalizeContentProvider(args.provider);
 
         const clientSlugs: string[] = Array.isArray(args.client_slugs) ? (args.client_slugs as string[]) : [];
         const dates: string[] = [];
@@ -1045,13 +1048,14 @@ async function executeTool(
           period_start: dates[0], period_end: dates[dates.length - 1],
           triggered_by: user.userId, publish_time: null,
           overwrite_existing: args.overwrite_existing === true,
+          provider,
         }, baseUrl));
 
         return {
           success: true,
           job_id: run.id,
-          summary: { job_id: run.id, date_range: `${dates[0]} → ${dates[dates.length - 1]}`, clients: clientSlugs.length > 0 ? clientSlugs.join(', ') : 'all active', days: dates.length },
-          action_summary: `Generation job ${run.id} started — ${clientSlugs.length > 0 ? clientSlugs.join(', ') : 'all clients'} for ${dates.length} days`,
+          summary: { job_id: run.id, date_range: `${dates[0]} → ${dates[dates.length - 1]}`, clients: clientSlugs.length > 0 ? clientSlugs.join(', ') : 'all active', days: dates.length, provider },
+          action_summary: `Generation job ${run.id} started with ${getProviderDisplayName(provider)} — ${clientSlugs.length > 0 ? clientSlugs.join(', ') : 'all clients'} for ${dates.length} days`,
         };
       }
 

@@ -30,6 +30,8 @@
   let aiProvider = 'openai';
   let aiModel = '';
   let aiApiKey = '';
+  let aiOpenAiKey = '';
+  let aiAnthropicKey = '';
   let aiBaseUrl = '';
   let savingAi = false;
 
@@ -58,12 +60,19 @@
         cronEnabled  = systemSettings['cron_enabled']  !== 'false';
         aiProvider   = systemSettings['ai_provider']   ?? 'openai';
         aiModel      = systemSettings['ai_model']      ?? '';
-        aiApiKey     = systemSettings['ai_api_key']    ?? '';
+        aiOpenAiKey  = systemSettings['ai_openai_api_key']    ?? (systemSettings['ai_provider'] === 'openai' ? systemSettings['ai_api_key'] ?? '' : '');
+        aiAnthropicKey = systemSettings['ai_anthropic_api_key'] ?? (systemSettings['ai_provider'] === 'anthropic' ? systemSettings['ai_api_key'] ?? '' : '');
+        syncAiKeyForProvider();
         aiBaseUrl    = systemSettings['ai_base_url']   ?? '';
       } catch {}
     }
     loading = false;
   });
+
+  function syncAiKeyForProvider() {
+    if (aiProvider === 'anthropic') aiApiKey = aiAnthropicKey;
+    else if (aiProvider === 'openai') aiApiKey = aiOpenAiKey;
+  }
 
   async function saveProfile() {
     if (!name.trim()) { toast.error('Name is required'); return; }
@@ -111,11 +120,15 @@
     }
     savingAi = true;
     try {
+      if (aiProvider === 'openai') aiOpenAiKey = aiApiKey;
+      if (aiProvider === 'anthropic') aiAnthropicKey = aiApiKey;
       const updated = {
         ...systemSettings,
         ai_provider: aiProvider,
         ai_model:    aiModel.trim(),
         ai_api_key:  aiApiKey.trim(),
+        ai_openai_api_key: aiOpenAiKey.trim(),
+        ai_anthropic_api_key: aiAnthropicKey.trim(),
         ai_base_url: aiBaseUrl.trim(),
       };
       await api.put('/api/settings', { settings: updated });
@@ -232,7 +245,7 @@
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
       <div>
         <label for="ai_provider" class="block text-xs text-muted mb-1.5">Provider</label>
-        <select id="ai_provider" bind:value={aiProvider} class="input w-full">
+        <select id="ai_provider" bind:value={aiProvider} class="input w-full" on:change={syncAiKeyForProvider}>
           {#each aiProviders as p}
             <option value={p.value}>{p.label}</option>
           {/each}
@@ -249,7 +262,7 @@
         />
       </div>
       <div>
-        <label for="ai_api_key" class="block text-xs text-muted mb-1.5">API Key</label>
+        <label for="ai_api_key" class="block text-xs text-muted mb-1.5">API Key for {aiProvider === 'anthropic' ? 'Claude' : aiProvider === 'openai' ? 'OpenAI' : 'Current Provider'}</label>
         <input
           id="ai_api_key"
           type="password"

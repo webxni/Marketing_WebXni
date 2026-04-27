@@ -19,9 +19,23 @@ import {
   DISCORD_COLORS,
 } from '../services/discord';
 import { runAgent } from './ai';
-import { createGenerationRun } from '../db/queries';
-import { planGeneration } from '../loader/generation-run';
+import {
+  appendGenerationError,
+  appendGenerationLog,
+  finalizeGenerationRun,
+  createApprovedCommandJob,
+  createGenerationRun,
+  claimNextApprovedCommandJob,
+  getGenerationRunById,
+  getApprovedCommandJobById,
+  completeApprovedCommandJob,
+  markApprovedCommandJobRunning,
+  updateApprovedCommandJobProgress,
+} from '../db/queries';
+import { planGeneration, prepareGenerationPlan, buildSlotGenerationRequest, saveGeneratedSlotResult } from '../loader/generation-run';
 import { createContentWithImage } from '../loader/autonomous-content';
+import { getProviderDisplayName, normalizeContentProvider, resolveProviderApiKey } from '../services/content-provider';
+import type { GeneratedPost } from '../services/openai';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -48,6 +62,17 @@ interface DiscordInteraction {
     name:     string;
     options?: DiscordInteractionOption[];
   };
+}
+
+interface ApprovedClaudeJobArgs {
+  run_id: string;
+  client_slugs: string[];
+  period_start: string;
+  period_end: string;
+  content_only: true;
+  generate_images: false;
+  provider: 'claude';
+  requested_in: 'discord';
 }
 
 // ── Routes ─────────────────────────────────────────────────────────────────────
@@ -339,11 +364,23 @@ async function handleCommand(
   } else if (commandName === 'weekly-content') {
     const opts      = interaction.data?.options ?? [];
     const clientArg = (opts.find(o => o.name === 'client')?.value  as string | undefined) ?? '';
-    const weekArg   = (opts.find(o => o.name === 'week')?.value    as string | undefined) ?? 'next-week';
+    const weekArg   = ((opts.find(o => o.name === 'date_range')?.value as string | undefined)
+                    ?? (opts.find(o => o.name === 'week')?.value       as string | undefined)
+                    ?? 'next_week');
     const modeArg   = (opts.find(o => o.name === 'mode')?.value    as string | undefined) ?? 'standard';
+    const provider  = normalizeContentProvider((opts.find(o => o.name === 'provider')?.value as string | undefined) ?? 'openai');
     const isHQ      = modeArg === 'high-quality';
 
     try {
+      const settings = await env.KV_BINDING.get('settings:system').then((raw) => raw ? JSON.parse(raw) as Record<string, string> : {}).catch(() => ({}));
+      if (provider !== 'claude' && !resolveProviderApiKey(env, settings, provider)) {
+        await discordPatchInteraction({
+          applicationId: appId, token, botToken,
+          content: '❌ OpenAI API key not configured.',
+        });
+        return;
+      }
+
       const { start, end } = resolveWeekRange(weekArg);
       const clientSlugs: string[] = clientArg ? [clientArg] : [];
 
@@ -354,8 +391,8 @@ async function handleCommand(
         overwrite_existing: false,
       });
 
-      ctx.waitUntil(
-        planGeneration(env, {
+      if (provider === 'claude') {
+        const params = {
           run_id:             run.id,
           client_slugs:       clientSlugs,
           period_start:       start,
@@ -363,15 +400,73 @@ async function handleCommand(
           triggered_by:       `discord:${username}`,
           publish_time:       null,
           overwrite_existing: false,
-          high_quality:       isHQ,
-        }, 'https://marketing.webxni.com'),
-      );
+          high_quality:       true,
+          provider,
+        } as const;
+        await prepareGenerationPlan(env, params).then(async ({ slots, clients }) => {
+          await env.DB.prepare(
+            `UPDATE generation_runs
+             SET post_slots = ?, total_slots = ?, current_slot_idx = 0, publish_time = ?, progress_json = ?, last_activity_at = ?
+             WHERE id = ?`,
+          ).bind(
+            JSON.stringify(slots),
+            slots.length,
+            '10:00',
+            JSON.stringify({
+              current_client: clients[0]?.canonical_name ?? '',
+              current_post: slots[0] ? `${slots[0].date} / ${slots[0].content_type}` : '',
+              completed: 0,
+              total_estimated: slots.length,
+              errors: 0,
+              clients_done: 0,
+              clients_total: clients.length,
+            }),
+            Math.floor(Date.now() / 1000),
+            run.id,
+          ).run();
+          await appendGenerationLog(env.DB, run.id, 'START', `Claude terminal job queued — ${start} → ${end}`);
+        });
 
-      const modeLabel = isHQ ? '✨ High-Quality' : 'Standard';
+        const args: ApprovedClaudeJobArgs = {
+          run_id: run.id,
+          client_slugs: clientSlugs,
+          period_start: start,
+          period_end: end,
+          content_only: true,
+          generate_images: false,
+          provider: 'claude',
+          requested_in: 'discord',
+        };
+        await createApprovedCommandJob(env.DB, {
+          generation_run_id: run.id,
+          command_name: 'weekly_content_claude',
+          provider: 'claude',
+          requested_by: `discord:${username}`,
+          args_json: JSON.stringify(args),
+        });
+      } else {
+        ctx.waitUntil(
+          planGeneration(env, {
+            run_id:             run.id,
+            client_slugs:       clientSlugs,
+            period_start:       start,
+            period_end:         end,
+            triggered_by:       `discord:${username}`,
+            publish_time:       null,
+            overwrite_existing: false,
+            high_quality:       isHQ,
+            provider,
+          }, 'https://marketing.webxni.com'),
+        );
+      }
+
+      const modeLabel = provider === 'claude' ? 'reviewed high-quality' : (isHQ ? 'high-quality' : 'standard');
       const clientLabel = clientArg ? `**${clientArg}**` : 'all active clients';
       await discordPatchInteraction({
         applicationId: appId, token, botToken,
-        content: `🚀 ${modeLabel} content generation started for ${clientLabel} — week of ${start} to ${end}.\nRun ID: \`${run.id}\`\nCheck progress: https://marketing.webxni.com/automation`,
+        content: provider === 'claude'
+          ? `🚀 Weekly content queued for ${clientLabel}\nProvider: **Claude Code** (${modeLabel})\nWeek: **${start} → ${end}**\nMode: content only, no image generation by default\nRun ID: \`${run.id}\`\nA whitelisted backend job will start shortly.`
+          : `🚀 Weekly content started for ${clientLabel}\nProvider: **${getProviderDisplayName(provider)}** (${modeLabel})\nWeek: **${start} → ${end}**\nAssets: content + design prompts only; no image generation by default\nRun ID: \`${run.id}\`\nCheck progress: https://marketing.webxni.com/automation`,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -462,18 +557,7 @@ async function handleCommand(
 // ─────────────────────────────────────────────────────────────────────────────
 
 discordInternalRoute.post('/upload-asset', async (c) => {
-  // Verify bot secret
-  const authHeader  = c.req.header('Authorization') ?? '';
-  const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-
-  let botSecret = '';
-  try {
-    const raw = await c.env.KV_BINDING.get('settings:system');
-    const s   = raw ? JSON.parse(raw) as Record<string, string> : {};
-    botSecret  = s['discord_bot_secret'] || '';
-  } catch { /* ignore */ }
-
-  if (!botSecret || bearerToken !== botSecret) {
+  if (!(await requireDiscordBotSecret(c))) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
 
@@ -530,6 +614,102 @@ discordInternalRoute.post('/upload-asset', async (c) => {
   console.log(`[discord] asset uploaded: ${r2Key} (${assetType}, ${file.size} bytes)`);
 
   return c.json({ ok: true, r2_key: r2Key, asset_id: assetId, asset_type: assetType, url: mediaUrl, linked_post_id: postId }, 201);
+});
+
+discordInternalRoute.post('/approved-jobs/claim', async (c) => {
+  if (!(await requireDiscordBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  let body: { runner_id?: string } = {};
+  try { body = await c.req.json(); } catch { /* optional */ }
+  const runnerId = body.runner_id?.trim() || 'discord-bot-runner';
+  const job = await claimNextApprovedCommandJob(c.env.DB, runnerId);
+  return c.json({ ok: true, job });
+});
+
+discordInternalRoute.get('/approved-jobs/:id/context', async (c) => {
+  if (!(await requireDiscordBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const job = await getApprovedCommandJobById(c.env.DB, c.req.param('id'));
+  if (!job) return c.json({ error: 'Not found' }, 404);
+  const args = JSON.parse(job.args_json) as ApprovedClaudeJobArgs;
+  const run = await c.env.DB.prepare('SELECT post_slots, total_slots, current_slot_idx, status FROM generation_runs WHERE id = ?')
+    .bind(args.run_id)
+    .first<{ post_slots: string | null; total_slots: number | null; current_slot_idx: number | null; status: string }>();
+  if (!run) return c.json({ error: 'Generation run not found' }, 404);
+  const slots = JSON.parse(run.post_slots ?? '[]') as Array<unknown>;
+  const startIdx = Math.max(0, run.current_slot_idx ?? 0);
+  const requests = [];
+  for (let slotIdx = startIdx; slotIdx < slots.length; slotIdx += 1) {
+    const built = await buildSlotGenerationRequest(c.env, args.run_id, slotIdx);
+    requests.push({
+      slot_idx: slotIdx,
+      client_slug: built.slot.client_slug,
+      client_name: built.clientName,
+      publish_date: built.slot.date,
+      content_type: built.slot.content_type,
+      prompt: built.request.prompt,
+      schema: built.request.schema.schema,
+    });
+  }
+  return c.json({ ok: true, job, run, requests });
+});
+
+discordInternalRoute.post('/approved-jobs/:id/start', async (c) => {
+  if (!(await requireDiscordBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  let body: { command_line?: string } = {};
+  try { body = await c.req.json(); } catch { /* optional */ }
+  await markApprovedCommandJobRunning(c.env.DB, c.req.param('id'), body.command_line ?? '');
+  return c.json({ ok: true });
+});
+
+discordInternalRoute.post('/approved-jobs/:id/log', async (c) => {
+  if (!(await requireDiscordBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  let body: { run_id?: string; level?: 'INFO' | 'AI' | 'SAVED' | 'WARN' | 'ERROR' | 'START' | 'DONE'; message?: string } = {};
+  try { body = await c.req.json(); } catch { /* */ }
+  const level = body.level ?? 'INFO';
+  const message = body.message?.slice(0, 2000) ?? '';
+  if (!message) return c.json({ error: 'message required' }, 400);
+  if (body.run_id) await appendGenerationLog(c.env.DB, body.run_id, level, message);
+  await updateApprovedCommandJobProgress(c.env.DB, c.req.param('id'), message);
+  return c.json({ ok: true });
+});
+
+discordInternalRoute.post('/approved-jobs/:id/save-slot', async (c) => {
+  if (!(await requireDiscordBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  let body: { run_id?: string; slot_idx?: number; post?: GeneratedPost | null } = {};
+  try { body = await c.req.json(); } catch { /* */ }
+  if (!body.run_id || typeof body.slot_idx !== 'number' || !body.post) return c.json({ error: 'run_id, slot_idx, and post required' }, 400);
+  const result = await saveGeneratedSlotResult(c.env, body.run_id, body.slot_idx, body.post);
+  await appendGenerationLog(c.env.DB, body.run_id, 'SAVED', `Claude terminal slot ${body.slot_idx + 1} saved`);
+  return c.json({ ok: true, result });
+});
+
+discordInternalRoute.post('/approved-jobs/:id/complete', async (c) => {
+  if (!(await requireDiscordBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  let body: { result_json?: Record<string, unknown> | null } = {};
+  try { body = await c.req.json(); } catch { /* */ }
+  await completeApprovedCommandJob(c.env.DB, c.req.param('id'), 'completed', JSON.stringify(body.result_json ?? {}), null);
+  return c.json({ ok: true });
+});
+
+discordInternalRoute.post('/approved-jobs/:id/fail', async (c) => {
+  if (!(await requireDiscordBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  let body: { run_id?: string; error?: string } = {};
+  try { body = await c.req.json(); } catch { /* */ }
+  const error = body.error?.slice(0, 4000) ?? 'Unknown failure';
+  await completeApprovedCommandJob(c.env.DB, c.req.param('id'), 'failed', null, error);
+  if (body.run_id) {
+    await appendGenerationError(c.env.DB, body.run_id, error);
+    const run = await getGenerationRunById(c.env.DB, body.run_id);
+    if (run && run.status === 'running') {
+      await finalizeGenerationRun(
+        c.env.DB,
+        body.run_id,
+        run.posts_created > 0 ? 'completed_with_errors' : 'failed',
+        run.posts_created,
+        run.error_log ? `${run.error_log}\n${error}` : error,
+      );
+    }
+  }
+  return c.json({ ok: true });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -638,19 +818,20 @@ async function resolveOpenAiKey(env: Env): Promise<string> {
 }
 
 function resolveWeekRange(weekStr: string): { start: string; end: string } {
+  const normalized = weekStr.trim().toLowerCase().replace(/_/g, '-');
   const today    = new Date();
   const dayOfWeek = today.getUTCDay(); // 0=Sun, 1=Mon ... 6=Sat
   const monday   = new Date(today);
   monday.setUTCHours(12, 0, 0, 0);
 
-  if (weekStr === 'next-week') {
+  if (normalized === 'next-week') {
     const daysUntilNextMonday = dayOfWeek === 0 ? 1 : (8 - dayOfWeek);
     monday.setUTCDate(today.getUTCDate() + daysUntilNextMonday);
-  } else if (weekStr === 'this-week') {
+  } else if (normalized === 'this-week') {
     const daysToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
     monday.setUTCDate(today.getUTCDate() + daysToMonday);
-  } else if (/^\d{4}-\d{2}-\d{2}$/.test(weekStr)) {
-    const d = new Date(weekStr + 'T12:00:00Z');
+  } else if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    const d = new Date(normalized + 'T12:00:00Z');
     monday.setTime(d.getTime());
   } else {
     // Default: next week
@@ -688,5 +869,22 @@ Response rules for Discord:
 - Never use markdown headings (## ###) — Discord renders these awkwardly
 - Data goes in the items array, not in your message text
 - Bold (**text**) is fine in Discord for emphasis
-- Be direct and operational`;
+- Be direct and operational
+- For weekly content requests, default provider to openai unless the user explicitly asks for Claude
+- For weekly content requests without a date range, default to next week`;
+}
+
+async function requireDiscordBotSecret(c: { req: { header(name: string): string | undefined }; env: Env }): Promise<string | null> {
+  const authHeader  = c.req.header('Authorization') ?? '';
+  const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+
+  let botSecret = '';
+  try {
+    const raw = await c.env.KV_BINDING.get('settings:system');
+    const s = raw ? JSON.parse(raw) as Record<string, string> : {};
+    botSecret = s['discord_bot_secret'] || '';
+  } catch { /* ignore */ }
+
+  if (!botSecret || bearerToken !== botSecret) return null;
+  return botSecret;
 }

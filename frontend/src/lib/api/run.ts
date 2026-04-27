@@ -1,10 +1,11 @@
 import { api } from './client';
-import type { PostingJob, GenerationRun, Post } from '../types';
+import type { PostingJob, GenerationRun, Post, ApprovedCommandJob } from '../types';
 
 export interface GenerateParams {
   client_slugs?:  string[];
   date_from:      string;
   date_to:        string;
+  provider?:      'openai' | 'claude';
   publish_time?:  string;  // HH:MM — applied to all generated posts
   overwrite_existing?: boolean;
 }
@@ -30,6 +31,9 @@ export const runApi = {
 
   listGenerationRuns: () =>
     api.get<{ runs: GenerationRun[] }>('/api/run/generate/runs'),
+
+  listApprovedJobs: () =>
+    api.get<{ jobs: ApprovedCommandJob[] }>('/api/run/approved-jobs'),
 
   getGenerationRun: (id: string) =>
     api.get<{ run: GenerationRun }>(`/api/run/generate/runs/${id}`),
