@@ -634,12 +634,32 @@ discordInternalRoute.get('/approved-jobs/:id/context', async (c) => {
     .bind(args.run_id)
     .first<{ post_slots: string | null; total_slots: number | null; current_slot_idx: number | null; status: string }>();
   if (!run) return c.json({ error: 'Generation run not found' }, 404);
-  const slots = JSON.parse(run.post_slots ?? '[]') as Array<unknown>;
+  const slots = JSON.parse(run.post_slots ?? '[]') as Array<{ client_slug?: string; date?: string; content_type?: string }>;
   const startIdx = Math.max(0, run.current_slot_idx ?? 0);
-  const requests = [];
-  for (let slotIdx = startIdx; slotIdx < slots.length; slotIdx += 1) {
+
+  // Lightweight per-slot summary only — the bot fetches each prompt
+  // separately via /slot-request to avoid a multi-minute worker request
+  // (each prompt build can call OpenAI for topic research).
+  const slotSummaries = slots.slice(startIdx).map((slot, offset) => ({
+    slot_idx: startIdx + offset,
+    client_slug: slot.client_slug ?? '',
+    publish_date: slot.date ?? '',
+    content_type: slot.content_type ?? '',
+  }));
+  return c.json({ ok: true, job, run, slots: slotSummaries });
+});
+
+discordInternalRoute.get('/approved-jobs/:id/slot-request/:slotIdx', async (c) => {
+  if (!(await requireDiscordBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const job = await getApprovedCommandJobById(c.env.DB, c.req.param('id'));
+  if (!job) return c.json({ error: 'Not found' }, 404);
+  const args = JSON.parse(job.args_json) as ApprovedClaudeJobArgs;
+  const slotIdx = Number.parseInt(c.req.param('slotIdx'), 10);
+  if (!Number.isInteger(slotIdx) || slotIdx < 0) return c.json({ error: 'Invalid slot index' }, 400);
+  try {
     const built = await buildSlotGenerationRequest(c.env, args.run_id, slotIdx);
-    requests.push({
+    return c.json({
+      ok: true,
       slot_idx: slotIdx,
       client_slug: built.slot.client_slug,
       client_name: built.clientName,
@@ -648,8 +668,9 @@ discordInternalRoute.get('/approved-jobs/:id/context', async (c) => {
       prompt: built.request.prompt,
       schema: built.request.schema.schema,
     });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
-  return c.json({ ok: true, job, run, requests });
 });
 
 discordInternalRoute.post('/approved-jobs/:id/start', async (c) => {

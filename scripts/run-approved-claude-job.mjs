@@ -104,9 +104,9 @@ Return only the final improved JSON that still matches the schema.`;
 async function main() {
   const context = await get(`/internal/discord/approved-jobs/${jobId}/context`);
   const job = context.job;
-  const requests = Array.isArray(context.requests) ? context.requests : [];
+  const slotSummaries = Array.isArray(context.slots) ? context.slots : [];
 
-  if (!job || !requests.length) {
+  if (!job || !slotSummaries.length) {
     await post(`/internal/discord/approved-jobs/${jobId}/fail`, {
       error: 'No queued slot requests found for approved Claude job.',
       run_id: JSON.parse(job?.args_json ?? '{}').run_id ?? null,
@@ -115,32 +115,46 @@ async function main() {
   }
 
   const args = JSON.parse(job.args_json);
+  const total = slotSummaries.length;
+
   await post('/internal/discord/notify', {
-    content: `🧠 Claude Code started weekly content job\nRun ID: \`${args.run_id}\`\nRunner: \`${runnerId}\`\nSlots: ${requests.length}`,
+    content: `🧠 Claude Code started weekly content job\nRun ID: \`${args.run_id}\`\nRunner: \`${runnerId}\`\nSlots: ${total}`,
   });
 
   await post(`/internal/discord/approved-jobs/${jobId}/log`, {
     run_id: args.run_id,
     level: 'START',
-    message: `Approved Claude runner ${runnerId} started command ${job.command_name} for ${requests.length} slot(s)`,
+    message: `Approved Claude runner ${runnerId} started command ${job.command_name} for ${total} slot(s)`,
   });
 
   let completed = 0;
 
-  for (const req of requests) {
-    const prefix = `${req.client_slug} / ${req.publish_date} / ${req.content_type}`;
+  for (const summary of slotSummaries) {
+    const prefix = `${summary.client_slug} / ${summary.publish_date} / ${summary.content_type}`;
     await post(`/internal/discord/approved-jobs/${jobId}/log`, {
       run_id: args.run_id,
       level: 'AI',
-      message: `Claude Code generating slot ${req.slot_idx + 1}/${requests.length}: ${prefix}`,
+      message: `Claude Code generating slot ${summary.slot_idx + 1}/${total}: ${prefix}`,
     });
 
-    const draft = await runClaude(req.prompt, req.schema);
-    const reviewed = await runClaude(buildReviewPrompt(req.prompt, draft), req.schema);
+    let slotReq;
+    try {
+      slotReq = await get(`/internal/discord/approved-jobs/${jobId}/slot-request/${summary.slot_idx}`);
+    } catch (err) {
+      await post(`/internal/discord/approved-jobs/${jobId}/log`, {
+        run_id: args.run_id,
+        level: 'ERROR',
+        message: `Slot ${summary.slot_idx + 1} prompt build failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      continue;
+    }
+
+    const draft = await runClaude(slotReq.prompt, slotReq.schema);
+    const reviewed = await runClaude(buildReviewPrompt(slotReq.prompt, draft), slotReq.schema);
 
     await post(`/internal/discord/approved-jobs/${jobId}/save-slot`, {
       run_id: args.run_id,
-      slot_idx: req.slot_idx,
+      slot_idx: summary.slot_idx,
       post: reviewed,
     });
 
@@ -148,11 +162,11 @@ async function main() {
     await post(`/internal/discord/approved-jobs/${jobId}/log`, {
       run_id: args.run_id,
       level: 'INFO',
-      message: `Claude Code saved slot ${req.slot_idx + 1}: ${prefix}`,
+      message: `Claude Code saved slot ${summary.slot_idx + 1}: ${prefix}`,
     });
 
     await post('/internal/discord/notify', {
-      content: `⏳ Claude Code progress for run \`${args.run_id}\`: ${completed}/${requests.length} slots saved`,
+      content: `⏳ Claude Code progress for run \`${args.run_id}\`: ${completed}/${total} slots saved`,
     });
   }
 
@@ -160,7 +174,7 @@ async function main() {
     result_json: {
       run_id: args.run_id,
       completed_slots: completed,
-      requested_slots: requests.length,
+      requested_slots: total,
       provider: 'claude',
       runner_id: runnerId,
     },
