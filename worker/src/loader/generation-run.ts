@@ -39,6 +39,7 @@ import {
   storeGenerationPlan,
   finalizeGenerationRun,
   getGenerationRunById,
+  createApprovedCommandJob,
   type GenerationProgress,
 } from '../db/queries';
 import {
@@ -547,7 +548,7 @@ export async function resumeGenerationRun(env: Env, baseUrl: string, runId: stri
   const run = await getGenerationRunById(env.DB, runId);
   if (!run) throw new Error('Generation run not found');
 
-  const slots = JSON.parse(run.post_slots ?? '[]') as Array<unknown>;
+  const slots = JSON.parse(run.post_slots ?? '[]') as PostSlot[];
   const totalSlots = run.total_slots ?? slots.length;
   const nextSlot = Math.max(0, run.current_slot_idx ?? 0);
 
@@ -568,6 +569,35 @@ export async function resumeGenerationRun(env: Env, baseUrl: string, runId: stri
               WHERE id = ?`)
     .bind(now, `${new Date(now * 1000).toISOString().slice(0, 19)}Z [INFO] Run resumed from slot ${nextSlot + 1}/${totalSlots}`, runId)
     .run();
+
+  // Claude provider runs must resume through the approved terminal-job queue,
+  // not the worker /internal/gen-step path (which would call the Anthropic API).
+  const provider = normalizeContentProvider(slots[nextSlot]?.provider ?? slots[0]?.provider);
+  if (provider === 'claude') {
+    const remainingClientSlugs = Array.from(
+      new Set(slots.slice(nextSlot).map((slot) => slot.client_slug)),
+    );
+    const periodStart = slots[nextSlot]?.date ?? slots[0].date;
+    const periodEnd = slots[slots.length - 1]?.date ?? periodStart;
+    await createApprovedCommandJob(env.DB, {
+      generation_run_id: runId,
+      command_name: 'weekly_content_claude',
+      provider: 'claude',
+      requested_by: run.triggered_by ?? 'resume',
+      args_json: JSON.stringify({
+        run_id: runId,
+        client_slugs: remainingClientSlugs,
+        period_start: periodStart,
+        period_end: periodEnd,
+        content_only: true,
+        generate_images: false,
+        provider: 'claude',
+        requested_in: 'resume',
+      }),
+    });
+    await appendGenerationLog(env.DB, runId, 'INFO', `Claude terminal job re-queued from slot ${nextSlot + 1}/${totalSlots}`);
+    return { resumed: true, nextSlot, totalSlots };
+  }
 
   await triggerStep(env, baseUrl, runId, nextSlot);
   return { resumed: true, nextSlot, totalSlots };
@@ -664,30 +694,42 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
     .filter((format): format is ContentFormat => format !== null);
 
   const settings = await loadSystemSettings(env);
-  const apiKey = resolveProviderApiKey(env, settings, provider);
+  const researchParams = {
+    client: {
+      canonical_name: client.canonical_name,
+      industry: client.industry,
+      state: client.state,
+      language: client.language,
+    },
+    intelligence: intel ? {
+      service_priorities: intel.service_priorities,
+      seasonal_notes: intel.seasonal_notes,
+      local_seo_themes: intel.local_seo_themes,
+    } : null,
+    contentType: slot.content_type,
+    contentIntent: slot.content_intent,
+    platforms,
+    publishDate: slot.date,
+    recentTitles,
+    recentFormats,
+    serviceAreas,
+    serviceNames,
+  };
+
+  // Topic research drives non-repetitive, SEO-aware prompts. When generation
+  // is routed to terminal Claude Code (no Anthropic API key in env), fall back
+  // to OpenAI for the research stage so the prompt fed to the CLI still
+  // carries researched topic / keyword / format data.
+  const primaryKey = resolveProviderApiKey(env, settings, provider);
   let topicResearch: TopicResearch | null = null;
-  if (apiKey) {
-    topicResearch = await researchTopicWithProvider(provider, apiKey, {
-      client: {
-        canonical_name: client.canonical_name,
-        industry: client.industry,
-        state: client.state,
-        language: client.language,
-      },
-      intelligence: intel ? {
-        service_priorities: intel.service_priorities,
-        seasonal_notes: intel.seasonal_notes,
-        local_seo_themes: intel.local_seo_themes,
-      } : null,
-      contentType: slot.content_type,
-      contentIntent: slot.content_intent,
-      platforms,
-      publishDate: slot.date,
-      recentTitles,
-      recentFormats,
-      serviceAreas,
-      serviceNames,
-    }, settings).catch(() => null);
+  if (primaryKey) {
+    topicResearch = await researchTopicWithProvider(provider, primaryKey, researchParams, settings).catch(() => null);
+  }
+  if (!topicResearch && provider === 'claude') {
+    const openaiKey = resolveProviderApiKey(env, settings, 'openai');
+    if (openaiKey) {
+      topicResearch = await researchTopicWithProvider('openai', openaiKey, researchParams, settings).catch(() => null);
+    }
   }
 
   const ctx: GenerationContext = {
