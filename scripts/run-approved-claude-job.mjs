@@ -70,13 +70,14 @@ function runClaude(prompt, schema) {
     `${prompt}\n\n` +
     `Return ONLY a single JSON object that conforms exactly to this schema. ` +
     `No prose, no markdown, no code fences:\n${schemaStr}`;
-  // --append-system-prompt: adds to the default Claude Code system prompt
-  // rather than replacing it. Replacing it (--system-prompt) caused the CLI
-  // to exit 0 with empty stdout — likely because stripping all default
-  // session context broke whatever the runtime needs to produce -p output.
+  // Use --output-format json (not text). With --json-schema, text mode prints
+  // nothing because the assistant's structured output isn't surfaced as text.
+  // json mode returns a wrapper with .structured_output (parsed) and .result
+  // (stringified JSON). We prefer .structured_output, falling back to parsing
+  // .result if needed.
   const args = [
     '-p',
-    '--output-format', 'text',
+    '--output-format', 'json',
     '--model', 'sonnet',
     '--tools', '',
     '--append-system-prompt', JSON_ONLY_SYSTEM_APPEND,
@@ -85,8 +86,6 @@ function runClaude(prompt, schema) {
   ];
 
   return new Promise((resolve, reject) => {
-    // Close stdin explicitly. The CLI prints a 3s "no stdin data received"
-    // warning otherwise, and in some setups exits non-zero after it.
     const child = spawn('claude', args, {
       cwd: process.cwd(),
       shell: false,
@@ -106,8 +105,7 @@ function runClaude(prompt, schema) {
         reject(new Error(`claude exited ${code}\n${detail}`));
         return;
       }
-      const candidate = extractJsonObject(stdout) ?? stdout.trim();
-      if (!candidate) {
+      if (!stdout.trim()) {
         reject(new Error(
           `Claude produced no output (exit 0).\n` +
           `stderr: ${stderr.slice(0, 800).trim() || '(empty)'}\n` +
@@ -117,14 +115,44 @@ function runClaude(prompt, schema) {
         ));
         return;
       }
+      let wrapper;
+      try {
+        wrapper = JSON.parse(stdout.trim());
+      } catch (err) {
+        reject(new Error(
+          `Failed to parse Claude wrapper output: ${String(err)}\n` +
+          `stdout (first 800): ${stdout.slice(0, 800)}\n` +
+          `stdout (last 400): ${stdout.slice(-400)}\n` +
+          `stderr: ${stderr.slice(0, 400)}`,
+        ));
+        return;
+      }
+      if (wrapper && typeof wrapper === 'object' && wrapper.is_error) {
+        reject(new Error(
+          `Claude reported error: api_status=${wrapper.api_error_status} stop=${wrapper.stop_reason} subtype=${wrapper.subtype}`,
+        ));
+        return;
+      }
+      // Prefer the parsed structured_output when present; fall back to
+      // parsing .result (stringified JSON) and finally extracting from the
+      // raw text result if the model emitted prose around the JSON.
+      if (wrapper && typeof wrapper === 'object' && wrapper.structured_output && typeof wrapper.structured_output === 'object') {
+        resolve(wrapper.structured_output);
+        return;
+      }
+      const resultStr = wrapper && typeof wrapper.result === 'string' ? wrapper.result : '';
+      if (!resultStr) {
+        reject(new Error(`Claude wrapper had no .structured_output and no .result\nwrapper keys: ${Object.keys(wrapper ?? {}).join(', ')}`));
+        return;
+      }
+      const candidate = extractJsonObject(resultStr) ?? resultStr.trim();
       try {
         resolve(JSON.parse(candidate));
       } catch (err) {
         reject(new Error(
-          `Failed to parse Claude output: ${String(err)}\n` +
-          `stdout (first 800): ${stdout.slice(0, 800)}\n` +
-          `stdout (last 400): ${stdout.slice(-400)}\n` +
-          `stderr: ${stderr.slice(0, 400)}`,
+          `Failed to parse Claude .result JSON: ${String(err)}\n` +
+          `result (first 800): ${resultStr.slice(0, 800)}\n` +
+          `result (last 400): ${resultStr.slice(-400)}`,
         ));
       }
     });
