@@ -46,15 +46,38 @@ async function get(pathname) {
   return res.json();
 }
 
+const JSON_ONLY_SYSTEM_PROMPT =
+  'You are a structured-output engine. Reply with EXACTLY ONE JSON object that matches the provided schema. ' +
+  'No preface, no commentary, no markdown, no code fences, no trailing text. Output must start with `{` and end with `}`. ' +
+  'If you cannot produce valid JSON for any field, still return the JSON object with empty strings or empty arrays as placeholders.';
+
+function extractJsonObject(text) {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  // Strip a leading code fence if present (```json ... ```)
+  const fenceMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```\s*$/i);
+  const candidate = fenceMatch ? fenceMatch[1].trim() : trimmed;
+  // Find the outermost {...} block in case there is preface/trailing text
+  const first = candidate.indexOf('{');
+  const last = candidate.lastIndexOf('}');
+  if (first === -1 || last === -1 || last <= first) return null;
+  return candidate.slice(first, last + 1);
+}
+
 function runClaude(prompt, schema) {
   const schemaStr = JSON.stringify(schema);
+  const wrappedPrompt =
+    `${prompt}\n\n` +
+    `Return ONLY a single JSON object that conforms exactly to this schema. ` +
+    `No prose, no markdown, no code fences:\n${schemaStr}`;
   const args = [
     '-p',
     '--output-format', 'text',
     '--model', 'sonnet',
     '--tools', '',
+    '--system-prompt', JSON_ONLY_SYSTEM_PROMPT,
     '--json-schema', schemaStr,
-    prompt,
+    wrappedPrompt,
   ];
 
   return new Promise((resolve, reject) => {
@@ -79,8 +102,9 @@ function runClaude(prompt, schema) {
         reject(new Error(`claude exited ${code}\n${detail}`));
         return;
       }
+      const candidate = extractJsonObject(stdout) ?? stdout.trim();
       try {
-        resolve(JSON.parse(stdout.trim()));
+        resolve(JSON.parse(candidate));
       } catch (err) {
         reject(new Error(`Failed to parse Claude output: ${String(err)}\nstdout: ${stdout.slice(0, 800)}\nstderr: ${stderr.slice(0, 400)}`));
       }
