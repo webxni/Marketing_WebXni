@@ -58,10 +58,13 @@ function runClaude(prompt, schema) {
   ];
 
   return new Promise((resolve, reject) => {
+    // Close stdin explicitly. The CLI prints a 3s "no stdin data received"
+    // warning otherwise, and in some setups exits non-zero after it.
     const child = spawn('claude', args, {
       cwd: process.cwd(),
       shell: false,
       env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
 
     let stdout = '';
@@ -72,13 +75,14 @@ function runClaude(prompt, schema) {
     child.on('error', reject);
     child.on('exit', (code) => {
       if (code !== 0) {
-        reject(new Error(`claude exited ${code}: ${stderr.slice(0, 500)}`));
+        const detail = `stderr: ${stderr.slice(0, 800).trim() || '(empty)'}\nstdout: ${stdout.slice(0, 800).trim() || '(empty)'}`;
+        reject(new Error(`claude exited ${code}\n${detail}`));
         return;
       }
       try {
         resolve(JSON.parse(stdout.trim()));
       } catch (err) {
-        reject(new Error(`Failed to parse Claude output: ${String(err)}\n${stdout.slice(0, 500)}`));
+        reject(new Error(`Failed to parse Claude output: ${String(err)}\nstdout: ${stdout.slice(0, 800)}\nstderr: ${stderr.slice(0, 400)}`));
       }
     });
   });
