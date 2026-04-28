@@ -41,6 +41,10 @@ export class UploadPostError extends Error {
         lower.includes('duplicate'))
     );
   }
+
+  get isGatewayTimeout(): boolean {
+    return this.status === 524;
+  }
 }
 
 export interface PostTextParams {
@@ -385,11 +389,25 @@ export class UploadPostClient {
   ): Promise<UploadPostResponse> {
     const headers: Record<string, string> = { ...this.auth };
     if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
-    const r = await fetch(`${BASE}${path}`, { method: 'POST', headers, body });
-    if (!r.ok) {
-      const text = await r.text();
-      throw new UploadPostError(r.status, text);
-    }
-    return r.json() as Promise<UploadPostResponse>;
+    return this._postWithGatewayTimeoutRetry(`${BASE}${path}`, headers, body);
+  }
+
+  private async _postWithGatewayTimeoutRetry(
+    url: string,
+    headers: Record<string, string>,
+    body: FormData,
+  ): Promise<UploadPostResponse> {
+    const first = await fetch(url, { method: 'POST', headers, body });
+    if (first.ok) return first.json() as Promise<UploadPostResponse>;
+
+    const firstText = await first.text();
+    const firstErr = new UploadPostError(first.status, firstText);
+    if (!firstErr.isGatewayTimeout) throw firstErr;
+
+    const second = await fetch(url, { method: 'POST', headers, body });
+    if (second.ok) return second.json() as Promise<UploadPostResponse>;
+
+    const secondText = await second.text();
+    throw new UploadPostError(second.status, secondText || firstText);
   }
 }

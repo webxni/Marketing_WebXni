@@ -97,6 +97,9 @@ export function translatePostingError(raw: string, platform?: string): string {
   if (lower.includes('requires asset url') || lower.includes('requires a media asset')) {
     return 'La publicación necesita un archivo de video o imagen válido antes de enviarse.';
   }
+  if (lower.includes('http 524') || lower.includes('error code: 524')) {
+    return 'Upload-Post tardó demasiado en responder. El sistema volverá a intentarlo con la misma clave de idempotencia.';
+  }
 
   return message;
 }
