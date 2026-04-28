@@ -46,10 +46,10 @@ async function get(pathname) {
   return res.json();
 }
 
-const JSON_ONLY_SYSTEM_PROMPT =
-  'You are a structured-output engine. Reply with EXACTLY ONE JSON object that matches the provided schema. ' +
+const JSON_ONLY_SYSTEM_APPEND =
+  'CRITICAL OUTPUT RULE: For this task you must reply with EXACTLY ONE JSON object that matches the provided JSON schema. ' +
   'No preface, no commentary, no markdown, no code fences, no trailing text. Output must start with `{` and end with `}`. ' +
-  'If you cannot produce valid JSON for any field, still return the JSON object with empty strings or empty arrays as placeholders.';
+  'If you cannot produce valid content for a field, still return the JSON object using empty strings or empty arrays as placeholders for that field.';
 
 function extractJsonObject(text) {
   const trimmed = text.trim();
@@ -70,12 +70,16 @@ function runClaude(prompt, schema) {
     `${prompt}\n\n` +
     `Return ONLY a single JSON object that conforms exactly to this schema. ` +
     `No prose, no markdown, no code fences:\n${schemaStr}`;
+  // --append-system-prompt: adds to the default Claude Code system prompt
+  // rather than replacing it. Replacing it (--system-prompt) caused the CLI
+  // to exit 0 with empty stdout — likely because stripping all default
+  // session context broke whatever the runtime needs to produce -p output.
   const args = [
     '-p',
     '--output-format', 'text',
     '--model', 'sonnet',
     '--tools', '',
-    '--system-prompt', JSON_ONLY_SYSTEM_PROMPT,
+    '--append-system-prompt', JSON_ONLY_SYSTEM_APPEND,
     '--json-schema', schemaStr,
     wrappedPrompt,
   ];
@@ -103,10 +107,25 @@ function runClaude(prompt, schema) {
         return;
       }
       const candidate = extractJsonObject(stdout) ?? stdout.trim();
+      if (!candidate) {
+        reject(new Error(
+          `Claude produced no output (exit 0).\n` +
+          `stderr: ${stderr.slice(0, 800).trim() || '(empty)'}\n` +
+          `args[0..6]: ${args.slice(0, 7).join(' ')}\n` +
+          `prompt chars: ${wrappedPrompt.length}\n` +
+          `schema chars: ${schemaStr.length}`,
+        ));
+        return;
+      }
       try {
         resolve(JSON.parse(candidate));
       } catch (err) {
-        reject(new Error(`Failed to parse Claude output: ${String(err)}\nstdout: ${stdout.slice(0, 800)}\nstderr: ${stderr.slice(0, 400)}`));
+        reject(new Error(
+          `Failed to parse Claude output: ${String(err)}\n` +
+          `stdout (first 800): ${stdout.slice(0, 800)}\n` +
+          `stdout (last 400): ${stdout.slice(-400)}\n` +
+          `stderr: ${stderr.slice(0, 400)}`,
+        ));
       }
     });
   });
