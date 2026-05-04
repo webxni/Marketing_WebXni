@@ -8,13 +8,16 @@
   import { getCompatiblePlatforms, normalizeContentType } from '$lib/platforms';
   import { hasRole } from '$lib/stores/auth';
   import { toast } from '$lib/stores/ui';
-  import type { ClientPlatform, Post } from '$lib/types';
+  import type { ClientPlatform, ConnectionHealth, Post } from '$lib/types';
 
   let post: Post | null = null;
   let loading = true;
   let saving = false;
   let savingAndPublishing = false;
   let clientPlatformConfigs: ClientPlatform[] = [];
+  let checkingConnections = false;
+  let connectionAccounts: ConnectionHealth[] = [];
+  let connectionMessage = '';
   let platformDraft: string[] = [];
   let allowPlatformOverride = false;
   const allPlatforms = ['facebook','instagram','linkedin','x','threads','tiktok','pinterest','bluesky','google_business','youtube','website_blog'];
@@ -87,6 +90,7 @@
         const clientRes = await clientsApi.get(post.client_slug);
         clientPlatformConfigs = clientRes.client.platforms ?? [];
       }
+      if (post?.client_id) await loadConnectionHealth(post.client_id);
       // Core
       title          = post.title ?? '';
       publishDate    = post.publish_date ?? '';
@@ -187,6 +191,31 @@
     }
   }
 
+  async function loadConnectionHealth(clientId: string) {
+    checkingConnections = true;
+    try {
+      const r = await clientsApi.connectionCheck(clientId);
+      connectionAccounts = r.accounts ?? [];
+      connectionMessage = r.profile_message_es;
+    } catch (e) {
+      connectionAccounts = [];
+      connectionMessage = e instanceof Error ? e.message : 'No se pudo cargar el estado de conexión.';
+    } finally {
+      checkingConnections = false;
+    }
+  }
+
+  function connectionBadge(status: string): string {
+    if (status === 'connected') return 'background:#1a73e81a;color:#1a73e8;border-color:#1a73e866;';
+    if (status === 'warning') return 'background:#f59e0b1a;color:#f59e0b;border-color:#f59e0b66;';
+    if (status === 'failed') return 'background:#ef44441a;color:#f87171;border-color:#ef444466;';
+    return 'background:#6b72801a;color:#9ca3af;border-color:#6b728066;';
+  }
+
+  function platformDisplay(platform: string): string {
+    return platform.replace(/^gbp_/, 'google_business_').replace(/_/g, ' ');
+  }
+
   function togglePlatform(platform: string) {
     if (!canEditPlatforms) return;
     const configured = clientPlatformConfigs.find((item) => item.platform === platform && item.paused !== 1);
@@ -254,9 +283,37 @@
         Allow incompatible override
       </label>
     </div>
+    <div class="rounded-lg border border-border p-3 mb-4" style="background:#1a73e80d;border-color:#1a73e833;">
+      <div class="flex items-center justify-between gap-3 mb-2">
+        <p class="text-xs font-semibold uppercase tracking-wide" style="color:#1a73e8;">Connection Status</p>
+        {#if post.client_id}
+          <button class="btn-ghost btn-sm text-xs" on:click={() => post && loadConnectionHealth(post.client_id)} disabled={checkingConnections}>
+            {checkingConnections ? 'Checking…' : 'Refresh'}
+          </button>
+        {/if}
+      </div>
+      <p class="text-xs text-muted mb-3">{connectionMessage || 'Sin verificación reciente.'}</p>
+      <div class="space-y-2">
+        {#each connectionAccounts as account}
+          <div class="flex items-start justify-between gap-3 rounded border border-border px-3 py-2">
+            <div>
+              <p class="text-sm text-white capitalize">{platformDisplay(account.platform)}</p>
+              <p class="text-xs text-muted">{account.message_es}</p>
+            </div>
+            <span class="text-[11px] font-semibold uppercase tracking-wide px-2 py-1 rounded border" style={connectionBadge(account.status)}>
+              {account.status.replace(/_/g, ' ')}
+            </span>
+          </div>
+        {/each}
+        {#if connectionAccounts.length === 0 && !checkingConnections}
+          <p class="text-xs text-muted">No hay cuentas para validar en este cliente.</p>
+        {/if}
+      </div>
+    </div>
     <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
       {#each allPlatforms as platform}
         {@const configured = clientPlatformConfigs.find((item) => item.platform === platform && item.paused !== 1)}
+        {@const account = connectionAccounts.find((item) => item.platform === platform)}
         {@const compatible = getCompatiblePlatforms(post?.content_type, [platform]).length > 0}
         <button
           class={`rounded-lg border p-3 text-left ${platformDraft.includes(platform) ? compatible ? 'border-accent bg-accent/10' : 'border-yellow-500/50 bg-yellow-500/10' : 'border-border bg-surface'}`}
@@ -265,10 +322,19 @@
         >
           <div class="flex items-center justify-between gap-3 mb-2">
             <PlatformBadge platform={platform} size="sm" />
-            <span class={`text-[11px] uppercase tracking-wide ${configured ? 'text-accent' : 'text-muted'}`}>
-              {configured ? 'connected' : 'unavailable'}
-            </span>
+            {#if account}
+              <span class="text-[11px] uppercase tracking-wide px-2 py-1 rounded border" style={connectionBadge(account.status)}>
+                {account.status.replace(/_/g, ' ')}
+              </span>
+            {:else}
+              <span class={`text-[11px] uppercase tracking-wide ${configured ? 'text-accent' : 'text-muted'}`}>
+                {configured ? 'configured' : 'unavailable'}
+              </span>
+            {/if}
           </div>
+          {#if account}
+            <p class="text-xs text-muted mb-2">{account.message_es}</p>
+          {/if}
           <p class={`text-xs ${compatible ? 'text-green-300' : 'text-yellow-300'}`}>
             {compatible ? 'Compatible' : `Incompatible with ${normalizeContentType(post?.content_type)}`}
           </p>
