@@ -32,7 +32,7 @@ export const postsApi = {
   create: (data: Record<string, unknown>) =>
     api.post<{ post: Post }>('/api/posts', data),
 
-  update: (id: string, data: Partial<Post>) =>
+  update: (id: string, data: Record<string, unknown>) =>
     api.put<{ post: Post }>(`/api/posts/${id}`, data),
 
   approve: (id: string) =>

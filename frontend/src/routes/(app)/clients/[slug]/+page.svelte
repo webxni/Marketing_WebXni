@@ -7,7 +7,7 @@
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import { can } from '$lib/stores/auth';
   import { toast } from '$lib/stores/ui';
-  import type { Client, ClientPlatform, ClientIntelligence, ClientOffer, ClientEvent } from '$lib/types';
+  import type { Client, ClientMonthlyTopic, ClientPlatform, ClientIntelligence, ClientOffer, ClientEvent } from '$lib/types';
   import type { PlatformConfigWarning } from '$lib/api/clients';
 
   type Svc   = { id: string; name: string; category_name: string | null; active: number };
@@ -16,7 +16,7 @@
   let client:    Client | null = null;
   let platforms: ClientPlatform[] = [];
   let loading = true;
-  let activeTab: 'profile' | 'platforms' | 'intelligence' | 'services' | 'areas' | 'gbp' | 'feedback' = 'profile';
+  let activeTab: 'profile' | 'platforms' | 'intelligence' | 'monthly_topics' | 'services' | 'areas' | 'gbp' | 'feedback' = 'profile';
 
   // Intelligence
   let intelligence: ClientIntelligence = { brand_voice: null, tone_keywords: null, prohibited_terms: null,
@@ -27,6 +27,26 @@
   let intelligenceLoaded = false;
   let savingIntelligence = false;
 
+  let monthlyTopics: ClientMonthlyTopic[] = [];
+  let monthlyTopicsLoaded = false;
+  let loadingMonthlyTopics = false;
+  let savingMonthlyTopic = false;
+  let bulkAddingMonthlyTopics = false;
+  let monthlyTopicMonth = new Date().toISOString().slice(0, 7);
+  let monthlyTopicForm = {
+    topic_title: '',
+    service_category: '',
+    target_keyword: '',
+    content_type_preference: '',
+    preferred_platforms: [] as string[],
+    priority: 0,
+    status: 'planned',
+    notes: '',
+  };
+  let monthlyTopicsBulkText = '';
+  let monthlyTopicSuggestions: ClientMonthlyTopic[] = [];
+  let suggestingMonthlyTopics = false;
+
   async function loadIntelligence(slug: string) {
     try { const r = await clientsApi.getIntelligence(slug); intelligence = r.intelligence as ClientIntelligence; intelligenceLoaded = true; } catch {}
   }
@@ -36,6 +56,142 @@
     try { await clientsApi.saveIntelligence(client.slug, intelligence as unknown as Record<string, unknown>); toast.success('Intelligence saved'); }
     catch { toast.error('Failed to save'); }
     finally { savingIntelligence = false; }
+  }
+
+  async function loadMonthlyTopics(slug: string) {
+    loadingMonthlyTopics = true;
+    try {
+      const r = await clientsApi.getMonthlyTopics(slug, monthlyTopicMonth);
+      monthlyTopics = r.topics ?? [];
+      monthlyTopicsLoaded = true;
+    } catch {
+      monthlyTopics = [];
+    } finally {
+      loadingMonthlyTopics = false;
+    }
+  }
+
+  async function addMonthlyTopic() {
+    if (!client || !monthlyTopicForm.topic_title.trim()) return;
+    savingMonthlyTopic = true;
+    try {
+      await clientsApi.createMonthlyTopic(client.slug, {
+        plan_month: monthlyTopicMonth,
+        ...monthlyTopicForm,
+      });
+      monthlyTopicForm = {
+        topic_title: '',
+        service_category: '',
+        target_keyword: '',
+        content_type_preference: '',
+        preferred_platforms: [],
+        priority: 0,
+        status: 'planned',
+        notes: '',
+      };
+      await loadMonthlyTopics(client.slug);
+      toast.success('Monthly topic added');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to add topic');
+    } finally {
+      savingMonthlyTopic = false;
+    }
+  }
+
+  async function addMonthlyTopicsBulk() {
+    if (!client || !monthlyTopicsBulkText.trim()) return;
+    bulkAddingMonthlyTopics = true;
+    try {
+      await clientsApi.bulkCreateMonthlyTopics(client.slug, {
+        plan_month: monthlyTopicMonth,
+        topics_text: monthlyTopicsBulkText,
+      });
+      monthlyTopicsBulkText = '';
+      await loadMonthlyTopics(client.slug);
+      toast.success('Monthly topics imported');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to import topics');
+    } finally {
+      bulkAddingMonthlyTopics = false;
+    }
+  }
+
+  async function suggestMonthlyTopics() {
+    if (!client) return;
+    suggestingMonthlyTopics = true;
+    try {
+      const r = await clientsApi.suggestMonthlyTopics(client.slug, { plan_month: monthlyTopicMonth, count: 8 });
+      monthlyTopicSuggestions = r.suggestions ?? [];
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to suggest topics');
+    } finally {
+      suggestingMonthlyTopics = false;
+    }
+  }
+
+  async function addSuggestedMonthlyTopic(topic: ClientMonthlyTopic) {
+    if (!client) return;
+    try {
+      await clientsApi.createMonthlyTopic(client.slug, {
+        plan_month: topic.plan_month,
+        topic_title: topic.topic_title,
+        service_category: topic.service_category,
+        target_keyword: topic.target_keyword,
+        content_type_preference: topic.content_type_preference,
+        priority: topic.priority,
+        notes: topic.notes,
+      });
+      monthlyTopicSuggestions = monthlyTopicSuggestions.filter((item) => item.id !== topic.id);
+      await loadMonthlyTopics(client.slug);
+      toast.success('Suggested topic added');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to add suggested topic');
+    }
+  }
+
+  async function updateMonthlyTopic(topic: ClientMonthlyTopic, fields: Record<string, unknown>) {
+    if (!client) return;
+    try {
+      await clientsApi.updateMonthlyTopic(client.slug, topic.id, fields);
+      await loadMonthlyTopics(client.slug);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to update topic');
+    }
+  }
+
+  async function removeMonthlyTopic(topicId: string) {
+    if (!client) return;
+    try {
+      await clientsApi.deleteMonthlyTopic(client.slug, topicId);
+      await loadMonthlyTopics(client.slug);
+      toast.success('Monthly topic removed');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to remove topic');
+    }
+  }
+
+  function updateMonthlyTopicTitle(topic: ClientMonthlyTopic, value: string) {
+    updateMonthlyTopic(topic, { topic_title: value });
+  }
+
+  function updateMonthlyTopicKeyword(topic: ClientMonthlyTopic, value: string) {
+    updateMonthlyTopic(topic, { target_keyword: value || null });
+  }
+
+  function updateMonthlyTopicType(topic: ClientMonthlyTopic, value: string) {
+    updateMonthlyTopic(topic, { content_type_preference: value || null });
+  }
+
+  function updateMonthlyTopicPriority(topic: ClientMonthlyTopic, value: string) {
+    updateMonthlyTopic(topic, { priority: Number(value || 0) });
+  }
+
+  function updateMonthlyTopicStatus(topic: ClientMonthlyTopic, value: string) {
+    updateMonthlyTopic(topic, { status: value });
+  }
+
+  function updateMonthlyTopicNotes(topic: ClientMonthlyTopic, value: string) {
+    updateMonthlyTopic(topic, { notes: value || null });
   }
 
 
@@ -483,6 +639,7 @@
   $: if (client && activeTab === 'areas')        loadAreas(client.slug);
   $: if (client && activeTab === 'gbp')          { loadOffers(client.slug); loadEvents(client.slug); }
   $: if (client && activeTab === 'intelligence') loadIntelligence(client.slug);
+  $: if (client && activeTab === 'monthly_topics') loadMonthlyTopics(client.slug);
   $: if (client && activeTab === 'feedback')     loadFeedback(client.slug);
 </script>
 
@@ -519,6 +676,7 @@
       { key: 'profile',      label: 'Profile'      },
       { key: 'platforms',    label: 'Platforms'    },
       { key: 'intelligence', label: 'Intelligence' },
+      { key: 'monthly_topics', label: 'Content Plan' },
       { key: 'services',     label: 'Services'     },
       { key: 'areas',        label: 'Areas'        },
       { key: 'gbp',          label: 'Google Business' },
@@ -862,6 +1020,223 @@
   {/if}
 
 
+{/if}
+
+{#if activeTab === 'monthly_topics' && client}
+<div class="space-y-5">
+  <div class="card p-5">
+    <div class="flex items-center justify-between gap-3 mb-4">
+      <div>
+        <h3 class="section-label">Monthly Topic Plan</h3>
+        <p class="text-xs text-muted mt-1">Month-specific content topics. This is separate from long-term Intelligence.</p>
+      </div>
+      <div class="flex items-center gap-2">
+        {#if can('clients.edit')}
+          <button class="btn-secondary btn-sm" on:click={suggestMonthlyTopics} disabled={suggestingMonthlyTopics}>
+            {suggestingMonthlyTopics ? 'Suggesting…' : 'Suggest Topics'}
+          </button>
+        {/if}
+        <input type="month" bind:value={monthlyTopicMonth} class="input w-40 text-sm" />
+      </div>
+    </div>
+
+    {#if monthlyTopicSuggestions.length > 0}
+    <div class="mb-5">
+      <h4 class="text-xs font-medium text-white mb-3">AI Suggestions</h4>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {#each monthlyTopicSuggestions as suggestion}
+          <div class="rounded-lg border border-border bg-surface p-3">
+            <div class="flex items-start justify-between gap-3 mb-2">
+              <div>
+                <p class="text-sm text-white">{suggestion.topic_title}</p>
+                <p class="text-xs text-muted mt-1">{suggestion.target_keyword ?? 'No keyword'} • {suggestion.content_type_preference ?? 'any type'}</p>
+              </div>
+              <button class="btn-primary btn-sm text-xs" on:click={() => addSuggestedMonthlyTopic(suggestion)}>Add</button>
+            </div>
+            {#if suggestion.notes}<p class="text-xs text-muted">{suggestion.notes}</p>{/if}
+          </div>
+        {/each}
+      </div>
+    </div>
+    {/if}
+
+    {#if can('clients.edit')}
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      <div class="space-y-3">
+        <h4 class="text-xs font-medium text-white">Add Topic</h4>
+        <input type="text" bind:value={monthlyTopicForm.topic_title} placeholder="Topic title" class="input w-full text-sm" />
+        <div class="grid grid-cols-2 gap-3">
+          <input type="text" bind:value={monthlyTopicForm.service_category} placeholder="Service/category" class="input w-full text-sm" />
+          <input type="text" bind:value={monthlyTopicForm.target_keyword} placeholder="Target keyword" class="input w-full text-sm" />
+          <select bind:value={monthlyTopicForm.content_type_preference} class="input w-full text-sm">
+            <option value="">Any content type</option>
+            <option value="image">Image</option>
+            <option value="reel">Reel</option>
+            <option value="video">Video</option>
+            <option value="blog">Blog</option>
+          </select>
+          <input type="number" bind:value={monthlyTopicForm.priority} min="0" class="input w-full text-sm" placeholder="Priority" />
+        </div>
+        <div>
+          <label class="block text-xs text-muted mb-2">Preferred platforms</label>
+          <div class="flex flex-wrap gap-2">
+            {#each platforms as platform}
+              <label class="flex items-center gap-1.5 text-xs text-muted cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={monthlyTopicForm.preferred_platforms.includes(platform.platform)}
+                  on:change={() => {
+                    monthlyTopicForm.preferred_platforms = monthlyTopicForm.preferred_platforms.includes(platform.platform)
+                      ? monthlyTopicForm.preferred_platforms.filter((value) => value !== platform.platform)
+                      : [...monthlyTopicForm.preferred_platforms, platform.platform];
+                  }}
+                  class="rounded"
+                />
+                <span>{platform.platform}</span>
+              </label>
+            {/each}
+          </div>
+        </div>
+        <textarea bind:value={monthlyTopicForm.notes} rows="3" placeholder="Notes" class="input w-full text-sm resize-none"></textarea>
+        <div class="flex justify-end">
+          <button class="btn-primary btn-sm" on:click={addMonthlyTopic} disabled={savingMonthlyTopic || !monthlyTopicForm.topic_title.trim()}>
+            {savingMonthlyTopic ? 'Saving…' : 'Add Topic'}
+          </button>
+        </div>
+      </div>
+
+      <div class="space-y-3">
+        <h4 class="text-xs font-medium text-white">Paste Topic List</h4>
+        <textarea
+          bind:value={monthlyTopicsBulkText}
+          rows="12"
+          class="input w-full text-sm resize-none"
+          placeholder="One topic per line&#10;Kitchen remodel cost in Pasadena&#10;Signs you need a roof inspection&#10;How to choose a commercial locksmith"
+        ></textarea>
+        <div class="flex justify-end">
+          <button class="btn-secondary btn-sm" on:click={addMonthlyTopicsBulk} disabled={bulkAddingMonthlyTopics || !monthlyTopicsBulkText.trim()}>
+            {bulkAddingMonthlyTopics ? 'Importing…' : 'Import List'}
+          </button>
+        </div>
+      </div>
+    </div>
+    {/if}
+  </div>
+
+  <div class="card">
+    {#if loadingMonthlyTopics && !monthlyTopicsLoaded}
+      <p class="text-sm text-muted text-center py-8">Loading monthly topics…</p>
+    {:else if monthlyTopics.length === 0}
+      <p class="text-sm text-muted text-center py-8">No topics planned for {monthlyTopicMonth}.</p>
+    {:else}
+      <div class="table-wrapper">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Topic</th>
+              <th>Keyword</th>
+              <th>Type</th>
+              <th>Platforms</th>
+              <th>Priority</th>
+              <th>Status</th>
+              <th>Notes</th>
+              {#if can('clients.edit')}<th></th>{/if}
+            </tr>
+          </thead>
+          <tbody>
+            {#each monthlyTopics as topic}
+              <tr>
+                <td>
+                  {#if can('clients.edit')}
+                    <input
+                      type="text"
+                      class="input w-full text-sm"
+                      value={topic.topic_title}
+                      on:change={(e) => updateMonthlyTopicTitle(topic, e.currentTarget.value)}
+                    />
+                  {:else}
+                    <span class="text-sm text-white">{topic.topic_title}</span>
+                  {/if}
+                </td>
+                <td>
+                  {#if can('clients.edit')}
+                    <input
+                      type="text"
+                      class="input w-full text-xs"
+                      value={topic.target_keyword ?? ''}
+                      on:change={(e) => updateMonthlyTopicKeyword(topic, e.currentTarget.value)}
+                    />
+                  {:else}
+                    <span class="text-xs text-muted">{topic.target_keyword ?? '—'}</span>
+                  {/if}
+                </td>
+                <td>
+                  {#if can('clients.edit')}
+                    <select
+                      class="input w-28 text-xs"
+                      value={topic.content_type_preference ?? ''}
+                      on:change={(e) => updateMonthlyTopicType(topic, e.currentTarget.value)}
+                    >
+                      <option value="">any</option>
+                      <option value="image">image</option>
+                      <option value="reel">reel</option>
+                      <option value="video">video</option>
+                      <option value="blog">blog</option>
+                    </select>
+                  {:else}
+                    <span class="text-xs text-muted">{topic.content_type_preference ?? 'any'}</span>
+                  {/if}
+                </td>
+                <td class="text-xs text-muted">{topic.preferred_platforms ? JSON.parse(topic.preferred_platforms).join(', ') : 'all'}</td>
+                <td>
+                  {#if can('clients.edit')}
+                    <input
+                      type="number"
+                      class="input w-20 text-xs"
+                      value={topic.priority}
+                      on:change={(e) => updateMonthlyTopicPriority(topic, e.currentTarget.value)}
+                    />
+                  {:else}
+                    <span class="text-xs text-muted">{topic.priority}</span>
+                  {/if}
+                </td>
+                <td>
+                  <select
+                    class="input w-28 text-xs"
+                    value={topic.status}
+                    disabled={!can('clients.edit')}
+                    on:change={(e) => updateMonthlyTopicStatus(topic, e.currentTarget.value)}
+                  >
+                    <option value="planned">planned</option>
+                    <option value="used">used</option>
+                    <option value="skipped">skipped</option>
+                  </select>
+                </td>
+                <td>
+                  {#if can('clients.edit')}
+                    <input
+                      type="text"
+                      class="input w-full text-xs"
+                      value={topic.notes ?? ''}
+                      on:change={(e) => updateMonthlyTopicNotes(topic, e.currentTarget.value)}
+                    />
+                  {:else}
+                    <span class="text-xs text-muted max-w-xs truncate" title={topic.notes ?? ''}>{topic.notes ?? '—'}</span>
+                  {/if}
+                </td>
+                {#if can('clients.edit')}
+                <td>
+                  <button class="btn-ghost btn-sm text-xs text-red-400" on:click={() => removeMonthlyTopic(topic.id)}>Delete</button>
+                </td>
+                {/if}
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+  </div>
+</div>
 {/if}
 
 <!-- Services tab (outside {#if client} so reactive load works) -->

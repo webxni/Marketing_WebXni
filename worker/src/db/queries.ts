@@ -13,6 +13,7 @@ import type {
   ApprovedCommandJobRow,
   ContentRequestRow,
   ClientTopicRow,
+  ClientMonthlyTopicRow,
 } from '../types';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1309,4 +1310,206 @@ export async function markClientTopicUsed(
 
 export async function deleteClientTopic(db: D1Database, topicId: string): Promise<void> {
   await db.prepare('DELETE FROM client_topics WHERE id = ?').bind(topicId).run();
+}
+
+function normalizeTopicFingerprint(value: string | null | undefined): string {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((token) => token && !new Set(['a', 'an', 'and', 'for', 'how', 'in', 'is', 'of', 'or', 'the', 'to', 'with']).has(token))
+    .join(' ')
+    .trim();
+}
+
+function topicSimilarity(left: string | null | undefined, right: string | null | undefined): number {
+  const a = normalizeTopicFingerprint(left).split(/\s+/).filter(Boolean);
+  const b = normalizeTopicFingerprint(right).split(/\s+/).filter(Boolean);
+  if (a.length === 0 || b.length === 0) return 0;
+  const aSet = new Set(a);
+  const bSet = new Set(b);
+  let overlap = 0;
+  for (const token of aSet) {
+    if (bSet.has(token)) overlap++;
+  }
+  return overlap / Math.max(aSet.size, bSet.size, 1);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CLIENT MONTHLY TOPICS — migration 0030
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function listClientMonthlyTopics(
+  db: D1Database,
+  clientId: string,
+  planMonth: string,
+  status: 'planned' | 'used' | 'skipped' | 'all' = 'all',
+): Promise<ClientMonthlyTopicRow[]> {
+  const conds = ['client_id = ?', 'plan_month = ?'];
+  const binds: unknown[] = [clientId, planMonth];
+  if (status !== 'all') {
+    conds.push('status = ?');
+    binds.push(status);
+  }
+  const rows = await db
+    .prepare(
+      `SELECT * FROM client_monthly_topics
+       WHERE ${conds.join(' AND ')}
+       ORDER BY priority DESC, created_at ASC`,
+    )
+    .bind(...binds)
+    .all<ClientMonthlyTopicRow>();
+  return rows.results;
+}
+
+export async function createClientMonthlyTopic(
+  db: D1Database,
+  data: Omit<ClientMonthlyTopicRow, 'created_at' | 'updated_at' | 'used_at'>,
+): Promise<ClientMonthlyTopicRow> {
+  const now = Math.floor(Date.now() / 1000);
+  await db
+    .prepare(
+      `INSERT INTO client_monthly_topics
+        (id, client_id, plan_month, topic_title, service_category, target_keyword,
+         content_type_preference, preferred_platforms, priority, status, notes,
+         used_post_id, created_by, created_at, updated_at, used_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+    )
+    .bind(
+      data.id,
+      data.client_id,
+      data.plan_month,
+      data.topic_title,
+      data.service_category ?? null,
+      data.target_keyword ?? null,
+      data.content_type_preference ?? null,
+      data.preferred_platforms ?? null,
+      data.priority ?? 0,
+      data.status ?? 'planned',
+      data.notes ?? null,
+      data.used_post_id ?? null,
+      data.created_by ?? null,
+      now,
+      now,
+    )
+    .run();
+  return (await db.prepare('SELECT * FROM client_monthly_topics WHERE id = ?').bind(data.id).first<ClientMonthlyTopicRow>())!;
+}
+
+export async function updateClientMonthlyTopic(
+  db: D1Database,
+  id: string,
+  data: Partial<ClientMonthlyTopicRow>,
+): Promise<void> {
+  const sets = Object.keys(data)
+    .filter((key) => !['id', 'client_id', 'created_at'].includes(key))
+    .map((key) => `${key} = ?`);
+  if (sets.length === 0) return;
+  sets.push('updated_at = ?');
+  const now = Math.floor(Date.now() / 1000);
+  const values = [
+    ...Object.entries(data)
+      .filter(([key]) => !['id', 'client_id', 'created_at'].includes(key))
+      .map(([, value]) => value),
+    now,
+    id,
+  ];
+  await db.prepare(`UPDATE client_monthly_topics SET ${sets.join(', ')} WHERE id = ?`).bind(...values).run();
+}
+
+export async function deleteClientMonthlyTopic(db: D1Database, id: string, clientId: string): Promise<void> {
+  await db.prepare('DELETE FROM client_monthly_topics WHERE id = ? AND client_id = ?').bind(id, clientId).run();
+}
+
+export async function markClientMonthlyTopicUsed(
+  db: D1Database,
+  topicId: string,
+  postId: string | null,
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await db
+    .prepare("UPDATE client_monthly_topics SET status = 'used', used_post_id = ?, used_at = ?, updated_at = ? WHERE id = ?")
+    .bind(postId, now, now, topicId)
+    .run();
+}
+
+export async function getNextClientMonthlyTopic(
+  db: D1Database,
+  clientId: string,
+  planMonth: string,
+  contentType: string | null = null,
+  platforms: string[] = [],
+): Promise<ClientMonthlyTopicRow | null> {
+  const topics = await listClientMonthlyTopics(db, clientId, planMonth, 'planned');
+  const requestedPlatforms = new Set(platforms);
+  const matching = topics.filter((topic) => {
+    if (topic.content_type_preference && contentType && topic.content_type_preference !== contentType) {
+      return false;
+    }
+    if (!topic.preferred_platforms || requestedPlatforms.size === 0) {
+      return true;
+    }
+    try {
+      const preferred = JSON.parse(topic.preferred_platforms) as string[];
+      return preferred.some((platform) => requestedPlatforms.has(platform));
+    } catch {
+      return true;
+    }
+  });
+  return matching[0] ?? null;
+}
+
+export async function hasAnyPlannedMonthlyTopics(
+  db: D1Database,
+  clientId: string,
+  planMonth: string,
+): Promise<boolean> {
+  const row = await db
+    .prepare(`SELECT COUNT(*) AS n
+              FROM client_monthly_topics
+              WHERE client_id = ? AND plan_month = ? AND status = 'planned'`)
+    .bind(clientId, planMonth)
+    .first<{ n: number }>();
+  return (row?.n ?? 0) > 0;
+}
+
+export async function findSimilarRecentPost(
+  db: D1Database,
+  clientId: string,
+  contentType: string,
+  candidateTopic: string,
+  publishDate: string | null,
+  excludePostId: string | null = null,
+): Promise<PostRow | null> {
+  const baseDate = (publishDate ?? '').slice(0, 10) || new Date().toISOString().slice(0, 10);
+  const rows = await db
+    .prepare(
+      `SELECT * FROM posts
+       WHERE client_id = ?
+         AND content_type = ?
+         AND status NOT IN ('cancelled')
+         AND substr(COALESCE(publish_date, ''), 1, 10) >= date(?, '-90 day')
+       ORDER BY updated_at DESC
+       LIMIT 80`,
+    )
+    .bind(clientId, contentType, baseDate)
+    .all<PostRow>();
+
+  const candidateFingerprint = normalizeTopicFingerprint(candidateTopic);
+  for (const row of rows.results) {
+    if (excludePostId && row.id === excludePostId) continue;
+    const comparisons = [
+      row.title,
+      row.target_keyword,
+      row.master_caption?.slice(0, 180) ?? null,
+    ];
+    for (const comparison of comparisons) {
+      const comparisonFingerprint = normalizeTopicFingerprint(comparison);
+      if (!comparisonFingerprint) continue;
+      if (comparisonFingerprint === candidateFingerprint) return row;
+      if (topicSimilarity(candidateTopic, comparison) >= 0.74) return row;
+    }
+  }
+  return null;
 }

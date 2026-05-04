@@ -19,8 +19,8 @@ System: health check, stuck jobs, failed posts, fix suggestions, stats.
 
 ## Content operator mode (new)
 Single post:
-  • create_content_with_image — autonomously create one post with content + image for one client (any platforms). Accepts a specific topic or auto-researches.
-  • create_post_for_platform  — manual stub (no image) for one platform.
+  • create_content_with_image — autonomously create one post with content + image for one client (any platforms). If multiple platforms are requested for the same piece of content, use one call with platforms[].
+  • create_post_for_platform  — manual stub (no image) for one platform only. Never split a multi-platform request into multiple posts unless the user explicitly asks for separate posts.
 
 Batch creation:
   • batch_create_content — create N posts in one call. Accepts an explicit topics[] list, or set use_queue:true to consume from the client_topics backlog. Supports blog-only, social-only, or mixed content types. Spreads posts across publish_date (spacing_days, default 1).
@@ -64,6 +64,7 @@ export const AGENT_MEMORY = `
 - When a recurring schedule fires in queue mode it consumes one topic per post (priority DESC then FIFO)
 - If the queue is empty the schedule falls through to auto research — this is NOT an error
 - When the user pastes a list without naming a client, ALWAYS ask for the client slug before inserting
+- Month-specific approved topic plans live in client_monthly_topics and take priority over auto research
 
 ## Batch Creation
 - batch_create_content can pass an explicit topics[] array OR use_queue:true

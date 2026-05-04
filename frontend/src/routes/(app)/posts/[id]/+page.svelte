@@ -8,11 +8,11 @@
   import MediaGallery from '$lib/components/ui/MediaGallery.svelte';
   // Spinner removed — loading state uses inline CSS spinner
   import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
-  import { can } from '$lib/stores/auth';
+  import { can, hasRole } from '$lib/stores/auth';
   import { toast } from '$lib/stores/ui';
   import { formatDate, formatDateTime, parsePlatforms } from '$lib/utils';
   import { getCompatiblePlatforms, getIncompatiblePlatforms, normalizeContentType } from '$lib/platforms';
-  import type { ConnectionHealth, Post, PostPlatform, PostAsset } from '$lib/types';
+  import type { ClientPlatform, ConnectionHealth, Post, PostPlatform, PostAsset } from '$lib/types';
 
   let post: Post | null = null;
   let platforms: PostPlatform[] = [];
@@ -25,6 +25,7 @@
   let checkingConnections = false;
   let connectionAccounts: ConnectionHealth[] = [];
   let connectionMessage = '';
+  let clientPlatformConfigs: ClientPlatform[] = [];
   let refreshingUrls = false;
   let autoRefreshHandle: ReturnType<typeof setInterval> | null = null;
   let duplicatingPost = false;
@@ -50,6 +51,14 @@
           assets = r.assets ?? [];
         } catch {
           // Keep rendering the local state if WP sync fails.
+        }
+      }
+      if (post?.client_slug) {
+        try {
+          const clientRes = await clientsApi.get(post.client_slug);
+          clientPlatformConfigs = clientRes.client.platforms ?? [];
+        } catch {
+          clientPlatformConfigs = [];
         }
       }
       if (post?.client_id) await loadConnectionHealth(post.client_id);
@@ -256,6 +265,9 @@
   let addPlatform = '';
   let generatingCaption = false;
   let allowAddPlatformOverride = false;
+  let platformDraft: string[] = [];
+  let savingPlatforms = false;
+  let platformDraftSource = '';
 
   // GBP settings edit state
   let editingGbp = false;
@@ -316,12 +328,75 @@
 
   $: gbpHasData = post && (post.gbp_topic_type || post.gbp_cta_type || post.gbp_event_title || post.gbp_coupon_code);
   $: gbpIsSelected = post && (JSON.parse(post.platforms ?? '[]') as string[]).includes('google_business');
+  $: canEditPlatforms = post
+    ? ['draft', 'pending_approval', 'approved', 'ready', 'scheduled'].includes(post.status ?? '')
+      || (post.status === 'posted' && hasRole('admin'))
+    : false;
+  $: {
+    const nextSource = post ? `${post.id}:${post.platforms ?? ''}:${post.platform_manual_override ?? 0}` : '';
+    if (nextSource !== platformDraftSource) {
+      platformDraftSource = nextSource;
+      platformDraft = post ? parsePlatforms(post.platforms) : [];
+      allowAddPlatformOverride = post?.platform_manual_override === 1;
+    }
+  }
 
   function getMissingPlatforms(p: typeof post): string[] {
     if (!p) return allPlatforms;
     const existing = JSON.parse(p.platforms ?? '[]') as string[];
     const missing = allPlatforms.filter(pl => !existing.includes(pl));
     return allowAddPlatformOverride ? missing : getCompatiblePlatforms(p.content_type, missing);
+  }
+
+  function togglePlatform(platform: string) {
+    if (!canEditPlatforms) return;
+    platformDraft = platformDraft.includes(platform)
+      ? platformDraft.filter((value) => value !== platform)
+      : [...platformDraft, platform];
+  }
+
+  function connectionState(platform: string): 'connected' | 'warning' | 'unavailable' {
+    const account = connectionAccounts.find((item) => item.platform === platform);
+    if (account) {
+      if (account.status === 'connected') return 'connected';
+      if (account.status === 'warning') return 'warning';
+    }
+    const configured = clientPlatformConfigs.find((item) => item.platform === platform && item.paused !== 1);
+    return configured ? 'warning' : 'unavailable';
+  }
+
+  function connectionLabel(platform: string): string {
+    const account = connectionAccounts.find((item) => item.platform === platform);
+    if (account?.message_es) return account.message_es;
+    if (clientPlatformConfigs.find((item) => item.platform === platform && item.paused !== 1)) {
+      return 'Configured, but connection status needs review.';
+    }
+    return 'Not connected for this client.';
+  }
+
+  function platformCardClass(platform: string): string {
+    const selected = platformDraft.includes(platform);
+    const compatible = getCompatiblePlatforms(post?.content_type, [platform]).length > 0;
+    if (selected && compatible) return 'border-accent bg-accent/10';
+    if (selected && !compatible) return 'border-yellow-500/50 bg-yellow-500/10';
+    return 'border-border bg-surface';
+  }
+
+  async function savePlatformSelection() {
+    if (!post) return;
+    savingPlatforms = true;
+    try {
+      await postsApi.update(post.id, {
+        platforms: platformDraft,
+        allow_platform_override: allowAddPlatformOverride,
+      });
+      toast.success('Platforms updated');
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to update platforms');
+    } finally {
+      savingPlatforms = false;
+    }
   }
 
   async function generateCaption() {
@@ -1016,48 +1091,95 @@
 
   <!-- Platforms tab -->
   {#if activeTab === 'platforms'}
-  <div class="card">
-    {#if platforms.length === 0}
-      <p class="text-sm text-muted text-center py-8">No platform tracking data yet.</p>
-    {:else}
-    <div class="flex justify-end px-4 pt-4">
+  <div class="space-y-4">
+    <div class="card p-4">
+      <div class="flex items-center justify-between gap-3 mb-3">
+        <div>
+          <h4 class="section-label">Platform Selection</h4>
+          <p class="text-xs text-muted mt-1">Select the platforms this post should use before approval or posting.</p>
+        </div>
+        {#if canEditPlatforms}
+          <button class="btn-primary btn-sm" on:click={savePlatformSelection} disabled={savingPlatforms}>
+            {savingPlatforms ? 'Saving…' : 'Save Platforms'}
+          </button>
+        {/if}
+      </div>
+      <label class="mb-3 flex items-center gap-2 text-xs text-muted cursor-pointer">
+        <input type="checkbox" bind:checked={allowAddPlatformOverride} class="rounded" disabled={!canEditPlatforms} />
+        Allow incompatible platform override
+      </label>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {#each allPlatforms as platform}
+          {@const selected = platformDraft.includes(platform)}
+          {@const compatible = getCompatiblePlatforms(post?.content_type, [platform]).length > 0}
+          {@const state = connectionState(platform)}
+          <button
+            class={`rounded-lg border p-3 text-left transition-colors ${platformCardClass(platform)}`}
+            disabled={!canEditPlatforms || (state === 'unavailable' && !selected)}
+            on:click={() => togglePlatform(platform)}
+          >
+            <div class="flex items-center justify-between gap-3 mb-2">
+              <PlatformBadge platform={platform} size="sm" />
+              <span class={`text-[11px] uppercase tracking-wide ${state === 'connected' ? 'text-accent' : state === 'warning' ? 'text-yellow-300' : 'text-muted'}`}>
+                {state}
+              </span>
+            </div>
+            <p class="text-xs text-muted">{connectionLabel(platform)}</p>
+            <p class={`text-xs mt-2 ${compatible ? 'text-green-300' : 'text-yellow-300'}`}>
+              {compatible ? 'Compatible with this content type' : `Incompatible with ${normalizeContentType(post?.content_type)}`}
+            </p>
+            <p class="text-xs mt-2 text-white">{selected ? 'Selected' : 'Not selected'}</p>
+          </button>
+        {/each}
+      </div>
+      {#if !canEditPlatforms}
+        <p class="text-xs text-muted mt-3">Platforms can be edited only while the post is draft, pending approval, approved, ready, or scheduled. Posted posts require admin override.</p>
+      {/if}
+    </div>
+
+    <div class="card">
+      {#if platforms.length === 0}
+        <p class="text-sm text-muted text-center py-8">No platform tracking data yet.</p>
+      {:else}
+      <div class="flex justify-end px-4 pt-4">
       <button class="btn-ghost btn-sm" on:click={() => refreshUrls(true)} disabled={refreshingUrls}>
         {refreshingUrls ? 'Refreshing…' : 'Refresh Published URLs'}
       </button>
-    </div>
-    <div class="table-wrapper">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>Platform</th>
-            <th>Status</th>
-            <th>Tracking ID</th>
-            <th>Published URL</th>
-            <th>Error</th>
-            <th>Attempted</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each platforms as pt}
+      </div>
+      <div class="table-wrapper">
+        <table class="data-table">
+          <thead>
             <tr>
-              <td><PlatformBadge platform={pt.platform} /></td>
-              <td><Badge status={pt.status ?? 'pending'} /></td>
-              <td class="font-mono text-xs text-muted">{pt.tracking_id ?? '—'}</td>
-              <td class="text-xs">
-                {#if pt.real_url}
-                  <a href={pt.real_url} target="_blank" class="text-accent hover:underline">View →</a>
-                {:else}
-                  <span class="text-muted">{pt.tracking_id ? 'Pendiente de sincronización' : '—'}</span>
-                {/if}
-              </td>
-              <td class="text-xs text-red-400 max-w-xs truncate" title={pt.error_message ?? ''}>{errorInSpanish(pt.error_message)}</td>
-              <td class="text-xs text-muted">{pt.attempted_at ? formatDate(pt.attempted_at) : '—'}</td>
+              <th>Platform</th>
+              <th>Status</th>
+              <th>Tracking ID</th>
+              <th>Published URL</th>
+              <th>Error</th>
+              <th>Attempted</th>
             </tr>
-          {/each}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {#each platforms as pt}
+              <tr>
+                <td><PlatformBadge platform={pt.platform} /></td>
+                <td><Badge status={pt.status ?? 'pending'} /></td>
+                <td class="font-mono text-xs text-muted">{pt.tracking_id ?? '—'}</td>
+                <td class="text-xs">
+                  {#if pt.real_url}
+                    <a href={pt.real_url} target="_blank" class="text-accent hover:underline">View →</a>
+                  {:else}
+                    <span class="text-muted">{pt.tracking_id ? 'Pendiente de sincronización' : '—'}</span>
+                  {/if}
+                </td>
+                <td class="text-xs text-red-400 max-w-xs truncate" title={pt.error_message ?? ''}>{errorInSpanish(pt.error_message)}</td>
+                <td class="text-xs text-muted">{pt.attempted_at ? formatDate(pt.attempted_at) : '—'}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+      {/if}
     </div>
-    {/if}
   </div>
   {/if}
 

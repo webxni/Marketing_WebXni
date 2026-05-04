@@ -164,7 +164,7 @@ const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'create_post_for_platform',
-      description: 'Create a new post targeting one specific platform for a client.',
+      description: 'Create one manual stub post targeting exactly one platform for a client. Never use this for multi-platform requests.',
       parameters: {
         type: 'object',
         properties: {
@@ -584,6 +584,7 @@ const AGENT_TOOLS = [
       name: 'create_content_with_image',
       description: `Autonomously create a post: write content (OpenAI) + generate image (Stability AI) + save as pending_approval + notify Discord.
 Use for: "Create content for X about Y", "Make an Instagram post for Z", "Create a Google Business post with image", "Create a blog post answering Q".
+If the user asks for one piece of content on multiple platforms, call this tool once with a platforms array. Do not create one separate post per platform unless the user explicitly asks for separate posts.
 Runs image generation in the background — returns the post ID immediately.
 If no topic is specified, the system researches the best topic automatically.`,
       parameters: {

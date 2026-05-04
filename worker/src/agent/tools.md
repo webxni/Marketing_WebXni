@@ -12,8 +12,8 @@ All client/post mutations are automatically audit-logged. Always use these exact
 - `list_client_topics { client, status?, limit? }`
 
 ## Single-post creation
-- `create_post_for_platform { client, platform, title, caption?, publish_date?, content_type? }` — manual stub (no image)
-- `create_content_with_image { client, platforms?, content_type?, topic?, publish_date?, status? }` — full orchestration (content + image + Discord notify)
+- `create_post_for_platform { client, platform, title, caption?, publish_date?, content_type? }` — manual stub (no image) for one platform only
+- `create_content_with_image { client, platforms?, content_type?, topic?, publish_date?, status? }` — full orchestration (content + image + Discord notify). Use one call for one post even if multiple platforms were requested.
 
 ## Batch + recurring creation
 - `batch_create_content { client, count?, content_type?, platforms?, topic?, topics[]?, use_queue?, start_date?, spacing_days?, status? }` — up to 20 posts in one call.

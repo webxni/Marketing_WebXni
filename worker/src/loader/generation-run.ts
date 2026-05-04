@@ -31,11 +31,15 @@ import {
   getClientPlatforms,
   getClientGbpLocations,
   createPost,
+  findSimilarRecentPost,
   updatePost,
   getPostByAutomationSlot,
+  getNextClientMonthlyTopic,
+  hasAnyPlannedMonthlyTopics,
   updateGenerationProgress,
   appendGenerationLog,
   appendGenerationError,
+  markClientMonthlyTopicUsed,
   storeGenerationPlan,
   finalizeGenerationRun,
   getGenerationRunById,
@@ -254,6 +258,41 @@ function buildDatesRaw(periodStart: string, periodEnd: string, frequency: string
     d.setUTCDate(d.getUTCDate() + 1);
   }
   return dates;
+}
+
+function planMonth(date: string): string {
+  return date.slice(0, 7);
+}
+
+async function buildMonthlyTopicResearch(
+  db: D1Database,
+  clientId: string,
+  date: string,
+  contentType: string,
+  platforms: string[],
+  serviceAreas: string[],
+): Promise<{ monthlyTopicId: string | null; topicResearch: TopicResearch | null; strictMonthlyPlan: boolean }> {
+  const month = planMonth(date);
+  const strictMonthlyPlan = await hasAnyPlannedMonthlyTopics(db, clientId, month);
+  if (!strictMonthlyPlan) {
+    return { monthlyTopicId: null, topicResearch: null, strictMonthlyPlan: false };
+  }
+  const monthlyTopic = await getNextClientMonthlyTopic(db, clientId, month, contentType, platforms);
+  if (!monthlyTopic) {
+    return { monthlyTopicId: null, topicResearch: null, strictMonthlyPlan: true };
+  }
+  return {
+    monthlyTopicId: monthlyTopic.id,
+    strictMonthlyPlan: true,
+    topicResearch: {
+      topic: monthlyTopic.topic_title,
+      angle: monthlyTopic.service_category ?? 'monthly-plan',
+      format: 'quick_explainer',
+      targetKeyword: monthlyTopic.target_keyword?.trim() || monthlyTopic.topic_title.toLowerCase().split(' ').slice(0, 4).join(' '),
+      localModifier: serviceAreas[0] ?? '',
+      searchQuestion: monthlyTopic.notes?.trim() || monthlyTopic.topic_title,
+    },
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -722,7 +761,12 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
   // carries researched topic / keyword / format data.
   const primaryKey = resolveProviderApiKey(env, settings, provider);
   let topicResearch: TopicResearch | null = null;
-  if (primaryKey) {
+  const monthlyTopic = await buildMonthlyTopicResearch(db, client.id, slot.date, slot.content_type, platforms, serviceAreas);
+  if (monthlyTopic.strictMonthlyPlan && !monthlyTopic.topicResearch) {
+    throw new Error(`Monthly topic plan exists for ${planMonth(slot.date)}, but no compatible planned topic is available for ${slot.content_type}.`);
+  }
+  topicResearch = monthlyTopic.topicResearch;
+  if (!topicResearch && primaryKey) {
     topicResearch = await researchTopicWithProvider(provider, primaryKey, researchParams, settings).catch(() => null);
   }
   if (!topicResearch && provider === 'claude') {
@@ -817,22 +861,32 @@ export async function saveGeneratedSlotResult(
   );
   const overwriteExisting = run.overwrite_existing === 1;
   const merged = mergeGeneratedContent(existingPost as unknown as Record<string, string | null | undefined>, generatedPost as unknown as Record<string, string | undefined>, overwriteExisting);
+  const monthlyTopic = await buildMonthlyTopicResearch(db, client.id, slot.date, slot.content_type, platforms, []);
+  const duplicatePost = await findSimilarRecentPost(
+    db,
+    client.id,
+    normalizeContentType(slot.content_type),
+    merged.title ?? generatedPost.title ?? '',
+    `${slot.date}T${postTime}`,
+    existingPost?.id ?? null,
+  );
+  const targetPost = existingPost ?? duplicatePost;
   const isBlogSlot = normalizeContentType(slot.content_type) === 'blog';
   const blogGbpDefaults = isBlogSlot
     ? { gbp_cta_type: 'LEARN_MORE' as string, gbp_topic_type: 'STANDARD' as string }
     : {};
 
   let outcome: 'created' | 'updated' | 'skipped' = 'skipped';
-  if (existingPost) {
-    const nextPlatforms = existingPost.platform_manual_override === 1 && parsePlatforms(existingPost.platforms).length > 0
-      ? parsePlatforms(existingPost.platforms)
+  if (targetPost) {
+    const nextPlatforms = targetPost.platform_manual_override === 1 && parsePlatforms(targetPost.platforms).length > 0
+      ? parsePlatforms(targetPost.platforms)
       : platforms;
-    await updatePost(db, existingPost.id, {
+    await updatePost(db, targetPost.id, {
       title: merged.title,
       content_type: normalizeContentType(slot.content_type),
       platforms: JSON.stringify(nextPlatforms),
-      publish_date: existingPost.publish_date ?? `${slot.date}T${postTime}`,
-      platform_manual_override: existingPost.platform_manual_override ?? 0,
+      publish_date: targetPost.publish_date ?? `${slot.date}T${postTime}`,
+      platform_manual_override: targetPost.platform_manual_override ?? 0,
       automation_slot_key: slot.slot_key,
       generation_run_id: runId,
       scheduled_by_automation: 1,
@@ -856,6 +910,9 @@ export async function saveGeneratedSlotResult(
       ...merged,
     } as Parameters<typeof createPost>[1]);
     outcome = 'created';
+  }
+  if (monthlyTopic.monthlyTopicId) {
+    await markClientMonthlyTopicUsed(db, monthlyTopic.monthlyTopicId, targetPost?.id ?? null);
   }
 
   return finalizeSlotProgress(db, env, runId, slotIdx + 1, outcome, client.canonical_name, slots, async () => undefined);
@@ -1001,8 +1058,17 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
 
       // Topic research — directs this post to a specific, non-repetitive, SEO-aware topic
       let topicResearch: TopicResearch | null = null;
+      let monthlyTopicId: string | null = null;
+      const monthlyTopic = await buildMonthlyTopicResearch(db, client.id, slot.date, slot.content_type, platforms, serviceAreas);
+      if (monthlyTopic.strictMonthlyPlan && !monthlyTopic.topicResearch) {
+        await log('WARN', `${postKey}: monthly plan exists for ${planMonth(slot.date)} but no compatible planned topic matched this slot`);
+        return await finishSlot(slot_idx + 1, 'skipped', clientName, slots);
+      }
+      monthlyTopicId = monthlyTopic.monthlyTopicId;
+      topicResearch = monthlyTopic.topicResearch;
       try {
-        topicResearch = await researchTopicWithProvider(provider, apiKey, {
+        if (!topicResearch) {
+          topicResearch = await researchTopicWithProvider(provider, apiKey, {
           client: {
             canonical_name: client.canonical_name,
             industry:       client.industry,
@@ -1022,7 +1088,8 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
           recentFormats,
           serviceAreas,
           serviceNames,
-        }, settings);
+          }, settings);
+        }
         if (topicResearch) {
           await log('AI', `Topic: "${topicResearch.topic}" [${topicResearch.format}] kw: "${topicResearch.targetKeyword}"`);
         }
@@ -1094,16 +1161,26 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         ? { gbp_cta_type: 'LEARN_MORE' as string, gbp_topic_type: 'STANDARD' as string }
         : {};
 
-      if (existingPost) {
-        const nextPlatforms = existingPost.platform_manual_override === 1 && parsePlatforms(existingPost.platforms).length > 0
-          ? parsePlatforms(existingPost.platforms)
+      const duplicatePost = await findSimilarRecentPost(
+        db,
+        client.id,
+        normalizeContentType(slot.content_type),
+        merged.title ?? genResult.post.title ?? '',
+        `${slot.date}T${postTime}`,
+        existingPost?.id ?? null,
+      );
+      const targetPost = existingPost ?? duplicatePost;
+
+      if (targetPost) {
+        const nextPlatforms = targetPost.platform_manual_override === 1 && parsePlatforms(targetPost.platforms).length > 0
+          ? parsePlatforms(targetPost.platforms)
           : platforms;
-        await updatePost(db, existingPost.id, {
+        await updatePost(db, targetPost.id, {
           title: merged.title,
           content_type: normalizeContentType(slot.content_type),
           platforms: JSON.stringify(nextPlatforms),
-          publish_date: existingPost.publish_date ?? `${slot.date}T${postTime}`,
-          platform_manual_override: existingPost.platform_manual_override ?? 0,
+          publish_date: targetPost.publish_date ?? `${slot.date}T${postTime}`,
+          platform_manual_override: targetPost.platform_manual_override ?? 0,
           automation_slot_key: slot.slot_key,
           generation_run_id: run_id,
           scheduled_by_automation: 1,
@@ -1111,9 +1188,12 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
           ...merged,
         });
         slotOutcome = 'updated';
-        await log('SAVED', `Updated post ${existingPost.id} for ${postKey}`);
+        if (monthlyTopicId) {
+          await markClientMonthlyTopicUsed(db, monthlyTopicId, targetPost.id);
+        }
+        await log('SAVED', `Updated post ${targetPost.id} for ${postKey}`);
       } else {
-        await createPost(db, {
+        const createdPost = await createPost(db, {
           client_id:           client.id,
           title:               merged.title ?? `${client.canonical_name} — ${slot.date}`,
           status:              'draft',
@@ -1128,6 +1208,9 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
           ...merged,
         } as Parameters<typeof createPost>[1]);
         slotOutcome = 'created';
+        if (monthlyTopicId) {
+          await markClientMonthlyTopicUsed(db, monthlyTopicId, createdPost.id);
+        }
         await log('SAVED', `Created post ${slot_idx + 1}/${slots.length}: "${genResult.post.title?.slice(0, 55) ?? '(no title)'}" — ${slot.client_slug}`);
       }
       await log('INFO', `Save done: ${postKey} (${Date.now() - saveStarted}ms)`);

@@ -1,5 +1,5 @@
 import { api } from './client';
-import type { Client, ClientPlatform, ConnectionHealth } from '../types';
+import type { Client, ClientPlatform, ClientMonthlyTopic, ConnectionHealth } from '../types';
 
 export interface PlatformConfigWarning {
   code: string;
@@ -157,4 +157,22 @@ export const clientsApi = {
 
   deleteFeedback: (slug: string, id: string) =>
     api.delete(`/api/clients/${slug}/feedback/${id}`),
+
+  getMonthlyTopics: (slug: string, month: string, status = 'all') =>
+    api.get<{ topics: ClientMonthlyTopic[] }>(`/api/clients/${slug}/monthly-topics?month=${encodeURIComponent(month)}&status=${encodeURIComponent(status)}`),
+
+  createMonthlyTopic: (slug: string, data: Record<string, unknown>) =>
+    api.post<{ topic: ClientMonthlyTopic }>(`/api/clients/${slug}/monthly-topics`, data),
+
+  bulkCreateMonthlyTopics: (slug: string, data: Record<string, unknown>) =>
+    api.post<{ inserted: number }>(`/api/clients/${slug}/monthly-topics/bulk`, data),
+
+  suggestMonthlyTopics: (slug: string, data: Record<string, unknown>) =>
+    api.post<{ suggestions: ClientMonthlyTopic[] }>(`/api/clients/${slug}/monthly-topics/suggest`, data),
+
+  updateMonthlyTopic: (slug: string, topicId: string, data: Record<string, unknown>) =>
+    api.put<{ topic: ClientMonthlyTopic }>(`/api/clients/${slug}/monthly-topics/${topicId}`, data),
+
+  deleteMonthlyTopic: (slug: string, topicId: string) =>
+    api.delete(`/api/clients/${slug}/monthly-topics/${topicId}`),
 };

@@ -408,3 +408,22 @@ export interface ClientTopicRow {
   created_at:   number;
   used_at:      number | null;
 }
+
+export interface ClientMonthlyTopicRow {
+  id:                      string;
+  client_id:               string;
+  plan_month:              string;
+  topic_title:             string;
+  service_category:        string | null;
+  target_keyword:          string | null;
+  content_type_preference: string | null;
+  preferred_platforms:     string | null;
+  priority:                number;
+  status:                  string;
+  notes:                   string | null;
+  used_post_id:            string | null;
+  created_by:              string | null;
+  created_at:              number;
+  updated_at:              number;
+  used_at:                 number | null;
+}

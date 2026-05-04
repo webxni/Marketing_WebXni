@@ -258,6 +258,15 @@ postRoutes.put('/:id', async (c) => {
     Object.prototype.hasOwnProperty.call(body, 'asset_type');
 
   if (shouldValidatePlatforms) {
+    const editableStatuses = new Set(['draft', 'pending_approval', 'approved', 'ready', 'scheduled']);
+    const user = c.get('user');
+    const isAdminOverride = user.role === 'admin';
+    if (!editableStatuses.has(post.status ?? '') && !(post.status === 'posted' && isAdminOverride)) {
+      return c.json({ error: 'Platforms cannot be changed after posting unless admin override is used.' }, 409);
+    }
+  }
+
+  if (shouldValidatePlatforms) {
     const clientConfig = await getClientWithConfig(c.env.DB, post.client_id);
     if (!clientConfig) return c.json({ error: 'Client not found' }, 404);
 

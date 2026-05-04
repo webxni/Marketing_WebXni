@@ -15,7 +15,16 @@
  */
 
 import type { Env, ClientRow } from '../types';
-import { createPost, getClientBySlug, getClientPlatforms, updatePost } from '../db/queries';
+import {
+  createPost,
+  findSimilarRecentPost,
+  getClientBySlug,
+  getClientPlatforms,
+  getNextClientMonthlyTopic,
+  hasAnyPlannedMonthlyTopics,
+  markClientMonthlyTopicUsed,
+  updatePost,
+} from '../db/queries';
 import {
   generatePostContent,
   researchTopic,
@@ -42,6 +51,7 @@ import {
 } from '../services/stability';
 import { serializeBlogBodyImages, type BlogBodyImage } from '../modules/blog-body-images';
 import { discordSend, DISCORD_COLORS } from '../services/discord';
+import { normalizePlatform, parsePlatforms, resolvePlatformSelection } from '../modules/platform-compatibility';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -103,6 +113,10 @@ function str(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+function monthFromPublishDate(value: string): string {
+  return value.slice(0, 7);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Main orchestration
 // ─────────────────────────────────────────────────────────────────────────────
@@ -119,24 +133,36 @@ export async function createContentWithImage(
   if (!client) throw new Error(`Client not found: ${params.clientSlug}`);
 
   const contentType = normalizeContentType(params.contentType);
+  const clientPlatforms = await getClientPlatforms(db, client.id);
 
   // ── 2. Resolve platforms ────────────────────────────────────────────────────
-  let platforms: string[] = params.platforms ?? [];
-  if (platforms.length === 0) {
-    const clientPlatforms = await getClientPlatforms(db, client.id);
-    platforms = clientPlatforms.map(p => p.platform).filter(Boolean);
-    // Filter to content-type compatible platforms
-    if (contentType === 'blog') {
-      platforms = ['website_blog'];
-    } else if (contentType === 'reel') {
-      const REEL_COMPATIBLE = new Set(['facebook', 'instagram', 'tiktok', 'youtube']);
-      platforms = platforms.filter(p => REEL_COMPATIBLE.has(p));
+  const requestedPlatforms = (params.platforms ?? []).map((platform) => normalizePlatform(platform));
+  const selection = resolvePlatformSelection({
+    contentType,
+    requestedPlatforms,
+    clientPlatforms,
+  });
+  if (requestedPlatforms.length > 0) {
+    const unavailable = requestedPlatforms.filter((platform) => !selection.availableClientPlatforms.includes(platform));
+    if (unavailable.length > 0) {
+      throw new Error(`Requested platforms are not connected for ${client.canonical_name}: ${unavailable.join(', ')}`);
+    }
+    if (selection.incompatible.length > 0) {
+      throw new Error(`Requested platforms are incompatible with ${contentType}: ${selection.incompatible.join(', ')}`);
     }
   }
-  if (platforms.length === 0) platforms = ['facebook', 'instagram'];
+  const brokenConnections = clientPlatforms
+    .filter((platform) => selection.selected.includes(normalizePlatform(platform.platform)))
+    .filter((platform) => platform.connection_status === 'failed')
+    .map((platform) => normalizePlatform(platform.platform));
+  if (brokenConnections.length > 0) {
+    throw new Error(`Requested platforms are connected in config but currently unavailable: ${brokenConnections.join(', ')}`);
+  }
+  const platforms = selection.selected.length > 0 ? selection.selected : ['facebook', 'instagram'];
 
   // ── 3. Resolve publish date ─────────────────────────────────────────────────
   const publishDate = params.publishDate ?? `${today()}T10:00`;
+  const planMonth = monthFromPublishDate(publishDate);
 
   // ── 4. Load intelligence + service context ──────────────────────────────────
   const [intel, fbRows, recRows, svcAreaRows, svcNameRows] = await Promise.all([
@@ -161,16 +187,36 @@ export async function createContentWithImage(
 
   // ── 5. Topic research ───────────────────────────────────────────────────────
   let topicResearch: TopicResearch | null = null;
+  let monthlyTopicId: string | null = null;
+  let resolvedTopicOverride = params.topicOverride?.trim() || null;
+  const hasMonthlyPlan = await hasAnyPlannedMonthlyTopics(db, client.id, planMonth);
 
-  if (params.topicOverride) {
+  if (!resolvedTopicOverride && hasMonthlyPlan) {
+    const monthlyTopic = await getNextClientMonthlyTopic(db, client.id, planMonth, contentType, platforms);
+    if (!monthlyTopic) {
+      throw new Error(`Monthly topic plan exists for ${planMonth}, but no compatible planned topic is available for ${contentType}.`);
+    }
+    monthlyTopicId = monthlyTopic.id;
+    resolvedTopicOverride = monthlyTopic.topic_title;
+    topicResearch = {
+      topic: monthlyTopic.topic_title,
+      angle: monthlyTopic.service_category ?? 'monthly-plan',
+      format: 'quick_explainer',
+      targetKeyword: monthlyTopic.target_keyword?.trim() || monthlyTopic.topic_title.toLowerCase().split(' ').slice(0, 4).join(' '),
+      localModifier: serviceAreas[0] ?? '',
+      searchQuestion: monthlyTopic.notes?.trim() || monthlyTopic.topic_title,
+    };
+  }
+
+  if (resolvedTopicOverride) {
     // User supplied a specific topic — use it directly
     topicResearch = {
-      topic:          params.topicOverride,
+      topic:          resolvedTopicOverride,
       angle:          'user-specified',
       format:         'quick_explainer',
-      targetKeyword:  params.topicOverride.toLowerCase().split(' ').slice(0, 4).join(' '),
+      targetKeyword:  resolvedTopicOverride.toLowerCase().split(' ').slice(0, 4).join(' '),
       localModifier:  serviceAreas[0] ?? '',
-      searchQuestion: params.topicOverride,
+      searchQuestion: resolvedTopicOverride,
     };
   } else {
     try {
@@ -366,9 +412,15 @@ export async function createContentWithImage(
   // ── 8. Create post in DB ─────────────────────────────────────────────────────
   const finalStatus  = params.status ?? 'pending_approval';
   const assetDelivered = r2Key ? 1 : 0;
+  const duplicatePost = await findSimilarRecentPost(
+    db,
+    client.id,
+    contentType,
+    p.title ?? topicResearch?.topic ?? resolvedTopicOverride ?? '',
+    publishDate,
+  );
 
-  const newPost = await createPost(db, {
-    client_id:               client.id,
+  const payload = {
     title:                   p.title ?? `${client.canonical_name} — ${today()}`,
     status:                  finalStatus,
     content_type:            contentType,
@@ -404,18 +456,44 @@ export async function createContentWithImage(
     scheduled_by_automation: 0,
     platform_manual_override: 0,
     generation_run_id:       null,
-  });
+  } as const;
 
-  if (blogBodyImagesJson) {
-    await updatePost(db, newPost.id, { blog_body_images: blogBodyImagesJson });
+  const editableStatuses = new Set(['draft', 'pending_approval', 'approved', 'ready', 'scheduled']);
+  const targetPost = duplicatePost && editableStatuses.has(duplicatePost.status ?? '')
+    ? duplicatePost
+    : null;
+
+  let savedPost;
+  if (targetPost) {
+    const currentPlatforms = parsePlatforms(targetPost.platforms);
+    await updatePost(db, targetPost.id, {
+      ...payload,
+      platforms: JSON.stringify(requestedPlatforms.length > 0 ? platforms : Array.from(new Set([...currentPlatforms, ...platforms]))),
+    });
+    if (blogBodyImagesJson) {
+      await updatePost(db, targetPost.id, { blog_body_images: blogBodyImagesJson });
+    }
+    savedPost = (await db.prepare('SELECT * FROM posts WHERE id = ?').bind(targetPost.id).first()) as Awaited<ReturnType<typeof createPost>>;
+  } else {
+    savedPost = await createPost(db, {
+      client_id: client.id,
+      ...payload,
+    });
+    if (blogBodyImagesJson) {
+      await updatePost(db, savedPost.id, { blog_body_images: blogBodyImagesJson });
+    }
+  }
+
+  if (monthlyTopicId) {
+    await markClientMonthlyTopicUsed(db, monthlyTopicId, savedPost.id);
   }
 
   // ── 9. Discord notification ──────────────────────────────────────────────────
   if (params.notifyDiscord !== false) {
     try {
       await notifyDiscordContentCreated(env, {
-        postId:       newPost.id,
-        title:        newPost.title ?? '',
+        postId:       savedPost.id,
+        title:        savedPost.title ?? '',
         clientName:   client.canonical_name,
         platforms,
         publishDate,
@@ -431,8 +509,8 @@ export async function createContentWithImage(
   }
 
   return {
-    postId:       newPost.id,
-    title:        newPost.title ?? '',
+    postId:       savedPost.id,
+    title:        savedPost.title ?? '',
     platforms,
     imageStatus,
     imageAttempts,

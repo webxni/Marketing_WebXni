@@ -2,15 +2,22 @@
   import { page } from '$app/stores';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
-  import { postsApi } from '$lib/api';
+  import { clientsApi, postsApi } from '$lib/api';
   import Spinner from '$lib/components/ui/Spinner.svelte';
+  import PlatformBadge from '$lib/components/ui/PlatformBadge.svelte';
+  import { getCompatiblePlatforms, normalizeContentType } from '$lib/platforms';
+  import { hasRole } from '$lib/stores/auth';
   import { toast } from '$lib/stores/ui';
-  import type { Post } from '$lib/types';
+  import type { ClientPlatform, Post } from '$lib/types';
 
   let post: Post | null = null;
   let loading = true;
   let saving = false;
   let savingAndPublishing = false;
+  let clientPlatformConfigs: ClientPlatform[] = [];
+  let platformDraft: string[] = [];
+  let allowPlatformOverride = false;
+  const allPlatforms = ['facebook','instagram','linkedin','x','threads','tiktok','pinterest','bluesky','google_business','youtube','website_blog'];
 
   // Core fields
   let title = '';
@@ -63,6 +70,10 @@
   $: isGbp        = post ? JSON.parse(post.platforms ?? '[]').includes('google_business') : false;
   // Multi-location GBP overrides only for ETB — extend this check when adding future multi-location clients
   $: isEtb        = post?.client_slug === 'elite-team-builders';
+  $: canEditPlatforms = post
+    ? ['draft', 'pending_approval', 'approved', 'ready', 'scheduled'].includes(post.status ?? '')
+      || (post.status === 'posted' && hasRole('admin'))
+    : false;
 
   onMount(async () => {
     try {
@@ -70,6 +81,12 @@
       if (!postId) return;
       const r = await postsApi.get(postId);
       post = r.post;
+      platformDraft = post ? JSON.parse(post.platforms ?? '[]') : [];
+      allowPlatformOverride = post?.platform_manual_override === 1;
+      if (post?.client_slug) {
+        const clientRes = await clientsApi.get(post.client_slug);
+        clientPlatformConfigs = clientRes.client.platforms ?? [];
+      }
       // Core
       title          = post.title ?? '';
       publishDate    = post.publish_date ?? '';
@@ -154,6 +171,8 @@
         ai_image_prompt:     ai_image_prompt || null,
         ai_video_prompt:     ai_video_prompt || null,
         canva_link:          canva_link || null,
+        platforms:           platformDraft,
+        allow_platform_override: allowPlatformOverride,
       });
       if (updateWordPress && isBlog && post?.wp_post_id) {
         const targetStatus = post.wp_post_status === 'publish' ? 'publish' : 'draft';
@@ -166,6 +185,15 @@
       saving = false;
       savingAndPublishing = false;
     }
+  }
+
+  function togglePlatform(platform: string) {
+    if (!canEditPlatforms) return;
+    const configured = clientPlatformConfigs.find((item) => item.platform === platform && item.paused !== 1);
+    if (!configured) return;
+    platformDraft = platformDraft.includes(platform)
+      ? platformDraft.filter((value) => value !== platform)
+      : [...platformDraft, platform];
   }
 </script>
 
@@ -216,6 +244,40 @@
         <input id="canva_link" type="url" bind:value={canva_link} placeholder="https://www.canva.com/design/…" class="input w-full" />
       </div>
     </div>
+  </div>
+
+  <div class="card p-5 mb-6">
+    <div class="flex items-center justify-between gap-3 mb-3">
+      <h3 class="section-label">Platforms</h3>
+      <label class="flex items-center gap-2 text-xs text-muted cursor-pointer">
+        <input type="checkbox" bind:checked={allowPlatformOverride} class="rounded" disabled={!canEditPlatforms} />
+        Allow incompatible override
+      </label>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      {#each allPlatforms as platform}
+        {@const configured = clientPlatformConfigs.find((item) => item.platform === platform && item.paused !== 1)}
+        {@const compatible = getCompatiblePlatforms(post?.content_type, [platform]).length > 0}
+        <button
+          class={`rounded-lg border p-3 text-left ${platformDraft.includes(platform) ? compatible ? 'border-accent bg-accent/10' : 'border-yellow-500/50 bg-yellow-500/10' : 'border-border bg-surface'}`}
+          disabled={!configured || !canEditPlatforms}
+          on:click={() => togglePlatform(platform)}
+        >
+          <div class="flex items-center justify-between gap-3 mb-2">
+            <PlatformBadge platform={platform} size="sm" />
+            <span class={`text-[11px] uppercase tracking-wide ${configured ? 'text-accent' : 'text-muted'}`}>
+              {configured ? 'connected' : 'unavailable'}
+            </span>
+          </div>
+          <p class={`text-xs ${compatible ? 'text-green-300' : 'text-yellow-300'}`}>
+            {compatible ? 'Compatible' : `Incompatible with ${normalizeContentType(post?.content_type)}`}
+          </p>
+        </button>
+      {/each}
+    </div>
+    {#if !canEditPlatforms}
+      <p class="text-xs text-muted mt-3">Platform changes are locked for this status unless admin override applies.</p>
+    {/if}
   </div>
 
   <!-- Tabs -->
