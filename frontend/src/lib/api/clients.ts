@@ -1,5 +1,5 @@
 import { api } from './client';
-import type { Client, ClientPlatform, ClientMonthlyTopic, ConnectionHealth } from '../types';
+import type { Client, ClientPlatform, ClientMonthlyContentPlan, ClientMonthlyTopic, ConnectionHealth } from '../types';
 
 export interface PlatformConfigWarning {
   code: string;
@@ -161,11 +161,20 @@ export const clientsApi = {
   getMonthlyTopics: (slug: string, month: string, status = 'all') =>
     api.get<{ topics: ClientMonthlyTopic[] }>(`/api/clients/${slug}/monthly-topics?month=${encodeURIComponent(month)}&status=${encodeURIComponent(status)}`),
 
+  getMonthlyContentPlan: (slug: string, month: string) =>
+    api.get<{ plan: ClientMonthlyContentPlan | null }>(`/api/clients/${slug}/monthly-plan?month=${encodeURIComponent(month)}`),
+
+  saveMonthlyContentPlan: (slug: string, data: Record<string, unknown>) =>
+    api.put<{ plan: ClientMonthlyContentPlan }>(`/api/clients/${slug}/monthly-plan`, data),
+
   createMonthlyTopic: (slug: string, data: Record<string, unknown>) =>
     api.post<{ topic: ClientMonthlyTopic }>(`/api/clients/${slug}/monthly-topics`, data),
 
   bulkCreateMonthlyTopics: (slug: string, data: Record<string, unknown>) =>
     api.post<{ inserted: number }>(`/api/clients/${slug}/monthly-topics/bulk`, data),
+
+  parseMonthlyTopics: (slug: string, data: Record<string, unknown>) =>
+    api.post<{ topics: ClientMonthlyTopic[] }>(`/api/clients/${slug}/monthly-topics/parse`, data),
 
   suggestMonthlyTopics: (slug: string, data: Record<string, unknown>) =>
     api.post<{ suggestions: ClientMonthlyTopic[] }>(`/api/clients/${slug}/monthly-topics/suggest`, data),

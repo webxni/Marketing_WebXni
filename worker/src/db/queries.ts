@@ -14,6 +14,7 @@ import type {
   ContentRequestRow,
   ClientTopicRow,
   ClientMonthlyTopicRow,
+  ClientMonthlyContentPlanRow,
 } from '../types';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1344,7 +1345,7 @@ export async function listClientMonthlyTopics(
   db: D1Database,
   clientId: string,
   planMonth: string,
-  status: 'planned' | 'used' | 'skipped' | 'all' = 'all',
+  status: 'planned' | 'approved' | 'used' | 'skipped' | 'all' = 'all',
 ): Promise<ClientMonthlyTopicRow[]> {
   const conds = ['client_id = ?', 'plan_month = ?'];
   const binds: unknown[] = [clientId, planMonth];
@@ -1363,6 +1364,66 @@ export async function listClientMonthlyTopics(
   return rows.results;
 }
 
+export async function getClientMonthlyContentPlan(
+  db: D1Database,
+  clientId: string,
+  planMonth: string,
+): Promise<ClientMonthlyContentPlanRow | null> {
+  return await db
+    .prepare(`SELECT * FROM client_monthly_content_plans
+              WHERE client_id = ? AND plan_month = ?
+              LIMIT 1`)
+    .bind(clientId, planMonth)
+    .first<ClientMonthlyContentPlanRow>();
+}
+
+export async function upsertClientMonthlyContentPlan(
+  db: D1Database,
+  data: Omit<ClientMonthlyContentPlanRow, 'id' | 'created_at' | 'updated_at'>,
+): Promise<ClientMonthlyContentPlanRow> {
+  const now = Math.floor(Date.now() / 1000);
+  const existing = await getClientMonthlyContentPlan(db, data.client_id, data.plan_month);
+  if (!existing) {
+    const id = crypto.randomUUID().replace(/-/g, '').toLowerCase();
+    await db
+      .prepare(
+        `INSERT INTO client_monthly_content_plans
+          (id, client_id, plan_month, monthly_focus, promotion_notes, priority_services, notes, created_by, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        id,
+        data.client_id,
+        data.plan_month,
+        data.monthly_focus ?? null,
+        data.promotion_notes ?? null,
+        data.priority_services ?? null,
+        data.notes ?? null,
+        data.created_by ?? null,
+        now,
+        now,
+      )
+      .run();
+    return (await db.prepare('SELECT * FROM client_monthly_content_plans WHERE id = ?').bind(id).first<ClientMonthlyContentPlanRow>())!;
+  }
+
+  await db
+    .prepare(`UPDATE client_monthly_content_plans
+              SET monthly_focus = ?, promotion_notes = ?, priority_services = ?, notes = ?, created_by = COALESCE(created_by, ?), updated_at = ?
+              WHERE id = ?`)
+    .bind(
+      data.monthly_focus ?? null,
+      data.promotion_notes ?? null,
+      data.priority_services ?? null,
+      data.notes ?? null,
+      data.created_by ?? null,
+      now,
+      existing.id,
+    )
+    .run();
+  return (await db.prepare('SELECT * FROM client_monthly_content_plans WHERE id = ?').bind(existing.id).first<ClientMonthlyContentPlanRow>())!;
+}
+
 export async function createClientMonthlyTopic(
   db: D1Database,
   data: Omit<ClientMonthlyTopicRow, 'created_at' | 'updated_at' | 'used_at'>,
@@ -1371,14 +1432,15 @@ export async function createClientMonthlyTopic(
   await db
     .prepare(
       `INSERT INTO client_monthly_topics
-        (id, client_id, plan_month, topic_title, service_category, target_keyword,
+        (id, client_id, plan_id, plan_month, topic_title, service_category, target_keyword,
          content_type_preference, preferred_platforms, priority, status, notes,
-         used_post_id, created_by, created_at, updated_at, used_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+         generated_post_id, used_post_id, created_by, created_at, updated_at, used_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
     )
     .bind(
       data.id,
       data.client_id,
+      data.plan_id ?? null,
       data.plan_month,
       data.topic_title,
       data.service_category ?? null,
@@ -1388,6 +1450,7 @@ export async function createClientMonthlyTopic(
       data.priority ?? 0,
       data.status ?? 'planned',
       data.notes ?? null,
+      data.generated_post_id ?? null,
       data.used_post_id ?? null,
       data.created_by ?? null,
       now,
@@ -1429,8 +1492,8 @@ export async function markClientMonthlyTopicUsed(
 ): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
   await db
-    .prepare("UPDATE client_monthly_topics SET status = 'used', used_post_id = ?, used_at = ?, updated_at = ? WHERE id = ?")
-    .bind(postId, now, now, topicId)
+    .prepare("UPDATE client_monthly_topics SET status = 'used', generated_post_id = ?, used_post_id = ?, used_at = ?, updated_at = ? WHERE id = ?")
+    .bind(postId, postId, now, now, topicId)
     .run();
 }
 
@@ -1441,7 +1504,7 @@ export async function getNextClientMonthlyTopic(
   contentType: string | null = null,
   platforms: string[] = [],
 ): Promise<ClientMonthlyTopicRow | null> {
-  const topics = await listClientMonthlyTopics(db, clientId, planMonth, 'planned');
+  const topics = await listClientMonthlyTopics(db, clientId, planMonth, 'approved');
   const requestedPlatforms = new Set(platforms);
   const matching = topics.filter((topic) => {
     if (topic.content_type_preference && contentType && topic.content_type_preference !== contentType) {
@@ -1460,7 +1523,7 @@ export async function getNextClientMonthlyTopic(
   return matching[0] ?? null;
 }
 
-export async function hasAnyPlannedMonthlyTopics(
+export async function hasAnyApprovedMonthlyTopics(
   db: D1Database,
   clientId: string,
   planMonth: string,
@@ -1468,7 +1531,7 @@ export async function hasAnyPlannedMonthlyTopics(
   const row = await db
     .prepare(`SELECT COUNT(*) AS n
               FROM client_monthly_topics
-              WHERE client_id = ? AND plan_month = ? AND status = 'planned'`)
+              WHERE client_id = ? AND plan_month = ? AND status = 'approved'`)
     .bind(clientId, planMonth)
     .first<{ n: number }>();
   return (row?.n ?? 0) > 0;

@@ -9,12 +9,135 @@ import {
   createClientMonthlyTopic,
   deleteClientMonthlyTopic,
   getClientBySlug,
+  getClientMonthlyContentPlan,
   listClientMonthlyTopics,
+  upsertClientMonthlyContentPlan,
   updateClientMonthlyTopic,
 } from '../db/queries';
 import { requirePermission } from '../middleware/auth';
 
 export const intelligenceRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
+
+const MONTHLY_TOPIC_STATUSES = new Set(['planned', 'approved', 'used', 'skipped']);
+
+type MonthlyTopicValidationContext = {
+  prohibitedTerms: string[];
+  recentFingerprints: string[];
+};
+
+function normalizeTopicFingerprint(value: string | null | undefined): string {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractPlatformList(value: string): string[] | null {
+  const map: Record<string, string> = {
+    fb: 'facebook',
+    facebook: 'facebook',
+    ig: 'instagram',
+    insta: 'instagram',
+    instagram: 'instagram',
+    google: 'google_business',
+    gbp: 'google_business',
+    google_business: 'google_business',
+    threads: 'threads',
+    linkedin: 'linkedin',
+    tiktok: 'tiktok',
+    youtube: 'youtube',
+    blog: 'website_blog',
+    website: 'website_blog',
+  };
+  const found = Array.from(new Set(
+    value
+      .toLowerCase()
+      .split(/[^a-z_]+/)
+      .map((part) => map[part])
+      .filter(Boolean),
+  ));
+  return found.length > 0 ? found : null;
+}
+
+function detectContentType(value: string): string | null {
+  const lower = value.toLowerCase();
+  if (/(^|\b)(blog|article|website blog)(\b|$)/.test(lower)) return 'blog';
+  if (/(^|\b)(reel|short|vertical video)(\b|$)/.test(lower)) return 'reel';
+  if (/(^|\b)(video|youtube)(\b|$)/.test(lower)) return 'video';
+  if (/(^|\b)(image|post|graphic|carousel)(\b|$)/.test(lower)) return 'image';
+  return null;
+}
+
+function detectKeyword(value: string): string | null {
+  const quoted = value.match(/"([^"]{4,80})"/);
+  if (quoted?.[1]) return quoted[1].trim();
+  const keywordMatch = value.match(/(?:keyword|seo)\s*[:\-]\s*([^|;]+)/i);
+  return keywordMatch?.[1]?.trim() ?? null;
+}
+
+function detectServiceCategory(value: string, services: string[]): string | null {
+  const lower = value.toLowerCase();
+  const direct = services.find((service) => lower.includes(service.toLowerCase()));
+  if (direct) return direct;
+  const tagged = value.match(/(?:service|category)\s*[:\-]\s*([^|;]+)/i);
+  return tagged?.[1]?.trim() ?? null;
+}
+
+function parseTopicLines(
+  linesRaw: string,
+  planMonth: string,
+  clientId: string,
+  createdBy: string,
+  services: string[],
+): Array<Record<string, unknown>> {
+  return linesRaw
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^[-*•\d.)\s]+/, '').trim())
+    .filter(Boolean)
+    .map((line, index) => {
+      const parts = line.split(/\s+\|\s+|;\s+/).map((part) => part.trim()).filter(Boolean);
+      const topicTitle = parts[0] ?? line;
+      const contentType = detectContentType(line);
+      const preferredPlatforms = extractPlatformList(line);
+      return {
+        id: crypto.randomUUID().replace(/-/g, '').toLowerCase(),
+        client_id: clientId,
+        plan_id: null,
+        plan_month: planMonth,
+        topic_title: topicTitle,
+        service_category: detectServiceCategory(line, services),
+        target_keyword: detectKeyword(line),
+        content_type_preference: contentType,
+        preferred_platforms: preferredPlatforms ? JSON.stringify(preferredPlatforms) : null,
+        priority: Math.max(0, 100 - index),
+        status: 'planned',
+        notes: parts.length > 1 ? parts.slice(1).join(' | ') : null,
+        generated_post_id: null,
+        used_post_id: null,
+        created_by: createdBy,
+        created_at: Math.floor(Date.now() / 1000),
+        updated_at: Math.floor(Date.now() / 1000),
+        used_at: null,
+      };
+    });
+}
+
+function validateMonthlyTopic(
+  topic: { topic_title?: string | null; service_category?: string | null; target_keyword?: string | null },
+  ctx: MonthlyTopicValidationContext,
+): string[] {
+  const warnings: string[] = [];
+  const topicText = `${topic.topic_title ?? ''} ${topic.target_keyword ?? ''}`.toLowerCase();
+  for (const term of ctx.prohibitedTerms) {
+    if (term && topicText.includes(term)) warnings.push(`Contains prohibited term: ${term}`);
+  }
+  if (!topic.service_category) warnings.push('Missing service/category');
+  if (!topic.target_keyword) warnings.push('No target keyword');
+  const fingerprint = normalizeTopicFingerprint(topic.topic_title);
+  if (fingerprint && ctx.recentFingerprints.includes(fingerprint)) warnings.push('Looks similar to recent content');
+  return warnings;
+}
 
 const WRITABLE_FIELDS = new Set([
   'brand_voice','tone_keywords','prohibited_terms','approved_ctas',
@@ -95,6 +218,40 @@ intelligenceRoutes.put('/:slug/intelligence', requirePermission('clients.edit'),
     .bind(client.id)
     .first();
   return c.json({ intelligence: row });
+});
+
+/** GET /api/clients/:slug/monthly-plan?month=YYYY-MM */
+intelligenceRoutes.get('/:slug/monthly-plan', requirePermission('clients.view'), async (c) => {
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') ?? '');
+  if (!client) return c.json({ error: 'Not found' }, 404);
+  const month = String(c.req.query('month') ?? '').trim();
+  if (!/^\d{4}-\d{2}$/.test(month)) return c.json({ error: 'month=YYYY-MM is required' }, 400);
+  const plan = await getClientMonthlyContentPlan(c.env.DB, client.id, month);
+  return c.json({ plan });
+});
+
+/** PUT /api/clients/:slug/monthly-plan */
+intelligenceRoutes.put('/:slug/monthly-plan', requirePermission('clients.edit'), async (c) => {
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') ?? '');
+  if (!client) return c.json({ error: 'Not found' }, 404);
+
+  let body: Record<string, unknown>;
+  try { body = (await c.req.json()) as Record<string, unknown>; }
+  catch { return c.json({ error: 'Invalid JSON' }, 400); }
+
+  const planMonth = String(body.plan_month ?? '').trim();
+  if (!/^\d{4}-\d{2}$/.test(planMonth)) return c.json({ error: 'plan_month must be YYYY-MM' }, 400);
+
+  const plan = await upsertClientMonthlyContentPlan(c.env.DB, {
+    client_id: client.id,
+    plan_month: planMonth,
+    monthly_focus: typeof body.monthly_focus === 'string' ? body.monthly_focus : null,
+    promotion_notes: typeof body.promotion_notes === 'string' ? body.promotion_notes : null,
+    priority_services: typeof body.priority_services === 'string' ? body.priority_services : null,
+    notes: typeof body.notes === 'string' ? body.notes : null,
+    created_by: c.get('user').userId,
+  });
+  return c.json({ plan });
 });
 
 /** GET /api/clients/:slug/platform-links */
@@ -242,10 +399,30 @@ intelligenceRoutes.get('/:slug/monthly-topics', requirePermission('clients.view'
   const month = String(c.req.query('month') ?? '').trim();
   if (!/^\d{4}-\d{2}$/.test(month)) return c.json({ error: 'month=YYYY-MM is required' }, 400);
   const statusRaw = String(c.req.query('status') ?? 'all');
-  const status = new Set(['planned', 'used', 'skipped', 'all']).has(statusRaw) ? statusRaw as 'planned' | 'used' | 'skipped' | 'all' : 'all';
+  const status = new Set(['planned', 'approved', 'used', 'skipped', 'all']).has(statusRaw) ? statusRaw as 'planned' | 'approved' | 'used' | 'skipped' | 'all' : 'all';
 
-  const topics = await listClientMonthlyTopics(c.env.DB, client.id, month, status);
-  return c.json({ topics });
+  const [topics, intelligence, recentPosts] = await Promise.all([
+    listClientMonthlyTopics(c.env.DB, client.id, month, status),
+    c.env.DB.prepare('SELECT prohibited_terms FROM client_intelligence WHERE client_id = ?').bind(client.id).first<{ prohibited_terms?: string | null }>(),
+    c.env.DB.prepare(`SELECT title FROM posts
+                      WHERE client_id = ?
+                        AND status NOT IN ('cancelled')
+                        AND substr(COALESCE(publish_date, ''), 1, 10) >= date('now', '-90 day')
+                      ORDER BY updated_at DESC
+                      LIMIT 80`)
+      .bind(client.id)
+      .all<{ title: string | null }>(),
+  ]);
+  const prohibitedTerms = String(intelligence?.prohibited_terms ?? '')
+    .split(/[\n,]+/)
+    .map((term) => term.trim().toLowerCase())
+    .filter(Boolean);
+  const recentFingerprints = recentPosts.results.map((row) => normalizeTopicFingerprint(row.title)).filter(Boolean);
+  const enriched = topics.map((topic) => ({
+    ...topic,
+    validation_warnings: validateMonthlyTopic(topic, { prohibitedTerms, recentFingerprints }),
+  }));
+  return c.json({ topics: enriched });
 });
 
 /** POST /api/clients/:slug/monthly-topics */
@@ -267,10 +444,23 @@ intelligenceRoutes.post('/:slug/monthly-topics', requirePermission('clients.edit
     : typeof body.preferred_platforms === 'string'
       ? body.preferred_platforms
       : null;
+  const plan = await getClientMonthlyContentPlan(c.env.DB, client.id, planMonth) ?? await upsertClientMonthlyContentPlan(c.env.DB, {
+    client_id: client.id,
+    plan_month: planMonth,
+    monthly_focus: null,
+    promotion_notes: null,
+    priority_services: null,
+    notes: null,
+    created_by: c.get('user').userId,
+  });
+  const status = typeof body.status === 'string' && MONTHLY_TOPIC_STATUSES.has(body.status)
+    ? body.status
+    : 'planned';
 
   const topic = await createClientMonthlyTopic(c.env.DB, {
     id: crypto.randomUUID().replace(/-/g, '').toLowerCase(),
     client_id: client.id,
+    plan_id: plan.id,
     plan_month: planMonth,
     topic_title: topicTitle,
     service_category: typeof body.service_category === 'string' ? body.service_category : null,
@@ -278,13 +468,60 @@ intelligenceRoutes.post('/:slug/monthly-topics', requirePermission('clients.edit
     content_type_preference: typeof body.content_type_preference === 'string' ? body.content_type_preference : null,
     preferred_platforms: preferredPlatforms,
     priority: typeof body.priority === 'number' ? body.priority : 0,
-    status: typeof body.status === 'string' ? body.status : 'planned',
+    status,
     notes: typeof body.notes === 'string' ? body.notes : null,
+    generated_post_id: null,
     used_post_id: null,
     created_by: c.get('user').userId,
   });
 
   return c.json({ topic }, 201);
+});
+
+/** POST /api/clients/:slug/monthly-topics/parse */
+intelligenceRoutes.post('/:slug/monthly-topics/parse', requirePermission('clients.edit'), async (c) => {
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') ?? '');
+  if (!client) return c.json({ error: 'Not found' }, 404);
+  let body: Record<string, unknown>;
+  try { body = (await c.req.json()) as Record<string, unknown>; }
+  catch { return c.json({ error: 'Invalid JSON' }, 400); }
+
+  const planMonth = String(body.plan_month ?? '').trim();
+  if (!/^\d{4}-\d{2}$/.test(planMonth)) return c.json({ error: 'plan_month must be YYYY-MM' }, 400);
+  const topicsText = typeof body.topics_text === 'string' ? body.topics_text : '';
+  if (!topicsText.trim()) return c.json({ error: 'topics_text is required' }, 400);
+
+  const [services, intelligence, recentPosts] = await Promise.all([
+    c.env.DB.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC').bind(client.id).all<{ name: string }>(),
+    c.env.DB.prepare('SELECT prohibited_terms FROM client_intelligence WHERE client_id = ?').bind(client.id).first<{ prohibited_terms?: string | null }>(),
+    c.env.DB.prepare(`SELECT title FROM posts
+                      WHERE client_id = ?
+                        AND status NOT IN ('cancelled')
+                        AND substr(COALESCE(publish_date, ''), 1, 10) >= date('now', '-90 day')
+                      ORDER BY updated_at DESC
+                      LIMIT 80`)
+      .bind(client.id)
+      .all<{ title: string | null }>(),
+  ]);
+
+  const topics = parseTopicLines(
+    topicsText,
+    planMonth,
+    client.id,
+    c.get('user').userId,
+    services.results.map((item) => item.name),
+  );
+  const prohibitedTerms = String(intelligence?.prohibited_terms ?? '')
+    .split(/[\n,]+/)
+    .map((term) => term.trim().toLowerCase())
+    .filter(Boolean);
+  const recentFingerprints = recentPosts.results.map((row) => normalizeTopicFingerprint(row.title)).filter(Boolean);
+  return c.json({
+    topics: topics.map((topic) => ({
+      ...topic,
+      validation_warnings: validateMonthlyTopic(topic, { prohibitedTerms, recentFingerprints }),
+    })),
+  });
 });
 
 /** POST /api/clients/:slug/monthly-topics/bulk */
@@ -305,27 +542,36 @@ intelligenceRoutes.post('/:slug/monthly-topics/bulk', requirePermission('clients
   const preferredPlatforms = Array.isArray(body.preferred_platforms)
     ? JSON.stringify((body.preferred_platforms as string[]).filter(Boolean))
     : null;
+  if (!linesRaw.trim()) return c.json({ error: 'topics_text is required' }, 400);
 
-  const lines = linesRaw
-    .split(/\r?\n/)
-    .map((line) => line.replace(/^[-*•\d.\s]+/, '').trim())
-    .filter(Boolean);
-  if (lines.length === 0) return c.json({ error: 'topics_text is required' }, 400);
+  const plan = await getClientMonthlyContentPlan(c.env.DB, client.id, planMonth) ?? await upsertClientMonthlyContentPlan(c.env.DB, {
+    client_id: client.id,
+    plan_month: planMonth,
+    monthly_focus: null,
+    promotion_notes: null,
+    priority_services: null,
+    notes: null,
+    created_by: c.get('user').userId,
+  });
+  const services = await c.env.DB.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC').bind(client.id).all<{ name: string }>();
+  const parsedTopics = parseTopicLines(linesRaw, planMonth, client.id, c.get('user').userId, services.results.map((item) => item.name));
 
   let inserted = 0;
-  for (const line of lines) {
+  for (const parsed of parsedTopics) {
     await createClientMonthlyTopic(c.env.DB, {
-      id: crypto.randomUUID().replace(/-/g, '').toLowerCase(),
+      id: parsed.id as string,
       client_id: client.id,
+      plan_id: plan.id,
       plan_month: planMonth,
-      topic_title: line,
-      service_category: null,
-      target_keyword: null,
-      content_type_preference: defaultContentType,
-      preferred_platforms: preferredPlatforms,
-      priority: defaultPriority,
+      topic_title: parsed.topic_title as string,
+      service_category: parsed.service_category as string | null,
+      target_keyword: parsed.target_keyword as string | null,
+      content_type_preference: (parsed.content_type_preference as string | null) ?? defaultContentType,
+      preferred_platforms: (parsed.preferred_platforms as string | null) ?? preferredPlatforms,
+      priority: typeof parsed.priority === 'number' ? parsed.priority : defaultPriority,
       status: 'planned',
-      notes: null,
+      notes: parsed.notes as string | null,
+      generated_post_id: null,
       used_post_id: null,
       created_by: c.get('user').userId,
     });
@@ -349,32 +595,64 @@ intelligenceRoutes.post('/:slug/monthly-topics/suggest', requirePermission('clie
   if (!/^\d{4}-\d{2}$/.test(planMonth)) return c.json({ error: 'plan_month must be YYYY-MM' }, 400);
   const count = typeof body.count === 'number' ? Math.max(3, Math.min(15, Math.floor(body.count))) : 8;
 
-  const [intelligence, services, areas] = await Promise.all([
+  const [intelligence, services, areas, feedback, recentPosts, pkg] = await Promise.all([
     c.env.DB.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first(),
     c.env.DB.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC LIMIT 15').bind(client.id).all<{ name: string }>(),
     c.env.DB.prepare('SELECT city FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 10').bind(client.id).all<{ city: string }>(),
+    c.env.DB.prepare('SELECT sentiment, message FROM client_feedback WHERE client_id = ? ORDER BY created_at DESC LIMIT 12').bind(client.id).all<{ sentiment: string | null; message: string | null }>(),
+    c.env.DB.prepare(`SELECT title, content_type, target_keyword
+                      FROM posts
+                      WHERE client_id = ? AND status NOT IN ('cancelled')
+                      ORDER BY updated_at DESC LIMIT 20`).bind(client.id).all<{ title: string | null; content_type: string | null; target_keyword: string | null }>(),
+    client.package
+      ? c.env.DB.prepare('SELECT slug, weekly_schedule, platforms_included FROM packages WHERE slug = ? LIMIT 1').bind(client.package).first<{ slug: string; weekly_schedule: string | null; platforms_included: string | null }>()
+      : Promise.resolve(null),
   ]);
+
+  const plan = await getClientMonthlyContentPlan(c.env.DB, client.id, planMonth) ?? await upsertClientMonthlyContentPlan(c.env.DB, {
+    client_id: client.id,
+    plan_month: planMonth,
+    monthly_focus: null,
+    promotion_notes: null,
+    priority_services: null,
+    notes: null,
+    created_by: c.get('user').userId,
+  });
 
   const prompt = `Suggest ${count} monthly content topics for ${client.canonical_name} for ${planMonth}.
 Return JSON only in this shape:
-{"suggestions":[{"topic_title":"...","service_category":"...","target_keyword":"...","content_type_preference":"image|reel|video|blog","notes":"..."}]}
+{"suggestions":[{"topic_title":"...","service_category":"...","target_keyword":"...","content_type_preference":"image|reel|video|blog","preferred_platforms":["facebook","instagram"],"priority":0,"notes":"..."}]}
 
 Client language: ${client.language ?? 'en'}
 Industry: ${client.industry ?? ''}
 State: ${client.state ?? ''}
 Services: ${services.results.map((item) => item.name).join(', ')}
 Service areas: ${areas.results.map((item) => item.city).join(', ')}
+Package: ${pkg?.slug ?? ''}
+Package weekly schedule: ${pkg?.weekly_schedule ?? ''}
+Package platforms: ${pkg?.platforms_included ?? ''}
 Brand voice: ${String((intelligence as Record<string, unknown> | null)?.['brand_voice'] ?? '')}
 Service priorities: ${String((intelligence as Record<string, unknown> | null)?.['service_priorities'] ?? '')}
 Content goals: ${String((intelligence as Record<string, unknown> | null)?.['content_goals'] ?? '')}
 Content angles: ${String((intelligence as Record<string, unknown> | null)?.['content_angles'] ?? '')}
 Local SEO themes: ${String((intelligence as Record<string, unknown> | null)?.['local_seo_themes'] ?? '')}
+Audience notes: ${String((intelligence as Record<string, unknown> | null)?.['audience_notes'] ?? '')}
+Humanization style: ${String((intelligence as Record<string, unknown> | null)?.['humanization_style'] ?? '')}
+Approved CTAs: ${String((intelligence as Record<string, unknown> | null)?.['approved_ctas'] ?? '')}
+Prohibited terms: ${String((intelligence as Record<string, unknown> | null)?.['prohibited_terms'] ?? '')}
+Seasonality: ${String((intelligence as Record<string, unknown> | null)?.['seasonal_notes'] ?? '')}
+Feedback summary: ${String((intelligence as Record<string, unknown> | null)?.['feedback_summary'] ?? '')}
+Recent feedback: ${feedback.results.map((row) => `${row.sentiment ?? 'neutral'}:${row.message ?? ''}`).join(' | ')}
+Recent post history to avoid repeating: ${recentPosts.results.map((row) => `${row.content_type ?? 'post'}:${row.title ?? ''}:${row.target_keyword ?? ''}`).join(' | ')}
 
 Requirements:
 - Avoid generic duplicate themes
-- Prefer locally relevant topics
-- Make the set varied across services and content types
-- Keep notes concise`;
+- Prefer locally relevant, specific topics with real search intent
+- Make the set varied across services, buyer intents, and content types
+- Include a platform recommendation when obvious
+- Include a target keyword whenever possible
+- Do not use prohibited terms
+- Keep notes concise and practical`;
 
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -401,24 +679,34 @@ Requirements:
   const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
   const raw = data.choices?.[0]?.message?.content ?? '';
   const parsed = raw ? JSON.parse(raw) as { suggestions?: Array<Record<string, unknown>> } : { suggestions: [] };
+  const prohibitedTerms = String((intelligence as Record<string, unknown> | null)?.['prohibited_terms'] ?? '')
+    .split(/[\n,]+/)
+    .map((term) => term.trim().toLowerCase())
+    .filter(Boolean);
+  const recentFingerprints = recentPosts.results.map((row) => normalizeTopicFingerprint(row.title)).filter(Boolean);
   const suggestions = (parsed.suggestions ?? []).map((item) => ({
     id: crypto.randomUUID().replace(/-/g, '').toLowerCase(),
     client_id: client.id,
+    plan_id: plan.id,
     plan_month: planMonth,
     topic_title: String(item.topic_title ?? '').trim(),
     service_category: typeof item.service_category === 'string' ? item.service_category : null,
     target_keyword: typeof item.target_keyword === 'string' ? item.target_keyword : null,
     content_type_preference: typeof item.content_type_preference === 'string' ? item.content_type_preference : null,
-    preferred_platforms: null,
-    priority: 0,
+    preferred_platforms: Array.isArray(item.preferred_platforms) ? JSON.stringify((item.preferred_platforms as string[]).filter(Boolean)) : null,
+    priority: typeof item.priority === 'number' ? item.priority : 0,
     status: 'planned',
     notes: typeof item.notes === 'string' ? item.notes : null,
+    generated_post_id: null,
     used_post_id: null,
     created_by: c.get('user').userId,
     created_at: Math.floor(Date.now() / 1000),
     updated_at: Math.floor(Date.now() / 1000),
     used_at: null,
-  })).filter((item) => item.topic_title);
+  })).filter((item) => item.topic_title).map((item) => ({
+    ...item,
+    validation_warnings: validateMonthlyTopic(item, { prohibitedTerms, recentFingerprints }),
+  }));
 
   return c.json({ suggestions });
 });
@@ -439,10 +727,11 @@ intelligenceRoutes.put('/:slug/monthly-topics/:topicId', requirePermission('clie
   if (typeof body.target_keyword === 'string' || body.target_keyword === null) update['target_keyword'] = body.target_keyword;
   if (typeof body.content_type_preference === 'string' || body.content_type_preference === null) update['content_type_preference'] = body.content_type_preference;
   if (typeof body.priority === 'number') update['priority'] = body.priority;
-  if (typeof body.status === 'string') update['status'] = body.status;
+  if (typeof body.status === 'string' && MONTHLY_TOPIC_STATUSES.has(body.status)) update['status'] = body.status;
   if (typeof body.notes === 'string' || body.notes === null) update['notes'] = body.notes;
   if (Array.isArray(body.preferred_platforms)) update['preferred_platforms'] = JSON.stringify((body.preferred_platforms as string[]).filter(Boolean));
   if (body.preferred_platforms === null) update['preferred_platforms'] = null;
+  if (typeof body.generated_post_id === 'string' || body.generated_post_id === null) update['generated_post_id'] = body.generated_post_id;
 
   await updateClientMonthlyTopic(c.env.DB, c.req.param('topicId') ?? '', update);
   const row = await c.env.DB

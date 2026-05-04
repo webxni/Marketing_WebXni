@@ -493,6 +493,7 @@ export interface ClientTopic {
 export interface ClientMonthlyTopic {
   id:                      string;
   client_id:               string;
+  plan_id:                 string | null;
   plan_month:              string;
   topic_title:             string;
   service_category:        string | null;
@@ -502,11 +503,26 @@ export interface ClientMonthlyTopic {
   priority:                number;
   status:                  string;
   notes:                   string | null;
+  generated_post_id:       string | null;
   used_post_id:            string | null;
   created_by:              string | null;
   created_at:              number;
   updated_at:              number;
   used_at:                 number | null;
+  validation_warnings?:    string[];
+}
+
+export interface ClientMonthlyContentPlan {
+  id?:               string;
+  client_id?:        string;
+  plan_month:        string;
+  monthly_focus:     string | null;
+  promotion_notes:   string | null;
+  priority_services: string | null;
+  notes:             string | null;
+  created_by?:       string | null;
+  created_at?:       number;
+  updated_at?:       number;
 }
 
 export interface PostingStats {

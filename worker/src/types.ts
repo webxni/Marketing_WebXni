@@ -412,6 +412,7 @@ export interface ClientTopicRow {
 export interface ClientMonthlyTopicRow {
   id:                      string;
   client_id:               string;
+  plan_id:                 string | null;
   plan_month:              string;
   topic_title:             string;
   service_category:        string | null;
@@ -421,9 +422,23 @@ export interface ClientMonthlyTopicRow {
   priority:                number;
   status:                  string;
   notes:                   string | null;
+  generated_post_id:       string | null;
   used_post_id:            string | null;
   created_by:              string | null;
   created_at:              number;
   updated_at:              number;
   used_at:                 number | null;
+}
+
+export interface ClientMonthlyContentPlanRow {
+  id:                string;
+  client_id:         string;
+  plan_month:        string;
+  monthly_focus:     string | null;
+  promotion_notes:   string | null;
+  priority_services: string | null;
+  notes:             string | null;
+  created_by:        string | null;
+  created_at:        number;
+  updated_at:        number;
 }

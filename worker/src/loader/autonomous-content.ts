@@ -19,9 +19,10 @@ import {
   createPost,
   findSimilarRecentPost,
   getClientBySlug,
+  getClientMonthlyContentPlan,
   getClientPlatforms,
   getNextClientMonthlyTopic,
-  hasAnyPlannedMonthlyTopics,
+  hasAnyApprovedMonthlyTopics,
   markClientMonthlyTopicUsed,
   updatePost,
 } from '../db/queries';
@@ -124,6 +125,22 @@ function monthFromPublishDate(value: string): string {
   return value.slice(0, 7);
 }
 
+function applyMonthlyPlanToIntelligence(
+  intel: IntelRow | null,
+  plan: { monthly_focus?: string | null; promotion_notes?: string | null; priority_services?: string | null; notes?: string | null } | null,
+): IntelRow | null {
+  if (!intel && !plan) return null;
+  const next = { ...(intel ?? {}) };
+  const monthlyNotes = [plan?.monthly_focus, plan?.promotion_notes, plan?.notes].filter(Boolean).join(' | ');
+  if (monthlyNotes) {
+    next.seasonal_notes = [next.seasonal_notes, monthlyNotes].filter(Boolean).join(' | ');
+  }
+  if (plan?.priority_services) {
+    next.service_priorities = [plan.priority_services, next.service_priorities].filter(Boolean).join(' | ');
+  }
+  return next;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Main orchestration
 // ─────────────────────────────────────────────────────────────────────────────
@@ -181,9 +198,10 @@ export async function createContentWithImage(
   // ── 3. Resolve publish date ─────────────────────────────────────────────────
   const publishDate = params.publishDate ?? `${today()}T10:00`;
   const planMonth = monthFromPublishDate(publishDate);
+  const monthlyPlan = await getClientMonthlyContentPlan(db, client.id, planMonth);
 
   // ── 4. Load intelligence + service context ──────────────────────────────────
-  const [intel, fbRows, recRows, svcAreaRows, svcNameRows] = await Promise.all([
+  const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows] = await Promise.all([
     db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?')
       .bind(client.id).first<IntelRow>().then(r => r ?? null),
     db.prepare('SELECT sentiment, message AS note FROM client_feedback WHERE client_id = ? ORDER BY created_at DESC LIMIT 8')
@@ -195,6 +213,7 @@ export async function createContentWithImage(
     db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC LIMIT 12')
       .bind(client.id).all<{ name: string }>(),
   ]);
+  const intel = applyMonthlyPlanToIntelligence(intelBase, monthlyPlan);
 
   const recentTitles  = recRows.results.map(r => r.title ?? r.master_caption?.slice(0, 80) ?? '').filter(Boolean) as string[];
   const serviceAreas  = svcAreaRows.results.map(r => r.city);
@@ -207,12 +226,12 @@ export async function createContentWithImage(
   let topicResearch: TopicResearch | null = null;
   let monthlyTopicId: string | null = null;
   let resolvedTopicOverride = params.topicOverride?.trim() || null;
-  const hasMonthlyPlan = await hasAnyPlannedMonthlyTopics(db, client.id, planMonth);
+  const hasApprovedMonthlyTopics = await hasAnyApprovedMonthlyTopics(db, client.id, planMonth);
 
-  if (!resolvedTopicOverride && hasMonthlyPlan) {
+  if (!resolvedTopicOverride && hasApprovedMonthlyTopics) {
     const monthlyTopic = await getNextClientMonthlyTopic(db, client.id, planMonth, contentType, platforms);
     if (!monthlyTopic) {
-      throw new Error(`Monthly topic plan exists for ${planMonth}, but no compatible planned topic is available for ${contentType}.`);
+      throw new Error(`Approved monthly topic plan exists for ${planMonth}, but no compatible approved topic is available for ${contentType}.`);
     }
     monthlyTopicId = monthlyTopic.id;
     resolvedTopicOverride = monthlyTopic.topic_title;
@@ -222,7 +241,7 @@ export async function createContentWithImage(
       format: 'quick_explainer',
       targetKeyword: monthlyTopic.target_keyword?.trim() || monthlyTopic.topic_title.toLowerCase().split(' ').slice(0, 4).join(' '),
       localModifier: serviceAreas[0] ?? '',
-      searchQuestion: monthlyTopic.notes?.trim() || monthlyTopic.topic_title,
+      searchQuestion: [monthlyPlan?.monthly_focus, monthlyTopic.notes?.trim() || null, monthlyTopic.topic_title].filter(Boolean).join(' | '),
     };
   }
 

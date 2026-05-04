@@ -34,8 +34,9 @@ import {
   findSimilarRecentPost,
   updatePost,
   getPostByAutomationSlot,
+  getClientMonthlyContentPlan,
   getNextClientMonthlyTopic,
-  hasAnyPlannedMonthlyTopics,
+  hasAnyApprovedMonthlyTopics,
   updateGenerationProgress,
   appendGenerationLog,
   appendGenerationError,
@@ -140,6 +141,18 @@ interface IntelRow {
 }
 
 interface FeedbackRow { sentiment: string; note: string; }
+
+function applyMonthlyPlanToIntelligence(
+  intel: IntelRow | null,
+  plan: { monthly_focus?: string | null; promotion_notes?: string | null; priority_services?: string | null; notes?: string | null } | null,
+): IntelRow | null {
+  if (!intel && !plan) return null;
+  const next = { ...(intel ?? {}) };
+  const monthlyNotes = [plan?.monthly_focus, plan?.promotion_notes, plan?.notes].filter(Boolean).join(' | ');
+  if (monthlyNotes) next.seasonal_notes = [next.seasonal_notes, monthlyNotes].filter(Boolean).join(' | ');
+  if (plan?.priority_services) next.service_priorities = [plan.priority_services, next.service_priorities].filter(Boolean).join(' | ');
+  return next;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -274,7 +287,7 @@ async function buildMonthlyTopicResearch(
   serviceAreas: string[],
 ): Promise<{ monthlyTopicId: string | null; topicResearch: TopicResearch | null; strictMonthlyPlan: boolean }> {
   const month = planMonth(date);
-  const strictMonthlyPlan = await hasAnyPlannedMonthlyTopics(db, clientId, month);
+  const strictMonthlyPlan = await hasAnyApprovedMonthlyTopics(db, clientId, month);
   if (!strictMonthlyPlan) {
     return { monthlyTopicId: null, topicResearch: null, strictMonthlyPlan: false };
   }
@@ -717,7 +730,7 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
   const platforms = platformSelection.selected;
   if (platforms.length === 0) throw new Error('No compatible platforms for slot');
 
-  const [intel, fbRows, recRows, svcAreaRows, svcNameRows, gbpLocations] = await Promise.all([
+  const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows, gbpLocations] = await Promise.all([
     db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then((row) => row ?? null),
     db.prepare('SELECT sentiment, message AS note FROM client_feedback WHERE client_id = ? ORDER BY created_at DESC LIMIT 10').bind(client.id).all<FeedbackRow>(),
     db.prepare(`SELECT title, master_caption, content_type FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`).bind(client.id).all<{title:string|null;master_caption:string|null;content_type:string|null}>(),
@@ -729,6 +742,8 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
   const recentTitles  = recRows.results.map((row) => row.title ?? row.master_caption?.slice(0, 80) ?? '').filter(Boolean) as string[];
   const serviceAreas  = svcAreaRows.results.map((row) => row.city);
   const serviceNames  = svcNameRows.results.map((row) => row.name);
+  const monthlyPlan = await getClientMonthlyContentPlan(db, client.id, planMonth(slot.date));
+  const intel = applyMonthlyPlanToIntelligence(intelBase, monthlyPlan);
   const recentFormats = recRows.results
     .map((row) => detectFormatFromTitle(row.title ?? row.master_caption ?? ''))
     .filter((format): format is ContentFormat => format !== null);
@@ -764,7 +779,7 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
   let topicResearch: TopicResearch | null = null;
   const monthlyTopic = await buildMonthlyTopicResearch(db, client.id, slot.date, slot.content_type, platforms, serviceAreas);
   if (monthlyTopic.strictMonthlyPlan && !monthlyTopic.topicResearch) {
-    throw new Error(`Monthly topic plan exists for ${planMonth(slot.date)}, but no compatible planned topic is available for ${slot.content_type}.`);
+    throw new Error(`Approved monthly topic plan exists for ${planMonth(slot.date)}, but no compatible approved topic is available for ${slot.content_type}.`);
   }
   topicResearch = monthlyTopic.topicResearch;
   if (!topicResearch && primaryKey) {
@@ -1042,7 +1057,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
       const isHighQuality = slot.high_quality ?? false;
 
       // Parallel fetch: intelligence, feedback, recent posts, service areas, service names
-      const [intel, fbRows, recRows, svcAreaRows, svcNameRows] = await Promise.all([
+      const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows] = await Promise.all([
         db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then(r => r ?? null),
         db.prepare('SELECT sentiment, message AS note FROM client_feedback WHERE client_id = ? ORDER BY created_at DESC LIMIT 10').bind(client.id).all<FeedbackRow>(),
         db.prepare(`SELECT title, master_caption, content_type FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`).bind(client.id).all<{title:string|null;master_caption:string|null;content_type:string|null}>(),
@@ -1053,6 +1068,8 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
       const recentTitles  = recRows.results.map(r => r.title ?? r.master_caption?.slice(0, 80) ?? '').filter(Boolean) as string[];
       const serviceAreas  = svcAreaRows.results.map(r => r.city);
       const serviceNames  = svcNameRows.results.map(r => r.name);
+      const monthlyPlan = await getClientMonthlyContentPlan(db, client.id, planMonth(slot.date));
+      const intel = applyMonthlyPlanToIntelligence(intelBase, monthlyPlan);
       const recentFormats = recRows.results
         .map(r => detectFormatFromTitle(r.title ?? r.master_caption ?? ''))
         .filter((f): f is ContentFormat => f !== null);
@@ -1062,7 +1079,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
       let monthlyTopicId: string | null = null;
       const monthlyTopic = await buildMonthlyTopicResearch(db, client.id, slot.date, slot.content_type, platforms, serviceAreas);
       if (monthlyTopic.strictMonthlyPlan && !monthlyTopic.topicResearch) {
-        await log('WARN', `${postKey}: monthly plan exists for ${planMonth(slot.date)} but no compatible planned topic matched this slot`);
+        await log('WARN', `${postKey}: approved monthly plan exists for ${planMonth(slot.date)} but no compatible approved topic matched this slot`);
         return await finishSlot(slot_idx + 1, 'skipped', clientName, slots);
       }
       monthlyTopicId = monthlyTopic.monthlyTopicId;
