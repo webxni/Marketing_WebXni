@@ -586,12 +586,17 @@ const AGENT_TOOLS = [
 Use for: "Create content for X about Y", "Make an Instagram post for Z", "Create a Google Business post with image", "Create a blog post answering Q".
 If the user asks for one piece of content on multiple platforms, call this tool once with a platforms array. Do not create one separate post per platform unless the user explicitly asks for separate posts.
 Runs image generation in the background — returns the post ID immediately.
-If no topic is specified, the system researches the best topic automatically.`,
+If no topic is specified, the system researches the best topic automatically.
+If platforms are omitted, use content-type defaults instead of "all platforms":
+image -> facebook + instagram + google_business
+reel -> facebook + instagram + threads
+video -> facebook + instagram + youtube
+blog -> website_blog.`,
       parameters: {
         type: 'object',
         properties: {
           client:        { type: 'string',  description: 'Client slug (required)' },
-          platforms:     { type: 'array',   items: { type: 'string' }, description: 'facebook|instagram|linkedin|google_business|x|threads|tiktok|pinterest|bluesky|youtube. Empty = all client platforms.' },
+          platforms:     { type: 'array',   items: { type: 'string' }, description: 'facebook|instagram|linkedin|google_business|x|threads|tiktok|pinterest|bluesky|youtube. Omit to use content-type defaults; if provided, use exactly these platforms.' },
           content_type:  { type: 'string',  description: 'image|reel|video|blog (default: image)' },
           topic:         { type: 'string',  description: 'Specific topic, question, or angle to write about. Leave empty for automatic research.' },
           publish_date:  { type: 'string',  description: 'YYYY-MM-DD or YYYY-MM-DDTHH:MM. Default: today at 10:00.' },
@@ -622,7 +627,7 @@ Max 20 per call.`,
           client:        { type: 'string',  description: 'Client slug (required)' },
           count:         { type: 'number',  description: 'Number of posts to create (1-20). Ignored when topics[] is provided.' },
           content_type:  { type: 'string',  description: 'image|reel|video|blog (default: image)' },
-          platforms:     { type: 'array',   items: { type: 'string' }, description: 'Platforms array. Empty = all client platforms.' },
+          platforms:     { type: 'array',   items: { type: 'string' }, description: 'Platforms array. Omit to use content-type defaults; if provided, use exactly these platforms.' },
           topic:         { type: 'string',  description: 'A single topic shared across all posts (each gets a different angle).' },
           topics:        { type: 'array',   items: { type: 'string' }, description: 'Explicit list of topics. One post per topic.' },
           use_queue:     { type: 'boolean', description: 'Consume from client_topics queue in priority order. Ignored if topics[] is set.' },
@@ -649,7 +654,7 @@ The hourly cron fires eligible requests; each firing creates per_run posts via t
           client:         { type: 'string',  description: 'Client slug (required)' },
           request_type:   { type: 'string',  description: "'social' (default), 'blog', or 'mixed'" },
           content_type:   { type: 'string',  description: 'image|reel|video|blog (overrides request_type default)' },
-          platforms:      { type: 'array',   items: { type: 'string' }, description: 'Target platforms. Empty = all client platforms.' },
+          platforms:      { type: 'array',   items: { type: 'string' }, description: 'Target platforms. Omit to use content-type defaults; if provided, use exactly these platforms.' },
           recurrence:     { type: 'string',  description: 'daily|weekdays|weekly|biweekly|monthly|once' },
           day_of_week:    { type: 'number',  description: '0=Sun..6=Sat (for weekly/biweekly). 1=Mon, 2=Tue, etc.' },
           time_of_day:    { type: 'string',  description: 'UTC HH:MM, e.g. "09:00". Request only fires after this hour.' },
@@ -1971,7 +1976,7 @@ Return JSON: { "caption": "..." }`;
           action_summary: `Content creation started for "${clientSlug}" — running in background`,
           summary: {
             client:       clientSlug,
-            platforms:    platforms.length > 0 ? platforms : 'all client platforms',
+            platforms:    Array.isArray(platforms) && platforms.length > 0 ? platforms : `default ${contentType} platforms`,
             content_type: contentType,
             topic:        topic ?? 'auto-researched',
             publish_date: publishDate ?? 'today at 10:00',
@@ -2085,7 +2090,7 @@ Return JSON: { "caption": "..." }`;
             start_date:   startDate,
             spacing_days: spacing,
             source:       explicitTopics.length ? 'explicit' : useQueue ? 'queue' : singleTopic ? 'shared_topic' : 'auto',
-            platforms:    platforms ?? 'all client platforms',
+            platforms:    Array.isArray(platforms) && platforms.length > 0 ? platforms : `default ${contentType} platforms`,
           },
           suggestions: [
             `Background job created ${slots.length} post${slots.length !== 1 ? 's' : ''} — check /approvals when ready.`,

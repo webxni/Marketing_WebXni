@@ -15,7 +15,7 @@ import {
   listPostAssetsRows,
   attachAssetsToPost,
 } from '../db/queries';
-import { normalizeContentType, parsePlatforms, resolvePlatformSelection } from '../modules/platform-compatibility';
+import { normalizeContentType, parsePlatforms, resolvePlatformSelection, withImplicitBlogPlatform } from '../modules/platform-compatibility';
 import { cleanupLegacyInvalidPlatformAttempts, syncPublishedUrls } from '../modules/published-urls';
 import { runPosting } from '../loader/posting-run';
 import { runFetchUrls } from './run';
@@ -140,7 +140,7 @@ postRoutes.post('/', async (c) => {
   const selection = resolvePlatformSelection({
     contentType: (body['content_type'] as string) ?? 'image',
     requestedPlatforms,
-    clientPlatforms: clientConfig.platforms,
+    clientPlatforms: withImplicitBlogPlatform(clientConfig.platforms, clientConfig),
     assetType: (body['asset_type'] as string) ?? null,
     allowIncompatibleOverride: allowPlatformOverride,
   });
@@ -281,7 +281,7 @@ postRoutes.put('/:id', async (c) => {
     const selection = resolvePlatformSelection({
       contentType: nextContentType,
       requestedPlatforms,
-      clientPlatforms: clientConfig.platforms,
+      clientPlatforms: withImplicitBlogPlatform(clientConfig.platforms, clientConfig),
       assetType: (body['asset_type'] as string) ?? post.asset_type,
       allowIncompatibleOverride: allowPlatformOverride,
     });
@@ -296,6 +296,7 @@ postRoutes.put('/:id', async (c) => {
     body['platforms'] = JSON.stringify(selection.selected);
     body['platform_manual_override'] = allowPlatformOverride ? 1 : 0;
   }
+  delete body['allow_platform_override'];
 
   const clientConfig = await getClientWithConfig(c.env.DB, post.client_id);
   if (!clientConfig) return c.json({ error: 'Client not found' }, 404);
@@ -635,7 +636,7 @@ postRoutes.post('/:id/generate-caption', async (c) => {
   const selection = resolvePlatformSelection({
     contentType: normalizeContentType(post.content_type, post.asset_type),
     requestedPlatforms: [...parsePlatforms(post.platforms), platform],
-    clientPlatforms: client.platforms,
+    clientPlatforms: withImplicitBlogPlatform(client.platforms, client),
     assetType: post.asset_type,
     allowIncompatibleOverride: allow_platform_override === true,
   });

@@ -1,4 +1,4 @@
-import type { ClientGbpLocationRow, ClientPlatformRow, PostRow } from '../types';
+import type { ClientGbpLocationRow, ClientPlatformRow, ClientRow, PostRow } from '../types';
 
 export type SupportedContentType =
   | 'image'
@@ -135,6 +135,40 @@ export function getClientActivePlatforms(clientPlatforms: ClientPlatformRow[]): 
       .filter((platform) => platform.paused !== 1)
       .map((platform) => platform.platform),
   );
+}
+
+export function withImplicitBlogPlatform<T extends Pick<ClientRow, 'id' | 'wp_base_url' | 'wp_url'> | null | undefined>(
+  clientPlatforms: ClientPlatformRow[],
+  client: T,
+): ClientPlatformRow[] {
+  const hasWordPress = Boolean(String(client?.wp_base_url ?? client?.wp_url ?? '').trim());
+  if (!hasWordPress) return clientPlatforms;
+  if (clientPlatforms.some((platform) => normalizePlatform(platform.platform) === 'website_blog')) return clientPlatforms;
+
+  return [
+    ...clientPlatforms,
+    {
+      id: `implicit_website_blog_${client?.id ?? 'client'}`,
+      client_id: client?.id ?? '',
+      platform: 'website_blog',
+      account_id: null,
+      username: null,
+      page_id: null,
+      upload_post_board_id: null,
+      upload_post_location_id: null,
+      privacy_level: null,
+      privacy_status: null,
+      profile_url: null,
+      profile_username: null,
+      connection_status: 'connected',
+      yt_channel_id: null,
+      linkedin_urn: null,
+      paused: 0,
+      paused_reason: null,
+      paused_since: null,
+      notes: 'Implicit website_blog platform from WordPress configuration',
+    },
+  ];
 }
 
 export function resolvePlatformSelection(input: {

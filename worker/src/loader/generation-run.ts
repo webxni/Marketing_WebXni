@@ -71,6 +71,7 @@ import {
   normalizeContentType,
   parsePlatforms,
   resolvePlatformSelection,
+  withImplicitBlogPlatform,
 } from '../modules/platform-compatibility';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -705,7 +706,7 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
     if (row) pkg = row;
   }
 
-  const clientPlatforms = await getClientPlatforms(db, client.id);
+  const clientPlatforms = withImplicitBlogPlatform(await getClientPlatforms(db, client.id), client);
   let packagePlatforms: string[] = [];
   try { packagePlatforms = JSON.parse(pkg.platforms_included); } catch { /* */ }
   const platformSelection = resolvePlatformSelection({
@@ -834,7 +835,7 @@ export async function saveGeneratedSlotResult(
   const client = await db.prepare('SELECT * FROM clients WHERE id = ?').bind(slot.client_id).first<ClientRow>();
   if (!client) throw new Error(`Client not found: ${slot.client_slug}`);
 
-  const clientPlatforms = await getClientPlatforms(db, client.id);
+  const clientPlatforms = withImplicitBlogPlatform(await getClientPlatforms(db, client.id), client);
   let pkg = DEFAULT_PACKAGE;
   if (client.package) {
     const row = await db.prepare('SELECT * FROM packages WHERE slug = ? AND active = 1').bind(client.package).first<PackageRow>();
@@ -1004,7 +1005,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         if (p) pkg = p;
       }
 
-      const clientPlatforms = await getClientPlatforms(db, client.id);
+      const clientPlatforms = withImplicitBlogPlatform(await getClientPlatforms(db, client.id), client);
       let packagePlatforms: string[] = [];
       try { packagePlatforms = JSON.parse(pkg.platforms_included); } catch { /* */ }
       const platformSelection = resolvePlatformSelection({

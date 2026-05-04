@@ -51,7 +51,7 @@ import {
 } from '../services/stability';
 import { serializeBlogBodyImages, type BlogBodyImage } from '../modules/blog-body-images';
 import { discordSend, DISCORD_COLORS } from '../services/discord';
-import { normalizePlatform, parsePlatforms, resolvePlatformSelection } from '../modules/platform-compatibility';
+import { normalizePlatform, parsePlatforms, resolvePlatformSelection, withImplicitBlogPlatform } from '../modules/platform-compatibility';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -96,6 +96,13 @@ interface IntelRow {
   humanization_style?: string | null;
 }
 
+const DEFAULT_AUTONOMOUS_PLATFORMS: Record<'image' | 'reel' | 'video' | 'blog', string[]> = {
+  image: ['facebook', 'instagram', 'google_business'],
+  reel: ['facebook', 'instagram', 'threads'],
+  video: ['facebook', 'instagram', 'youtube'],
+  blog: ['website_blog'],
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -133,13 +140,14 @@ export async function createContentWithImage(
   if (!client) throw new Error(`Client not found: ${params.clientSlug}`);
 
   const contentType = normalizeContentType(params.contentType);
-  const clientPlatforms = await getClientPlatforms(db, client.id);
+  const clientPlatforms = withImplicitBlogPlatform(await getClientPlatforms(db, client.id), client);
 
   // ── 2. Resolve platforms ────────────────────────────────────────────────────
   const requestedPlatforms = (params.platforms ?? []).map((platform) => normalizePlatform(platform));
+  const defaultPlatforms = DEFAULT_AUTONOMOUS_PLATFORMS[contentType];
   const selection = resolvePlatformSelection({
     contentType,
-    requestedPlatforms,
+    requestedPlatforms: requestedPlatforms.length > 0 ? requestedPlatforms : defaultPlatforms,
     clientPlatforms,
   });
   if (requestedPlatforms.length > 0) {
@@ -158,7 +166,17 @@ export async function createContentWithImage(
   if (brokenConnections.length > 0) {
     throw new Error(`Requested platforms are connected in config but currently unavailable: ${brokenConnections.join(', ')}`);
   }
-  const platforms = selection.selected.length > 0 ? selection.selected : ['facebook', 'instagram'];
+  const platforms = selection.selected.length > 0
+    ? selection.selected
+    : resolvePlatformSelection({
+      contentType,
+      requestedPlatforms: defaultPlatforms,
+      clientPlatforms,
+      allowIncompatibleOverride: false,
+    }).selected;
+  if (platforms.length === 0) {
+    throw new Error(`No connected compatible platforms available for ${client.canonical_name} and content type ${contentType}.`);
+  }
 
   // ── 3. Resolve publish date ─────────────────────────────────────────────────
   const publishDate = params.publishDate ?? `${today()}T10:00`;
