@@ -31,21 +31,22 @@ import {
   getClientPlatforms,
   getClientGbpLocations,
   createPost,
-  findSimilarRecentPost,
+  findRecentTopicConflict,
   updatePost,
   getPostByAutomationSlot,
   getClientMonthlyContentPlan,
-  getNextClientMonthlyTopic,
-  hasAnyApprovedMonthlyTopics,
+  listClientMonthlyTopics,
   updateGenerationProgress,
   appendGenerationLog,
   appendGenerationError,
   markClientMonthlyTopicUsed,
+  markClientMonthlyTopicSkipped,
   storeGenerationPlan,
   finalizeGenerationRun,
   getGenerationRunById,
   createApprovedCommandJob,
   type GenerationProgress,
+  buildTopicFingerprint,
 } from '../db/queries';
 import {
   buildGenerationRequest,
@@ -109,6 +110,17 @@ export interface SlotGenerationRequest {
   clientName: string;
   provider: ContentProviderName;
   request: ReturnType<typeof buildGenerationRequest>;
+  topicSelection: SlotTopicSelection;
+}
+
+export interface SlotTopicSelection {
+  monthlyTopicId: string | null;
+  topicTitle: string | null;
+  targetKeyword: string | null;
+  serviceCategory: string | null;
+  topicFingerprint: string | null;
+  notes?: string | null;
+  source: 'monthly_approved' | 'monthly_planned' | 'research';
 }
 
 interface PackageRow {
@@ -278,34 +290,86 @@ function planMonth(date: string): string {
   return date.slice(0, 7);
 }
 
-async function buildMonthlyTopicResearch(
+function getMonthBounds(month: string): { start: string; end: string } {
+  const [yearStr, monthStr] = month.split('-');
+  const year = Number(yearStr);
+  const monthIndex = Number(monthStr) - 1;
+  const start = new Date(Date.UTC(year, monthIndex, 1, 12, 0, 0));
+  const end = new Date(Date.UTC(year, monthIndex + 1, 0, 12, 0, 0));
+  return {
+    start: start.toISOString().slice(0, 10),
+    end: end.toISOString().slice(0, 10),
+  };
+}
+
+function getMonthlySequenceTypeForDate(
+  pkg: PackageRow,
+  date: string,
+): string {
+  const month = planMonth(date);
+  const { start, end } = getMonthBounds(month);
+  const monthDates = buildDates(start, end, pkg.posting_frequency, pkg.posting_days ?? null, pkg.weekly_schedule ?? null);
+  const dateIndex = Math.max(0, monthDates.indexOf(date));
+  const sequence = buildContentSequence(pkg);
+  return sequence[dateIndex % sequence.length] ?? 'image';
+}
+
+async function buildMonthlyTopicSelection(
   db: D1Database,
   clientId: string,
   date: string,
   contentType: string,
   platforms: string[],
-  serviceAreas: string[],
-): Promise<{ monthlyTopicId: string | null; topicResearch: TopicResearch | null; strictMonthlyPlan: boolean }> {
+  _serviceAreas: string[],
+  excludedTopicIds: string[] = [],
+): Promise<SlotTopicSelection | null> {
   const month = planMonth(date);
-  const strictMonthlyPlan = await hasAnyApprovedMonthlyTopics(db, clientId, month);
-  if (!strictMonthlyPlan) {
-    return { monthlyTopicId: null, topicResearch: null, strictMonthlyPlan: false };
-  }
-  const monthlyTopic = await getNextClientMonthlyTopic(db, clientId, month, contentType, platforms);
-  if (!monthlyTopic) {
-    return { monthlyTopicId: null, topicResearch: null, strictMonthlyPlan: true };
-  }
+  const requestedPlatforms = new Set(platforms);
+  const [approvedTopics, plannedTopics] = await Promise.all([
+    listClientMonthlyTopics(db, clientId, month, 'approved'),
+    listClientMonthlyTopics(db, clientId, month, 'planned'),
+  ]);
+  const allTopics = [...approvedTopics, ...plannedTopics].filter((topic) => {
+    if (excludedTopicIds.includes(topic.id)) return false;
+    if (topic.content_type_preference && topic.content_type_preference !== contentType) return false;
+    if (!topic.preferred_platforms || requestedPlatforms.size === 0) return true;
+    try {
+      const preferred = JSON.parse(topic.preferred_platforms) as string[];
+      return preferred.some((platform) => requestedPlatforms.has(platform));
+    } catch {
+      return true;
+    }
+  });
+  const monthlyTopic = allTopics[0] ?? null;
+  if (!monthlyTopic) return null;
+
   return {
     monthlyTopicId: monthlyTopic.id,
-    strictMonthlyPlan: true,
-    topicResearch: {
+    topicTitle: monthlyTopic.topic_title,
+    serviceCategory: monthlyTopic.service_category ?? null,
+    targetKeyword: monthlyTopic.target_keyword?.trim() || monthlyTopic.topic_title.toLowerCase().split(' ').slice(0, 4).join(' '),
+    topicFingerprint: buildTopicFingerprint({
       topic: monthlyTopic.topic_title,
-      angle: monthlyTopic.service_category ?? 'monthly-plan',
-      format: 'quick_explainer',
-      targetKeyword: monthlyTopic.target_keyword?.trim() || monthlyTopic.topic_title.toLowerCase().split(' ').slice(0, 4).join(' '),
-      localModifier: serviceAreas[0] ?? '',
-      searchQuestion: monthlyTopic.notes?.trim() || monthlyTopic.topic_title,
-    },
+      serviceCategory: monthlyTopic.service_category,
+      contentType,
+      targetKeyword: monthlyTopic.target_keyword,
+    }),
+    notes: monthlyTopic.notes ?? null,
+    source: monthlyTopic.status === 'approved' ? 'monthly_approved' : 'monthly_planned',
+  };
+}
+
+function getTopicResearchFromSelection(
+  selection: SlotTopicSelection,
+  serviceAreas: string[],
+): TopicResearch {
+  return {
+    topic: selection.topicTitle ?? '',
+    angle: selection.serviceCategory ?? selection.source,
+    format: 'quick_explainer',
+    targetKeyword: selection.targetKeyword ?? selection.topicTitle ?? '',
+    localModifier: serviceAreas[0] ?? '',
+    searchQuestion: selection.notes?.trim() || (selection.topicTitle ?? ''),
   };
 }
 
@@ -441,14 +505,12 @@ export async function prepareGenerationPlan(env: Env, params: GenerationParams):
 
     const weeklySchedule = parseWeeklySchedule(pkg.weekly_schedule ?? null);
     const dates = buildDates(params.period_start, params.period_end, pkg.posting_frequency, pkg.posting_days ?? null, pkg.weekly_schedule ?? null);
-    const sequence = buildContentSequence(pkg);
-    let seqIdx = 0;
 
     for (const date of dates) {
       const dayName = getDayName(date);
       const contentTypes = weeklySchedule
         ? (weeklySchedule[dayName] ?? ['image'])
-        : [sequence[seqIdx++ % sequence.length]];
+        : [getMonthlySequenceTypeForDate(pkg, date)];
 
       for (const [dailyIndex, contentType] of contentTypes.entries()) {
         const totalSoFar = intentEduc + intentSales;
@@ -690,6 +752,9 @@ export async function planGeneration(env: Env, params: GenerationParams, baseUrl
     await updateGenerationProgress(db, params.run_id, progress);
 
     await log('INFO', `Plan ready: ${slots.length} slots — firing step 0`);
+    for (const [idx, slot] of slots.entries()) {
+      await log('INFO', `Planned slot ${idx + 1}/${slots.length}: client=${slot.client_slug} date=${slot.date} type=${slot.content_type} intent=${slot.content_intent} provider=${slot.provider ?? 'openai'}`);
+    }
     await log('INFO', `Dispatch start: slot 0 / ${slots.length - 1}`);
     await triggerStep(env, baseUrl, params.run_id, 0);
     await log('INFO', 'Dispatch success: slot 0');
@@ -777,11 +842,28 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
   // carries researched topic / keyword / format data.
   const primaryKey = resolveProviderApiKey(env, settings, provider);
   let topicResearch: TopicResearch | null = null;
-  const monthlyTopic = await buildMonthlyTopicResearch(db, client.id, slot.date, slot.content_type, platforms, serviceAreas);
-  if (monthlyTopic.strictMonthlyPlan && !monthlyTopic.topicResearch) {
-    throw new Error(`Approved monthly topic plan exists for ${planMonth(slot.date)}, but no compatible approved topic is available for ${slot.content_type}.`);
+  let topicSelection: SlotTopicSelection | null = null;
+  const skippedTopicIds: string[] = [];
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const candidate = await buildMonthlyTopicSelection(db, client.id, slot.date, slot.content_type, platforms, serviceAreas, skippedTopicIds);
+    if (!candidate) break;
+    const conflict = await findRecentTopicConflict(db, {
+      clientId: client.id,
+      candidateTitle: candidate.topicTitle,
+      candidateKeyword: candidate.targetKeyword,
+      candidateServiceCategory: candidate.serviceCategory,
+      contentType: slot.content_type,
+      topicFingerprint: candidate.topicFingerprint,
+      publishDate: slot.date,
+    });
+    if (conflict && candidate.monthlyTopicId) {
+      skippedTopicIds.push(candidate.monthlyTopicId);
+      continue;
+    }
+    topicSelection = candidate;
+    topicResearch = getTopicResearchFromSelection(candidate, serviceAreas);
+    break;
   }
-  topicResearch = monthlyTopic.topicResearch;
   if (!topicResearch && primaryKey) {
     topicResearch = await researchTopicWithProvider(provider, primaryKey, researchParams, settings).catch(() => null);
   }
@@ -790,6 +872,20 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
     if (openaiKey) {
       topicResearch = await researchTopicWithProvider('openai', openaiKey, researchParams, settings).catch(() => null);
     }
+  }
+  if (!topicSelection && topicResearch) {
+    topicSelection = {
+      monthlyTopicId: null,
+      topicTitle: topicResearch.topic,
+      targetKeyword: topicResearch.targetKeyword,
+      serviceCategory: null,
+      topicFingerprint: buildTopicFingerprint({
+        topic: topicResearch.topic,
+        contentType: slot.content_type,
+        targetKeyword: topicResearch.targetKeyword,
+      }),
+      source: 'research',
+    };
   }
 
   const ctx: GenerationContext = {
@@ -831,6 +927,20 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
     clientName: client.canonical_name,
     provider,
     request: buildGenerationRequest(ctx),
+    topicSelection: topicSelection ?? {
+      monthlyTopicId: null,
+      topicTitle: topicResearch?.topic ?? null,
+      targetKeyword: topicResearch?.targetKeyword ?? null,
+      serviceCategory: null,
+      topicFingerprint: topicResearch
+        ? buildTopicFingerprint({
+          topic: topicResearch.topic,
+          contentType: slot.content_type,
+          targetKeyword: topicResearch.targetKeyword,
+        })
+        : null,
+      source: 'research',
+    },
   };
 }
 
@@ -839,6 +949,7 @@ export async function saveGeneratedSlotResult(
   runId: string,
   slotIdx: number,
   generatedPost: GeneratedPost,
+  topicSelection?: SlotTopicSelection | null,
 ): Promise<SlotWorkResult> {
   const db = env.DB;
   const run = await getGenerationRunById(db, runId);
@@ -877,23 +988,45 @@ export async function saveGeneratedSlotResult(
   );
   const overwriteExisting = run.overwrite_existing === 1;
   const merged = mergeGeneratedContent(existingPost as unknown as Record<string, string | null | undefined>, generatedPost as unknown as Record<string, string | undefined>, overwriteExisting);
-  const monthlyTopic = await buildMonthlyTopicResearch(db, client.id, slot.date, slot.content_type, platforms, []);
-  const duplicatePost = await findSimilarRecentPost(
-    db,
-    client.id,
-    normalizeContentType(slot.content_type),
-    merged.title ?? generatedPost.title ?? '',
-    `${slot.date}T${postTime}`,
-    existingPost?.id ?? null,
-  );
-  const targetPost = existingPost ?? duplicatePost;
+  const selectedTopic = topicSelection ?? {
+    monthlyTopicId: null,
+    topicTitle: generatedPost.title ?? merged.title ?? null,
+    targetKeyword: generatedPost.target_keyword ?? merged.target_keyword ?? null,
+    serviceCategory: null,
+    topicFingerprint: buildTopicFingerprint({
+      topic: generatedPost.title ?? merged.title ?? null,
+      contentType: slot.content_type,
+      targetKeyword: generatedPost.target_keyword ?? merged.target_keyword ?? null,
+    }),
+    source: 'research',
+  };
+  const duplicateConflict = await findRecentTopicConflict(db, {
+    clientId: client.id,
+    candidateTitle: merged.title ?? generatedPost.title ?? '',
+    candidateKeyword: merged.target_keyword ?? generatedPost.target_keyword ?? '',
+    candidateCaption: merged.master_caption ?? generatedPost.master_caption ?? '',
+    candidateServiceCategory: selectedTopic.serviceCategory,
+    contentType: normalizeContentType(slot.content_type),
+    topicFingerprint: selectedTopic.topicFingerprint,
+    publishDate: `${slot.date}T${postTime}`,
+    excludePostId: existingPost?.id ?? null,
+  });
+  const duplicateDraftPost = duplicateConflict && ['draft', 'pending_approval', 'approved', 'ready'].includes(duplicateConflict.post.status ?? '')
+    ? duplicateConflict.post
+    : null;
+  const targetPost = existingPost ?? duplicateDraftPost;
   const isBlogSlot = normalizeContentType(slot.content_type) === 'blog';
   const blogGbpDefaults = isBlogSlot
     ? { gbp_cta_type: 'LEARN_MORE' as string, gbp_topic_type: 'STANDARD' as string }
     : {};
 
   let outcome: 'created' | 'updated' | 'skipped' = 'skipped';
-  if (targetPost) {
+  let savedPostId: string | null = targetPost?.id ?? null;
+  if (!targetPost && duplicateConflict) {
+    if (selectedTopic.monthlyTopicId) {
+      await markClientMonthlyTopicSkipped(db, selectedTopic.monthlyTopicId, duplicateConflict.reason);
+    }
+  } else if (targetPost) {
     const nextPlatforms = targetPost.platform_manual_override === 1 && parsePlatforms(targetPost.platforms).length > 0
       ? parsePlatforms(targetPost.platforms)
       : platforms;
@@ -906,12 +1039,16 @@ export async function saveGeneratedSlotResult(
       automation_slot_key: slot.slot_key,
       generation_run_id: runId,
       scheduled_by_automation: 1,
+      monthly_topic_id: selectedTopic.monthlyTopicId,
+      topic_fingerprint: selectedTopic.topicFingerprint,
+      topic_service_category: selectedTopic.serviceCategory,
       ...blogGbpDefaults,
       ...merged,
     });
+    savedPostId = targetPost.id;
     outcome = 'updated';
   } else {
-    await createPost(db, {
+    const createdPost = await createPost(db, {
       client_id: client.id,
       title: merged.title ?? `${client.canonical_name} — ${slot.date}`,
       status: 'draft',
@@ -925,10 +1062,17 @@ export async function saveGeneratedSlotResult(
       ...blogGbpDefaults,
       ...merged,
     } as Parameters<typeof createPost>[1]);
+    await updatePost(db, createdPost.id, {
+      monthly_topic_id: selectedTopic.monthlyTopicId,
+      topic_fingerprint: selectedTopic.topicFingerprint,
+      topic_service_category: selectedTopic.serviceCategory,
+      ...blogGbpDefaults,
+    });
+    savedPostId = createdPost.id;
     outcome = 'created';
   }
-  if (monthlyTopic.monthlyTopicId) {
-    await markClientMonthlyTopicUsed(db, monthlyTopic.monthlyTopicId, targetPost?.id ?? null);
+  if (selectedTopic.monthlyTopicId && outcome !== 'skipped') {
+    await markClientMonthlyTopicUsed(db, selectedTopic.monthlyTopicId, savedPostId);
   }
 
   return finalizeSlotProgress(db, env, runId, slotIdx + 1, outcome, client.canonical_name, slots, async () => undefined);
@@ -1033,6 +1177,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         await log('WARN', `${postKey}: no compatible platforms after content-type filtering`);
         return await finishSlot(slot_idx + 1, 'skipped', clientName, slots);
       }
+      await log('INFO', `${postKey}: platforms=${platforms.join(', ')}`);
 
       const existingPost = await getPostByAutomationSlot(
         db,
@@ -1076,14 +1221,34 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
 
       // Topic research — directs this post to a specific, non-repetitive, SEO-aware topic
       let topicResearch: TopicResearch | null = null;
-      let monthlyTopicId: string | null = null;
-      const monthlyTopic = await buildMonthlyTopicResearch(db, client.id, slot.date, slot.content_type, platforms, serviceAreas);
-      if (monthlyTopic.strictMonthlyPlan && !monthlyTopic.topicResearch) {
-        await log('WARN', `${postKey}: approved monthly plan exists for ${planMonth(slot.date)} but no compatible approved topic matched this slot`);
-        return await finishSlot(slot_idx + 1, 'skipped', clientName, slots);
+      let topicSelection: SlotTopicSelection | null = null;
+      const skippedTopicIds: string[] = [];
+      for (let attempt = 0; attempt < 12; attempt++) {
+        const candidate = await buildMonthlyTopicSelection(db, client.id, slot.date, slot.content_type, platforms, serviceAreas, skippedTopicIds);
+        if (!candidate) break;
+        const conflict = await findRecentTopicConflict(db, {
+          clientId: client.id,
+          candidateTitle: candidate.topicTitle,
+          candidateKeyword: candidate.targetKeyword,
+          candidateServiceCategory: candidate.serviceCategory,
+          contentType: slot.content_type,
+          topicFingerprint: candidate.topicFingerprint,
+          publishDate: slot.date,
+          excludePostId: existingPost?.id ?? null,
+        });
+        if (conflict && candidate.monthlyTopicId) {
+          skippedTopicIds.push(candidate.monthlyTopicId);
+          await markClientMonthlyTopicSkipped(db, candidate.monthlyTopicId, conflict.reason);
+          await log('WARN', `${postKey}: skipped monthly topic "${candidate.topicTitle}" because ${conflict.reason}`);
+          continue;
+        }
+        topicSelection = candidate;
+        topicResearch = getTopicResearchFromSelection(candidate, serviceAreas);
+        break;
       }
-      monthlyTopicId = monthlyTopic.monthlyTopicId;
-      topicResearch = monthlyTopic.topicResearch;
+      if (!topicSelection && skippedTopicIds.length > 0) {
+        await log('WARN', `${postKey}: no unique monthly topic remained after duplicate checks; falling back to research`);
+      }
       try {
         if (!topicResearch) {
           topicResearch = await researchTopicWithProvider(provider, apiKey, {
@@ -1109,10 +1274,24 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
           }, settings);
         }
         if (topicResearch) {
-          await log('AI', `Topic: "${topicResearch.topic}" [${topicResearch.format}] kw: "${topicResearch.targetKeyword}"`);
+          await log('AI', `Topic: "${topicResearch.topic}" [${topicResearch.format}] kw: "${topicResearch.targetKeyword}" source=${topicSelection?.source ?? 'research'}`);
         }
       } catch (err) {
         await log('WARN', `Topic research failed (non-fatal): ${str(err)}`);
+      }
+      if (!topicSelection && topicResearch) {
+        topicSelection = {
+          monthlyTopicId: null,
+          topicTitle: topicResearch.topic,
+          targetKeyword: topicResearch.targetKeyword,
+          serviceCategory: null,
+          topicFingerprint: buildTopicFingerprint({
+            topic: topicResearch.topic,
+            contentType: slot.content_type,
+            targetKeyword: topicResearch.targetKeyword,
+          }),
+          source: 'research',
+        };
       }
 
       const ctx: GenerationContext = {
@@ -1179,15 +1358,21 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         ? { gbp_cta_type: 'LEARN_MORE' as string, gbp_topic_type: 'STANDARD' as string }
         : {};
 
-      const duplicatePost = await findSimilarRecentPost(
-        db,
-        client.id,
-        normalizeContentType(slot.content_type),
-        merged.title ?? genResult.post.title ?? '',
-        `${slot.date}T${postTime}`,
-        existingPost?.id ?? null,
-      );
-      const targetPost = existingPost ?? duplicatePost;
+      const duplicateConflict = await findRecentTopicConflict(db, {
+        clientId: client.id,
+        candidateTitle: merged.title ?? genResult.post.title ?? '',
+        candidateKeyword: merged.target_keyword ?? genResult.post.target_keyword ?? '',
+        candidateCaption: merged.master_caption ?? genResult.post.master_caption ?? '',
+        candidateServiceCategory: topicSelection?.serviceCategory,
+        contentType: normalizeContentType(slot.content_type),
+        topicFingerprint: topicSelection?.topicFingerprint,
+        publishDate: `${slot.date}T${postTime}`,
+        excludePostId: existingPost?.id ?? null,
+      });
+      const duplicateDraftPost = duplicateConflict && ['draft', 'pending_approval', 'approved', 'ready'].includes(duplicateConflict.post.status ?? '')
+        ? duplicateConflict.post
+        : null;
+      const targetPost = existingPost ?? duplicateDraftPost;
 
       if (targetPost) {
         const nextPlatforms = targetPost.platform_manual_override === 1 && parsePlatforms(targetPost.platforms).length > 0
@@ -1202,14 +1387,22 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
           automation_slot_key: slot.slot_key,
           generation_run_id: run_id,
           scheduled_by_automation: 1,
+          monthly_topic_id: topicSelection?.monthlyTopicId ?? null,
+          topic_fingerprint: topicSelection?.topicFingerprint ?? null,
+          topic_service_category: topicSelection?.serviceCategory ?? null,
           ...blogGbpDefaults,
           ...merged,
         });
         slotOutcome = 'updated';
-        if (monthlyTopicId) {
-          await markClientMonthlyTopicUsed(db, monthlyTopicId, targetPost.id);
+        if (topicSelection?.monthlyTopicId) {
+          await markClientMonthlyTopicUsed(db, topicSelection.monthlyTopicId, targetPost.id);
         }
         await log('SAVED', `Updated post ${targetPost.id} for ${postKey}`);
+      } else if (duplicateConflict) {
+        if (topicSelection?.monthlyTopicId) {
+          await markClientMonthlyTopicSkipped(db, topicSelection.monthlyTopicId, duplicateConflict.reason);
+        }
+        await log('WARN', `${postKey}: skipped because ${duplicateConflict.reason} (post ${duplicateConflict.post.id})`);
       } else {
         const createdPost = await createPost(db, {
           client_id:           client.id,
@@ -1225,9 +1418,15 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
           ...blogGbpDefaults,
           ...merged,
         } as Parameters<typeof createPost>[1]);
+        await updatePost(db, createdPost.id, {
+          monthly_topic_id: topicSelection?.monthlyTopicId ?? null,
+          topic_fingerprint: topicSelection?.topicFingerprint ?? null,
+          topic_service_category: topicSelection?.serviceCategory ?? null,
+          ...blogGbpDefaults,
+        });
         slotOutcome = 'created';
-        if (monthlyTopicId) {
-          await markClientMonthlyTopicUsed(db, monthlyTopicId, createdPost.id);
+        if (topicSelection?.monthlyTopicId) {
+          await markClientMonthlyTopicUsed(db, topicSelection.monthlyTopicId, createdPost.id);
         }
         await log('SAVED', `Created post ${slot_idx + 1}/${slots.length}: "${genResult.post.title?.slice(0, 55) ?? '(no title)'}" — ${slot.client_slug}`);
       }

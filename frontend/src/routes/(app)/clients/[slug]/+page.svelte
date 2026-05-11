@@ -8,7 +8,7 @@
   import { can } from '$lib/stores/auth';
   import { toast } from '$lib/stores/ui';
   import type { Client, ClientMonthlyContentPlan, ClientMonthlyTopic, ClientPlatform, ClientIntelligence, ClientOffer, ClientEvent } from '$lib/types';
-  import type { PlatformConfigWarning } from '$lib/api/clients';
+  import type { ClientContentHistoryItem, PlatformConfigWarning } from '$lib/api/clients';
 
   type Svc   = { id: string; name: string; category_name: string | null; active: number };
   type Area  = { id: string; city: string; state: string | null; zip: string | null; primary_area: number };
@@ -16,7 +16,7 @@
   let client:    Client | null = null;
   let platforms: ClientPlatform[] = [];
   let loading = true;
-  let activeTab: 'profile' | 'platforms' | 'intelligence' | 'monthly_topics' | 'services' | 'areas' | 'gbp' | 'feedback' = 'profile';
+  let activeTab: 'profile' | 'platforms' | 'intelligence' | 'content_history' | 'monthly_topics' | 'services' | 'areas' | 'gbp' | 'feedback' = 'profile';
 
   // Intelligence
   let intelligence: ClientIntelligence = { brand_voice: null, tone_keywords: null, prohibited_terms: null,
@@ -57,6 +57,45 @@
   let suggestingMonthlyTopics = false;
   let parsingMonthlyTopics = false;
   let parsedMonthlyTopics: ClientMonthlyTopic[] = [];
+
+  type ContentHistoryFilters = {
+    from: string;
+    to: string;
+    content_type: string;
+    platform: string;
+    service_category: string;
+    search: string;
+  };
+
+  function isoDaysAgo(days: number): string {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() - days);
+    return d.toISOString().slice(0, 10);
+  }
+
+  let contentHistory: ClientContentHistoryItem[] = [];
+  let loadingContentHistory = false;
+  let contentHistoryLoaded = false;
+  let contentHistoryFilterKey = '';
+  let contentHistoryFilters: ContentHistoryFilters = {
+    from: isoDaysAgo(90),
+    to: new Date().toISOString().slice(0, 10),
+    content_type: '',
+    platform: '',
+    service_category: '',
+    search: '',
+  };
+
+  function parsePlatformList(raw: string | null | undefined): string[] {
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw) as string[];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  $: contentHistoryFilterKey = `${contentHistoryFilters.from}|${contentHistoryFilters.to}|${contentHistoryFilters.content_type}|${contentHistoryFilters.platform}|${contentHistoryFilters.service_category}|${contentHistoryFilters.search}`;
 
   function emptyMonthlyPlan(month: string): ClientMonthlyContentPlan {
     return {
@@ -707,6 +746,23 @@
     try { const r = await clientsApi.getEvents(slug); events = r.events as ClientEvent[]; } catch {}
   }
 
+  async function loadContentHistory(slug: string) {
+    loadingContentHistory = true;
+    try {
+      const r = await clientsApi.getContentHistory(slug, {
+        ...contentHistoryFilters,
+        limit: 150,
+      });
+      contentHistory = r.history ?? [];
+      contentHistoryLoaded = true;
+    } catch {
+      contentHistory = [];
+      toast.error('Failed to load content history');
+    } finally {
+      loadingContentHistory = false;
+    }
+  }
+
   // Feedback tab
   type Feedback = { id: string; month: string; category: string | null; sentiment: string | null; message: string | null; admin_reviewed: number; applied_to_intelligence: number; created_at: number };
   let feedback: Feedback[] = [];
@@ -744,7 +800,10 @@
 
   $: brand = client?.brand_json ? JSON.parse(client.brand_json) : null;
 
-  function switchTab(t: string) { activeTab = t as typeof activeTab; }
+  function switchTab(t: string) {
+    activeTab = t as typeof activeTab;
+    if (client && t === 'content_history') loadContentHistory(client.slug);
+  }
   $: if (client && activeTab === 'services')     loadServices(client.slug);
   $: if (client && activeTab === 'areas')        loadAreas(client.slug);
   $: if (client && activeTab === 'gbp')          { loadOffers(client.slug); loadEvents(client.slug); }
@@ -752,6 +811,7 @@
   $: if (client && activeTab === 'monthly_topics') loadMonthlyTopics(client.slug);
   $: if (client && activeTab === 'feedback')     loadFeedback(client.slug);
   $: if (client && activeTab === 'intelligence' && monthlyTopicMonth) { loadMonthlyPlan(client.slug); loadMonthlyTopics(client.slug); }
+  $: if (client && activeTab === 'content_history' && contentHistoryLoaded && contentHistoryFilterKey) loadContentHistory(client.slug);
 </script>
 
 <svelte:head><title>{client?.canonical_name ?? 'Client'} — WebXni</title></svelte:head>
@@ -787,6 +847,7 @@
       { key: 'profile',      label: 'Profile'      },
       { key: 'platforms',    label: 'Platforms'    },
       { key: 'intelligence', label: 'Intelligence + Plan' },
+      { key: 'content_history', label: 'Content History' },
       { key: 'services',     label: 'Services'     },
       { key: 'areas',        label: 'Areas'        },
       { key: 'gbp',          label: 'Google Business' },
@@ -1339,6 +1400,103 @@
   {/if}
 
 
+{/if}
+
+{#if activeTab === 'content_history' && client}
+<div class="space-y-5">
+  <div class="card p-5">
+    <div class="flex items-center justify-between gap-3 mb-4">
+      <div>
+        <h3 class="section-label">Previous Content</h3>
+        <p class="text-xs text-muted mt-1">Use this before weekly generation to avoid repeating topics, services, and keywords.</p>
+      </div>
+      <button class="btn-secondary btn-sm" on:click={() => client && loadContentHistory(client.slug)} disabled={loadingContentHistory}>
+        {loadingContentHistory ? 'Refreshing…' : 'Refresh'}
+      </button>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-3">
+      <input type="date" class="input text-sm" bind:value={contentHistoryFilters.from} />
+      <input type="date" class="input text-sm" bind:value={contentHistoryFilters.to} />
+      <select class="input text-sm" bind:value={contentHistoryFilters.content_type}>
+        <option value="">All types</option>
+        <option value="image">Image</option>
+        <option value="reel">Reel</option>
+        <option value="video">Video</option>
+        <option value="blog">Blog</option>
+      </select>
+      <select class="input text-sm" bind:value={contentHistoryFilters.platform}>
+        <option value="">All platforms</option>
+        {#each platforms as platform}
+          <option value={platform.platform}>{platform.platform}</option>
+        {/each}
+      </select>
+      <input type="text" class="input text-sm" bind:value={contentHistoryFilters.service_category} placeholder="Service/category" />
+      <input type="text" class="input text-sm" bind:value={contentHistoryFilters.search} placeholder="Keyword or topic" />
+    </div>
+  </div>
+
+  <div class="card">
+    {#if loadingContentHistory && !contentHistoryLoaded}
+      <p class="text-sm text-muted text-center py-8">Loading content history…</p>
+    {:else if contentHistory.length === 0}
+      <p class="text-sm text-muted text-center py-8">No posts found for the selected filters.</p>
+    {:else}
+      <div class="table-wrapper">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Title</th>
+              <th>Date</th>
+              <th>Type</th>
+              <th>Platforms</th>
+              <th>Service / Topic</th>
+              <th>Keyword</th>
+              <th>Status</th>
+              <th>Monthly Topic</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each contentHistory as item}
+              <tr>
+                <td>
+                  <a href="/posts/{item.id}" class="text-sm text-white hover:text-accent">{item.title ?? 'Untitled'}</a>
+                </td>
+                <td class="text-xs text-muted">{item.publish_date ? item.publish_date.slice(0, 10) : '—'}</td>
+                <td class="text-xs text-muted capitalize">{item.content_type ?? '—'}</td>
+                <td>
+                  <div class="flex flex-wrap gap-1">
+                    {#each parsePlatformList(item.platforms) as platform}
+                      <PlatformBadge platform={platform} />
+                    {/each}
+                  </div>
+                </td>
+                <td class="text-xs text-muted">
+                  {item.linked_service_category ?? item.topic_service_category ?? '—'}
+                  {#if item.monthly_topic_title}
+                    <div class="mt-1 text-[11px] text-white/70">{item.monthly_topic_title}</div>
+                  {/if}
+                </td>
+                <td class="text-xs text-muted">{item.target_keyword ?? '—'}</td>
+                <td><Badge status={item.status ?? 'draft'} /></td>
+                <td class="text-xs text-muted">
+                  {#if item.monthly_topic_title}
+                    <div>{item.monthly_topic_status ?? 'linked'}: {item.monthly_topic_title}</div>
+                    {#if item.monthly_topic_skip_reason}
+                      <div class="mt-1 text-yellow-300">{item.monthly_topic_skip_reason}</div>
+                    {/if}
+                  {:else}
+                    —
+                  {/if}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+  </div>
+</div>
 {/if}
 
 {#if activeTab === 'monthly_topics' && client}

@@ -13,7 +13,7 @@
 - Accept an explicit `topics[]` array, OR consume pending topics from the client queue (`use_queue: true`)
 - Blog-only, social-only, or mixed
 - Single client, multiple clients (loop), or all active clients
-- Max 20 per call — confirm with the user before exceeding
+- Supports up to 60 per call and returns a persistent run summary
 
 ### Recurring requests (`create_content_request`)
 - Schedule recurring content generation

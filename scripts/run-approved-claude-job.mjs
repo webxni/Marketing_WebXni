@@ -231,6 +231,7 @@ async function main() {
       run_id: args.run_id,
       slot_idx: summary.slot_idx,
       post: reviewed,
+      topic_selection: slotReq.topic_selection ?? null,
     });
 
     completed += 1;

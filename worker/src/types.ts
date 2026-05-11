@@ -270,6 +270,9 @@ export interface PostRow {
   blog_excerpt:           string | null;
   wp_featured_media_id:   number | null;
   blog_body_images:       string | null;  // JSON array — see migration 0025
+  topic_fingerprint:      string | null;
+  monthly_topic_id:       string | null;
+  topic_service_category: string | null;
   // GBP advanced fields (migration 0004 + 0009)
   gbp_location_id:        string | null;  // per-post location override (migration 0009)
   gbp_topic_type:         string | null;  // 'STANDARD'|'EVENT'|'OFFER'
@@ -424,6 +427,7 @@ export interface ClientMonthlyTopicRow {
   notes:                   string | null;
   generated_post_id:       string | null;
   used_post_id:            string | null;
+  skip_reason:             string | null;
   created_by:              string | null;
   created_at:              number;
   updated_at:              number;

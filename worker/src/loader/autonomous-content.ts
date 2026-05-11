@@ -52,7 +52,13 @@ import {
 } from '../services/stability';
 import { serializeBlogBodyImages, type BlogBodyImage } from '../modules/blog-body-images';
 import { discordSend, DISCORD_COLORS } from '../services/discord';
-import { normalizePlatform, parsePlatforms, resolvePlatformSelection, withImplicitBlogPlatform } from '../modules/platform-compatibility';
+import {
+  getBlogDistributionPlatforms,
+  normalizePlatform,
+  parsePlatforms,
+  resolvePlatformSelection,
+  withImplicitBlogPlatform,
+} from '../modules/platform-compatibility';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -67,6 +73,7 @@ export interface CreateContentParams {
   status?:       'draft' | 'pending_approval';
   notifyDiscord?: boolean;
   triggeredBy?:  string;
+  reuseSimilarDraft?: boolean;
 }
 
 export interface CreateContentResult {
@@ -158,6 +165,7 @@ export async function createContentWithImage(
 
   const contentType = normalizeContentType(params.contentType);
   const clientPlatforms = withImplicitBlogPlatform(await getClientPlatforms(db, client.id), client);
+  const blogDistributionPlatforms = getBlogDistributionPlatforms(clientPlatforms);
 
   // ── 2. Resolve platforms ────────────────────────────────────────────────────
   const requestedPlatforms = (params.platforms ?? []).map((platform) => normalizePlatform(platform));
@@ -292,7 +300,9 @@ export async function createContentWithImage(
     feedback:      fbRows.results,
     publishDate:   publishDate.slice(0, 10),
     contentType,
-    platforms,
+    platforms: contentType === 'blog'
+      ? Array.from(new Set([...platforms, ...blogDistributionPlatforms]))
+      : platforms,
     contentIntent: 'educational',
     topicResearch,
     serviceAreas,
@@ -496,6 +506,10 @@ export async function createContentWithImage(
   } as const;
 
   const editableStatuses = new Set(['draft', 'pending_approval', 'approved', 'ready', 'scheduled']);
+  if (duplicatePost && params.reuseSimilarDraft === false) {
+    throw new Error(`Duplicate draft conflict: similar ${contentType} post already exists (${duplicatePost.id})`);
+  }
+
   const targetPost = duplicatePost && editableStatuses.has(duplicatePost.status ?? '')
     ? duplicatePost
     : null;

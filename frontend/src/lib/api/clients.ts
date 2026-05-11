@@ -1,6 +1,21 @@
 import { api } from './client';
 import type { Client, ClientPlatform, ClientMonthlyContentPlan, ClientMonthlyTopic, ConnectionHealth } from '../types';
 
+export interface ClientContentHistoryItem {
+  id: string;
+  title: string | null;
+  publish_date: string | null;
+  content_type: string | null;
+  platforms: string | null;
+  topic_service_category: string | null;
+  target_keyword: string | null;
+  status: string | null;
+  monthly_topic_title: string | null;
+  monthly_topic_status: string | null;
+  monthly_topic_skip_reason: string | null;
+  linked_service_category: string | null;
+}
+
 export interface PlatformConfigWarning {
   code: string;
   message: string;
@@ -133,6 +148,14 @@ export const clientsApi = {
 
   saveIntelligence: (slug: string, data: Record<string, unknown>) =>
     api.put<{ intelligence: unknown }>(`/api/clients/${slug}/intelligence`, data),
+
+  getContentHistory: (slug: string, params: Record<string, string | number | undefined> = {}) => {
+    const q = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== '') q.set(key, String(value));
+    }
+    return api.get<{ history: ClientContentHistoryItem[] }>(`/api/clients/${slug}/content-history?${q}`);
+  },
 
   // Platform links
   getPlatformLinks: (slug: string) =>

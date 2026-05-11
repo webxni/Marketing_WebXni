@@ -132,6 +132,24 @@ export interface ListPostsParams {
   offset?: number;
 }
 
+export interface ContentHistoryRow extends PostRow {
+  monthly_topic_title: string | null;
+  monthly_topic_status: string | null;
+  monthly_topic_skip_reason: string | null;
+  linked_service_category: string | null;
+}
+
+export interface ListClientContentHistoryParams {
+  clientId: string;
+  dateFrom?: string;
+  dateTo?: string;
+  contentType?: string;
+  platform?: string;
+  serviceCategory?: string;
+  search?: string;
+  limit?: number;
+}
+
 export async function listPosts(
   db: D1Database,
   params: ListPostsParams = {},
@@ -191,6 +209,66 @@ export async function listPosts(
       .first<{ n: number }>(),
   ]);
   return { rows: data.results, total: countRow?.n ?? data.results.length };
+}
+
+export async function listClientContentHistory(
+  db: D1Database,
+  params: ListClientContentHistoryParams,
+): Promise<ContentHistoryRow[]> {
+  const conditions = ['p.client_id = ?'];
+  const binds: unknown[] = [params.clientId];
+
+  if (params.dateFrom) {
+    conditions.push("substr(p.publish_date, 1, 10) >= ?");
+    binds.push(params.dateFrom);
+  }
+  if (params.dateTo) {
+    conditions.push("substr(p.publish_date, 1, 10) <= ?");
+    binds.push(params.dateTo);
+  }
+  if (params.contentType) {
+    conditions.push('p.content_type = ?');
+    binds.push(params.contentType);
+  }
+  if (params.platform) {
+    conditions.push('p.platforms LIKE ?');
+    binds.push(`%"${params.platform}"%`);
+  }
+  if (params.serviceCategory) {
+    conditions.push('LOWER(COALESCE(p.topic_service_category, mt.service_category, "")) LIKE ?');
+    binds.push(`%${params.serviceCategory.toLowerCase()}%`);
+  }
+  if (params.search) {
+    conditions.push(`(
+      p.title LIKE ?
+      OR p.target_keyword LIKE ?
+      OR p.master_caption LIKE ?
+      OR COALESCE(mt.topic_title, '') LIKE ?
+      OR COALESCE(p.topic_service_category, mt.service_category, '') LIKE ?
+    )`);
+    const term = `%${params.search}%`;
+    binds.push(term, term, term, term, term);
+  }
+
+  const limit = Math.min(Math.max(params.limit ?? 100, 1), 300);
+  const rows = await db
+    .prepare(
+      `SELECT
+         p.*,
+         mt.topic_title AS monthly_topic_title,
+         mt.status AS monthly_topic_status,
+         mt.skip_reason AS monthly_topic_skip_reason,
+         COALESCE(p.topic_service_category, mt.service_category) AS linked_service_category
+       FROM posts p
+       LEFT JOIN client_monthly_topics mt
+         ON mt.id = p.monthly_topic_id
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY COALESCE(p.publish_date, '') DESC, p.updated_at DESC
+       LIMIT ?`,
+    )
+    .bind(...binds, limit)
+    .all<ContentHistoryRow>();
+  return rows.results;
 }
 
 /** Query posts ready for automation (the posting gate) */
@@ -341,6 +419,18 @@ export async function getPostByAutomationSlot(
     .bind(clientId, publishDate, contentType)
     .first<PostRow>();
   return fallback ?? null;
+}
+
+export async function getPostByAutomationSlotKey(
+  db: D1Database,
+  clientId: string,
+  automationSlotKey: string,
+): Promise<PostRow | null> {
+  const row = await db
+    .prepare('SELECT * FROM posts WHERE client_id = ? AND automation_slot_key = ? LIMIT 1')
+    .bind(clientId, automationSlotKey)
+    .first<PostRow>();
+  return row ?? null;
 }
 
 export async function updatePost(
@@ -1313,7 +1403,7 @@ export async function deleteClientTopic(db: D1Database, topicId: string): Promis
   await db.prepare('DELETE FROM client_topics WHERE id = ?').bind(topicId).run();
 }
 
-function normalizeTopicFingerprint(value: string | null | undefined): string {
+export function normalizeTopicFingerprint(value: string | null | undefined): string {
   return String(value ?? '')
     .toLowerCase()
     .replace(/&/g, ' and ')
@@ -1322,6 +1412,21 @@ function normalizeTopicFingerprint(value: string | null | undefined): string {
     .filter((token) => token && !new Set(['a', 'an', 'and', 'for', 'how', 'in', 'is', 'of', 'or', 'the', 'to', 'with']).has(token))
     .join(' ')
     .trim();
+}
+
+export function buildTopicFingerprint(parts: {
+  topic?: string | null;
+  title?: string | null;
+  serviceCategory?: string | null;
+  contentType?: string | null;
+  targetKeyword?: string | null;
+}): string {
+  return [
+    normalizeTopicFingerprint(parts.topic ?? parts.title),
+    normalizeTopicFingerprint(parts.serviceCategory),
+    normalizeTopicFingerprint(parts.contentType),
+    normalizeTopicFingerprint(parts.targetKeyword),
+  ].filter(Boolean).join(' | ');
 }
 
 function topicSimilarity(left: string | null | undefined, right: string | null | undefined): number {
@@ -1335,6 +1440,11 @@ function topicSimilarity(left: string | null | undefined, right: string | null |
     if (bSet.has(token)) overlap++;
   }
   return overlap / Math.max(aSet.size, bSet.size, 1);
+}
+
+export interface TopicConflictMatch {
+  post: PostRow;
+  reason: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1492,8 +1602,20 @@ export async function markClientMonthlyTopicUsed(
 ): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
   await db
-    .prepare("UPDATE client_monthly_topics SET status = 'used', generated_post_id = ?, used_post_id = ?, used_at = ?, updated_at = ? WHERE id = ?")
+    .prepare("UPDATE client_monthly_topics SET status = 'used', generated_post_id = ?, used_post_id = ?, used_at = ?, skip_reason = NULL, updated_at = ? WHERE id = ?")
     .bind(postId, postId, now, now, topicId)
+    .run();
+}
+
+export async function markClientMonthlyTopicSkipped(
+  db: D1Database,
+  topicId: string,
+  reason: string,
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await db
+    .prepare("UPDATE client_monthly_topics SET status = 'skipped', skip_reason = ?, updated_at = ? WHERE id = ?")
+    .bind(reason.slice(0, 500), now, topicId)
     .run();
 }
 
@@ -1503,24 +1625,28 @@ export async function getNextClientMonthlyTopic(
   planMonth: string,
   contentType: string | null = null,
   platforms: string[] = [],
+  statuses: Array<'approved' | 'planned'> = ['approved'],
 ): Promise<ClientMonthlyTopicRow | null> {
-  const topics = await listClientMonthlyTopics(db, clientId, planMonth, 'approved');
   const requestedPlatforms = new Set(platforms);
-  const matching = topics.filter((topic) => {
-    if (topic.content_type_preference && contentType && topic.content_type_preference !== contentType) {
-      return false;
-    }
-    if (!topic.preferred_platforms || requestedPlatforms.size === 0) {
-      return true;
-    }
-    try {
-      const preferred = JSON.parse(topic.preferred_platforms) as string[];
-      return preferred.some((platform) => requestedPlatforms.has(platform));
-    } catch {
-      return true;
-    }
-  });
-  return matching[0] ?? null;
+  for (const status of statuses) {
+    const topics = await listClientMonthlyTopics(db, clientId, planMonth, status);
+    const matching = topics.filter((topic) => {
+      if (topic.content_type_preference && contentType && topic.content_type_preference !== contentType) {
+        return false;
+      }
+      if (!topic.preferred_platforms || requestedPlatforms.size === 0) {
+        return true;
+      }
+      try {
+        const preferred = JSON.parse(topic.preferred_platforms) as string[];
+        return preferred.some((platform) => requestedPlatforms.has(platform));
+      } catch {
+        return true;
+      }
+    });
+    if (matching[0]) return matching[0];
+  }
+  return null;
 }
 
 export async function hasAnyApprovedMonthlyTopics(
@@ -1537,6 +1663,87 @@ export async function hasAnyApprovedMonthlyTopics(
   return (row?.n ?? 0) > 0;
 }
 
+export async function findRecentTopicConflict(
+  db: D1Database,
+  params: {
+    clientId: string;
+    candidateTitle?: string | null;
+    candidateKeyword?: string | null;
+    candidateCaption?: string | null;
+    candidateServiceCategory?: string | null;
+    contentType?: string | null;
+    topicFingerprint?: string | null;
+    publishDate?: string | null;
+    excludePostId?: string | null;
+  },
+): Promise<TopicConflictMatch | null> {
+  const baseDate = (params.publishDate ?? '').slice(0, 10) || new Date().toISOString().slice(0, 10);
+  const rows = await db
+    .prepare(
+      `SELECT * FROM posts
+       WHERE client_id = ?
+         AND status NOT IN ('cancelled')
+         AND substr(COALESCE(publish_date, ''), 1, 10) >= date(?, '-90 day')
+       ORDER BY updated_at DESC
+       LIMIT 120`,
+    )
+    .bind(params.clientId, baseDate)
+    .all<PostRow>();
+
+  const candidateTitle = params.candidateTitle ?? '';
+  const candidateKeyword = params.candidateKeyword ?? '';
+  const candidateCaption = params.candidateCaption ?? '';
+  const candidateServiceCategory = params.candidateServiceCategory ?? '';
+  const candidateFingerprint = params.topicFingerprint
+    ? normalizeTopicFingerprint(params.topicFingerprint)
+    : buildTopicFingerprint({
+      title: candidateTitle,
+      serviceCategory: candidateServiceCategory,
+      contentType: params.contentType,
+      targetKeyword: candidateKeyword,
+    });
+
+  for (const row of rows.results) {
+    if (params.excludePostId && row.id === params.excludePostId) continue;
+
+    const rowFingerprint = normalizeTopicFingerprint(
+      row.topic_fingerprint || buildTopicFingerprint({
+        title: row.title,
+        serviceCategory: row.topic_service_category,
+        contentType: row.content_type,
+        targetKeyword: row.target_keyword,
+      }),
+    );
+    if (candidateFingerprint && rowFingerprint && candidateFingerprint === rowFingerprint) {
+      return { post: row, reason: 'topic fingerprint matched recent post' };
+    }
+
+    if (candidateKeyword && row.target_keyword && normalizeTopicFingerprint(candidateKeyword) === normalizeTopicFingerprint(row.target_keyword)) {
+      return { post: row, reason: 'target keyword matched recent post' };
+    }
+
+    if (candidateTitle && row.title && topicSimilarity(candidateTitle, row.title) >= 0.74) {
+      return { post: row, reason: 'title/topic matched recent post' };
+    }
+
+    if (candidateCaption && row.master_caption && topicSimilarity(candidateCaption, row.master_caption) >= 0.82) {
+      return { post: row, reason: 'caption pattern matched recent post' };
+    }
+
+    if (
+      candidateServiceCategory &&
+      row.topic_service_category &&
+      normalizeTopicFingerprint(candidateServiceCategory) === normalizeTopicFingerprint(row.topic_service_category) &&
+      candidateTitle &&
+      row.title &&
+      topicSimilarity(candidateTitle, row.title) >= 0.55
+    ) {
+      return { post: row, reason: 'service angle matched recent post' };
+    }
+  }
+  return null;
+}
+
 export async function findSimilarRecentPost(
   db: D1Database,
   clientId: string,
@@ -1545,34 +1752,12 @@ export async function findSimilarRecentPost(
   publishDate: string | null,
   excludePostId: string | null = null,
 ): Promise<PostRow | null> {
-  const baseDate = (publishDate ?? '').slice(0, 10) || new Date().toISOString().slice(0, 10);
-  const rows = await db
-    .prepare(
-      `SELECT * FROM posts
-       WHERE client_id = ?
-         AND content_type = ?
-         AND status NOT IN ('cancelled')
-         AND substr(COALESCE(publish_date, ''), 1, 10) >= date(?, '-90 day')
-       ORDER BY updated_at DESC
-       LIMIT 80`,
-    )
-    .bind(clientId, contentType, baseDate)
-    .all<PostRow>();
-
-  const candidateFingerprint = normalizeTopicFingerprint(candidateTopic);
-  for (const row of rows.results) {
-    if (excludePostId && row.id === excludePostId) continue;
-    const comparisons = [
-      row.title,
-      row.target_keyword,
-      row.master_caption?.slice(0, 180) ?? null,
-    ];
-    for (const comparison of comparisons) {
-      const comparisonFingerprint = normalizeTopicFingerprint(comparison);
-      if (!comparisonFingerprint) continue;
-      if (comparisonFingerprint === candidateFingerprint) return row;
-      if (topicSimilarity(candidateTopic, comparison) >= 0.74) return row;
-    }
-  }
-  return null;
+  const conflict = await findRecentTopicConflict(db, {
+    clientId,
+    candidateTitle: candidateTopic,
+    contentType,
+    publishDate,
+    excludePostId,
+  });
+  return conflict?.post ?? null;
 }

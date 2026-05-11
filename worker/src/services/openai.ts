@@ -409,6 +409,32 @@ function buildBlogPrompt(ctx: GenerationContext): string {
     industry: ctx.client.industry,
   });
   const serviceAreasForBlog = (ctx.serviceAreas ?? []).slice(0, 6).join(', ') || (ctx.client.state ?? '');
+  const distributionPlatforms = ctx.platforms.filter((platform) => platform !== 'website_blog');
+  const distributionCaptionRules: string[] = [];
+  if (distributionPlatforms.includes('google_business')) {
+    distributionCaptionRules.push('- "cap_google_business": 120-180 chars — 1-2 benefit lines + "[blog_url]". No hashtags. Reads like a GBP update, not an ad.');
+  }
+  if (distributionPlatforms.includes('facebook')) {
+    distributionCaptionRules.push('- "cap_facebook": 130-230 chars — conversational, specific hook from the content + "[blog_url]".');
+  }
+  if (distributionPlatforms.includes('instagram')) {
+    distributionCaptionRules.push('- "cap_instagram": 110-180 chars — short caption version + "[blog_url]" + 6-10 relevant hashtags on new lines.');
+  }
+  if (distributionPlatforms.includes('linkedin')) {
+    distributionCaptionRules.push('- "cap_linkedin": 200-350 chars — professional authority tone; brief insight from the blog + why it matters + "[blog_url]".');
+  }
+  if (distributionPlatforms.includes('x')) {
+    distributionCaptionRules.push('- "cap_x": max 240 chars — compact insight or hook + "[blog_url]".');
+  }
+  if (distributionPlatforms.includes('threads')) {
+    distributionCaptionRules.push('- "cap_threads": 100-180 chars — casual short take + "[blog_url]".');
+  }
+  if (distributionPlatforms.includes('pinterest')) {
+    distributionCaptionRules.push('- "cap_pinterest": 100-180 chars — search-friendly teaser + "[blog_url]" + 4-6 hashtags.');
+  }
+  if (distributionPlatforms.includes('bluesky')) {
+    distributionCaptionRules.push('- "cap_bluesky": max 240 chars — concise value statement + "[blog_url]".');
+  }
 
   const topicLine = ctx.topicResearch
     ? `Write a long-form blog post about: "${ctx.topicResearch.topic}"\nCustomer search question to answer: "${ctx.topicResearch.searchQuestion}"\nPrimary keyword: "${ctx.topicResearch.targetKeyword}"${ctx.topicResearch.localModifier ? `\nLocal focus: mention "${ctx.topicResearch.localModifier}" naturally at least twice` : ''}\nDo not change the topic.`
@@ -420,7 +446,7 @@ ${buildSharedContext(ctx, 'blog')}
 
 TASK:
 ${topicLine}
-Generate BOTH the blog content AND three social distribution captions. Use "[blog_url]" as a placeholder wherever the live blog URL belongs — it will be replaced with the real URL after publishing.
+Generate the full blog content and adapted short-form distribution captions for every requested non-video platform. Use "[blog_url]" as a placeholder wherever the live blog URL belongs — it will be replaced with the real URL after publishing.
 
 SEO RULES (mandatory):
 - Target keyword must appear in: title, intro (within first 80 words), at least 2 H2 headings, and naturally in sections
@@ -446,9 +472,8 @@ Return ONLY JSON matching the requested schema:
 - "cta_heading": 4-8 words, direct and service-focused
 - "cta_body": 1-2 sentences, benefit-driven, no prices
 - "cta_button_label": 2-5 words
-- "cap_google_business": 120-180 chars — 1-2 benefit lines + "[blog_url]". No hashtags. Reads like a GBP update, not an ad.
-- "cap_linkedin": 200-350 chars — professional authority tone; brief insight from the blog + why it matters + "[blog_url]"
-- "cap_facebook": 130-230 chars — conversational, specific hook from the content + "[blog_url]"
+- Distribution captions must be short, platform-native, and based on the published blog. Include the exact "[blog_url]" placeholder in every generated distribution caption:
+${distributionCaptionRules.join('\n')}
 - "ai_image_prompt": MUST BE IN SPANISH — featured image brief, 1080×628px, include brand color context if known
 
 CONTENT RULES:
@@ -511,10 +536,6 @@ function buildResponseSchema(ctx: GenerationContext): GenerationRequestSchema {
     properties.cta_body = { type: 'string' };
     properties.cta_button_label = { type: 'string' };
     properties.ai_image_prompt = { type: 'string' };
-    // Distribution captions — generated at blog-creation time with [blog_url] placeholder
-    properties.cap_google_business = { type: 'string' };
-    properties.cap_linkedin       = { type: 'string' };
-    properties.cap_facebook        = { type: 'string' };
     required.push(
       'blog_excerpt',
       'slug',
@@ -530,10 +551,39 @@ function buildResponseSchema(ctx: GenerationContext): GenerationRequestSchema {
       'cta_body',
       'cta_button_label',
       'ai_image_prompt',
-      'cap_google_business',
-      'cap_linkedin',
-      'cap_facebook',
     );
+    if (platforms.includes('google_business')) {
+      properties.cap_google_business = { type: 'string' };
+      required.push('cap_google_business');
+    }
+    if (platforms.includes('facebook')) {
+      properties.cap_facebook = { type: 'string' };
+      required.push('cap_facebook');
+    }
+    if (platforms.includes('instagram')) {
+      properties.cap_instagram = { type: 'string' };
+      required.push('cap_instagram');
+    }
+    if (platforms.includes('linkedin')) {
+      properties.cap_linkedin = { type: 'string' };
+      required.push('cap_linkedin');
+    }
+    if (platforms.includes('x')) {
+      properties.cap_x = { type: 'string' };
+      required.push('cap_x');
+    }
+    if (platforms.includes('threads')) {
+      properties.cap_threads = { type: 'string' };
+      required.push('cap_threads');
+    }
+    if (platforms.includes('pinterest')) {
+      properties.cap_pinterest = { type: 'string' };
+      required.push('cap_pinterest');
+    }
+    if (platforms.includes('bluesky')) {
+      properties.cap_bluesky = { type: 'string' };
+      required.push('cap_bluesky');
+    }
   } else {
     if (platforms.includes('facebook')) properties.cap_facebook = { type: 'string' };
     if (platforms.includes('instagram')) properties.cap_instagram = { type: 'string' };

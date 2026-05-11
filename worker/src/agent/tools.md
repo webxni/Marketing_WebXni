@@ -16,7 +16,7 @@ All client/post mutations are automatically audit-logged. Always use these exact
 - `create_content_with_image { client, platforms?, content_type?, topic?, publish_date?, status? }` — full orchestration (content + image + Discord notify). Use one call for one post even if multiple platforms were requested.
 
 ## Batch + recurring creation
-- `batch_create_content { client, count?, content_type?, platforms?, topic?, topics[]?, use_queue?, start_date?, spacing_days?, status? }` — up to 20 posts in one call.
+- `batch_create_content { client, count?, content_type?, platforms?, topic?, topics[]?, use_queue?, start_date?, spacing_days?, status? }` — up to 60 posts in one call with a persistent run summary.
 - `create_content_request { client, request_type, content_type?, platforms?, recurrence, day_of_week?, time_of_day?, per_run?, topic_strategy?, fixed_topic?, next_run_date? }`
 - `update_content_request { request_id, fields{} }`
 - `cancel_content_request { request_id }`

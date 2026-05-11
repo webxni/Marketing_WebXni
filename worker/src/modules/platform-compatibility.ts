@@ -214,6 +214,27 @@ export function resolvePlatformSelection(input: {
   };
 }
 
+export function getBlogDistributionPlatforms(
+  clientPlatforms: ClientPlatformRow[],
+): string[] {
+  const allowed = new Set([
+    'facebook',
+    'instagram',
+    'linkedin',
+    'x',
+    'threads',
+    'pinterest',
+    'bluesky',
+    'google_business',
+  ]);
+  return uniquePlatforms(
+    clientPlatforms
+      .filter((platform) => platform.paused !== 1)
+      .filter((platform) => platform.connection_status !== 'failed')
+      .map((platform) => platform.platform),
+  ).filter((platform) => allowed.has(platform));
+}
+
 export function getAutomationSlotKey(clientId: string, date: string, contentType: string, slotIndex: number): string {
   return `${clientId}:${date}:${normalizeContentType(contentType)}:${slotIndex}`;
 }

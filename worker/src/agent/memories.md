@@ -25,7 +25,7 @@
 - bulk_update_posts defaults to dry_run=true — always confirm before real execution
 - Never delete posts without explicit user confirmation
 - Publishing blog to WordPress is irreversible without manual WP editing
-- Never create more than 20 posts in a single `batch_create_content` call without explicit user confirmation
+- `batch_create_content` supports up to 60 posts in a single call; use the returned run summary for created/skipped/failed tracking
 
 ## Recurring Content Requests
 - Separate from GBP offers/events (which only drive Google Business)

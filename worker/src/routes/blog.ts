@@ -7,7 +7,7 @@ import { Hono } from 'hono';
 import type { Env, SessionData } from '../types';
 import { getPostById, getClientWithConfig, updatePost } from '../db/queries';
 import { buildWordPressClient } from '../services/wordpress';
-import { publishBlogPost } from '../modules/blog-publishing';
+import { publishBlogPost, syncBlogDistributionPost } from '../modules/blog-publishing';
 import { requirePermission } from '../middleware/auth';
 
 export const blogRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
@@ -47,7 +47,7 @@ blogRoutes.post('/:id/sync-blog', requirePermission('posts.edit'), async (c) => 
 
   const client = await getClientWithConfig(c.env.DB, post.client_id);
   const wp = client ? buildWordPressClient(client) : null;
-  if (!wp) return c.json({ error: 'WordPress not configured for this client' }, 400);
+  if (!client || !wp) return c.json({ error: 'WordPress not configured for this client' }, 400);
 
   try {
     const wpPost = await wp.getPost(post.wp_post_id);
@@ -59,6 +59,10 @@ blogRoutes.post('/:id/sync-blog', requirePermission('posts.edit'), async (c) => 
       slug: wpPost.slug ?? post.slug,
       wp_featured_media_id: wpPost.featured_media ?? post.wp_featured_media_id,
     } as Parameters<typeof updatePost>[2]);
+    const refreshed = await getPostById(c.env.DB, post.id);
+    if (refreshed && wpPost.link) {
+      await syncBlogDistributionPost(c.env, { ...refreshed, wp_post_url: wpPost.link }, client);
+    }
 
     return c.json({
       ok: true,

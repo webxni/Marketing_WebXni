@@ -1,5 +1,5 @@
-import type { ClientRow, Env, PostRow } from '../types';
-import { getClientWithConfig, getPostById, updatePost } from '../db/queries';
+import type { ClientPlatformRow, ClientRow, Env, PostRow } from '../types';
+import { createPost, getClientWithConfig, getPostByAutomationSlotKey, getPostById, updatePost } from '../db/queries';
 import {
   BLOG_BODY_IMAGE_PLACEHOLDER,
   buildWordPressClient,
@@ -16,6 +16,7 @@ import {
 } from '../services/wordpress';
 import { parseBlogBodyImages, serializeBlogBodyImages } from './blog-body-images';
 import { ensureBlogBodyImagesGenerated } from '../loader/autonomous-content';
+import { getBlogDistributionPlatforms } from './platform-compatibility';
 import { resolveStabilityApiKeys } from '../services/stability';
 
 export interface BlogPreflightResult {
@@ -188,6 +189,85 @@ function buildBodyImageHtml(media: WpMediaItem | null, caption: string): string 
   if (!media?.source_url) return '';
   const alt = (media.alt_text || caption).replace(/"/g, '&quot;');
   return `<img src="${media.source_url}" alt="${alt}" /><figcaption>${caption.replace(/</g, '&lt;')}</figcaption>`;
+}
+
+function getDistributionCaption(post: PostRow, platform: string): string | null {
+  switch (platform) {
+    case 'google_business':
+      return post.cap_google_business ?? post.master_caption;
+    case 'facebook':
+      return post.cap_facebook ?? post.master_caption;
+    case 'instagram':
+      return post.cap_instagram ?? post.master_caption;
+    case 'linkedin':
+      return post.cap_linkedin ?? post.master_caption;
+    case 'x':
+      return post.cap_x ?? post.master_caption;
+    case 'threads':
+      return post.cap_threads ?? post.master_caption;
+    case 'pinterest':
+      return post.cap_pinterest ?? post.master_caption;
+    case 'bluesky':
+      return post.cap_bluesky ?? post.master_caption;
+    default:
+      return post.master_caption;
+  }
+}
+
+export async function syncBlogDistributionPost(
+  env: Env,
+  blogPost: PostRow,
+  client: ClientRow & { platforms: unknown[] },
+): Promise<{ action: 'created' | 'updated' | 'skipped'; postId: string | null; platforms: string[] }> {
+  const clientPlatforms = (client.platforms ?? []) as ClientPlatformRow[];
+  const platforms = getBlogDistributionPlatforms(clientPlatforms);
+  if (platforms.length === 0) return { action: 'skipped', postId: null, platforms: [] };
+
+  const automationSlotKey = `blog_distribution:${blogPost.id}`;
+  const existing = await getPostByAutomationSlotKey(env.DB, client.id, automationSlotKey);
+  const distributionContentType = blogPost.asset_r2_key ? 'image' : 'text';
+  const title = blogPost.title?.trim()
+    ? `${blogPost.title.trim()} — Blog Promo`
+    : `${client.canonical_name} Blog Promo`;
+  const payload: Omit<Partial<PostRow>, 'title' | 'client_id'> = {
+    status: existing?.status ?? 'pending_approval',
+    content_type: distributionContentType,
+    platforms: JSON.stringify(platforms),
+    publish_date: blogPost.publish_date,
+    master_caption: getDistributionCaption(blogPost, platforms[0] ?? '') ?? blogPost.master_caption,
+    cap_google_business: platforms.includes('google_business') ? getDistributionCaption(blogPost, 'google_business') : null,
+    cap_facebook: platforms.includes('facebook') ? getDistributionCaption(blogPost, 'facebook') : null,
+    cap_instagram: platforms.includes('instagram') ? getDistributionCaption(blogPost, 'instagram') : null,
+    cap_linkedin: platforms.includes('linkedin') ? getDistributionCaption(blogPost, 'linkedin') : null,
+    cap_x: platforms.includes('x') ? getDistributionCaption(blogPost, 'x') : null,
+    cap_threads: platforms.includes('threads') ? getDistributionCaption(blogPost, 'threads') : null,
+    cap_pinterest: platforms.includes('pinterest') ? getDistributionCaption(blogPost, 'pinterest') : null,
+    cap_bluesky: platforms.includes('bluesky') ? getDistributionCaption(blogPost, 'bluesky') : null,
+    asset_r2_key: blogPost.asset_r2_key,
+    asset_r2_bucket: blogPost.asset_r2_bucket,
+    asset_type: blogPost.asset_r2_key ? 'image' : null,
+    asset_delivered: blogPost.asset_r2_key ? 1 : 0,
+    ready_for_automation: 0,
+    gbp_topic_type: platforms.includes('google_business') ? 'STANDARD' : null,
+    gbp_cta_type: platforms.includes('google_business') ? 'LEARN_MORE' : null,
+    gbp_cta_url: platforms.includes('google_business') ? blogPost.wp_post_url : null,
+    scheduled_by_automation: 0,
+    platform_manual_override: 0,
+    automation_slot_key: automationSlotKey,
+    generation_run_id: blogPost.generation_run_id,
+  };
+
+  if (existing) {
+    await updatePost(env.DB, existing.id, payload);
+    return { action: 'updated', postId: existing.id, platforms };
+  }
+
+  const created = await createPost(env.DB, {
+    client_id: client.id,
+    title,
+    ...payload,
+  });
+  return { action: 'created', postId: created.id, platforms };
 }
 
 async function ensurePostBodyImages(
@@ -497,7 +577,17 @@ export async function publishBlogPost(env: Env, postId: string, options: Publish
   const blogUrl = wpPost.link;
 
   // Replace [blog_url] placeholder in distribution captions now that the URL is known
-  const CAPTION_FIELDS = ['cap_google_business', 'cap_linkedin', 'cap_facebook', 'cap_instagram', 'cap_threads', 'master_caption'] as const;
+  const CAPTION_FIELDS = [
+    'cap_google_business',
+    'cap_linkedin',
+    'cap_facebook',
+    'cap_instagram',
+    'cap_x',
+    'cap_threads',
+    'cap_pinterest',
+    'cap_bluesky',
+    'master_caption',
+  ] as const;
   const captionUpdates: Partial<Record<typeof CAPTION_FIELDS[number], string>> = {};
   for (const field of CAPTION_FIELDS) {
     const current = post[field as keyof typeof post] as string | null | undefined;
@@ -523,6 +613,12 @@ export async function publishBlogPost(env: Env, postId: string, options: Publish
 
   const refreshed = await getPostById(env.DB, post.id);
   if (!refreshed) throw new Error('Post disappeared after WordPress sync');
+  const distributionResult = await syncBlogDistributionPost(env, refreshed, client);
+  if (distributionResult.action === 'skipped') {
+    warnings.push('No connected non-video distribution platforms available for this client');
+  } else {
+    warnings.push(`Distribution post ${distributionResult.action} for ${distributionResult.platforms.join(', ')}`);
+  }
 
   return {
     post: refreshed,

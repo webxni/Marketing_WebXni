@@ -10,6 +10,7 @@ import {
   deleteClientMonthlyTopic,
   getClientBySlug,
   getClientMonthlyContentPlan,
+  listClientContentHistory,
   listClientMonthlyTopics,
   upsertClientMonthlyContentPlan,
   updateClientMonthlyTopic,
@@ -391,6 +392,25 @@ intelligenceRoutes.delete('/:slug/platforms/:platform', requirePermission('clien
   return c.json({ ok: true });
 });
 
+/** GET /api/clients/:slug/content-history */
+intelligenceRoutes.get('/:slug/content-history', requirePermission('clients.view'), async (c) => {
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') ?? '');
+  if (!client) return c.json({ error: 'Not found' }, 404);
+
+  const limit = Math.min(Math.max(Number.parseInt(String(c.req.query('limit') ?? '120'), 10) || 120, 1), 300);
+  const history = await listClientContentHistory(c.env.DB, {
+    clientId: client.id,
+    dateFrom: c.req.query('from') ?? c.req.query('date_from') ?? undefined,
+    dateTo: c.req.query('to') ?? c.req.query('date_to') ?? undefined,
+    contentType: c.req.query('content_type') ?? undefined,
+    platform: c.req.query('platform') ?? undefined,
+    serviceCategory: c.req.query('service_category') ?? undefined,
+    search: c.req.query('search') ?? undefined,
+    limit,
+  });
+  return c.json({ history });
+});
+
 /** GET /api/clients/:slug/monthly-topics?month=YYYY-MM&status=planned|used|skipped|all */
 intelligenceRoutes.get('/:slug/monthly-topics', requirePermission('clients.view'), async (c) => {
   const client = await getClientBySlug(c.env.DB, c.req.param('slug') ?? '');
@@ -472,6 +492,7 @@ intelligenceRoutes.post('/:slug/monthly-topics', requirePermission('clients.edit
     notes: typeof body.notes === 'string' ? body.notes : null,
     generated_post_id: null,
     used_post_id: null,
+    skip_reason: null,
     created_by: c.get('user').userId,
   });
 
@@ -573,6 +594,7 @@ intelligenceRoutes.post('/:slug/monthly-topics/bulk', requirePermission('clients
       notes: parsed.notes as string | null,
       generated_post_id: null,
       used_post_id: null,
+      skip_reason: null,
       created_by: c.get('user').userId,
     });
     inserted++;

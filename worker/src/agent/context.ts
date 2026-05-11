@@ -69,7 +69,7 @@ export const AGENT_MEMORY = `
 ## Batch Creation
 - batch_create_content can pass an explicit topics[] array OR use_queue:true
 - Default spacing is 1 day between posts starting from start_date (today if omitted)
-- Never create more than 20 posts in a single batch — ask the user to confirm if they request more
+- batch_create_content supports up to 60 posts per call and returns a persistent run summary for created/skipped/failed results
 
 ## Client Expertise
 - Before writing content for a client, call get_client_details and match client.industry against the playbooks in the expertise section of this prompt

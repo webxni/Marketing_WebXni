@@ -32,7 +32,7 @@ import {
   markApprovedCommandJobRunning,
   updateApprovedCommandJobProgress,
 } from '../db/queries';
-import { planGeneration, prepareGenerationPlan, buildSlotGenerationRequest, saveGeneratedSlotResult } from '../loader/generation-run';
+import { planGeneration, prepareGenerationPlan, buildSlotGenerationRequest, saveGeneratedSlotResult, type SlotTopicSelection } from '../loader/generation-run';
 import { createContentWithImage } from '../loader/autonomous-content';
 import { getProviderDisplayName, normalizeContentProvider, resolveProviderApiKey } from '../services/content-provider';
 import type { GeneratedPost } from '../services/openai';
@@ -665,6 +665,7 @@ discordInternalRoute.get('/approved-jobs/:id/slot-request/:slotIdx', async (c) =
       client_name: built.clientName,
       publish_date: built.slot.date,
       content_type: built.slot.content_type,
+      topic_selection: built.topicSelection,
       prompt: built.request.prompt,
       schema: built.request.schema.schema,
     });
@@ -705,11 +706,12 @@ discordInternalRoute.post('/approved-jobs/:id/log', async (c) => {
 
 discordInternalRoute.post('/approved-jobs/:id/save-slot', async (c) => {
   if (!(await requireDiscordBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
-  let body: { run_id?: string; slot_idx?: number; post?: GeneratedPost | null } = {};
+  let body: { run_id?: string; slot_idx?: number; post?: GeneratedPost | null; topic_selection?: SlotTopicSelection | null } = {};
   try { body = await c.req.json(); } catch { /* */ }
   if (!body.run_id || typeof body.slot_idx !== 'number' || !body.post) return c.json({ error: 'run_id, slot_idx, and post required' }, 400);
-  const result = await saveGeneratedSlotResult(c.env, body.run_id, body.slot_idx, body.post);
-  await appendGenerationLog(c.env.DB, body.run_id, 'SAVED', `Claude terminal slot ${body.slot_idx + 1} saved`);
+  const result = await saveGeneratedSlotResult(c.env, body.run_id, body.slot_idx, body.post, body.topic_selection ?? null);
+  const outcomeLabel = result.outcome === 'skipped' ? 'skipped' : 'saved';
+  await appendGenerationLog(c.env.DB, body.run_id, result.outcome === 'skipped' ? 'WARN' : 'SAVED', `Claude terminal slot ${body.slot_idx + 1} ${outcomeLabel}`);
   return c.json({ ok: true, result });
 });
 

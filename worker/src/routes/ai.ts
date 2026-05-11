@@ -15,7 +15,8 @@ import {
   listClients, getClientBySlug,
   listPosts, getPostById, updatePost, setPostStatus,
   createPost, createGenerationRun, createPostingJob, getGenerationRunById,
-  createApprovedCommandJob, appendGenerationLog,
+  createApprovedCommandJob, appendGenerationError, appendGenerationLog,
+  advanceGenerationSlot, finalizeGenerationRun, storeGenerationPlan, updateGenerationProgress,
   writeAuditLog,
   listContentRequests, getContentRequestById, createContentRequest, updateContentRequest,
   listClientTopics, addClientTopics, markClientTopicUsed,
@@ -55,6 +56,148 @@ interface ApprovedClaudeJobArgs {
   generate_images: false;
   provider: 'claude';
   requested_in: 'agent';
+}
+
+interface AgentBatchSlot {
+  topic?: string;
+  topicId: string | null;
+  publishDate: string;
+}
+
+interface AgentBatchRunOptions {
+  clientSlug: string;
+  contentType: 'image' | 'reel' | 'video' | 'blog';
+  platforms?: string[];
+  status: 'draft' | 'pending_approval';
+  slots: AgentBatchSlot[];
+  runId: string;
+  userEmail: string;
+}
+
+async function runAgentBatchContent(
+  env: Env,
+  openAiKey: string,
+  options: AgentBatchRunOptions,
+): Promise<void> {
+  const total = options.slots.length;
+  let created = 0;
+  let failed = 0;
+  let skipped = 0;
+
+  await appendGenerationLog(
+    env.DB,
+    options.runId,
+    'START',
+    `Agent batch started for ${options.clientSlug} with ${total} ${options.contentType} slot(s)`,
+  );
+
+  for (let idx = 0; idx < options.slots.length; idx++) {
+    const slot = options.slots[idx];
+    const label = `${slot.publishDate} / ${options.contentType}${slot.topic ? ` / ${slot.topic}` : ''}`;
+    await updateGenerationProgress(env.DB, options.runId, {
+      current_client: options.clientSlug,
+      current_post: label,
+      completed: created + failed + skipped,
+      total_estimated: total,
+      errors: failed,
+      clients_done: 0,
+      clients_total: 1,
+    });
+    await appendGenerationLog(env.DB, options.runId, 'INFO', `Slot ${idx + 1}/${total}: ${label}`);
+
+    let saved = false;
+    let lastError = '';
+    const attemptLimit = slot.topic ? 1 : 3;
+
+    for (let attempt = 1; attempt <= attemptLimit; attempt++) {
+      try {
+        const result = await createContentWithImage(
+          env,
+          {
+            clientSlug: options.clientSlug,
+            platforms: options.platforms,
+            contentType: options.contentType,
+            topicOverride: slot.topic,
+            publishDate: slot.publishDate,
+            status: options.status,
+            notifyDiscord: true,
+            triggeredBy: `agent:batch:${options.userEmail}`,
+            reuseSimilarDraft: false,
+          },
+          openAiKey,
+        );
+        if (slot.topicId) {
+          try { await markClientTopicUsed(env.DB, slot.topicId, result.postId); }
+          catch { /* non-fatal */ }
+        }
+        created++;
+        saved = true;
+        await appendGenerationLog(
+          env.DB,
+          options.runId,
+          'SAVED',
+          `Created post ${result.postId} for slot ${idx + 1}/${total}`,
+        );
+        break;
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+        const duplicateConflict = lastError.includes('Duplicate draft conflict');
+        if (duplicateConflict && !slot.topic && attempt < attemptLimit) {
+          await appendGenerationLog(
+            env.DB,
+            options.runId,
+            'WARN',
+            `Retrying slot ${idx + 1}/${total} after duplicate conflict (attempt ${attempt}/${attemptLimit})`,
+          );
+          continue;
+        }
+        if (duplicateConflict) skipped++;
+        else failed++;
+        await appendGenerationError(env.DB, options.runId, `Slot ${idx + 1}/${total} failed: ${lastError}`);
+        break;
+      }
+    }
+
+    await advanceGenerationSlot(
+      env.DB,
+      options.runId,
+      idx + 1,
+      created,
+      JSON.stringify({
+        current_client: options.clientSlug,
+        current_post: label,
+        completed: created + failed + skipped,
+        total_estimated: total,
+        errors: failed,
+        clients_done: 1,
+        clients_total: 1,
+        skipped,
+        failed,
+        created,
+      }),
+    );
+
+    if (!saved && lastError) {
+      await appendGenerationLog(env.DB, options.runId, lastError.includes('Duplicate draft conflict') ? 'WARN' : 'ERROR', lastError);
+    }
+  }
+
+  const status = created === 0 && (failed > 0 || skipped > 0)
+    ? 'failed'
+    : (failed > 0 || skipped > 0 ? 'completed_with_errors' : 'completed');
+  await finalizeGenerationRun(
+    env.DB,
+    options.runId,
+    status,
+    created,
+    failed > 0 || skipped > 0 ? `created=${created}; skipped=${skipped}; failed=${failed}` : null,
+  );
+  await appendGenerationLog(
+    env.DB,
+    options.runId,
+    'DONE',
+    `Agent batch finished: created=${created}, skipped=${skipped}, failed=${failed}`,
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -613,19 +756,19 @@ blog -> website_blog.`,
     type: 'function',
     function: {
       name: 'batch_create_content',
-      description: `Create multiple posts for a client in one call. Each post runs full content+image generation in the background.
+      description: `Create multiple posts for a client in one call. Each post runs full content+image generation in a persistent background run.
 Use for: "Create 5 posts about bathroom remodeling this week", "Create 10 blog posts from this topic list", "Generate content from this question list".
 Pass either:
   • topics[] — one post per topic (count = topics.length)
   • use_queue: true — consumes pending topics from client_topics (priority DESC)
   • topic + count — single topic, N posts with slight angle variation
   • count only — auto-researches each post independently
-Max 20 per call.`,
+Supports up to 60 posts per call and returns a run_id with created/skipped/failed progress.`,
       parameters: {
         type: 'object',
         properties: {
           client:        { type: 'string',  description: 'Client slug (required)' },
-          count:         { type: 'number',  description: 'Number of posts to create (1-20). Ignored when topics[] is provided.' },
+          count:         { type: 'number',  description: 'Number of posts to create (1-60). Ignored when topics[] is provided.' },
           content_type:  { type: 'string',  description: 'image|reel|video|blog (default: image)' },
           platforms:     { type: 'array',   items: { type: 'string' }, description: 'Platforms array. Omit to use content-type defaults; if provided, use exactly these platforms.' },
           topic:         { type: 'string',  description: 'A single topic shared across all posts (each gets a different angle).' },
@@ -2007,7 +2150,7 @@ Return JSON: { "caption": "..." }`;
         const explicitTopics = Array.isArray(args.topics) ? (args.topics as string[]).filter(Boolean) : [];
         const useQueue = args.use_queue === true;
         const singleTopic = typeof args.topic === 'string' && args.topic.trim() ? args.topic.trim() : null;
-        const requestedCount = typeof args.count === 'number' ? Math.max(1, Math.min(20, Math.floor(args.count))) : null;
+        const requestedCount = typeof args.count === 'number' ? Math.max(1, Math.min(60, Math.floor(args.count))) : null;
 
         const startDate = typeof args.start_date === 'string' ? args.start_date : new Date().toISOString().slice(0, 10);
         const spacing   = typeof args.spacing_days === 'number' ? Math.max(0, Math.min(30, args.spacing_days)) : 1;
@@ -2023,13 +2166,13 @@ Return JSON: { "caption": "..." }`;
         };
 
         if (explicitTopics.length > 0) {
-          const limit = Math.min(20, explicitTopics.length);
+          const limit = Math.min(60, explicitTopics.length);
           for (let i = 0; i < limit; i++) {
             slots.push({ topic: explicitTopics[i], topicId: null, publishDate: `${addDays(startDate, i * spacing)}T10:00` });
           }
         } else if (useQueue) {
-          const pending = await listClientTopics(env.DB, client.id, 'pending', Math.min(20, requestedCount ?? 20));
-          const limit = Math.min(20, requestedCount ?? pending.length);
+          const pending = await listClientTopics(env.DB, client.id, 'pending', Math.min(60, requestedCount ?? 60));
+          const limit = Math.min(60, requestedCount ?? pending.length);
           for (let i = 0; i < Math.min(limit, pending.length); i++) {
             slots.push({ topic: pending[i].topic, topicId: pending[i].id, publishDate: `${addDays(startDate, i * spacing)}T10:00` });
           }
@@ -2051,51 +2194,65 @@ Return JSON: { "caption": "..." }`;
 
         if (slots.length === 0) return { success: false, error: 'No slots resolved' };
 
-        // Fire in background, sequentially (respect OpenAI + Stability rate limits)
-        ctx.waitUntil((async () => {
-          for (const slot of slots) {
-            try {
-              const result = await createContentWithImage(env, {
-                clientSlug:    slug,
-                platforms,
-                contentType,
-                topicOverride: slot.topic,
-                publishDate:   slot.publishDate,
-                status:        statusArg as 'draft' | 'pending_approval',
-                notifyDiscord: true,
-                triggeredBy:   `agent:batch:${user.email}`,
-              }, openAiKey);
-              if (slot.topicId) {
-                try { await markClientTopicUsed(env.DB, slot.topicId, result.postId); }
-                catch { /* non-fatal */ }
-              }
-            } catch (err) {
-              console.error('[agent] batch_create_content slot failed:', err);
-            }
-          }
-        })());
+        const endDate = slots[slots.length - 1]?.publishDate.slice(0, 10) ?? startDate;
+        const run = await createGenerationRun(env.DB, {
+          triggered_by: user.userId,
+          date_range: `${startDate}:${endDate}`,
+          client_filter: JSON.stringify([slug]),
+          overwrite_existing: false,
+        });
+        await storeGenerationPlan(env.DB, run.id, slots.map((slot) => ({
+          client_slug: slug,
+          date: slot.publishDate.slice(0, 10),
+          publish_date: slot.publishDate,
+          content_type: contentType,
+          topic: slot.topic ?? null,
+          topic_id: slot.topicId,
+        })), '10:00');
+        await updateGenerationProgress(env.DB, run.id, {
+          current_client: client.canonical_name,
+          current_post: slots[0] ? `${slots[0].publishDate} / ${contentType}` : '',
+          completed: 0,
+          total_estimated: slots.length,
+          errors: 0,
+          clients_done: 0,
+          clients_total: 1,
+        });
+
+        ctx.waitUntil(runAgentBatchContent(env, openAiKey, {
+          clientSlug: slug,
+          contentType,
+          platforms,
+          status: statusArg as 'draft' | 'pending_approval',
+          slots,
+          runId: run.id,
+          userEmail: user.email,
+        }));
 
         await writeAuditLog(env.DB, {
           user_id: user.userId, action: 'agent_batch_create_content',
           entity_type: 'client', entity_id: client.id,
-          new_value: { slots: slots.length, content_type: contentType, start_date: startDate, spacing },
+          new_value: { slots: slots.length, content_type: contentType, start_date: startDate, spacing, run_id: run.id },
         });
 
         return {
           success: true,
+          job_id: run.id,
           summary: {
             client:       slug,
             count:        slots.length,
             content_type: contentType,
             start_date:   startDate,
+            end_date:     endDate,
             spacing_days: spacing,
             source:       explicitTopics.length ? 'explicit' : useQueue ? 'queue' : singleTopic ? 'shared_topic' : 'auto',
             platforms:    Array.isArray(platforms) && platforms.length > 0 ? platforms : `default ${contentType} platforms`,
+            run_id:       run.id,
           },
           suggestions: [
-            `Background job created ${slots.length} post${slots.length !== 1 ? 's' : ''} — check /approvals when ready.`,
+            `Queued ${slots.length} planned slot${slots.length !== 1 ? 's' : ''} — check /api/run/generate/runs/${run.id} for created, skipped, and failed results.`,
           ],
-          action_summary: `Batch of ${slots.length} ${contentType} post${slots.length !== 1 ? 's' : ''} queued for ${client.canonical_name}`,
+          action_summary: `Batch of ${slots.length} ${contentType} post${slots.length !== 1 ? 's' : ''} queued for ${client.canonical_name} — run ${run.id}`,
         };
       }
 
