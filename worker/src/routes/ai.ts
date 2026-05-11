@@ -58,6 +58,45 @@ interface ApprovedClaudeJobArgs {
   requested_in: 'agent';
 }
 
+function normalizeAgentPostUpdateFields(args: Record<string, unknown>): Record<string, unknown> {
+  const fromFields = (args.fields && typeof args.fields === 'object' && !Array.isArray(args.fields))
+    ? { ...(args.fields as Record<string, unknown>) }
+    : {};
+  const topLevel = Object.fromEntries(
+    Object.entries(args).filter(([key]) => !['post_id', 'fields'].includes(key)),
+  );
+  const merged = { ...topLevel, ...fromFields };
+
+  if (typeof merged['caption'] === 'string' && !merged['master_caption']) {
+    merged['master_caption'] = merged['caption'];
+  }
+  delete merged['caption'];
+
+  if (Array.isArray(merged['platforms'])) {
+    merged['platforms'] = JSON.stringify(merged['platforms']);
+  }
+
+  if (typeof merged['publish_date'] === 'string') {
+    const value = merged['publish_date'].trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) merged['publish_date'] = `${value}T10:00`;
+  }
+
+  const forbidden = new Set([
+    'id',
+    'client_id',
+    'created_at',
+    'generation_run_id',
+    'automation_slot_key',
+    'post_id',
+  ]);
+  const safe: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(merged)) {
+    if (forbidden.has(key)) continue;
+    safe[key] = value;
+  }
+  return safe;
+}
+
 interface AgentBatchSlot {
   topic?: string;
   topicId: string | null;
@@ -327,7 +366,7 @@ const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'update_post',
-      description: 'Update fields on a single post. Returns fresh post data after update.',
+      description: 'Update fields on a single post. Accept either fields:{...} or direct editable keys like title, master_caption, publish_date, status, cap_*, seo_title, target_keyword, blog_content. Returns fresh post data after update.',
       parameters: {
         type: 'object',
         properties: {
@@ -1359,13 +1398,13 @@ async function executeTool(
         const before = await getPostById(env.DB, postId);
         if (!before) return { success: false, error: `Post not found: ${postId}` };
 
-        const fields = (args.fields ?? {}) as Record<string, unknown>;
-        const FORBIDDEN = ['id', 'client_id', 'created_at', 'generation_run_id', 'automation_slot_key'];
-        const safe: Record<string, unknown> = {};
-        for (const [k, v] of Object.entries(fields)) {
-          if (!FORBIDDEN.includes(k)) safe[k] = v;
+        const safe = normalizeAgentPostUpdateFields(args as Record<string, unknown>);
+        if (Object.keys(safe).length === 0) {
+          return {
+            success: false,
+            error: 'No valid fields to update. Provide fields like title, master_caption, publish_date, status, blog_content, seo_title, target_keyword, or cap_*.',
+          };
         }
-        if (Object.keys(safe).length === 0) return { success: false, error: 'No valid fields to update' };
 
         await updatePost(env.DB, postId, safe as never);
         await writeAuditLog(env.DB, { user_id: user.userId, action: 'agent_update_post', entity_type: 'post', entity_id: postId, new_value: safe });

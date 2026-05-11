@@ -27,6 +27,7 @@ All client/post mutations are automatically audit-logged. Always use these exact
 
 ## Post ops (existing)
 - `update_post`, `bulk_update_posts`, `set_post_status`, `publish_post`, `publish_bulk`, `fix_failed_posts`, `delete_post`
+  `update_post` can send editable keys either inside `fields{}` or directly at the top level together with `post_id`
 - Blog: `update_blog_post`, `publish_blog`
 - Media: `attach_asset_to_post`
 - Captions: `generate_captions { post_id, platforms[] }`
@@ -53,6 +54,7 @@ All client/post mutations are automatically audit-logged. Always use these exact
 | "5 posts this week about X" | `batch_create_content { count: 5, topic: 'X' }` |
 | "here's a list of topics" | `add_client_topics` then `batch_create_content { use_queue: true }` |
 | "10 blogs from this list" | `add_client_topics { content_type: 'blog' }` + `batch_create_content { content_type: 'blog', use_queue: true, count: 10 }` |
+| "I want to create blog posts" with missing client/topics/dates | ask one short follow-up question to gather the missing intake data before calling tools |
 | "every Monday at 9am" | `create_content_request { recurrence: 'weekly', day_of_week: 1, time_of_day: '09:00' }` |
 | "every weekday" | `create_content_request { recurrence: 'weekdays', time_of_day: '09:00' }` |
 | "every other Tuesday" | `create_content_request { recurrence: 'biweekly', day_of_week: 2 }` |
