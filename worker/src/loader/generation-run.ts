@@ -1088,6 +1088,12 @@ export async function saveGeneratedSlotResult(
 
 export async function executeSlotWork(env: Env, run_id: string, slot_idx: number): Promise<SlotWorkResult> {
   const db = env.DB;
+  const heartbeat = setInterval(() => {
+    db.prepare('UPDATE generation_runs SET last_activity_at = ? WHERE id = ?')
+      .bind(Math.floor(Date.now() / 1000), run_id)
+      .run()
+      .catch(() => undefined);
+  }, 20_000);
 
   async function log(level: Parameters<typeof appendGenerationLog>[2], msg: string) {
     console.log(`[gen:${run_id.slice(0, 8)}] slot${slot_idx} [${level}] ${msg}`);
@@ -1445,5 +1451,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
       return await finishSlot(slot_idx + 1, 'skipped', clientName || slots[slot_idx]?.client_slug || '', slots);
     }
     return { outcome: 'skipped' };
+  } finally {
+    clearInterval(heartbeat);
   }
 }
