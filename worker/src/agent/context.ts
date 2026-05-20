@@ -47,6 +47,13 @@ export const AGENT_MEMORY = `
 - Post IDs are UUIDs (long hex strings) — NEVER treat a plain number like "8" or "3" as a post ID
 - When the user says "the 8th post", "post number 3", "that one", etc., look at the [Items shown] block in the conversation history to find the correct UUID for that position, then use that UUID in your tool call
 - If you cannot find the ID from history, call get_posts to fetch the list first before acting
+- If the user asks to edit, update, revise, rewrite, retitle, reschedule, or change an existing post, use update_post
+- Common edit requests map to update_post:
+  - "change the caption" → master_caption
+  - "change the date" / "reschedule" → publish_date
+  - "change the title" → title
+  - "change the platforms" → platforms[]
+  - blog body / excerpt / SEO changes → blog_content, blog_excerpt, seo_title, target_keyword, meta_description, slug
 
 ## Recurring Content Requests
 - Recurring schedules live in content_requests (separate from GBP client_offers/client_events)
@@ -201,9 +208,22 @@ export const NL_INTENT_MAP = `
 - If only one client has been mentioned in recent history, use that slug. Otherwise ASK for the client slug before inserting.
 - Save with add_client_topics first (audit trail + reusability), THEN call batch_create_content with use_queue: true.
 
+## Natural-language intake for blog creation
+- For natural-language requests like "help me create blog posts" or "I want blogs for a client", gather the required inputs conversationally before creating anything.
+- Required intake fields for batch blog work:
+  - client
+  - topic source: explicit topic list, shared topic, or auto-research
+  - count when the user wants multiple posts
+  - posting timing: specific dates, start date + spacing, or "create now and I will schedule later"
+- If the user already provided a topic list but not the client, ask for the client first.
+- If the user provided the client but not the topics/count, ask whether they want to paste topics, use the topic queue, or auto-research.
+- If the user provided client + topics/count but not dates, ask when the posts should be scheduled before running the batch.
+- Do not guess missing client, topic-list, or schedule details for blog batches.
+
 ## When the user's phrasing is ambiguous
 - If intent is clearly a content action but client is missing: ask "Which client?" in one sentence.
-- If intent is clearly a content action but count/topic is missing: pick reasonable defaults (count=1, auto-research) and proceed.
+- If intent is clearly a single-post social content action and topic/date are missing: defaults are allowed.
+- If intent is batch blog creation or blog planning and count/topic/date are missing: ask a short follow-up instead of defaulting.
 - Never ask clarifying questions beyond one short sentence. Prefer to act and let the user correct.
 `;
 

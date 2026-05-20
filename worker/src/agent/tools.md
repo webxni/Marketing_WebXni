@@ -28,6 +28,7 @@ All client/post mutations are automatically audit-logged. Always use these exact
 ## Post ops (existing)
 - `update_post`, `bulk_update_posts`, `set_post_status`, `publish_post`, `publish_bulk`, `fix_failed_posts`, `delete_post`
   `update_post` can send editable keys either inside `fields{}` or directly at the top level together with `post_id`
+  Use `update_post` for natural requests like "edit this post", "rewrite the caption", "change the publish date", "rename the title", or "update the blog SEO"
 - Blog: `update_blog_post`, `publish_blog`
 - Media: `attach_asset_to_post`
 - Captions: `generate_captions { post_id, platforms[] }`

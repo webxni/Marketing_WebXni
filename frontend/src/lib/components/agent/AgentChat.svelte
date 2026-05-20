@@ -12,6 +12,7 @@
   interface ChatMessage {
     role:        'user' | 'assistant';
     content:     string;
+    historyContent?: string;
     actions?:    string[];
     errors?:     string[];
     tools?:      string[];
@@ -27,7 +28,7 @@
   // Track conversation history for context
   $: history = messages
     .filter(m => !m.pending)
-    .map(m => ({ role: m.role, content: m.content } as AgentConversationMessage));
+    .map(m => ({ role: m.role, content: m.historyContent ?? m.content } as AgentConversationMessage));
 
   // ── Keyboard shortcut: Cmd/Ctrl+K ─────────────────────────────────────────
   function handleKeydown(e: KeyboardEvent) {
@@ -72,11 +73,24 @@
         history: history.slice(0, -1),
       });
 
+      let historyContent = res.message;
+      if (Array.isArray(res.items) && res.items.length > 0) {
+        const itemLines = res.items.map((item, i) => {
+          if (!item || typeof item !== 'object') return `${i + 1}. ${String(item)}`;
+          const o = item as Record<string, unknown>;
+          const id = o['id'] ?? '?';
+          const title = o['title'] ?? o['name'] ?? '—';
+          return `${i + 1}. [id:${id}] ${title}`;
+        });
+        historyContent += `\n\n[Items shown in this response:\n${itemLines.join('\n')}]`;
+      }
+
       messages = messages.map((m, i) => {
         if (i === placeholderIdx) {
           return {
             role:        'assistant' as const,
             content:     res.message,
+            historyContent,
             actions:     res.actions_taken?.length  ? res.actions_taken  : undefined,
             errors:      res.errors?.length         ? res.errors         : undefined,
             tools:       res.tools_used?.length     ? res.tools_used     : undefined,
