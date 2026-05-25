@@ -15,6 +15,7 @@ export interface Env {
   UPLOAD_POST_API_KEY: string;
   OPENAI_API_KEY: string;
   ANTHROPIC_API_KEY?: string;
+  AGENT_INTERNAL_TOKEN?: string;
   R2_MEDIA_PUBLIC_URL: string;
   NOTION_API_TOKEN?: string;       // optional — only needed for Notion import
   // Discord

@@ -151,6 +151,7 @@ export interface GenerationContext {
   recentFormats?:  ContentFormat[];
   // High-quality mode — uses better model + larger token budget
   highQuality?:    boolean;
+  strategicContext?: string | null;
 }
 
 function line(condition: unknown, text: string): string {
@@ -292,6 +293,10 @@ function buildSharedContext(ctx: GenerationContext, mode: 'social' | 'blog'): st
 
   if (mode === 'blog') {
     block += `${line(i?.local_seo_themes, `\n- Local SEO themes: ${i?.local_seo_themes}`)}${line(i?.primary_keyword, `\n- Primary keyword: ${i?.primary_keyword}`)}${line(i?.secondary_keywords, `\n- Secondary keywords: ${i?.secondary_keywords}`)}`;
+  }
+
+  if (ctx.strategicContext) {
+    block += `\n\nWEEKLY STRATEGIC CONTEXT:\n${ctx.strategicContext}`;
   }
 
   block += `\n\n${intentInstruction}`;

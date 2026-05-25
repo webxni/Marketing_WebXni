@@ -139,6 +139,14 @@ export interface ContentHistoryRow extends PostRow {
   linked_service_category: string | null;
 }
 
+export interface ClientGenerationTopicHistoryRow {
+  title: string;
+  target_keyword: string | null;
+  content_type: string | null;
+  publish_date: string | null;
+  platforms: string[];
+}
+
 export interface ListClientContentHistoryParams {
   clientId: string;
   dateFrom?: string;
@@ -209,6 +217,59 @@ export async function listPosts(
       .first<{ n: number }>(),
   ]);
   return { rows: data.results, total: countRow?.n ?? data.results.length };
+}
+
+export async function getClientGenerationTopicHistory(
+  db: D1Database,
+  clientId: string,
+  limit = 24,
+): Promise<ClientGenerationTopicHistoryRow[]> {
+  const rows = await db
+    .prepare(
+      `SELECT title, target_keyword, content_type, publish_date, platforms
+       FROM posts
+       WHERE client_id = ?
+         AND status NOT IN ('cancelled')
+         AND title IS NOT NULL
+         AND trim(title) != ''
+       ORDER BY COALESCE(publish_date, '') DESC, created_at DESC
+       LIMIT ?`,
+    )
+    .bind(clientId, Math.max(1, Math.min(limit, 60)))
+    .all<{
+      title: string | null;
+      target_keyword: string | null;
+      content_type: string | null;
+      publish_date: string | null;
+      platforms: string | null;
+    }>();
+
+  return rows.results
+    .filter((row): row is {
+      title: string;
+      target_keyword: string | null;
+      content_type: string | null;
+      publish_date: string | null;
+      platforms: string | null;
+    } => typeof row.title === 'string' && row.title.trim().length > 0)
+    .map((row) => {
+      let platforms: string[] = [];
+      try {
+        const parsed = JSON.parse(row.platforms ?? '[]') as unknown;
+        if (Array.isArray(parsed)) {
+          platforms = parsed.map((item) => String(item).trim()).filter(Boolean);
+        }
+      } catch {
+        platforms = [];
+      }
+      return {
+        title: row.title.trim(),
+        target_keyword: row.target_keyword,
+        content_type: row.content_type,
+        publish_date: row.publish_date,
+        platforms,
+      };
+    });
 }
 
 export async function listClientContentHistory(
@@ -1021,6 +1082,180 @@ export async function completeApprovedCommandJob(
      SET status = ?, result_json = ?, error_log = ?, completed_at = ?, updated_at = ?
      WHERE id = ?`,
   ).bind(status, result_json, error_log, now, now, id).run();
+}
+
+export interface AgentAuditMarkerRow {
+  id: string;
+  action: string;
+  entity_type: string | null;
+  entity_id: string | null;
+  new_value: string | null;
+  created_at: number;
+}
+
+export async function getLatestAuditMarker(
+  db: D1Database,
+  action: string,
+  entityType: string,
+  entityId: string,
+): Promise<AgentAuditMarkerRow | null> {
+  const row = await db.prepare(
+    `SELECT id, action, entity_type, entity_id, new_value, created_at
+     FROM audit_logs
+     WHERE action = ? AND entity_type = ? AND entity_id = ?
+     ORDER BY created_at DESC
+     LIMIT 1`,
+  ).bind(action, entityType, entityId).first<AgentAuditMarkerRow>();
+  return row ?? null;
+}
+
+export interface AgentSystemHealthSnapshot {
+  active_clients: number;
+  running_generation_runs: number;
+  recent_generation_failures: Array<{
+    id: string;
+    status: string;
+    triggered_by: string | null;
+    last_activity_at: number | null;
+    error_log: string | null;
+  }>;
+  approved_jobs: {
+    queued: number;
+    running: number;
+    failed_recent: number;
+  };
+  auth_failures_recent: Array<{
+    email: string;
+    ip: string | null;
+    fail_reason: string | null;
+    attempts: number;
+    last_seen: number;
+  }>;
+  stale_users: Array<{
+    id: string;
+    email: string;
+    role: string;
+    last_login: number | null;
+  }>;
+}
+
+export async function getAgentSystemHealthSnapshot(
+  db: D1Database,
+  options: { lookbackHours?: number; staleUserDays?: number } = {},
+): Promise<AgentSystemHealthSnapshot> {
+  const lookbackHours = Math.max(1, options.lookbackHours ?? 168);
+  const staleUserDays = Math.max(1, options.staleUserDays ?? 30);
+  const now = Math.floor(Date.now() / 1000);
+  const recentCutoff = now - (lookbackHours * 60 * 60);
+  const staleUserCutoff = now - (staleUserDays * 24 * 60 * 60);
+
+  const [
+    activeClientsRow,
+    runningRunsRow,
+    recentFailures,
+    queuedJobsRow,
+    runningJobsRow,
+    failedJobsRow,
+    authFailures,
+    staleUsers,
+  ] = await Promise.all([
+    db.prepare("SELECT COUNT(*) AS n FROM clients WHERE status = 'active'").first<{ n: number }>(),
+    db.prepare("SELECT COUNT(*) AS n FROM generation_runs WHERE status = 'running'").first<{ n: number }>(),
+    db.prepare(
+      `SELECT id, status, triggered_by, last_activity_at, error_log
+       FROM generation_runs
+       WHERE created_at >= ?
+         AND status IN ('failed', 'timed_out', 'completed_with_errors')
+       ORDER BY COALESCE(last_activity_at, created_at) DESC
+       LIMIT 12`,
+    ).bind(recentCutoff).all<{
+      id: string;
+      status: string;
+      triggered_by: string | null;
+      last_activity_at: number | null;
+      error_log: string | null;
+    }>(),
+    db.prepare("SELECT COUNT(*) AS n FROM approved_command_jobs WHERE status = 'queued'").first<{ n: number }>(),
+    db.prepare("SELECT COUNT(*) AS n FROM approved_command_jobs WHERE status IN ('claimed', 'running')").first<{ n: number }>(),
+    db.prepare(
+      `SELECT COUNT(*) AS n
+       FROM approved_command_jobs
+       WHERE status = 'failed' AND updated_at >= ?`,
+    ).bind(recentCutoff).first<{ n: number }>(),
+    db.prepare(
+      `SELECT email, ip, fail_reason, COUNT(*) AS attempts, MAX(created_at) AS last_seen
+       FROM login_audit
+       WHERE success = 0 AND created_at >= ?
+       GROUP BY email, ip, fail_reason
+       ORDER BY attempts DESC, last_seen DESC
+       LIMIT 12`,
+    ).bind(recentCutoff).all<{
+      email: string;
+      ip: string | null;
+      fail_reason: string | null;
+      attempts: number;
+      last_seen: number;
+    }>(),
+    db.prepare(
+      `SELECT id, email, role, last_login
+       FROM users
+       WHERE is_active = 1
+         AND (last_login IS NULL OR last_login < ?)
+       ORDER BY COALESCE(last_login, 0) ASC
+       LIMIT 12`,
+    ).bind(staleUserCutoff).all<{
+      id: string;
+      email: string;
+      role: string;
+      last_login: number | null;
+    }>(),
+  ]);
+
+  return {
+    active_clients: activeClientsRow?.n ?? 0,
+    running_generation_runs: runningRunsRow?.n ?? 0,
+    recent_generation_failures: recentFailures.results,
+    approved_jobs: {
+      queued: queuedJobsRow?.n ?? 0,
+      running: runningJobsRow?.n ?? 0,
+      failed_recent: failedJobsRow?.n ?? 0,
+    },
+    auth_failures_recent: authFailures.results,
+    stale_users: staleUsers.results,
+  };
+}
+
+export interface AgentClientReportSummary {
+  total_posts: number;
+  posted_posts: number;
+  failed_posts: number;
+  scheduled_posts: number;
+}
+
+export async function getAgentClientReportSummary(
+  db: D1Database,
+  clientId: string,
+  from: string,
+  to: string,
+): Promise<AgentClientReportSummary> {
+  const row = await db.prepare(
+    `SELECT
+       COUNT(*) AS total_posts,
+       SUM(CASE WHEN status = 'posted' THEN 1 ELSE 0 END) AS posted_posts,
+       SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_posts,
+       SUM(CASE WHEN status = 'scheduled' THEN 1 ELSE 0 END) AS scheduled_posts
+     FROM posts
+     WHERE client_id = ?
+       AND substr(publish_date, 1, 10) >= ?
+       AND substr(publish_date, 1, 10) <= ?`,
+  ).bind(clientId, from, to).first<AgentClientReportSummary>();
+
+  return {
+    total_posts: row?.total_posts ?? 0,
+    posted_posts: row?.posted_posts ?? 0,
+    failed_posts: row?.failed_posts ?? 0,
+    scheduled_posts: row?.scheduled_posts ?? 0,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

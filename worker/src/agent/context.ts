@@ -238,3 +238,214 @@ export const RESPONSE_RULES = `
 - If you need to list things, put them in the items array — NOT in your message
 - Be brief and operational. One sentence is often enough.
 `;
+
+export const WEEKLY_MARKETING_BUYER_PERSONAS = `# Buyer personas
+
+Use these archetypes to frame the hook, CTA, and pain point of every piece of content. Always ground the persona in the client's actual service menu and service areas (via \`get_client_details\`).
+
+---
+
+## The Emergency Caller
+Applies to: locksmiths, roofing-leak repair, burst-pipe plumbers, 24/7 locksmiths.
+- **State:** stressed, time-compressed, searching from a phone, can't wait.
+- **Wants:** fast response, clear pricing, "are you open now?", reassurance.
+- **Hook:** "Locked out at 2 am?" / "Water dripping from your ceiling?"
+- **CTA:** \`CALL\` — include phone number prominently.
+- **Avoid:** long explanations; save those for the blog.
+
+## The Homeowner Planner
+Applies to: remodelers, builders, roof replacement, solar, large-ticket HVAC.
+- **State:** researching 3-6 months before purchase, comparing 2-3 contractors, risk-averse.
+- **Wants:** portfolio proof, realistic timeline, permit + insurance clarity, references, warranty terms.
+- **Hook:** "Thinking about remodeling your [kitchen]?" / "Planning a 2026 [project]?"
+- **CTA:** book a free estimate / see our portfolio.
+- **Avoid:** pressure tactics; build trust with specifics instead.
+
+## The Commercial Property Manager
+Applies to: multi-site locksmiths, commercial roofing, commercial builders, access control.
+- **State:** juggling budget + owner/HOA reporting, needs a vendor they can trust with 10+ properties.
+- **Wants:** reliability, multi-location coverage, invoiced billing, after-hours response, speed.
+- **Hook:** "Multi-property portfolio? Here's what to ask your [service] provider."
+- **CTA:** request a property-manager quote / ask about our commercial program.
+- **Avoid:** consumer-retail framing; speak B2B.
+
+## The Status-Driven Remodeler
+Applies to: kitchen / bath remodelers, ADU, high-end builders.
+- **State:** motivated by aesthetics + neighborhood resale value, likes finished-space imagery.
+- **Wants:** high-end finishes, designer imagery, "this will add $X to resale."
+- **Hook:** "The [kitchen island] trend adding real value in [city] in 2026."
+- **CTA:** see the finished project / book a design consult.
+
+## The Local Small-Business Buyer
+Applies to: marketing agency clients (WebXni's own buyer), local-SEO services.
+- **State:** wearing five hats, skeptical of agencies, has been burned before.
+- **Wants:** specific ROI numbers, no long contracts, a real human they can call.
+- **Hook:** "[Industry] owners: here's the one report we pull weekly."
+- **CTA:** book a 15-min audit / see a real case study.
+- **Avoid:** jargon, "digital transformation," vanity metrics.
+
+---
+
+## Picking a persona
+1. Read the content intent (\`educational\` | \`promo\` | \`cta\`) if provided.
+2. Read the client's industry and primary services from \`get_client_details\`.
+3. Match to the persona whose "Applies to" line covers the client+service best.
+4. If multiple match (e.g. locksmith doing both emergency + commercial work), default to the Emergency Caller for social/GBP and the Commercial Property Manager for LinkedIn.
+
+## Writing framework (after you pick a persona)
+1. Sentence 1 — name the specific pain (concrete: "at 2 am in the rain," not abstract: "when things go wrong").
+2. Sentence 2 — offer ONE outcome they'll get from this client.
+3. Sentence 3 — the approved CTA (\`client.cta_text\` or the persona default).
+
+Keep it to three sentences for social. For blog intros, expand each sentence into a paragraph while keeping the same beats.
+`;
+
+export const WEEKLY_MARKETING_CLIENT_EXPERTISE = `# Client expertise playbooks
+
+Use these playbooks to frame captions, blog topics, and recurring-content strategies on a per-industry basis. Match on \`clients.industry\` (case-insensitive substring match against the headings below). When in doubt, call \`get_client_details\` and read the services + service areas before writing content.
+
+---
+
+## Locksmith / automotive / commercial locksmith
+- **Dominant buyer jobs:** emergency lockout (urgency), rekey after move-in, upgrade to smart locks, key duplication, ignition repair.
+- **Trust signals to surface:** licensed/bonded/insured, 24/7 availability, sub-30-min response time, mobile-service vehicle.
+- **Local-SEO pattern:** \`[service] in [city]\` — always include a service area and a phone number.
+- **Platform style**
+  - Google Business: factual, local, 100-250 chars, direct CTA (CALL), include city + phone.
+  - Facebook: mini-case-study or before/after, 200-350 chars, one emoji max.
+  - Instagram: photo-first; caption opens with the hook ("Locked out at 2 am?").
+  - LinkedIn: commercial focus — property managers, HOAs, office buildings, access-control integrators.
+- **Blog angles**
+  - "What to do if you're locked out of your [car|house|business] in [city]"
+  - "Are smart locks secure? An honest take from a [city] locksmith"
+  - "How much does [rekey | lock replacement] cost in [city] in 2026?"
+- **Never** promise bypass of locks on vehicles/properties the customer doesn't own; never imply illicit entry.
+
+---
+
+## Builder / general contractor / remodeler
+- **Dominant buyer jobs:** kitchen remodel, bathroom remodel, home addition, ADU, whole-home build.
+- **Trust signals:** licensed GC, permits pulled, project-manager on site, workmanship warranty (5-10 years), real portfolio photos.
+- **Visual direction:** before/after, progress shots, close-ups of finishes (cabinetry, tile, trim).
+- **Platform style**
+  - Instagram: strong portfolio imagery, \`#beforeafter\`, \`#remodel\`, local + style hashtags.
+  - Pinterest: aspirational finished rooms, keyword-rich description, brand-board thinking.
+  - LinkedIn: design-build expertise, commercial projects, team culture, subcontractor relationships.
+  - Google Business: local neighborhood names, project-specific testimonials.
+- **Blog angles**
+  - "How long does a [kitchen|bathroom] remodel take in [city]?"
+  - "Permits you need for a [project type] in [city/state]"
+  - "Cost breakdown: remodeling a [room] in [city] in 2026"
+- **Never** over-promise turnaround without caveats; always mention inspections/permits.
+
+---
+
+## Roofing / storm-damage / roof repair
+- **Dominant buyer jobs:** roof replacement, storm damage repair, inspection, leak repair, new-construction roofing.
+- **Trust signals:** factory certifications (GAF, Owens Corning), insurance-claim help, material + labor warranty, crew tenure.
+- **Seasonality:** storm/wind/rainy-season content in Q1 + Q4; inspections in shoulder seasons; cool-roof / energy content in summer.
+- **Platform style**
+  - Google Business: hyperlocal storm damage / inspection CTAs.
+  - Facebook: neighborhood-based project spotlights, drone photo.
+  - Instagram: drone shots, close-up shingle detail, team photos.
+  - Pinterest: style guides (architectural shingles, metal, tile).
+- **Blog angles**
+  - "5 warning signs your [city] roof needs replacement"
+  - "Insurance claim help for storm-damaged roofs in [state]"
+  - "Shingle vs. metal vs. tile: best roof for [city]'s climate"
+- **Never** use cold insurance-claim-chasing language; stay educational.
+
+---
+
+## Marketing agency / AI / SaaS (WebXni self)
+- **Buyer:** small-business owners, agency operators, in-house marketers.
+- **Trust signals:** case studies with numbers, retention rate, platform certifications (Meta, Google), team photos.
+- **Platform style**
+  - LinkedIn: thought leadership, frameworks, contrarian takes, 300-600 chars.
+  - X: one idea per post, punchy insight.
+  - Instagram: behind-the-scenes, team, carousel frameworks.
+  - Blog: long-form "how to" with real client-work examples.
+- **Blog angles**
+  - "How [specific workflow] saved [client type] [X] hours per week"
+  - "The [X] tools we use to manage [Y] clients"
+  - "Before you hire a marketing agency, ask these [X] questions"
+- **Never** write generic "digital marketing is important" platitudes; always lead with a specific outcome.
+
+---
+
+## Default / unknown industry
+- Always call \`get_client_details\` first.
+- Tone: conversational-professional.
+- CTA: \`client.cta_text\` if set, otherwise a neutral "Learn more" / "Get in touch" tied to the client's phone.
+- Blog template: "[Service] in [service_area]: [how-to | cost | timeline | warning signs]".
+
+---
+
+## Cross-industry platform rules (apply after the industry playbook)
+- **Instagram:** 150-300 char caption + 10-15 hashtags on new lines.
+- **Facebook:** 200-400 chars, conversational, 1 emoji max.
+- **LinkedIn:** 200-400 chars, insight-driven, ≤5 hashtags.
+- **Google Business:** 100-250 chars, NO hashtags, always include city + phone.
+- **Pinterest:** 150-200 char description + 5-8 hashtags, keyword-rich.
+- **X / Threads:** ≤280 chars, one idea.
+- **TikTok:** 150-250 chars, trending hashtags, hook in first line.
+
+## How to apply
+1. Call \`get_client_details\` and match \`client.industry\` to a heading above.
+2. Pull 1-3 services from \`services\` array, 1-2 cities from \`areas\`, and the primary keyword from \`intelligence\`.
+3. Cross-reference \`buyer-personas.md\` to pick a hook that matches the content intent.
+4. Use the platform style block to format the caption.
+`;
+
+export interface ClientGenerationTopicHistoryItem {
+  title: string;
+  target_keyword: string | null;
+  content_type: string | null;
+  publish_date: string | null;
+  platforms: string[];
+}
+
+export function buildWeeklyMarketingStrategicContext(input: {
+  client: {
+    slug: string;
+    canonical_name: string;
+    industry?: string | null;
+    language?: string | null;
+  };
+  topicHistory: ClientGenerationTopicHistoryItem[];
+}): string {
+  const historyBlock = input.topicHistory.length > 0
+    ? input.topicHistory.slice(0, 16).map((item) => {
+      const parts = [
+        item.publish_date ? `date=${item.publish_date}` : null,
+        item.content_type ? `type=${item.content_type}` : null,
+        item.target_keyword ? `keyword=${item.target_keyword}` : null,
+        item.platforms.length > 0 ? `platforms=${item.platforms.join(',')}` : null,
+      ].filter(Boolean).join(' | ');
+      return `- ${item.title}${parts ? ` (${parts})` : ''}`;
+    }).join('\n')
+    : '- No recent post history found for this client.';
+
+  return `WEEKLY MARKETING STRATEGIC CONTEXT
+
+CLIENT
+- slug: ${input.client.slug}
+- name: ${input.client.canonical_name}
+- industry: ${input.client.industry ?? 'unknown'}
+- language: ${input.client.language ?? 'en'}
+
+GLOBAL BUYER PERSONAS
+${WEEKLY_MARKETING_BUYER_PERSONAS}
+
+GLOBAL CLIENT EXPERTISE PLAYBOOKS
+${WEEKLY_MARKETING_CLIENT_EXPERTISE}
+
+RECENT CLIENT TOPIC HISTORY
+${historyBlock}
+
+STRATEGIC CONTINUITY RULES
+- Use the buyer persona and expertise sections to choose a fresher angle, not to repeat the same hook.
+- Do not recycle the same title structure, keyword angle, or CTA framing from recent history.
+- Keep continuity with the client's industry and services, but push the weekly topic into a new concrete scenario, question, objection, comparison, or local angle.
+- If a recent topic already covered the basic explainer, prefer a sharper follow-up, misconception, checklist, local case, or higher-intent variant this week.`;
+}

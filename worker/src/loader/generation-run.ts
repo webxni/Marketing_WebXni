@@ -27,6 +27,10 @@
 import type { Env } from '../types';
 import type { ClientRow, PostRow } from '../types';
 import {
+  buildWeeklyMarketingStrategicContext,
+  type ClientGenerationTopicHistoryItem,
+} from '../agent/context';
+import {
   listClients,
   getClientPlatforms,
   getClientGbpLocations,
@@ -45,6 +49,7 @@ import {
   finalizeGenerationRun,
   getGenerationRunById,
   createApprovedCommandJob,
+  getClientGenerationTopicHistory,
   type GenerationProgress,
   buildTopicFingerprint,
 } from '../db/queries';
@@ -164,6 +169,16 @@ function applyMonthlyPlanToIntelligence(
   if (monthlyNotes) next.seasonal_notes = [next.seasonal_notes, monthlyNotes].filter(Boolean).join(' | ');
   if (plan?.priority_services) next.service_priorities = [plan.priority_services, next.service_priorities].filter(Boolean).join(' | ');
   return next;
+}
+
+function mapTopicHistoryForContext(rows: ClientGenerationTopicHistoryItem[]): ClientGenerationTopicHistoryItem[] {
+  return rows.map((row) => ({
+    title: row.title,
+    target_keyword: row.target_keyword,
+    content_type: row.content_type,
+    publish_date: row.publish_date,
+    platforms: row.platforms,
+  }));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -795,13 +810,14 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
   const platforms = platformSelection.selected;
   if (platforms.length === 0) throw new Error('No compatible platforms for slot');
 
-  const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows, gbpLocations] = await Promise.all([
+  const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows, gbpLocations, topicHistory] = await Promise.all([
     db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then((row) => row ?? null),
     db.prepare('SELECT sentiment, message AS note FROM client_feedback WHERE client_id = ? ORDER BY created_at DESC LIMIT 10').bind(client.id).all<FeedbackRow>(),
     db.prepare(`SELECT title, master_caption, content_type FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`).bind(client.id).all<{title:string|null;master_caption:string|null;content_type:string|null}>(),
     db.prepare('SELECT city FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 8').bind(client.id).all<{city:string}>(),
     db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC LIMIT 12').bind(client.id).all<{name:string}>(),
     getClientGbpLocations(db, client.id),
+    getClientGenerationTopicHistory(db, client.id, 24),
   ]);
 
   const recentTitles  = recRows.results.map((row) => row.title ?? row.master_caption?.slice(0, 80) ?? '').filter(Boolean) as string[];
@@ -888,6 +904,16 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
     };
   }
 
+  const strategicContext = buildWeeklyMarketingStrategicContext({
+    client: {
+      slug: client.slug,
+      canonical_name: client.canonical_name,
+      industry: client.industry,
+      language: client.language,
+    },
+    topicHistory: mapTopicHistoryForContext(topicHistory),
+  });
+
   const ctx: GenerationContext = {
     client: {
       canonical_name: client.canonical_name,
@@ -918,6 +944,7 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
     serviceNames,
     recentFormats,
     highQuality: slot.high_quality ?? false,
+    strategicContext,
   };
 
   return {
@@ -1208,12 +1235,13 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
       const isHighQuality = slot.high_quality ?? false;
 
       // Parallel fetch: intelligence, feedback, recent posts, service areas, service names
-      const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows] = await Promise.all([
+      const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows, topicHistory] = await Promise.all([
         db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then(r => r ?? null),
         db.prepare('SELECT sentiment, message AS note FROM client_feedback WHERE client_id = ? ORDER BY created_at DESC LIMIT 10').bind(client.id).all<FeedbackRow>(),
         db.prepare(`SELECT title, master_caption, content_type FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`).bind(client.id).all<{title:string|null;master_caption:string|null;content_type:string|null}>(),
         db.prepare('SELECT city FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 8').bind(client.id).all<{city:string}>(),
         db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC LIMIT 12').bind(client.id).all<{name:string}>(),
+        getClientGenerationTopicHistory(db, client.id, 24),
       ]);
 
       const recentTitles  = recRows.results.map(r => r.title ?? r.master_caption?.slice(0, 80) ?? '').filter(Boolean) as string[];
@@ -1300,6 +1328,16 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         };
       }
 
+      const strategicContext = buildWeeklyMarketingStrategicContext({
+        client: {
+          slug: client.slug,
+          canonical_name: client.canonical_name,
+          industry: client.industry,
+          language: client.language,
+        },
+        topicHistory: mapTopicHistoryForContext(topicHistory),
+      });
+
       const ctx: GenerationContext = {
         client: {
           canonical_name:      client.canonical_name,
@@ -1333,6 +1371,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         serviceNames,
         recentFormats,
         highQuality: isHighQuality,
+        strategicContext,
       };
 
       const isBlogSlot = normalizeContentType(slot.content_type) === 'blog';

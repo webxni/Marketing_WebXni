@@ -2,18 +2,27 @@
  * Internal Worker-to-Worker routes — no auth middleware.
  * Only reachable via the SELF service binding (not the public internet).
  */
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import type { Env } from '../types';
-import { executeSlotWork, triggerStep } from '../loader/generation-run';
+import { executeSlotWork, planGeneration, prepareGenerationPlan, triggerStep } from '../loader/generation-run';
 import { isRepairKeyValid, repairExistingBlogs } from '../loader/repair-blogs';
 import { planBlogRegen, executeBlogRegenSlot, triggerBlogRegenStep } from '../loader/blog-regen';
 import { cleanupLegacyInvalidPlatformAttempts, repairOrphanScheduledPosts, syncPublishedUrls } from '../modules/published-urls';
+import { getClientProfileAnalytics } from '../modules/reporting-metrics';
+import { discordSend, DISCORD_COLORS } from '../services/discord';
 import {
   appendGenerationError,
   appendGenerationLog,
   createGenerationRun,
   finalizeGenerationRun,
+  getAgentClientReportSummary,
+  getAgentSystemHealthSnapshot,
   getGenerationRunById,
+  getLatestAuditMarker,
+  getClientPlatforms,
+  listClients,
+  createApprovedCommandJob,
+  writeAuditLog,
 } from '../db/queries';
 
 export const internalRoutes = new Hono<{ Bindings: Env; Variables: Record<string, unknown> }>();
@@ -21,6 +30,35 @@ export const internalRoutes = new Hono<{ Bindings: Env; Variables: Record<string
 function detail(err: unknown): string {
   if (err instanceof Error) return err.stack ? `${err.message}\n${err.stack}` : err.message;
   return String(err);
+}
+
+function requireAgentBearer(c: Context<{ Bindings: Env; Variables: Record<string, unknown> }>): boolean {
+  const expected = c.env.AGENT_INTERNAL_TOKEN?.trim();
+  const authHeader = c.req.header('Authorization') ?? '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+  return !!expected && token === expected;
+}
+
+function parseClientFilter(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => String(item).trim()).filter(Boolean)
+    : [];
+}
+
+function makeAgentExecutionKey(prefix: string, from: string, to: string, clientSlugs: string[]): string {
+  const scope = clientSlugs.length > 0 ? clientSlugs.sort().join(',') : 'all-active';
+  return `${prefix}:${from}:${to}:${scope}`;
+}
+
+interface ApprovedClaudeJobArgs {
+  run_id: string;
+  client_slugs: string[];
+  period_start: string;
+  period_end: string;
+  content_only: true;
+  generate_images: false;
+  provider: 'claude';
+  requested_in: 'agent_mcp';
 }
 
 /**
@@ -238,4 +276,304 @@ internalRoutes.post('/repair-posting-state', async (c) => {
     console.error('[repair-posting-state] failed:', err);
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
+});
+
+internalRoutes.post('/agent/check-system-health', async (c) => {
+  if (!requireAgentBearer(c)) return c.json({ error: 'Unauthorized' }, 401);
+
+  let body: { lookback_hours?: number; stale_user_days?: number } = {};
+  try { body = await c.req.json(); } catch { /* optional */ }
+
+  try {
+    const snapshot = await getAgentSystemHealthSnapshot(c.env.DB, {
+      lookbackHours: body.lookback_hours,
+      staleUserDays: body.stale_user_days,
+    });
+    return c.json({ ok: true, snapshot });
+  } catch (err) {
+    console.error('[agent/check-system-health] failed:', err);
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+internalRoutes.post('/agent/run-weekly-marketing-pipeline', async (c) => {
+  if (!requireAgentBearer(c)) return c.json({ error: 'Unauthorized' }, 401);
+
+  let body: {
+    period_start?: string;
+    period_end?: string;
+    client_slugs?: string[];
+    overwrite_existing?: boolean;
+    publish_time?: string;
+    provider?: 'openai' | 'claude';
+    force?: boolean;
+  } = {};
+  try { body = await c.req.json(); } catch { /* optional */ }
+
+  const periodStart = body.period_start?.trim();
+  const periodEnd = body.period_end?.trim() ?? periodStart;
+  if (!periodStart || !periodEnd) return c.json({ error: 'period_start and period_end are required' }, 400);
+
+  const clientSlugs = parseClientFilter(body.client_slugs);
+  const provider = body.provider === 'openai' ? 'openai' : 'claude';
+  const executionKey = makeAgentExecutionKey(`weekly-pipeline:${provider}`, periodStart, periodEnd, clientSlugs);
+  const previous = await getLatestAuditMarker(c.env.DB, 'agent.weekly_pipeline.queued', 'agent_execution', executionKey);
+  if (previous && body.force !== true) {
+    return c.json({ ok: true, skipped: true, reason: 'already_queued', execution_key: executionKey, previous });
+  }
+
+  const run = await createGenerationRun(c.env.DB, {
+    triggered_by: 'agent-mcp',
+    date_range: `${periodStart}:${periodEnd}`,
+    client_filter: clientSlugs.length > 0 ? JSON.stringify(clientSlugs) : null,
+    overwrite_existing: body.overwrite_existing === true,
+  });
+
+  const publishTime = typeof body.publish_time === 'string' && /^\d{2}:\d{2}$/.test(body.publish_time)
+    ? body.publish_time
+    : null;
+  const baseUrl = new URL(c.req.url).origin;
+
+  if (provider === 'claude') {
+    const params = {
+      run_id: run.id,
+      client_slugs: clientSlugs,
+      period_start: periodStart,
+      period_end: periodEnd,
+      triggered_by: 'agent-mcp',
+      publish_time: publishTime,
+      overwrite_existing: body.overwrite_existing === true,
+      high_quality: true,
+      provider,
+    } as const;
+    const { slots, clients } = await prepareGenerationPlan(c.env, params);
+    await c.env.DB.prepare(
+      `UPDATE generation_runs
+       SET post_slots = ?, total_slots = ?, current_slot_idx = 0, publish_time = ?, progress_json = ?, last_activity_at = ?
+       WHERE id = ?`,
+    ).bind(
+      JSON.stringify(slots),
+      slots.length,
+      publishTime ?? '10:00',
+      JSON.stringify({
+        current_client: clients[0]?.canonical_name ?? '',
+        current_post: slots[0] ? `${slots[0].date} / ${slots[0].content_type}` : '',
+        completed: 0,
+        total_estimated: slots.length,
+        errors: 0,
+        clients_done: 0,
+        clients_total: clients.length,
+      }),
+      Math.floor(Date.now() / 1000),
+      run.id,
+    ).run();
+    await appendGenerationLog(c.env.DB, run.id, 'START', `Claude terminal job queued from MCP agent — ${periodStart} → ${periodEnd}`);
+
+    const args: ApprovedClaudeJobArgs = {
+      run_id: run.id,
+      client_slugs: clientSlugs,
+      period_start: periodStart,
+      period_end: periodEnd,
+      content_only: true,
+      generate_images: false,
+      provider: 'claude',
+      requested_in: 'agent_mcp',
+    };
+    const job = await createApprovedCommandJob(c.env.DB, {
+      generation_run_id: run.id,
+      command_name: 'weekly_content_claude',
+      provider: 'claude',
+      requested_by: 'agent-mcp',
+      args_json: JSON.stringify(args),
+    });
+
+    await writeAuditLog(c.env.DB, {
+      action: 'agent.weekly_pipeline.queued',
+      entity_type: 'agent_execution',
+      entity_id: executionKey,
+      new_value: {
+        run_id: run.id,
+        job_id: job.id,
+        provider,
+        period_start: periodStart,
+        period_end: periodEnd,
+        client_slugs: clientSlugs,
+      },
+    });
+
+    return c.json({
+      ok: true,
+      mode: 'approved_terminal_job',
+      provider,
+      run_id: run.id,
+      approved_job_id: job.id,
+      execution_key: executionKey,
+      total_slots: slots.length,
+    }, 202);
+  }
+
+  c.executionCtx.waitUntil(
+    planGeneration(c.env, {
+      run_id: run.id,
+      client_slugs: clientSlugs,
+      period_start: periodStart,
+      period_end: periodEnd,
+      triggered_by: 'agent-mcp',
+      publish_time: publishTime,
+      overwrite_existing: body.overwrite_existing === true,
+      high_quality: true,
+      provider,
+    }, baseUrl),
+  );
+
+  await writeAuditLog(c.env.DB, {
+    action: 'agent.weekly_pipeline.queued',
+    entity_type: 'agent_execution',
+    entity_id: executionKey,
+    new_value: {
+      run_id: run.id,
+      provider,
+      period_start: periodStart,
+      period_end: periodEnd,
+      client_slugs: clientSlugs,
+    },
+  });
+
+  return c.json({
+    ok: true,
+    mode: 'worker_api',
+    provider,
+    run_id: run.id,
+    execution_key: executionKey,
+  }, 202);
+});
+
+internalRoutes.post('/agent/dispatch-client-reports', async (c) => {
+  if (!requireAgentBearer(c)) return c.json({ error: 'Unauthorized' }, 401);
+
+  let body: {
+    from?: string;
+    to?: string;
+    client_slugs?: string[];
+    force?: boolean;
+  } = {};
+  try { body = await c.req.json(); } catch { /* optional */ }
+
+  const from = body.from?.trim();
+  const to = body.to?.trim() ?? from;
+  if (!from || !to) return c.json({ error: 'from and to are required' }, 400);
+
+  const clientSlugs = parseClientFilter(body.client_slugs);
+  const executionKey = makeAgentExecutionKey('client-reports', from, to, clientSlugs);
+  const previous = await getLatestAuditMarker(c.env.DB, 'agent.client_reports.compiled', 'agent_execution', executionKey);
+  if (previous && body.force !== true) {
+    return c.json({ ok: true, skipped: true, reason: 'already_compiled', execution_key: executionKey, previous });
+  }
+
+  const allClients = await listClients(c.env.DB, 'active');
+  const clients = clientSlugs.length > 0
+    ? allClients.filter((client) => clientSlugs.includes(client.slug))
+    : allClients;
+
+  const reports = await Promise.all(clients.map(async (client) => {
+    const [platforms, summary] = await Promise.all([
+      getClientPlatforms(c.env.DB, client.id),
+      getAgentClientReportSummary(c.env.DB, client.id, from, to),
+    ]);
+    const analytics = await getClientProfileAnalytics(c.env, {
+      upload_post_profile: client.upload_post_profile,
+      platform_page_ids: Object.fromEntries(platforms.map((platform) => [platform.platform, platform.page_id ?? platform.linkedin_urn ?? ''])),
+    }, {
+      from,
+      to,
+      platforms: platforms.map((platform) => platform.platform),
+    });
+
+    return {
+      client_id: client.id,
+      client_slug: client.slug,
+      client_name: client.canonical_name,
+      period: { from, to },
+      summary,
+      analytics,
+    };
+  }));
+
+  await writeAuditLog(c.env.DB, {
+    action: 'agent.client_reports.compiled',
+    entity_type: 'agent_execution',
+    entity_id: executionKey,
+    new_value: {
+      from,
+      to,
+      clients: reports.map((report) => report.client_slug),
+      report_count: reports.length,
+    },
+  });
+
+  return c.json({
+    ok: true,
+    execution_key: executionKey,
+    reports,
+  });
+});
+
+internalRoutes.post('/agent/send-heartbeat-notification', async (c) => {
+  if (!requireAgentBearer(c)) return c.json({ error: 'Unauthorized' }, 401);
+
+  let body: {
+    status?: 'ok' | 'warning' | 'error';
+    title?: string;
+    message?: string;
+    dedupe_key?: string;
+    fields?: Array<{ name: string; value: string; inline?: boolean }>;
+  } = {};
+  try { body = await c.req.json(); } catch { /* optional */ }
+
+  const title = body.title?.trim() || 'WebXni Agent Heartbeat';
+  const message = body.message?.trim() || 'Sin detalles adicionales.';
+  const status = body.status === 'warning' || body.status === 'error' ? body.status : 'ok';
+  const dedupeKey = body.dedupe_key?.trim() || `heartbeat:${status}:${new Date().toISOString().slice(0, 10)}`;
+
+  const previous = await getLatestAuditMarker(c.env.DB, 'agent.heartbeat.sent', 'agent_execution', dedupeKey);
+  if (previous) {
+    return c.json({ ok: true, skipped: true, reason: 'already_sent', dedupe_key: dedupeKey, previous });
+  }
+
+  if (!c.env.DISCORD_BOT_TOKEN || !c.env.DISCORD_CHANNEL_ID) {
+    return c.json({ error: 'Discord channel/token is not configured' }, 400);
+  }
+
+  const color = status === 'error'
+    ? DISCORD_COLORS.error
+    : status === 'warning'
+      ? DISCORD_COLORS.warning
+      : DISCORD_COLORS.success;
+
+  await discordSend({
+    channelId: c.env.DISCORD_CHANNEL_ID,
+    token: c.env.DISCORD_BOT_TOKEN,
+    embeds: [{
+      title,
+      description: message,
+      color,
+      fields: body.fields?.slice(0, 10),
+      timestamp: new Date().toISOString(),
+      footer: { text: 'WebXni MCP Agent' },
+    }],
+  });
+
+  await writeAuditLog(c.env.DB, {
+    action: 'agent.heartbeat.sent',
+    entity_type: 'agent_execution',
+    entity_id: dedupeKey,
+    new_value: {
+      status,
+      title,
+      message,
+      fields: body.fields ?? [],
+    },
+  });
+
+  return c.json({ ok: true, status, dedupe_key: dedupeKey });
 });
