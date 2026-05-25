@@ -3,6 +3,11 @@ export interface WorkerAgentRequestOptions {
   bearerToken: string;
 }
 
+export interface AgentConversationMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 export interface CheckSystemHealthInput {
   lookback_hours?: number;
   stale_user_days?: number;
@@ -35,4 +40,14 @@ export interface SendHeartbeatNotificationInput {
     value: string;
     inline?: boolean;
   }>;
+}
+
+export interface RunMarketingAgentInput {
+  message: string;
+  history?: AgentConversationMessage[];
+}
+
+export interface ExecuteMarketingToolInput {
+  tool_name: string;
+  args?: Record<string, unknown>;
 }

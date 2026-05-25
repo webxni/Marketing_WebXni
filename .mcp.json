@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "webxni": {
+      "type": "stdio",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/run-webxni-mcp.sh",
+      "args": [],
+      "timeout": 600000
+    }
+  }
+}

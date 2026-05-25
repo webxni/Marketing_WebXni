@@ -1,6 +1,8 @@
 import type {
   CheckSystemHealthInput,
   DispatchClientReportsInput,
+  ExecuteMarketingToolInput,
+  RunMarketingAgentInput,
   RunWeeklyMarketingPipelineInput,
   SendHeartbeatNotificationInput,
   WorkerAgentRequestOptions,
@@ -28,18 +30,44 @@ export class WebXniWorkerAgentClient {
   }
 
   checkSystemHealth(input: CheckSystemHealthInput) {
-    return this.post('/internal/agent/check-system-health', input);
+    return this.post('/api/ai/mcp/execute-tool', {
+      tool_name: 'get_system_status',
+      args: input,
+    });
   }
 
   runWeeklyMarketingPipeline(input: RunWeeklyMarketingPipelineInput) {
-    return this.post('/internal/agent/run-weekly-marketing-pipeline', input);
+    return this.post('/api/ai/mcp/execute-tool', {
+      tool_name: 'generate_content',
+      args: {
+        client_slugs: input.client_slugs ?? [],
+        date_from: input.period_start,
+        date_to: input.period_end,
+        provider: input.provider,
+      },
+    });
   }
 
   dispatchClientReports(input: DispatchClientReportsInput) {
-    return this.post('/internal/agent/dispatch-client-reports', input);
+    return this.post('/api/ai/mcp/execute-tool', {
+      tool_name: 'get_report',
+      args: {
+        client: input.client_slugs?.length === 1 ? input.client_slugs[0] : undefined,
+        date_from: input.from,
+        date_to: input.to,
+      },
+    });
   }
 
   sendHeartbeatNotification(input: SendHeartbeatNotificationInput) {
-    return this.post('/internal/agent/send-heartbeat-notification', input);
+    return this.post('/api/ai/mcp/heartbeat', input);
+  }
+
+  runMarketingAgent(input: RunMarketingAgentInput) {
+    return this.post('/api/ai/mcp/run', input);
+  }
+
+  executeMarketingTool(input: ExecuteMarketingToolInput) {
+    return this.post('/api/ai/mcp/execute-tool', input);
   }
 }

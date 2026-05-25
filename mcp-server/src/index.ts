@@ -8,10 +8,10 @@ import { z } from 'zod';
 import { WebXniWorkerAgentClient } from './worker-client.js';
 
 const workerBaseUrl = process.env.WEBXNI_WORKER_BASE_URL?.trim() || 'https://marketing.webxni.com';
-const agentToken = process.env.WEBXNI_AGENT_INTERNAL_TOKEN?.trim();
+const agentToken = process.env.WEBXNI_AGENT_INTERNAL_TOKEN?.trim() || process.env.AGENT_INTERNAL_TOKEN?.trim();
 
 if (!agentToken) {
-  throw new Error('WEBXNI_AGENT_INTERNAL_TOKEN is required');
+  throw new Error('WEBXNI_AGENT_INTERNAL_TOKEN or AGENT_INTERNAL_TOKEN is required');
 }
 
 const client = new WebXniWorkerAgentClient({
@@ -53,6 +53,19 @@ const sendHeartbeatNotificationSchema = z.object({
   })).max(10).optional(),
 });
 
+const runMarketingAgentSchema = z.object({
+  message: z.string().min(1),
+  history: z.array(z.object({
+    role: z.enum(['user', 'assistant']),
+    content: z.string().min(1),
+  })).max(12).optional(),
+});
+
+const executeMarketingToolSchema = z.object({
+  tool_name: z.string().min(1),
+  args: z.record(z.unknown()).optional(),
+});
+
 const server = new Server(
   {
     name: 'webxni-mcp-server',
@@ -67,6 +80,40 @@ const server = new Server(
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
+    {
+      name: 'run_marketing_agent',
+      description: 'Ejecuta al agente completo de WebXni con acceso autónomo a estrategia de clientes, topics, generación de posts, blog posts, publicación WordPress e imágenes vía Stability/OpenAI.',
+      inputSchema: {
+        type: 'object',
+        required: ['message'],
+        properties: {
+          message: { type: 'string' },
+          history: {
+            type: 'array',
+            items: {
+              type: 'object',
+              required: ['role', 'content'],
+              properties: {
+                role: { type: 'string', enum: ['user', 'assistant'] },
+                content: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+    },
+    {
+      name: 'execute_marketing_tool',
+      description: 'Ejecuta una herramienta interna concreta del agente sin pasar por un planner. Útil para operación determinística desde Claude/Codex. Ejemplos de tool_name: get_client_details, update_client_intelligence, add_client_topics, create_content_with_image, batch_create_content, publish_blog, create_content_request, generate_content.',
+      inputSchema: {
+        type: 'object',
+        required: ['tool_name'],
+        properties: {
+          tool_name: { type: 'string' },
+          args: { type: 'object', additionalProperties: true },
+        },
+      },
+    },
     {
       name: 'check_system_health',
       description: 'Audita errores recientes de generación, cola aprobada de Claude y señales básicas de seguridad/autenticación.',
@@ -141,6 +188,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: rawArgs } = request.params;
 
   switch (name) {
+    case 'run_marketing_agent': {
+      const input = runMarketingAgentSchema.parse(rawArgs ?? {});
+      const result = await client.runMarketingAgent(input);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+    case 'execute_marketing_tool': {
+      const input = executeMarketingToolSchema.parse(rawArgs ?? {});
+      const result = await client.executeMarketingTool(input);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
     case 'check_system_health': {
       const input = checkSystemHealthSchema.parse(rawArgs ?? {});
       const result = await client.checkSystemHealth(input);

@@ -1,0 +1,14 @@
+{
+  "servers": {
+    "webxni": {
+      "type": "stdio",
+      "command": "${workspaceFolder}/scripts/run-webxni-mcp.sh",
+      "args": [],
+      "env": {
+        "AGENT_INTERNAL_TOKEN": "${env:AGENT_INTERNAL_TOKEN}",
+        "WEBXNI_AGENT_INTERNAL_TOKEN": "${env:WEBXNI_AGENT_INTERNAL_TOKEN}",
+        "WEBXNI_WORKER_BASE_URL": "${env:WEBXNI_WORKER_BASE_URL}"
+      }
+    }
+  }
+}

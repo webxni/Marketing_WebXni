@@ -9,7 +9,7 @@
  *   • Discord-ready: /api/ai/dispatch accepts source + auth_token for bot callers
  */
 
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import type { Env, SessionData } from '../types';
 import {
   listClients, getClientBySlug,
@@ -25,12 +25,40 @@ import { runPosting }    from '../loader/posting-run';
 import { planGeneration, prepareGenerationPlan, resumeGenerationRun } from '../loader/generation-run';
 import { createContentWithImage } from '../loader/autonomous-content';
 import { getProviderDisplayName, normalizeContentProvider } from '../services/content-provider';
+import { discordSend, DISCORD_COLORS } from '../services/discord';
 import {
   AGENT_SKILLS, AGENT_MEMORY, RESPONSE_RULES,
   CLIENT_EXPERTISE, BUYER_PERSONAS, NL_INTENT_MAP,
 } from '../agent/context';
 
 export const aiRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
+
+const MCP_AGENT_USER: SessionData = {
+  userId: 'agent-mcp',
+  email: 'agent-mcp@internal.webxni',
+  name: 'WebXni MCP Agent',
+  role: 'admin',
+  clientId: null,
+};
+
+function requireMcpBearer(c: Context<{ Bindings: Env; Variables: { user: SessionData } }>): boolean {
+  const expected = c.env.AGENT_INTERNAL_TOKEN?.trim();
+  const authHeader = c.req.header('Authorization') ?? '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+  return !!expected && token === expected;
+}
+
+async function resolveAgentOpenAiKey(env: Env): Promise<string> {
+  let openAiKey = env.OPENAI_API_KEY || '';
+  if (!openAiKey) {
+    try {
+      const raw = await env.KV_BINDING.get('settings:system');
+      const s: Record<string, string> = raw ? JSON.parse(raw) as Record<string, string> : {};
+      openAiKey = s['ai_api_key'] || '';
+    } catch { /* ignore */ }
+  }
+  return openAiKey;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Structured response types
@@ -997,7 +1025,7 @@ function mapPostToItem(p: Record<string, unknown>): Record<string, unknown> {
 // Tool execution
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function executeTool(
+export async function executeTool(
   name: string,
   args: Record<string, unknown>,
   env: Env,
@@ -2596,7 +2624,7 @@ Return JSON: { "caption": "..." }`;
 // System prompt builder
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function buildSystemPrompt(env: Env): Promise<string> {
+export async function buildSystemPrompt(env: Env): Promise<string> {
   let clients: { canonical_name: string; slug: string }[] = [];
   try {
     const all = await listClients(env.DB, 'active');
@@ -2784,7 +2812,7 @@ export async function runAgent(opts: {
 // Agent log
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function logInteraction(db: D1Database, user: SessionData, message: string, result: AgentStructuredResponse) {
+export async function logInteraction(db: D1Database, user: SessionData, message: string, result: AgentStructuredResponse) {
   try {
     const id = crypto.randomUUID().replace(/-/g, '');
     await db.prepare(
@@ -2798,6 +2826,127 @@ async function logInteraction(db: D1Database, user: SessionData, message: string
     ).run();
   } catch { /* non-fatal */ }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MCP bridge — bearer-authenticated public route for terminal agents
+// ─────────────────────────────────────────────────────────────────────────────
+
+aiRoutes.post('/mcp/run', async (c) => {
+  if (!requireMcpBearer(c)) return c.json({ error: 'Unauthorized' }, 401);
+
+  let body: { message?: string; history?: Array<{ role: 'user' | 'assistant'; content: string }> };
+  try { body = (await c.req.json()) as typeof body; }
+  catch { return c.json({ error: 'Invalid JSON' }, 400); }
+
+  const userMessage = typeof body?.message === 'string' ? body.message.trim() : '';
+  if (!userMessage) return c.json({ error: 'message is required' }, 400);
+
+  const openAiKey = await resolveAgentOpenAiKey(c.env);
+  if (!openAiKey) return c.json({ error: 'OpenAI API key not configured' }, 503);
+
+  let baseUrl = 'https://marketing.webxni.com';
+  try { baseUrl = new URL(c.req.url).origin; } catch { /* keep default */ }
+
+  let systemPrompt = '';
+  try { systemPrompt = await buildSystemPrompt(c.env); } catch {
+    systemPrompt = `You are the WebXni Marketing Platform AI Agent. Today is ${new Date().toISOString().split('T')[0]}. ${RESPONSE_RULES}`;
+  }
+
+  try {
+    const result = await runAgent({
+      message: userMessage,
+      history: Array.isArray(body.history) ? body.history : [],
+      systemPrompt,
+      openAiKey,
+      env: c.env,
+      user: MCP_AGENT_USER,
+      baseUrl,
+      ctx: c.executionCtx,
+    });
+
+    c.executionCtx.waitUntil(logInteraction(c.env.DB, MCP_AGENT_USER, userMessage, result));
+    return c.json(result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[ai/mcp/run] error:', msg);
+    return c.json({ error: msg }, 500);
+  }
+});
+
+aiRoutes.post('/mcp/execute-tool', async (c) => {
+  if (!requireMcpBearer(c)) return c.json({ error: 'Unauthorized' }, 401);
+
+  let body: { tool_name?: string; args?: Record<string, unknown> };
+  try { body = (await c.req.json()) as typeof body; }
+  catch { return c.json({ error: 'Invalid JSON' }, 400); }
+
+  const toolName = typeof body?.tool_name === 'string' ? body.tool_name.trim() : '';
+  if (!toolName) return c.json({ error: 'tool_name is required' }, 400);
+
+  const openAiKey = await resolveAgentOpenAiKey(c.env);
+  if (!openAiKey) return c.json({ error: 'OpenAI API key not configured' }, 503);
+
+  let baseUrl = 'https://marketing.webxni.com';
+  try { baseUrl = new URL(c.req.url).origin; } catch { /* keep default */ }
+
+  try {
+    const result = await executeTool(toolName, body.args ?? {}, c.env, MCP_AGENT_USER, baseUrl, c.executionCtx, openAiKey);
+    c.executionCtx.waitUntil(logInteraction(c.env.DB, MCP_AGENT_USER, `${toolName} ${JSON.stringify(body.args ?? {})}`, {
+      message: result.action_summary ?? result.error ?? toolName,
+      summary: result.summary,
+      items: result.items,
+      actions_taken: result.action_summary ? [result.action_summary] : [],
+      suggestions: result.suggestions,
+      errors: result.error ? [result.error] : [],
+      tools_used: [toolName],
+      job_id: result.job_id,
+    }));
+    return c.json({ ok: result.success, tool_name: toolName, ...result }, result.success ? 200 : 400);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[ai/mcp/execute-tool] error:', msg);
+    return c.json({ error: msg }, 500);
+  }
+});
+
+aiRoutes.post('/mcp/heartbeat', async (c) => {
+  if (!requireMcpBearer(c)) return c.json({ error: 'Unauthorized' }, 401);
+
+  let body: {
+    status?: 'ok' | 'warning' | 'error';
+    title?: string;
+    message?: string;
+    fields?: Array<{ name: string; value: string; inline?: boolean }>;
+  };
+  try { body = (await c.req.json()) as typeof body; }
+  catch { return c.json({ error: 'Invalid JSON' }, 400); }
+
+  if (!c.env.DISCORD_BOT_TOKEN || !c.env.DISCORD_CHANNEL_ID) {
+    return c.json({ error: 'Discord channel/token is not configured' }, 400);
+  }
+
+  const status = body?.status === 'warning' || body?.status === 'error' ? body.status : 'ok';
+  const color = status === 'error'
+    ? DISCORD_COLORS.error
+    : status === 'warning'
+      ? DISCORD_COLORS.warning
+      : DISCORD_COLORS.success;
+
+  await discordSend({
+    channelId: c.env.DISCORD_CHANNEL_ID,
+    token: c.env.DISCORD_BOT_TOKEN,
+    embeds: [{
+      title: body?.title?.trim() || 'WebXni MCP Agent',
+      description: body?.message?.trim() || 'Sin detalles adicionales.',
+      color,
+      fields: body?.fields?.slice(0, 10),
+      timestamp: new Date().toISOString(),
+      footer: { text: 'WebXni MCP Agent' },
+    }],
+  });
+
+  return c.json({ ok: true, status });
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/ai/agent — web UI

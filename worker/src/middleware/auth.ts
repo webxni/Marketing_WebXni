@@ -65,6 +65,7 @@ export async function authMiddleware(
   if (c.req.path.startsWith('/api/auth/'))         return next();
   if (c.req.path.startsWith('/api/setup'))         return next();
   if (c.req.path === '/api/ai/dispatch')           return next(); // bot_token auth inside
+  if (c.req.path.startsWith('/api/ai/mcp/'))       return next(); // bearer auth inside
 
   const sessionId = getCookie(c, 'session');
   if (!sessionId) return c.json({ error: 'Unauthorized' }, 401);

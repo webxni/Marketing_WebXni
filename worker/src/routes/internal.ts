@@ -3,13 +3,14 @@
  * Only reachable via the SELF service binding (not the public internet).
  */
 import { Hono, type Context } from 'hono';
-import type { Env } from '../types';
+import type { Env, SessionData } from '../types';
 import { executeSlotWork, planGeneration, prepareGenerationPlan, triggerStep } from '../loader/generation-run';
 import { isRepairKeyValid, repairExistingBlogs } from '../loader/repair-blogs';
 import { planBlogRegen, executeBlogRegenSlot, triggerBlogRegenStep } from '../loader/blog-regen';
 import { cleanupLegacyInvalidPlatformAttempts, repairOrphanScheduledPosts, syncPublishedUrls } from '../modules/published-urls';
 import { getClientProfileAnalytics } from '../modules/reporting-metrics';
 import { discordSend, DISCORD_COLORS } from '../services/discord';
+import { buildSystemPrompt, executeTool, logInteraction, runAgent } from './ai';
 import {
   appendGenerationError,
   appendGenerationLog,
@@ -59,6 +60,30 @@ interface ApprovedClaudeJobArgs {
   generate_images: false;
   provider: 'claude';
   requested_in: 'agent_mcp';
+}
+
+const INTERNAL_AGENT_USER: SessionData = {
+  userId: 'agent-mcp',
+  email: 'agent-mcp@internal.webxni',
+  name: 'WebXni MCP Agent',
+  role: 'admin',
+  clientId: null,
+};
+
+async function resolveAgentOpenAiKey(env: Env): Promise<string> {
+  let openAiKey = env.OPENAI_API_KEY || '';
+  if (!openAiKey) {
+    try {
+      const raw = await env.KV_BINDING.get('settings:system');
+      const settings: Record<string, string> = raw ? JSON.parse(raw) as Record<string, string> : {};
+      openAiKey = settings['ai_api_key'] || '';
+    } catch { /* ignore */ }
+  }
+  return openAiKey;
+}
+
+function getRequestBaseUrl(c: Context<{ Bindings: Env; Variables: Record<string, unknown> }>): string {
+  try { return new URL(c.req.url).origin; } catch { return 'https://marketing.webxni.com'; }
 }
 
 /**
@@ -576,4 +601,104 @@ internalRoutes.post('/agent/send-heartbeat-notification', async (c) => {
   });
 
   return c.json({ ok: true, status, dedupe_key: dedupeKey });
+});
+
+internalRoutes.post('/agent/run', async (c) => {
+  if (!requireAgentBearer(c)) return c.json({ error: 'Unauthorized' }, 401);
+
+  let body: { message?: string; history?: Array<{ role: 'user' | 'assistant'; content: string }> } = {};
+  try { body = await c.req.json(); } catch { /* optional */ }
+
+  const message = typeof body.message === 'string' ? body.message.trim() : '';
+  if (!message) return c.json({ error: 'message is required' }, 400);
+
+  try {
+    const openAiKey = await resolveAgentOpenAiKey(c.env);
+    if (!openAiKey) return c.json({ error: 'OpenAI API key not configured' }, 503);
+
+    let systemPrompt = '';
+    try { systemPrompt = await buildSystemPrompt(c.env); } catch {
+      systemPrompt = `You are the WebXni Marketing Platform AI Agent. Today is ${new Date().toISOString().split('T')[0]}.`;
+    }
+
+    const result = await runAgent({
+      message,
+      history: Array.isArray(body.history) ? body.history : [],
+      systemPrompt,
+      openAiKey,
+      env: c.env,
+      user: INTERNAL_AGENT_USER,
+      baseUrl: getRequestBaseUrl(c),
+      ctx: c.executionCtx,
+    });
+
+    c.executionCtx.waitUntil(logInteraction(c.env.DB, INTERNAL_AGENT_USER, message, result));
+    return c.json(result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[agent/run] failed:', err);
+    return c.json({ error: msg }, 500);
+  }
+});
+
+internalRoutes.post('/agent/execute-tool', async (c) => {
+  if (!requireAgentBearer(c)) return c.json({ error: 'Unauthorized' }, 401);
+
+  let body: { tool_name?: string; args?: Record<string, unknown> } = {};
+  try { body = await c.req.json(); } catch { /* optional */ }
+
+  const toolName = typeof body.tool_name === 'string' ? body.tool_name.trim() : '';
+  if (!toolName) return c.json({ error: 'tool_name is required' }, 400);
+
+  try {
+    const openAiKey = await resolveAgentOpenAiKey(c.env);
+    if (!openAiKey) return c.json({ error: 'OpenAI API key not configured' }, 503);
+
+    const result = await executeTool(
+      toolName,
+      body.args ?? {},
+      c.env,
+      INTERNAL_AGENT_USER,
+      getRequestBaseUrl(c),
+      c.executionCtx,
+      openAiKey,
+    );
+
+    const logResult = result.success
+      ? {
+          message: result.action_summary ?? `${toolName} executed.`,
+          summary: result.summary,
+          items: result.items,
+          actions_taken: result.action_summary ? [result.action_summary] : [],
+          suggestions: result.suggestions,
+          errors: [],
+          tools_used: [toolName],
+          job_id: result.job_id,
+        }
+      : {
+          message: result.error ?? `${toolName} failed.`,
+          actions_taken: [],
+          errors: result.error ? [result.error] : [`${toolName} failed`],
+          tools_used: [toolName],
+        };
+
+    c.executionCtx.waitUntil(
+      logInteraction(
+        c.env.DB,
+        INTERNAL_AGENT_USER,
+        `${toolName} ${JSON.stringify(body.args ?? {})}`,
+        logResult,
+      ),
+    );
+
+    return c.json({
+      ok: result.success,
+      tool_name: toolName,
+      ...result,
+    }, result.success ? 200 : 400);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[agent/execute-tool] failed:', err);
+    return c.json({ error: msg }, 500);
+  }
 });
