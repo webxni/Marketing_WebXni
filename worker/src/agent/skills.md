@@ -14,6 +14,7 @@
 - Blog-only, social-only, or mixed
 - Single client, multiple clients (loop), or all active clients
 - Supports up to 60 per call and returns a persistent run summary
+- For natural-language blog requests, gather missing client, topic source, count, and posting timing before running the batch
 
 ### Recurring requests (`create_content_request`)
 - Schedule recurring content generation

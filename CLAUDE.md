@@ -114,6 +114,12 @@ Current required behavior:
 - Batch creation must return a persistent `run_id`.
 - Per-slot results must be trackable as created, skipped, or failed through `generation_runs`.
 - Batch blog generation must not satisfy the request by silently updating an old similar draft unless the workflow explicitly calls for reuse.
+- For natural-language blog requests with missing inputs, the agent should ask short follow-up questions to gather:
+  - client
+  - topics or topic source
+  - count
+  - when to post or whether to leave scheduling for later
+- Do not guess those missing intake fields for batch blog work.
 
 Important:
 

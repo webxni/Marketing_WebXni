@@ -157,6 +157,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'sync_post_urls',
+      description: 'Sincroniza URLs reales de Upload-Post hacia los posts publicados sin real_url. Lanza un job en background y devuelve job_id. Sin parámetros requeridos.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+      },
+    },
+    {
       name: 'send_heartbeat_notification',
       description: 'Envía un heartbeat o alerta al canal operativo de Discord usando un dedupe key auditable.',
       inputSchema: {
@@ -211,6 +219,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case 'dispatch_client_reports': {
       const input = dispatchClientReportsSchema.parse(rawArgs ?? {});
       const result = await client.dispatchClientReports(input);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+    case 'sync_post_urls': {
+      const result = await client.syncPostUrls();
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     }
     case 'send_heartbeat_notification': {

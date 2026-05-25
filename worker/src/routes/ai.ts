@@ -23,6 +23,7 @@ import {
 } from '../db/queries';
 import { runPosting }    from '../loader/posting-run';
 import { planGeneration, prepareGenerationPlan, resumeGenerationRun } from '../loader/generation-run';
+import { runFetchUrls } from './run';
 import { createContentWithImage } from '../loader/autonomous-content';
 import { getProviderDisplayName, normalizeContentProvider } from '../services/content-provider';
 import { discordSend, DISCORD_COLORS } from '../services/discord';
@@ -2609,6 +2610,17 @@ Return JSON: { "caption": "..." }`;
           })),
           summary: { client: slug, total: rows.length, status },
           action_summary: `${rows.length} ${status} topic${rows.length !== 1 ? 's' : ''} for ${client.canonical_name}`,
+        };
+      }
+
+      case 'sync_post_urls': {
+        const jobId = crypto.randomUUID().replace(/-/g, '').toLowerCase();
+        ctx.waitUntil(runFetchUrls(env, jobId));
+        return {
+          success: true,
+          job_id: jobId,
+          action_summary: 'sync_post_urls job enqueued',
+          summary: { job_id: jobId, status: 'enqueued' },
         };
       }
 

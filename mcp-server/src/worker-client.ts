@@ -70,4 +70,8 @@ export class WebXniWorkerAgentClient {
   executeMarketingTool(input: ExecuteMarketingToolInput) {
     return this.post('/api/ai/mcp/execute-tool', input);
   }
+
+  syncPostUrls() {
+    return this.post('/api/ai/mcp/execute-tool', { tool_name: 'sync_post_urls' });
+  }
 }
