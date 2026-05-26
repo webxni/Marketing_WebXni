@@ -320,17 +320,16 @@ export const SLASH_COMMANDS = [
       },
       {
         name:        'provider',
-        description: 'Content provider: openai (default) or claude',
+        description: 'Content provider: terminal workflow',
         type:        3,
         required:    false,
         choices: [
-          { name: 'openai', value: 'openai' },
-          { name: 'claude', value: 'claude' },
+          { name: 'terminal', value: 'terminal' },
         ],
       },
       {
         name:        'mode',
-        description: 'Legacy quality mode. Use provider=claude for reviewed high-quality content.',
+        description: 'Legacy quality mode. Terminal runs already use the terminal workflow.',
         type:        3,
         required:    false,
         choices: [

@@ -307,8 +307,10 @@ async function postInternal(pathname, body) {
 
 async function runApprovedJob(job) {
   const allowed = {
-    weekly_content_claude: ['scripts/run-approved-claude-job.mjs'],
-    regenerate_content_claude: ['scripts/run-approved-claude-job.mjs'],
+    weekly_content_terminal: ['scripts/run-approved-terminal-job.mjs'],
+    regenerate_content_terminal: ['scripts/run-approved-terminal-job.mjs'],
+    weekly_content_claude: ['scripts/run-approved-terminal-job.mjs'],
+    regenerate_content_claude: ['scripts/run-approved-terminal-job.mjs'],
   };
   const scriptPathParts = allowed[job.command_name];
   if (!scriptPathParts) throw new Error(`Unapproved command: ${job.command_name}`);
@@ -334,6 +336,7 @@ async function runApprovedJob(job) {
       API_BASE_URL,
       DISCORD_BOT_SECRET: BOT_SECRET,
       DISCORD_RUNNER_ID: RUNNER_ID,
+      TERMINAL_AGENT: process.env.TERMINAL_AGENT || process.env.TERMINAL_AI_BACKEND || '',
     },
   });
 
@@ -419,7 +422,7 @@ client.on(Events.MessageCreate, async (message) => {
     const providerMatch = rawArgs.match(/\bprovider:([^\s]+)/i);
     const rangeMatch = rawArgs.match(/\bdate_range:([^\s]+)/i);
     const clientArg = (clientMatch?.[1] ?? 'all').trim();
-    const providerArg = (providerMatch?.[1] ?? 'openai').trim().toLowerCase();
+    const providerArg = (providerMatch?.[1] ?? 'terminal').trim().toLowerCase();
     const rangeArg = (rangeMatch?.[1] ?? 'this_week').trim().toLowerCase();
     const { start, end } = resolveWeeklyDateRange(rangeArg);
     const clientPhrase = clientArg === 'all' ? 'all active clients' : clientArg;
@@ -427,7 +430,7 @@ client.on(Events.MessageCreate, async (message) => {
       client_slugs: clientArg === 'all' ? [] : [clientArg],
       date_from: start,
       date_to: end,
-      provider: providerArg === 'claude' ? 'claude' : 'openai',
+      provider: ['terminal', 'claude', 'codex', 'gemini'].includes(providerArg) ? 'terminal' : 'openai',
       overwrite_existing: false,
     })}. Content only, no image generation unless explicitly requested.`;
   }

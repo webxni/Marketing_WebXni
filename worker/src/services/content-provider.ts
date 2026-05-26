@@ -12,7 +12,7 @@ import {
   type TopicResearchParams,
 } from './openai';
 
-export type ContentProviderName = 'openai' | 'claude';
+export type ContentProviderName = 'openai' | 'terminal' | 'claude';
 
 const DEFAULT_OPENAI_MODEL = 'gpt-4o-mini';
 const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-5';
@@ -21,11 +21,18 @@ const CLAUDE_REVIEW_THRESHOLD = 86;
 
 export function normalizeContentProvider(value: unknown): ContentProviderName {
   const normalized = String(value ?? '').trim().toLowerCase();
-  return normalized === 'claude' || normalized === 'anthropic' ? 'claude' : 'openai';
+  return ['terminal', 'claude', 'anthropic', 'codex', 'gemini'].includes(normalized)
+    ? 'terminal'
+    : 'openai';
 }
 
 export function getProviderDisplayName(provider: ContentProviderName): string {
+  if (provider === 'terminal') return 'Terminal AI';
   return provider === 'claude' ? 'Claude' : 'OpenAI';
+}
+
+export function isTerminalContentProvider(provider: ContentProviderName): boolean {
+  return provider === 'terminal';
 }
 
 export function resolveProviderApiKey(
@@ -34,6 +41,9 @@ export function resolveProviderApiKey(
   provider: ContentProviderName,
 ): string {
   const hasProviderSpecificKeys = Boolean(settings['ai_openai_api_key'] || settings['ai_anthropic_api_key']);
+  if (provider === 'terminal') {
+    return '';
+  }
   if (provider === 'claude') {
     return env.ANTHROPIC_API_KEY
       || settings['ai_anthropic_api_key']
@@ -51,7 +61,7 @@ function resolveProviderModel(
   provider: ContentProviderName,
   kind: 'generation' | 'research' | 'review',
 ): string {
-  if (provider === 'claude') {
+  if (provider === 'terminal' || provider === 'claude') {
     return settings['ai_anthropic_model']
       || (settings['ai_provider'] === 'anthropic' ? settings['ai_model'] : '')
       || DEFAULT_ANTHROPIC_MODEL;
@@ -318,6 +328,9 @@ export async function generateWithProvider(
   settings: Record<string, string>,
   options?: { signal?: AbortSignal },
 ): Promise<GeneratePostResult> {
+  if (provider === 'terminal') {
+    throw new Error('Terminal provider must run through the approved terminal job path');
+  }
   if (provider === 'claude') {
     return generateWithClaude(apiKey, ctx, settings, options);
   }
@@ -330,6 +343,9 @@ export async function researchTopicWithProvider(
   params: TopicResearchParams,
   settings: Record<string, string>,
 ): Promise<TopicResearch | null> {
+  if (provider === 'terminal') {
+    return null;
+  }
   if (provider === 'claude') {
     return researchTopicWithClaude(apiKey, params, settings);
   }

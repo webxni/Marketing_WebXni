@@ -13,10 +13,9 @@ import {
   healStuckGenerationRuns,
 } from '../db/queries';
 import { runPosting } from '../loader/posting-run';
-import { planGeneration, prepareGenerationPlan, resumeGenerationRun } from '../loader/generation-run';
+import { prepareGenerationPlan, prebuildApprovedTerminalSlotRequests, resumeGenerationRun, type PreparedApprovedSlotRequest } from '../loader/generation-run';
 import { cleanupLegacyInvalidPlatformAttempts, repairOrphanScheduledPosts, syncPublishedUrls } from '../modules/published-urls';
 import { syncPostPlatformMetrics } from '../modules/reporting-metrics';
-import { getProviderDisplayName, normalizeContentProvider } from '../services/content-provider';
 
 /**
  * Fetch published URLs from Upload-Post history.
@@ -48,15 +47,16 @@ export async function runFetchUrls(env: Env, jobId: string): Promise<void> {
 
 export const runRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
-interface ApprovedClaudeJobArgs {
+interface ApprovedTerminalJobArgs {
   run_id: string;
   client_slugs: string[];
   period_start: string;
   period_end: string;
   content_only: true;
   generate_images: false;
-  provider: 'claude';
+  provider: 'terminal';
   requested_in: 'automation';
+  prepared_slots?: PreparedApprovedSlotRequest[];
 }
 
 const postingRunSchema = z.object({
@@ -140,7 +140,7 @@ runRoutes.post('/generate', async (c) => {
 
   const periodStart = dates[0];
   const periodEnd   = dates[dates.length - 1];
-  const provider = normalizeContentProvider(body.provider);
+  const provider = 'terminal';
 
   const run = await createGenerationRun(c.env.DB, {
     triggered_by:  c.get('user').userId,
@@ -154,89 +154,66 @@ runRoutes.post('/generate', async (c) => {
     ? body.publish_time
     : null;
 
-  const baseUrl = new URL(c.req.url).origin;
-  if (provider === 'claude') {
-    const params = {
-      run_id:             run.id,
-      client_slugs:       clientSlugs,
-      period_start:       periodStart,
-      period_end:         periodEnd,
-      triggered_by:       c.get('user').userId,
-      publish_time:       publishTime,
-      overwrite_existing: body.overwrite_existing === true,
-      high_quality:       true,
-      provider,
-    } as const;
-    const { slots, clients } = await prepareGenerationPlan(c.env, params);
-    await c.env.DB.prepare(
-      `UPDATE generation_runs
-       SET post_slots = ?, total_slots = ?, current_slot_idx = 0, publish_time = ?, progress_json = ?, last_activity_at = ?
-       WHERE id = ?`,
-    ).bind(
-      JSON.stringify(slots),
-      slots.length,
-      publishTime ?? '10:00',
-      JSON.stringify({
-        current_client: clients[0]?.canonical_name ?? '',
-        current_post: slots[0] ? `${slots[0].date} / ${slots[0].content_type}` : '',
-        completed: 0,
-        total_estimated: slots.length,
-        errors: 0,
-        clients_done: 0,
-        clients_total: clients.length,
-      }),
-      Math.floor(Date.now() / 1000),
-      run.id,
-    ).run();
-    await appendGenerationLog(c.env.DB, run.id, 'START', `Claude terminal job queued from Automation — ${periodStart} → ${periodEnd}`);
+  const params = {
+    run_id:             run.id,
+    client_slugs:       clientSlugs,
+    period_start:       periodStart,
+    period_end:         periodEnd,
+    triggered_by:       c.get('user').userId,
+    publish_time:       publishTime,
+    overwrite_existing: body.overwrite_existing === true,
+    high_quality:       true,
+    provider,
+  } as const;
+  const { slots, clients } = await prepareGenerationPlan(c.env, params);
+  await c.env.DB.prepare(
+    `UPDATE generation_runs
+     SET post_slots = ?, total_slots = ?, current_slot_idx = 0, publish_time = ?, progress_json = ?, last_activity_at = ?
+     WHERE id = ?`,
+  ).bind(
+    JSON.stringify(slots),
+    slots.length,
+    publishTime ?? '10:00',
+    JSON.stringify({
+      current_client: clients[0]?.canonical_name ?? '',
+      current_post: slots[0] ? `${slots[0].date} / ${slots[0].content_type}` : '',
+      completed: 0,
+      total_estimated: slots.length,
+      errors: 0,
+      clients_done: 0,
+      clients_total: clients.length,
+    }),
+    Math.floor(Date.now() / 1000),
+    run.id,
+  ).run();
+  await appendGenerationLog(c.env.DB, run.id, 'START', `Terminal AI job queued from Automation — ${periodStart} → ${periodEnd}`);
+  const preparedSlots = await prebuildApprovedTerminalSlotRequests(c.env, run.id);
 
-    const args: ApprovedClaudeJobArgs = {
-      run_id: run.id,
-      client_slugs: clientSlugs,
-      period_start: periodStart,
-      period_end: periodEnd,
-      content_only: true,
-      generate_images: false,
-      provider: 'claude',
-      requested_in: 'automation',
-    };
-    await createApprovedCommandJob(c.env.DB, {
-      generation_run_id: run.id,
-      command_name: 'weekly_content_claude',
-      provider: 'claude',
-      requested_by: c.get('user').userId,
-      args_json: JSON.stringify(args),
-    });
-
-    return c.json({
-      ok: true,
-      job_id: run.id,
-      mode: 'approved_terminal_job',
-      provider,
-      message: `Queued Claude Code reviewed run with ${slots.length} slot(s).`,
-    }, 202);
-  }
-
-  c.executionCtx.waitUntil(
-    planGeneration(c.env, {
-      run_id:             run.id,
-      client_slugs:       clientSlugs,
-      period_start:       periodStart,
-      period_end:         periodEnd,
-      triggered_by:       c.get('user').userId,
-      publish_time:       publishTime,
-      overwrite_existing: body.overwrite_existing === true,
-      high_quality:       body.high_quality === true,
-      provider,
-    }, baseUrl),
-  );
+  const args: ApprovedTerminalJobArgs = {
+    run_id: run.id,
+    client_slugs: clientSlugs,
+    period_start: periodStart,
+    period_end: periodEnd,
+    content_only: true,
+    generate_images: false,
+    provider: 'terminal',
+    requested_in: 'automation',
+    prepared_slots: preparedSlots,
+  };
+  await createApprovedCommandJob(c.env.DB, {
+    generation_run_id: run.id,
+    command_name: 'weekly_content_terminal',
+    provider: 'terminal',
+    requested_by: c.get('user').userId,
+    args_json: JSON.stringify(args),
+  });
 
   return c.json({
     ok: true,
     job_id: run.id,
-    mode: 'worker_api',
+    mode: 'approved_terminal_job',
     provider,
-    message: `Started ${getProviderDisplayName(provider)} generation run.`,
+    message: `Queued terminal content run with ${slots.length} slot(s).`,
   }, 202);
 });
 

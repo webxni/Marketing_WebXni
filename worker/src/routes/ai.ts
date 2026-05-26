@@ -22,10 +22,9 @@ import {
   listClientTopics, addClientTopics, markClientTopicUsed,
 } from '../db/queries';
 import { runPosting }    from '../loader/posting-run';
-import { planGeneration, prepareGenerationPlan, resumeGenerationRun } from '../loader/generation-run';
+import { prepareGenerationPlan, prebuildApprovedTerminalSlotRequests, resumeGenerationRun, type PreparedApprovedSlotRequest } from '../loader/generation-run';
 import { runFetchUrls } from './run';
 import { createContentWithImage } from '../loader/autonomous-content';
-import { getProviderDisplayName, normalizeContentProvider } from '../services/content-provider';
 import { discordSend, DISCORD_COLORS } from '../services/discord';
 import {
   AGENT_SKILLS, AGENT_MEMORY, RESPONSE_RULES,
@@ -76,15 +75,16 @@ export interface AgentStructuredResponse {
   job_id?:       string;
 }
 
-interface ApprovedClaudeJobArgs {
+interface ApprovedTerminalJobArgs {
   run_id: string;
   client_slugs: string[];
   period_start: string;
   period_end: string;
   content_only: true;
   generate_images: false;
-  provider: 'claude';
+  provider: 'terminal';
   requested_in: 'agent';
+  prepared_slots?: PreparedApprovedSlotRequest[];
 }
 
 function normalizeAgentPostUpdateFields(args: Record<string, unknown>): Record<string, unknown> {
@@ -343,14 +343,14 @@ const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'generate_content',
-      description: 'Trigger AI content generation for clients over a date range. Default provider is openai unless the user explicitly asks for Claude.',
+      description: 'Trigger AI content generation for clients over a date range using the approved terminal workflow.',
       parameters: {
         type: 'object',
         properties: {
           client_slugs:       { type: 'array', items: { type: 'string' }, description: 'Empty = all active' },
           date_from:          { type: 'string', description: 'YYYY-MM-DD' },
           date_to:            { type: 'string', description: 'YYYY-MM-DD' },
-          provider:           { type: 'string', description: 'openai or claude' },
+          provider:           { type: 'string', description: 'terminal' },
           overwrite_existing: { type: 'boolean' },
         },
         required: ['date_from', 'date_to'],
@@ -1273,7 +1273,7 @@ export async function executeTool(
         const dateFrom = typeof args.date_from === 'string' ? args.date_from : null;
         const dateTo   = typeof args.date_to   === 'string' ? args.date_to   : dateFrom;
         if (!dateFrom) return { success: false, error: 'date_from is required' };
-        const provider = normalizeContentProvider(args.provider);
+        const provider = 'terminal';
 
         const clientSlugs: string[] = Array.isArray(args.client_slugs) ? (args.client_slugs as string[]) : [];
         const dates: string[] = [];
@@ -1287,77 +1287,62 @@ export async function executeTool(
           overwrite_existing: args.overwrite_existing === true,
         });
 
-        if (provider === 'claude') {
-          const params = {
-            run_id: run.id, client_slugs: clientSlugs,
-            period_start: dates[0], period_end: dates[dates.length - 1],
-            triggered_by: user.userId, publish_time: null,
-            overwrite_existing: args.overwrite_existing === true,
-            high_quality: true,
-            provider,
-          } as const;
-          const { slots, clients } = await prepareGenerationPlan(env, params);
-          await env.DB.prepare(
-            `UPDATE generation_runs
-             SET post_slots = ?, total_slots = ?, current_slot_idx = 0, publish_time = ?, progress_json = ?, last_activity_at = ?
-             WHERE id = ?`,
-          ).bind(
-            JSON.stringify(slots),
-            slots.length,
-            '10:00',
-            JSON.stringify({
-              current_client: clients[0]?.canonical_name ?? '',
-              current_post: slots[0] ? `${slots[0].date} / ${slots[0].content_type}` : '',
-              completed: 0,
-              total_estimated: slots.length,
-              errors: 0,
-              clients_done: 0,
-              clients_total: clients.length,
-            }),
-            Math.floor(Date.now() / 1000),
-            run.id,
-          ).run();
-          await appendGenerationLog(env.DB, run.id, 'START', `Claude terminal job queued from agent — ${dates[0]} → ${dates[dates.length - 1]}`);
-
-          const approvedArgs: ApprovedClaudeJobArgs = {
-            run_id: run.id,
-            client_slugs: clientSlugs,
-            period_start: dates[0],
-            period_end: dates[dates.length - 1],
-            content_only: true,
-            generate_images: false,
-            provider: 'claude',
-            requested_in: 'agent',
-          };
-          await createApprovedCommandJob(env.DB, {
-            generation_run_id: run.id,
-            command_name: 'weekly_content_claude',
-            provider: 'claude',
-            requested_by: user.userId,
-            args_json: JSON.stringify(approvedArgs),
-          });
-
-          return {
-            success: true,
-            job_id: run.id,
-            summary: { job_id: run.id, date_range: `${dates[0]} → ${dates[dates.length - 1]}`, clients: clientSlugs.length > 0 ? clientSlugs.join(', ') : 'all active', days: dates.length, provider, mode: 'approved_terminal_job' },
-            action_summary: `Generation job ${run.id} queued with Claude Code — ${clientSlugs.length > 0 ? clientSlugs.join(', ') : 'all clients'} for ${dates.length} days`,
-          };
-        }
-
-        ctx.waitUntil(planGeneration(env, {
+        const params = {
           run_id: run.id, client_slugs: clientSlugs,
           period_start: dates[0], period_end: dates[dates.length - 1],
           triggered_by: user.userId, publish_time: null,
           overwrite_existing: args.overwrite_existing === true,
+          high_quality: true,
           provider,
-        }, baseUrl));
+        } as const;
+        const { slots, clients } = await prepareGenerationPlan(env, params);
+        await env.DB.prepare(
+          `UPDATE generation_runs
+           SET post_slots = ?, total_slots = ?, current_slot_idx = 0, publish_time = ?, progress_json = ?, last_activity_at = ?
+           WHERE id = ?`,
+        ).bind(
+          JSON.stringify(slots),
+          slots.length,
+          '10:00',
+          JSON.stringify({
+            current_client: clients[0]?.canonical_name ?? '',
+            current_post: slots[0] ? `${slots[0].date} / ${slots[0].content_type}` : '',
+            completed: 0,
+            total_estimated: slots.length,
+            errors: 0,
+            clients_done: 0,
+            clients_total: clients.length,
+          }),
+          Math.floor(Date.now() / 1000),
+          run.id,
+        ).run();
+        await appendGenerationLog(env.DB, run.id, 'START', `Terminal AI job queued from agent — ${dates[0]} → ${dates[dates.length - 1]}`);
+        const preparedSlots = await prebuildApprovedTerminalSlotRequests(env, run.id);
+
+        const approvedArgs: ApprovedTerminalJobArgs = {
+          run_id: run.id,
+          client_slugs: clientSlugs,
+          period_start: dates[0],
+          period_end: dates[dates.length - 1],
+          content_only: true,
+          generate_images: false,
+          provider: 'terminal',
+          requested_in: 'agent',
+          prepared_slots: preparedSlots,
+        };
+        await createApprovedCommandJob(env.DB, {
+          generation_run_id: run.id,
+          command_name: 'weekly_content_terminal',
+          provider: 'terminal',
+          requested_by: user.userId,
+          args_json: JSON.stringify(approvedArgs),
+        });
 
         return {
           success: true,
           job_id: run.id,
-          summary: { job_id: run.id, date_range: `${dates[0]} → ${dates[dates.length - 1]}`, clients: clientSlugs.length > 0 ? clientSlugs.join(', ') : 'all active', days: dates.length, provider },
-          action_summary: `Generation job ${run.id} started with ${getProviderDisplayName(provider)} — ${clientSlugs.length > 0 ? clientSlugs.join(', ') : 'all clients'} for ${dates.length} days`,
+          summary: { job_id: run.id, date_range: `${dates[0]} → ${dates[dates.length - 1]}`, clients: clientSlugs.length > 0 ? clientSlugs.join(', ') : 'all active', days: dates.length, provider, mode: 'approved_terminal_job' },
+          action_summary: `Generation job ${run.id} queued with Terminal AI — ${clientSlugs.length > 0 ? clientSlugs.join(', ') : 'all clients'} for ${dates.length} days`,
         };
       }
 
@@ -2660,9 +2645,9 @@ ${BUYER_PERSONAS}
 ${RESPONSE_RULES}
 
 Discord-specific interpretation rules:
-- If the user sends plain text like "/weekly-content client:all provider:claude", treat it as a weekly content generation request.
+- If the user sends plain text like "/weekly-content client:all provider:terminal", treat it as a weekly content generation request.
 - For slash-like weekly content messages without an explicit date range, default to this week.
-- If the user explicitly asks for Claude, route generation as provider=claude.`;
+- Weekly content generation always uses the approved terminal workflow, not OpenAI.`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

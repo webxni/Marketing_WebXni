@@ -32,9 +32,8 @@ import {
   markApprovedCommandJobRunning,
   updateApprovedCommandJobProgress,
 } from '../db/queries';
-import { planGeneration, prepareGenerationPlan, buildSlotGenerationRequest, saveGeneratedSlotResult, type SlotTopicSelection } from '../loader/generation-run';
+import { prepareGenerationPlan, prebuildApprovedTerminalSlotRequests, buildSlotGenerationRequest, saveGeneratedSlotResult, type PreparedApprovedSlotRequest, type SlotTopicSelection } from '../loader/generation-run';
 import { createContentWithImage } from '../loader/autonomous-content';
-import { getProviderDisplayName, normalizeContentProvider, resolveProviderApiKey } from '../services/content-provider';
 import type { GeneratedPost } from '../services/openai';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -64,15 +63,16 @@ interface DiscordInteraction {
   };
 }
 
-interface ApprovedClaudeJobArgs {
+interface ApprovedTerminalJobArgs {
   run_id: string;
   client_slugs: string[];
   period_start: string;
   period_end: string;
   content_only: true;
   generate_images: false;
-  provider: 'claude';
+  provider: 'terminal';
   requested_in: 'discord';
+  prepared_slots?: PreparedApprovedSlotRequest[];
 }
 
 // ── Routes ─────────────────────────────────────────────────────────────────────
@@ -368,19 +368,10 @@ async function handleCommand(
                     ?? (opts.find(o => o.name === 'week')?.value       as string | undefined)
                     ?? 'this_week');
     const modeArg   = (opts.find(o => o.name === 'mode')?.value    as string | undefined) ?? 'standard';
-    const provider  = normalizeContentProvider((opts.find(o => o.name === 'provider')?.value as string | undefined) ?? 'openai');
+    const provider  = 'terminal';
     const isHQ      = modeArg === 'high-quality';
 
     try {
-      const settings = await env.KV_BINDING.get('settings:system').then((raw) => raw ? JSON.parse(raw) as Record<string, string> : {}).catch(() => ({}));
-      if (provider !== 'claude' && !resolveProviderApiKey(env, settings, provider)) {
-        await discordPatchInteraction({
-          applicationId: appId, token, botToken,
-          content: '❌ OpenAI API key not configured.',
-        });
-        return;
-      }
-
       const { start, end } = resolveWeekRange(weekArg);
       const clientSlugs: string[] = clientArg ? [clientArg] : [];
 
@@ -391,82 +382,66 @@ async function handleCommand(
         overwrite_existing: false,
       });
 
-      if (provider === 'claude') {
-        const params = {
-          run_id:             run.id,
-          client_slugs:       clientSlugs,
-          period_start:       start,
-          period_end:         end,
-          triggered_by:       `discord:${username}`,
-          publish_time:       null,
-          overwrite_existing: false,
-          high_quality:       true,
-          provider,
-        } as const;
-        await prepareGenerationPlan(env, params).then(async ({ slots, clients }) => {
-          await env.DB.prepare(
-            `UPDATE generation_runs
-             SET post_slots = ?, total_slots = ?, current_slot_idx = 0, publish_time = ?, progress_json = ?, last_activity_at = ?
-             WHERE id = ?`,
-          ).bind(
-            JSON.stringify(slots),
-            slots.length,
-            '10:00',
-            JSON.stringify({
-              current_client: clients[0]?.canonical_name ?? '',
-              current_post: slots[0] ? `${slots[0].date} / ${slots[0].content_type}` : '',
-              completed: 0,
-              total_estimated: slots.length,
-              errors: 0,
-              clients_done: 0,
-              clients_total: clients.length,
-            }),
-            Math.floor(Date.now() / 1000),
-            run.id,
-          ).run();
-          await appendGenerationLog(env.DB, run.id, 'START', `Claude terminal job queued — ${start} → ${end}`);
-        });
+      const params = {
+        run_id:             run.id,
+        client_slugs:       clientSlugs,
+        period_start:       start,
+        period_end:         end,
+        triggered_by:       `discord:${username}`,
+        publish_time:       null,
+        overwrite_existing: false,
+        high_quality:       true,
+        provider,
+      } as const;
+      await prepareGenerationPlan(env, params).then(async ({ slots, clients }) => {
+        await env.DB.prepare(
+          `UPDATE generation_runs
+           SET post_slots = ?, total_slots = ?, current_slot_idx = 0, publish_time = ?, progress_json = ?, last_activity_at = ?
+           WHERE id = ?`,
+        ).bind(
+          JSON.stringify(slots),
+          slots.length,
+          '10:00',
+          JSON.stringify({
+            current_client: clients[0]?.canonical_name ?? '',
+            current_post: slots[0] ? `${slots[0].date} / ${slots[0].content_type}` : '',
+            completed: 0,
+            total_estimated: slots.length,
+            errors: 0,
+            clients_done: 0,
+            clients_total: clients.length,
+          }),
+          Math.floor(Date.now() / 1000),
+          run.id,
+        ).run();
+        await appendGenerationLog(env.DB, run.id, 'START', `Terminal AI job queued — ${start} → ${end}`);
+      });
+      const preparedSlots = await prebuildApprovedTerminalSlotRequests(env, run.id);
 
-        const args: ApprovedClaudeJobArgs = {
-          run_id: run.id,
-          client_slugs: clientSlugs,
-          period_start: start,
-          period_end: end,
-          content_only: true,
-          generate_images: false,
-          provider: 'claude',
-          requested_in: 'discord',
-        };
-        await createApprovedCommandJob(env.DB, {
-          generation_run_id: run.id,
-          command_name: 'weekly_content_claude',
-          provider: 'claude',
-          requested_by: `discord:${username}`,
-          args_json: JSON.stringify(args),
-        });
-      } else {
-        ctx.waitUntil(
-          planGeneration(env, {
-            run_id:             run.id,
-            client_slugs:       clientSlugs,
-            period_start:       start,
-            period_end:         end,
-            triggered_by:       `discord:${username}`,
-            publish_time:       null,
-            overwrite_existing: false,
-            high_quality:       isHQ,
-            provider,
-          }, 'https://marketing.webxni.com'),
-        );
-      }
+      const args: ApprovedTerminalJobArgs = {
+        run_id: run.id,
+        client_slugs: clientSlugs,
+        period_start: start,
+        period_end: end,
+        content_only: true,
+        generate_images: false,
+        provider: 'terminal',
+        requested_in: 'discord',
+        prepared_slots: preparedSlots,
+      };
+      await createApprovedCommandJob(env.DB, {
+        generation_run_id: run.id,
+        command_name: 'weekly_content_terminal',
+        provider: 'terminal',
+        requested_by: `discord:${username}`,
+        args_json: JSON.stringify(args),
+      });
 
-      const modeLabel = provider === 'claude' ? 'reviewed high-quality' : (isHQ ? 'high-quality' : 'standard');
+      const modeLabel = isHQ ? 'high-quality prompt profile' : 'terminal workflow';
       const clientLabel = clientArg ? `**${clientArg}**` : 'all active clients';
       await discordPatchInteraction({
         applicationId: appId, token, botToken,
-        content: provider === 'claude'
-          ? `🚀 Weekly content queued for ${clientLabel}\nProvider: **Claude Code** (${modeLabel})\nWeek: **${start} → ${end}**\nMode: content only, no image generation by default\nRun ID: \`${run.id}\`\nA whitelisted backend job will start shortly.`
-          : `🚀 Weekly content started for ${clientLabel}\nProvider: **${getProviderDisplayName(provider)}** (${modeLabel})\nWeek: **${start} → ${end}**\nAssets: content + design prompts only; no image generation by default\nRun ID: \`${run.id}\`\nCheck progress: https://marketing.webxni.com/automation`,
+        content: `🚀 Weekly content queued for ${clientLabel}\nProvider: **Terminal AI** (${modeLabel})\nWeek: **${start} → ${end}**\nMode: content only, no image generation by default\nRun ID: \`${run.id}\`\nA whitelisted backend job will start shortly.`,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -629,23 +604,28 @@ discordInternalRoute.get('/approved-jobs/:id/context', async (c) => {
   if (!(await requireDiscordBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
   const job = await getApprovedCommandJobById(c.env.DB, c.req.param('id'));
   if (!job) return c.json({ error: 'Not found' }, 404);
-  const args = JSON.parse(job.args_json) as ApprovedClaudeJobArgs;
+  const args = JSON.parse(job.args_json) as ApprovedTerminalJobArgs;
   const run = await c.env.DB.prepare('SELECT post_slots, total_slots, current_slot_idx, status FROM generation_runs WHERE id = ?')
     .bind(args.run_id)
     .first<{ post_slots: string | null; total_slots: number | null; current_slot_idx: number | null; status: string }>();
   if (!run) return c.json({ error: 'Generation run not found' }, 404);
-  const slots = JSON.parse(run.post_slots ?? '[]') as Array<{ client_slug?: string; date?: string; content_type?: string }>;
   const startIdx = Math.max(0, run.current_slot_idx ?? 0);
-
-  // Lightweight per-slot summary only — the bot fetches each prompt
-  // separately via /slot-request to avoid a multi-minute worker request
-  // (each prompt build can call OpenAI for topic research).
-  const slotSummaries = slots.slice(startIdx).map((slot, offset) => ({
-    slot_idx: startIdx + offset,
-    client_slug: slot.client_slug ?? '',
-    publish_date: slot.date ?? '',
-    content_type: slot.content_type ?? '',
-  }));
+  const cachedSlots = Array.isArray(args.prepared_slots) ? args.prepared_slots : [];
+  const slotSummaries = cachedSlots.length > 0
+    ? cachedSlots.map((slot) => ({
+      slot_idx: slot.slot_idx,
+      client_slug: slot.client_slug,
+      publish_date: slot.publish_date,
+      content_type: slot.content_type,
+    }))
+    : (JSON.parse(run.post_slots ?? '[]') as Array<{ client_slug?: string; date?: string; content_type?: string }>)
+      .slice(startIdx)
+      .map((slot, offset) => ({
+        slot_idx: startIdx + offset,
+        client_slug: slot.client_slug ?? '',
+        publish_date: slot.date ?? '',
+        content_type: slot.content_type ?? '',
+      }));
   return c.json({ ok: true, job, run, slots: slotSummaries });
 });
 
@@ -653,10 +633,27 @@ discordInternalRoute.get('/approved-jobs/:id/slot-request/:slotIdx', async (c) =
   if (!(await requireDiscordBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
   const job = await getApprovedCommandJobById(c.env.DB, c.req.param('id'));
   if (!job) return c.json({ error: 'Not found' }, 404);
-  const args = JSON.parse(job.args_json) as ApprovedClaudeJobArgs;
+  const args = JSON.parse(job.args_json) as ApprovedTerminalJobArgs;
   const slotIdx = Number.parseInt(c.req.param('slotIdx'), 10);
   if (!Number.isInteger(slotIdx) || slotIdx < 0) return c.json({ error: 'Invalid slot index' }, 400);
   try {
+    const cached = Array.isArray(args.prepared_slots)
+      ? args.prepared_slots.find((slot) => slot.slot_idx === slotIdx)
+      : null;
+    if (cached) {
+      return c.json({
+        ok: true,
+        slot_idx: cached.slot_idx,
+        client_slug: cached.client_slug,
+        client_name: cached.client_name,
+        publish_date: cached.publish_date,
+        content_type: cached.content_type,
+        topic_selection: cached.topic_selection,
+        prompt: cached.prompt,
+        schema: cached.schema,
+        plan: cached.plan,
+      });
+    }
     const built = await buildSlotGenerationRequest(c.env, args.run_id, slotIdx);
     return c.json({
       ok: true,
@@ -668,6 +665,7 @@ discordInternalRoute.get('/approved-jobs/:id/slot-request/:slotIdx', async (c) =
       topic_selection: built.topicSelection,
       prompt: built.request.prompt,
       schema: built.request.schema.schema,
+      plan: built.request.plan,
     });
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
@@ -680,7 +678,7 @@ discordInternalRoute.post('/approved-jobs/:id/start', async (c) => {
   try { body = await c.req.json(); } catch { /* optional */ }
   await markApprovedCommandJobRunning(c.env.DB, c.req.param('id'), body.command_line ?? '');
   const job = await getApprovedCommandJobById(c.env.DB, c.req.param('id'));
-  const runId = job ? (JSON.parse(job.args_json) as Partial<ApprovedClaudeJobArgs>).run_id ?? job.generation_run_id ?? null : null;
+  const runId = job ? (JSON.parse(job.args_json) as Partial<ApprovedTerminalJobArgs>).run_id ?? job.generation_run_id ?? null : null;
   if (runId) {
     const now = Math.floor(Date.now() / 1000);
     await c.env.DB.prepare(
@@ -711,7 +709,7 @@ discordInternalRoute.post('/approved-jobs/:id/save-slot', async (c) => {
   if (!body.run_id || typeof body.slot_idx !== 'number' || !body.post) return c.json({ error: 'run_id, slot_idx, and post required' }, 400);
   const result = await saveGeneratedSlotResult(c.env, body.run_id, body.slot_idx, body.post, body.topic_selection ?? null);
   const outcomeLabel = result.outcome === 'skipped' ? 'skipped' : 'saved';
-  await appendGenerationLog(c.env.DB, body.run_id, result.outcome === 'skipped' ? 'WARN' : 'SAVED', `Claude terminal slot ${body.slot_idx + 1} ${outcomeLabel}`);
+  await appendGenerationLog(c.env.DB, body.run_id, result.outcome === 'skipped' ? 'WARN' : 'SAVED', `Terminal slot ${body.slot_idx + 1} ${outcomeLabel}`);
   return c.json({ ok: true, result });
 });
 
@@ -903,7 +901,7 @@ Response rules for Discord:
 - Data goes in the items array, not in your message text
 - Bold (**text**) is fine in Discord for emphasis
 - Be direct and operational
-- For weekly content requests, default provider to openai unless the user explicitly asks for Claude
+- For weekly content requests, default provider to terminal unless the user explicitly asks for OpenAI
 - For weekly content requests without a date range, default to this week`;
 }
 

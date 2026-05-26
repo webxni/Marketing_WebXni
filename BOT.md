@@ -1,14 +1,14 @@
 # Discord Bot Notes
 
-This file records the current Discord bot architecture, the Claude routing rules, and the constraints that must remain true in future work.
+This file records the current Discord bot architecture, the terminal routing rules, and the constraints that must remain true in future work.
 
 ## Core Rule
 
 For weekly content and approved content jobs:
 
-- `provider=openai` uses the existing worker/API generation path
-- `provider=claude` must use **Claude Code in the terminal**
-- `provider=claude` must **not** use the Anthropic API path for weekly content generation
+- weekly generation uses the approved **terminal** workflow
+- weekly generation must not use the worker OpenAI path
+- the terminal backend may be `codex`, `gemini`, or `claude`, depending on what is available/authenticated
 
 Do not regress this.
 
@@ -27,7 +27,7 @@ There are two Discord entry paths:
 There is also a separate approved terminal job runner:
 
 - bot poller: `discord-bot/bot.js`
-- local runner script: `scripts/run-approved-claude-job.mjs`
+- local runner script: `scripts/run-approved-terminal-job.mjs`
 - queue table: `approved_command_jobs`
 
 ## Non-Negotiable Security Rules
@@ -36,8 +36,8 @@ Discord must never be allowed to run arbitrary shell commands.
 
 Only approved internal command names may execute:
 
-- `weekly_content_claude`
-- `regenerate_content_claude`
+- `weekly_content_terminal`
+- `regenerate_content_terminal`
 
 Execution must stay whitelisted through:
 
@@ -47,32 +47,32 @@ Execution must stay whitelisted through:
 
 The bot runner must only spawn fixed local scripts with fixed arguments.
 
-## Claude Routing Rules
+## Terminal Routing Rules
 
 ### Slash command flow
 
-For `/weekly-content ... provider:claude`:
+For `/weekly-content`:
 
 1. Create `generation_run`
 2. Build/store slot plan with `prepareGenerationPlan(...)`
 3. Create `approved_command_jobs` row
 4. Let local bot poller claim and execute the approved job
-5. Claude Code generates content in terminal
+5. A terminal AI backend generates content in terminal
 6. Save results back into existing posts system
 
 Relevant files:
 
 - `worker/src/routes/discord.ts`
 - `worker/src/loader/generation-run.ts`
-- `scripts/run-approved-claude-job.mjs`
+- `scripts/run-approved-terminal-job.mjs`
 - `discord-bot/bot.js`
 
 ### Dashboard / Automation flow
 
-For Automation page generation with `provider=claude`:
+For Automation page generation:
 
 - must also enqueue approved terminal jobs
-- must not call `planGeneration(...)` directly for Claude
+- must not call `planGeneration(...)` directly for weekly content
 
 Relevant files:
 
@@ -83,10 +83,10 @@ Relevant files:
 
 For messages like:
 
-- `@webxni /weekly-content client:all provider:claude`
-- `Generate weekly content for all clients using Claude`
+- `@webxni /weekly-content client:all`
+- `Generate weekly content for all clients in the terminal`
 
-The agent must route Claude weekly generation into approved terminal jobs, not API Claude.
+The agent must route weekly generation into approved terminal jobs, not the worker API generation path.
 
 Relevant files:
 
@@ -114,12 +114,12 @@ The local Discord bot:
 - runs only whitelisted scripts
 - reports progress back through internal endpoints
 
-### Claude self-review
+### Terminal self-review
 
-`scripts/run-approved-claude-job.mjs` does:
+`scripts/run-approved-terminal-job.mjs` does:
 
-1. generate draft with Claude Code
-2. run review/improvement pass with Claude Code
+1. generate draft with the selected terminal backend
+2. run review/improvement pass with the same backend
 3. save only final improved result
 
 ### No-image default
@@ -153,7 +153,7 @@ Example expected behavior when current date is `2026-04-27`:
 - `worker/src/routes/ai.ts`
 - `worker/src/routes/run.ts`
 - `worker/src/loader/generation-run.ts`
-- `scripts/run-approved-claude-job.mjs`
+- `scripts/run-approved-terminal-job.mjs`
 - `worker/src/db/queries.ts`
 - `frontend/src/routes/(app)/automation/+page.svelte`
 - `worker/src/services/content-provider.ts`
@@ -176,20 +176,19 @@ Recommended next improvements:
    - show per-slot progress
    - show final counts cleanly in Discord
 
-4. Add retry helpers for approved Claude jobs
-   - resume failed Claude runs from current slot
+4. Add retry helpers for approved terminal jobs
+   - resume failed terminal runs from current slot
    - optionally expose retry action in UI
 
 5. Add tests or at least fixture coverage for:
-   - `/weekly-content client:all provider:claude`
-   - `/weekly-content client:all provider:claude date_range:this_week`
-   - `@webxni /weekly-content client:all provider:claude`
-   - dashboard generation with provider `claude`
+   - `/weekly-content client:all`
+   - `/weekly-content client:all date_range:this_week`
+   - `@webxni /weekly-content client:all`
+   - dashboard generation through the terminal workflow
 
 ## Do Not Break These Expectations
 
-- Claude weekly content uses terminal Claude Code, not API Claude
-- OpenAI remains default unless user explicitly asks for Claude
+- Weekly content uses the approved terminal workflow
 - Discord cannot execute arbitrary shell
 - Weekly content does not auto-generate images by default
 - Same posts/content schema must be used regardless of provider

@@ -4,7 +4,7 @@
  */
 import { Hono, type Context } from 'hono';
 import type { Env, SessionData } from '../types';
-import { executeSlotWork, planGeneration, prepareGenerationPlan, triggerStep } from '../loader/generation-run';
+import { executeSlotWork, prepareGenerationPlan, prebuildApprovedTerminalSlotRequests, triggerStep, type PreparedApprovedSlotRequest } from '../loader/generation-run';
 import { isRepairKeyValid, repairExistingBlogs } from '../loader/repair-blogs';
 import { planBlogRegen, executeBlogRegenSlot, triggerBlogRegenStep } from '../loader/blog-regen';
 import { cleanupLegacyInvalidPlatformAttempts, repairOrphanScheduledPosts, syncPublishedUrls } from '../modules/published-urls';
@@ -51,15 +51,16 @@ function makeAgentExecutionKey(prefix: string, from: string, to: string, clientS
   return `${prefix}:${from}:${to}:${scope}`;
 }
 
-interface ApprovedClaudeJobArgs {
+interface ApprovedTerminalJobArgs {
   run_id: string;
   client_slugs: string[];
   period_start: string;
   period_end: string;
   content_only: true;
   generate_images: false;
-  provider: 'claude';
+  provider: 'terminal';
   requested_in: 'agent_mcp';
+  prepared_slots?: PreparedApprovedSlotRequest[];
 }
 
 const INTERNAL_AGENT_USER: SessionData = {
@@ -330,7 +331,7 @@ internalRoutes.post('/agent/run-weekly-marketing-pipeline', async (c) => {
     client_slugs?: string[];
     overwrite_existing?: boolean;
     publish_time?: string;
-    provider?: 'openai' | 'claude';
+    provider?: 'terminal';
     force?: boolean;
   } = {};
   try { body = await c.req.json(); } catch { /* optional */ }
@@ -340,7 +341,7 @@ internalRoutes.post('/agent/run-weekly-marketing-pipeline', async (c) => {
   if (!periodStart || !periodEnd) return c.json({ error: 'period_start and period_end are required' }, 400);
 
   const clientSlugs = parseClientFilter(body.client_slugs);
-  const provider = body.provider === 'openai' ? 'openai' : 'claude';
+  const provider = 'terminal';
   const executionKey = makeAgentExecutionKey(`weekly-pipeline:${provider}`, periodStart, periodEnd, clientSlugs);
   const previous = await getLatestAuditMarker(c.env.DB, 'agent.weekly_pipeline.queued', 'agent_execution', executionKey);
   if (previous && body.force !== true) {
@@ -357,99 +358,59 @@ internalRoutes.post('/agent/run-weekly-marketing-pipeline', async (c) => {
   const publishTime = typeof body.publish_time === 'string' && /^\d{2}:\d{2}$/.test(body.publish_time)
     ? body.publish_time
     : null;
-  const baseUrl = new URL(c.req.url).origin;
+  const params = {
+    run_id: run.id,
+    client_slugs: clientSlugs,
+    period_start: periodStart,
+    period_end: periodEnd,
+    triggered_by: 'agent-mcp',
+    publish_time: publishTime,
+    overwrite_existing: body.overwrite_existing === true,
+    high_quality: true,
+    provider,
+  } as const;
+  const { slots, clients } = await prepareGenerationPlan(c.env, params);
+  await c.env.DB.prepare(
+    `UPDATE generation_runs
+     SET post_slots = ?, total_slots = ?, current_slot_idx = 0, publish_time = ?, progress_json = ?, last_activity_at = ?
+     WHERE id = ?`,
+  ).bind(
+    JSON.stringify(slots),
+    slots.length,
+    publishTime ?? '10:00',
+    JSON.stringify({
+      current_client: clients[0]?.canonical_name ?? '',
+      current_post: slots[0] ? `${slots[0].date} / ${slots[0].content_type}` : '',
+      completed: 0,
+      total_estimated: slots.length,
+      errors: 0,
+      clients_done: 0,
+      clients_total: clients.length,
+    }),
+    Math.floor(Date.now() / 1000),
+    run.id,
+  ).run();
+  await appendGenerationLog(c.env.DB, run.id, 'START', `Terminal AI job queued from MCP agent — ${periodStart} → ${periodEnd}`);
+  const preparedSlots = await prebuildApprovedTerminalSlotRequests(c.env, run.id);
 
-  if (provider === 'claude') {
-    const params = {
-      run_id: run.id,
-      client_slugs: clientSlugs,
-      period_start: periodStart,
-      period_end: periodEnd,
-      triggered_by: 'agent-mcp',
-      publish_time: publishTime,
-      overwrite_existing: body.overwrite_existing === true,
-      high_quality: true,
-      provider,
-    } as const;
-    const { slots, clients } = await prepareGenerationPlan(c.env, params);
-    await c.env.DB.prepare(
-      `UPDATE generation_runs
-       SET post_slots = ?, total_slots = ?, current_slot_idx = 0, publish_time = ?, progress_json = ?, last_activity_at = ?
-       WHERE id = ?`,
-    ).bind(
-      JSON.stringify(slots),
-      slots.length,
-      publishTime ?? '10:00',
-      JSON.stringify({
-        current_client: clients[0]?.canonical_name ?? '',
-        current_post: slots[0] ? `${slots[0].date} / ${slots[0].content_type}` : '',
-        completed: 0,
-        total_estimated: slots.length,
-        errors: 0,
-        clients_done: 0,
-        clients_total: clients.length,
-      }),
-      Math.floor(Date.now() / 1000),
-      run.id,
-    ).run();
-    await appendGenerationLog(c.env.DB, run.id, 'START', `Claude terminal job queued from MCP agent — ${periodStart} → ${periodEnd}`);
-
-    const args: ApprovedClaudeJobArgs = {
-      run_id: run.id,
-      client_slugs: clientSlugs,
-      period_start: periodStart,
-      period_end: periodEnd,
-      content_only: true,
-      generate_images: false,
-      provider: 'claude',
-      requested_in: 'agent_mcp',
-    };
-    const job = await createApprovedCommandJob(c.env.DB, {
-      generation_run_id: run.id,
-      command_name: 'weekly_content_claude',
-      provider: 'claude',
-      requested_by: 'agent-mcp',
-      args_json: JSON.stringify(args),
-    });
-
-    await writeAuditLog(c.env.DB, {
-      action: 'agent.weekly_pipeline.queued',
-      entity_type: 'agent_execution',
-      entity_id: executionKey,
-      new_value: {
-        run_id: run.id,
-        job_id: job.id,
-        provider,
-        period_start: periodStart,
-        period_end: periodEnd,
-        client_slugs: clientSlugs,
-      },
-    });
-
-    return c.json({
-      ok: true,
-      mode: 'approved_terminal_job',
-      provider,
-      run_id: run.id,
-      approved_job_id: job.id,
-      execution_key: executionKey,
-      total_slots: slots.length,
-    }, 202);
-  }
-
-  c.executionCtx.waitUntil(
-    planGeneration(c.env, {
-      run_id: run.id,
-      client_slugs: clientSlugs,
-      period_start: periodStart,
-      period_end: periodEnd,
-      triggered_by: 'agent-mcp',
-      publish_time: publishTime,
-      overwrite_existing: body.overwrite_existing === true,
-      high_quality: true,
-      provider,
-    }, baseUrl),
-  );
+  const args: ApprovedTerminalJobArgs = {
+    run_id: run.id,
+    client_slugs: clientSlugs,
+    period_start: periodStart,
+    period_end: periodEnd,
+    content_only: true,
+    generate_images: false,
+    provider: 'terminal',
+    requested_in: 'agent_mcp',
+    prepared_slots: preparedSlots,
+  };
+  const job = await createApprovedCommandJob(c.env.DB, {
+    generation_run_id: run.id,
+    command_name: 'weekly_content_terminal',
+    provider: 'terminal',
+    requested_by: 'agent-mcp',
+    args_json: JSON.stringify(args),
+  });
 
   await writeAuditLog(c.env.DB, {
     action: 'agent.weekly_pipeline.queued',
@@ -457,6 +418,7 @@ internalRoutes.post('/agent/run-weekly-marketing-pipeline', async (c) => {
     entity_id: executionKey,
     new_value: {
       run_id: run.id,
+      job_id: job.id,
       provider,
       period_start: periodStart,
       period_end: periodEnd,
@@ -466,10 +428,12 @@ internalRoutes.post('/agent/run-weekly-marketing-pipeline', async (c) => {
 
   return c.json({
     ok: true,
-    mode: 'worker_api',
+    mode: 'approved_terminal_job',
     provider,
     run_id: run.id,
+    approved_job_id: job.id,
     execution_key: executionKey,
+    total_slots: slots.length,
   }, 202);
 });
 

@@ -59,7 +59,7 @@ Marketing_WebXni/
 ├── discord-bot/
 │   └── bot.js                        # Local Discord gateway bot (pm2: webxni-bot)
 ├── scripts/
-│   └── run-approved-claude-job.mjs   # Terminal Claude Code runner
+│   └── run-approved-terminal-job.mjs # Terminal AI runner (Codex/Gemini/Claude)
 └── .github/workflows/
     └── deploy.yml                    # CI deploy (push-to-main triggers it)
 ```
@@ -375,14 +375,14 @@ GET    /api/health                               Health check
 
 ---
 
-## Discord bot (terminal Claude Code path)
+## Discord bot (terminal AI path)
 
 The local Discord bot (`pm2: webxni-bot`) provides:
 
 - Slash commands for content creation and weekly generation.
 - Natural-language chat with an AI agent.
 - A polling runner that claims `approved_command_jobs` and spawns
-  `claude -p` per slot via `scripts/run-approved-claude-job.mjs`.
+  a terminal AI backend per slot via `scripts/run-approved-terminal-job.mjs`.
 
 Full architecture and routing rules: [`BOT.md`](BOT.md).
 

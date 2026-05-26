@@ -5,7 +5,7 @@ export interface GenerateParams {
   client_slugs?:  string[];
   date_from:      string;
   date_to:        string;
-  provider?:      'openai' | 'claude';
+  provider?:      'terminal';
   publish_time?:  string;  // HH:MM — applied to all generated posts
   overwrite_existing?: boolean;
 }

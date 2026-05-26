@@ -65,6 +65,7 @@ import {
 import {
   generateWithProvider,
   getProviderDisplayName,
+  isTerminalContentProvider,
   normalizeContentProvider,
   researchTopicWithProvider,
   resolveProviderApiKey,
@@ -116,6 +117,18 @@ export interface SlotGenerationRequest {
   provider: ContentProviderName;
   request: ReturnType<typeof buildGenerationRequest>;
   topicSelection: SlotTopicSelection;
+}
+
+export interface PreparedApprovedSlotRequest {
+  slot_idx: number;
+  client_slug: string;
+  client_name: string;
+  publish_date: string;
+  content_type: string;
+  topic_selection: SlotTopicSelection;
+  prompt: string;
+  schema: ReturnType<typeof buildGenerationRequest>['schema']['schema'];
+  plan: ReturnType<typeof buildGenerationRequest>['plan'];
 }
 
 export interface SlotTopicSelection {
@@ -703,16 +716,17 @@ export async function resumeGenerationRun(env: Env, baseUrl: string, runId: stri
   // Claude provider runs must resume through the approved terminal-job queue,
   // not the worker /internal/gen-step path (which would call the Anthropic API).
   const provider = normalizeContentProvider(slots[nextSlot]?.provider ?? slots[0]?.provider);
-  if (provider === 'claude') {
+  if (isTerminalContentProvider(provider)) {
     const remainingClientSlugs = Array.from(
       new Set(slots.slice(nextSlot).map((slot) => slot.client_slug)),
     );
     const periodStart = slots[nextSlot]?.date ?? slots[0].date;
     const periodEnd = slots[slots.length - 1]?.date ?? periodStart;
+    const preparedSlots = await prebuildApprovedTerminalSlotRequests(env, runId);
     await createApprovedCommandJob(env.DB, {
       generation_run_id: runId,
-      command_name: 'weekly_content_claude',
-      provider: 'claude',
+      command_name: 'weekly_content_terminal',
+      provider: 'terminal',
       requested_by: run.triggered_by ?? 'resume',
       args_json: JSON.stringify({
         run_id: runId,
@@ -721,11 +735,12 @@ export async function resumeGenerationRun(env: Env, baseUrl: string, runId: stri
         period_end: periodEnd,
         content_only: true,
         generate_images: false,
-        provider: 'claude',
+        provider: 'terminal',
         requested_in: 'resume',
+        prepared_slots: preparedSlots,
       }),
     });
-    await appendGenerationLog(env.DB, runId, 'INFO', `Claude terminal job re-queued from slot ${nextSlot + 1}/${totalSlots}`);
+    await appendGenerationLog(env.DB, runId, 'INFO', `Terminal AI job re-queued from slot ${nextSlot + 1}/${totalSlots}`);
     return { resumed: true, nextSlot, totalSlots };
   }
 
@@ -852,10 +867,9 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
     serviceNames,
   };
 
-  // Topic research drives non-repetitive, SEO-aware prompts. When generation
-  // is routed to terminal Claude Code (no Anthropic API key in env), fall back
-  // to OpenAI for the research stage so the prompt fed to the CLI still
-  // carries researched topic / keyword / format data.
+  // Topic research drives non-repetitive, SEO-aware prompts. Terminal runs stay
+  // terminal-only, so if there is no monthly topic selection and no API-backed
+  // research provider, the prompt falls back to the client context alone.
   const primaryKey = resolveProviderApiKey(env, settings, provider);
   let topicResearch: TopicResearch | null = null;
   let topicSelection: SlotTopicSelection | null = null;
@@ -882,12 +896,6 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
   }
   if (!topicResearch && primaryKey) {
     topicResearch = await researchTopicWithProvider(provider, primaryKey, researchParams, settings).catch(() => null);
-  }
-  if (!topicResearch && provider === 'claude') {
-    const openaiKey = resolveProviderApiKey(env, settings, 'openai');
-    if (openaiKey) {
-      topicResearch = await researchTopicWithProvider('openai', openaiKey, researchParams, settings).catch(() => null);
-    }
   }
   if (!topicSelection && topicResearch) {
     topicSelection = {
@@ -969,6 +977,36 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
       source: 'research',
     },
   };
+}
+
+export async function prebuildApprovedTerminalSlotRequests(
+  env: Env,
+  runId: string,
+): Promise<PreparedApprovedSlotRequest[]> {
+  const db = env.DB;
+  const run = await getGenerationRunById(db, runId);
+  if (!run) throw new Error('Generation run not found');
+
+  const slots = JSON.parse(run.post_slots ?? '[]') as PostSlot[];
+  const startIdx = Math.max(0, run.current_slot_idx ?? 0);
+  const prepared: PreparedApprovedSlotRequest[] = [];
+
+  for (let slotIdx = startIdx; slotIdx < slots.length; slotIdx++) {
+    const built = await buildSlotGenerationRequest(env, runId, slotIdx);
+    prepared.push({
+      slot_idx: slotIdx,
+      client_slug: built.slot.client_slug,
+      client_name: built.clientName,
+      publish_date: built.slot.date,
+      content_type: built.slot.content_type,
+      topic_selection: built.topicSelection,
+      prompt: built.request.prompt,
+      schema: built.request.schema.schema,
+      plan: built.request.plan,
+    });
+  }
+
+  return prepared;
 }
 
 export async function saveGeneratedSlotResult(
@@ -1185,7 +1223,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
     const apiKey = resolveProviderApiKey(env, settings, provider);
 
     try {
-      if (!apiKey) throw new Error(provider === 'claude' ? 'Missing Claude API key' : 'Missing OpenAI API key');
+      if (!apiKey) throw new Error(provider === 'terminal' ? 'Terminal provider must run through the approved terminal job path' : 'Missing OpenAI API key');
 
       const client = await db.prepare('SELECT * FROM clients WHERE id = ?').bind(slot.client_id).first<ClientRow>();
       if (!client) throw new Error(`Client not found: ${slot.client_slug}`);

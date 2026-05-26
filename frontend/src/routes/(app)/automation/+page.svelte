@@ -71,7 +71,7 @@
   // Publish time — applies to all generated posts
   let publishTime = '10:00';  // default 10:00 AM
   let overwriteExisting = false;
-  let contentProvider: 'openai' | 'claude' = 'openai';
+  let contentProvider: 'terminal' = 'terminal';
 
   // Custom
   let customStart = todayStr;
@@ -240,9 +240,7 @@
         publish_time: publishTime || '10:00',
         overwrite_existing: overwriteExisting,
       });
-      toast.success(contentProvider === 'claude'
-        ? `Claude Code queued — ~${totalEstimated} reviewed drafts planned`
-        : `Generation started — ~${totalEstimated} drafts queued`);
+      toast.success(`Terminal AI queued — ~${totalEstimated} drafts planned`);
       historyTab = 'generation';
       startProgressPolling();
     } catch (e) { toast.error(String(e)); generating = false; }
@@ -652,24 +650,15 @@
       <!-- ── Publish Time ──────────────────────────────────────────────────── -->
       <div class="mt-4 pt-4 border-t border-border">
         <p class="text-xs text-muted uppercase tracking-wider mb-2">Provider</p>
-        <div class="grid grid-cols-2 gap-2 mb-4">
+        <div class="grid grid-cols-1 gap-2 mb-4">
           <button
-            class="text-xs py-2 px-3 rounded-md border transition-colors text-left {contentProvider === 'openai' ? 'border-accent bg-accent/10 text-accent' : 'border-border text-muted hover:text-white hover:border-white/30'}"
-            on:click={() => { contentProvider = 'openai'; }}
-          >OpenAI
-          </button>
-          <button
-            class="text-xs py-2 px-3 rounded-md border transition-colors text-left {contentProvider === 'claude' ? 'border-accent bg-accent/10 text-accent' : 'border-border text-muted hover:text-white hover:border-white/30'}"
-            on:click={() => { contentProvider = 'claude'; }}
-          >Claude Code
+            class="text-xs py-2 px-3 rounded-md border transition-colors text-left border-accent bg-accent/10 text-accent"
+            on:click={() => { contentProvider = 'terminal'; }}
+          >Terminal AI
           </button>
         </div>
         <p class="text-xs text-muted mb-4">
-          {#if contentProvider === 'claude'}
-            Reviewed terminal workflow. Better quality, self-review, content only, no image generation by default.
-          {:else}
-            Faster standard workflow using the existing generation path.
-          {/if}
+          Runs weekly content through the approved terminal workflow using the available CLI agent on the runner. Content only, no image generation by default.
         </p>
 
         <p class="text-xs text-muted uppercase tracking-wider mb-2">Default Publish Time</p>

@@ -43,10 +43,10 @@ terminal Claude Code path) with topic research and per-platform captions.
    `worker/src/types.ts` and `frontend/src/lib/types.ts`. If it's a settable
    client field, also add it to `CLIENT_WRITABLE_FIELDS` in
    `worker/src/routes/clients.ts`.
-7. **Claude weekly content uses terminal Claude Code, not the Anthropic API.**
+7. **Weekly content generation uses approved terminal agents, not the worker OpenAI path.**
    See "Content generation flow" below — generation must enqueue an
-   `approved_command_jobs` row, never call `planGeneration` for
-   `provider: 'claude'`.
+   `approved_command_jobs` row for weekly runs, never call `planGeneration`
+   for the weekly automation workflow.
 8. **No speculative abstractions, no backwards-compat shims, no half-finished
    features, no comments that just describe what the code does.**
 9. **Touch the minimum needed.** A bug fix doesn't need surrounding cleanup.
@@ -84,10 +84,10 @@ Upload-Post  |  WordPress REST  |  Notion  |  OpenAI  |  Discord (bot + slash)
 ```
 
 Background work runs via `ctx.waitUntil()` inside the Worker. Long-lived
-Claude generation runs are handled by the **local Discord bot**
+terminal generation runs are handled by the **local Discord bot**
 (`discord-bot/bot.js`, `pm2: webxni-bot`) which polls the
-`approved_command_jobs` queue and spawns `scripts/run-approved-claude-job.mjs`
-to invoke the `claude` CLI per slot.
+`approved_command_jobs` queue and spawns `scripts/run-approved-terminal-job.mjs`
+to invoke an available terminal AI backend per slot.
 
 ### Cron schedule (`wrangler.toml`)
 
@@ -115,7 +115,7 @@ to invoke the `claude` CLI per slot.
 | `UPLOAD_POST_API_KEY` | Upload-Post API auth |
 | `OPENAI_API_KEY` | AI content generation + topic research |
 | `NOTION_API_TOKEN` | Notion import/export |
-| `ANTHROPIC_API_KEY` | Optional — only used by the worker-API Claude path. Terminal Claude doesn't need it |
+| `ANTHROPIC_API_KEY` | Optional — only needed if Claude CLI or Anthropic-backed flows are used elsewhere |
 
 ---
 
@@ -177,59 +177,63 @@ Gates before automation can post:
 
 ## Content generation flow
 
-Two providers, two paths. Both use the same prompt builder and the same posts
-schema; results are saved by `saveGeneratedSlotResult` in either case.
+Weekly content is terminal-first. Other AI features may still use OpenAI, but
+weekly post generation uses the approved terminal queue and the same post-save
+path.
 
 ```
-provider: openai                    provider: claude
-────────────────                    ────────────────
-POST /api/run/generate              POST /api/run/generate
-  ↓ planGeneration() (waitUntil)      ↓ prepareGenerationPlan() (sync)
-  ↓ /internal/gen-step (per slot)     ↓ createApprovedCommandJob()
-  ↓ generateWithOpenAI()              ↓ (worker stops here)
+weekly content generation
+────────────────────────
+POST /api/run/generate
+  ↓ prepareGenerationPlan() (sync)
+  ↓ createApprovedCommandJob()
+  ↓ (worker stops here)
+Local Discord bot polls
+`/internal/discord/approved-jobs/claim`
+  ↓ spawns scripts/run-approved-terminal-job.mjs
+  ↓ runner picks codex / gemini / claude
+  ↓ generates + self-reviews per slot
+  ↓ POSTs result back to /save-slot
   ↓ saveGeneratedSlotResult()
-                                    Local Discord bot polls
-                                    `/internal/discord/approved-jobs/claim`
-                                      ↓ spawns scripts/run-approved-claude-job.mjs
-                                      ↓ which runs `claude -p ...` per slot
-                                      ↓ POSTs result back to /save-slot
-                                      ↓ saveGeneratedSlotResult()
 ```
 
 ### Resume
 
 `POST /api/run/generate/runs/:id/resume` detects the provider from the slot
-plan. For `provider: 'claude'`, it re-queues an `approved_command_jobs` row
+plan. For terminal providers, it re-queues an `approved_command_jobs` row
 (starting at `current_slot_idx`) instead of triggering `/internal/gen-step`.
 The bot's `/approved-jobs/:id/context` endpoint resumes from
 `current_slot_idx`.
 
 ### Topic research
 
-`buildSlotGenerationRequest` runs `researchTopicWithProvider` to attach
-non-repetitive, SEO-aware topic + keyword + format to each slot prompt. When
-provider is Claude and no Anthropic key is set, **research falls back to
-OpenAI** so the prompt sent to terminal Claude still carries research data.
+`buildSlotGenerationRequest` runs topic selection from client context and
+monthly planning. Terminal weekly runs do not fall back to OpenAI topic
+research.
 
 ### Approved-jobs queue (security)
 
 Discord must never run arbitrary shell. Only whitelisted `command_name`
 values are accepted by the bot runner:
 
-- `weekly_content_claude` → `scripts/run-approved-claude-job.mjs`
-- `regenerate_content_claude` → `scripts/run-approved-claude-job.mjs`
+- `weekly_content_terminal` → `scripts/run-approved-terminal-job.mjs`
+- `regenerate_content_terminal` → `scripts/run-approved-terminal-job.mjs`
+
+Legacy `_claude` command names may still exist temporarily for backward
+compatibility with older queued jobs, but new weekly work must use the
+`_terminal` names.
 
 Whitelist is enforced in `discord-bot/bot.js`, `worker/src/routes/discord.ts`,
 and `worker/src/db/queries.ts`. The runner spawns fixed scripts with fixed
 args.
 
-### Claude self-review
+### Terminal self-review
 
-`scripts/run-approved-claude-job.mjs` runs **two passes per slot**:
+`scripts/run-approved-terminal-job.mjs` runs **two passes per slot**:
 
-1. Generate draft via `claude -p` with the JSON schema.
-2. Run a review/improvement pass via `claude -p` against the same schema,
-   feeding in the draft.
+1. Generate draft via the selected terminal backend with the JSON schema.
+2. Run a review/improvement pass against the same schema, feeding in the
+   draft.
 3. Save only the final improved JSON.
 
 ### No-image default
