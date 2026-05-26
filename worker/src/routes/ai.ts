@@ -1330,7 +1330,7 @@ export async function executeTool(
           requested_in: 'agent',
           prepared_slots: preparedSlots,
         };
-        await createApprovedCommandJob(env.DB, {
+        const approvedJob = await createApprovedCommandJob(env.DB, {
           generation_run_id: run.id,
           command_name: 'weekly_content_terminal',
           provider: 'terminal',
@@ -1340,9 +1340,9 @@ export async function executeTool(
 
         return {
           success: true,
-          job_id: run.id,
-          summary: { job_id: run.id, date_range: `${dates[0]} → ${dates[dates.length - 1]}`, clients: clientSlugs.length > 0 ? clientSlugs.join(', ') : 'all active', days: dates.length, provider, mode: 'approved_terminal_job' },
-          action_summary: `Generation job ${run.id} queued with Terminal AI — ${clientSlugs.length > 0 ? clientSlugs.join(', ') : 'all clients'} for ${dates.length} days`,
+          job_id: approvedJob.id,
+          summary: { job_id: approvedJob.id, date_range: `${dates[0]} → ${dates[dates.length - 1]}`, clients: clientSlugs.length > 0 ? clientSlugs.join(', ') : 'all active', days: dates.length, provider, mode: 'approved_terminal_job' },
+          action_summary: `Generation job ${approvedJob.id} queued with Terminal AI — ${clientSlugs.length > 0 ? clientSlugs.join(', ') : 'all clients'} for ${dates.length} days`,
         };
       }
 
