@@ -79,6 +79,12 @@ postRoutes.get('/', async (c) => {
     ...p,
     client_slug: clientMap.get(p.client_id)?.slug,
     client_name: clientMap.get(p.client_id)?.canonical_name,
+    // Normalize date-only publish_date strings (YYYY-MM-DD) to include noon time.
+    // Bare date strings are parsed as UTC midnight by JS, causing off-by-one in
+    // negative-UTC timezones. T12:00 (local noon) is unambiguous in all UTC offsets.
+    publish_date: p.publish_date && /^\d{4}-\d{2}-\d{2}$/.test(p.publish_date)
+      ? p.publish_date + 'T12:00'
+      : p.publish_date,
   }));
 
   return c.json({ posts: enriched, total });

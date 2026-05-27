@@ -8,9 +8,14 @@ export function formatDate(ts: number | string | null | undefined): string {
     d = new Date(ts * 1000);
   } else {
     // Date-only strings ("YYYY-MM-DD") are parsed as UTC midnight by JS spec,
-    // which shifts them one day back in negative-UTC timezones. Append T00:00
-    // (no Z) so the browser treats them as local midnight instead.
-    d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(ts) ? ts + 'T00:00' : ts);
+    // causing off-by-one in negative-UTC timezones. Use Date(y,m,d) constructor
+    // which always creates local time with no parsing ambiguity.
+    if (/^\d{4}-\d{2}-\d{2}$/.test(ts)) {
+      const [y, m, day] = ts.split('-').map(Number);
+      d = new Date(y, m - 1, day);
+    } else {
+      d = new Date(ts);
+    }
   }
   if (isNaN(d.getTime())) return '—';
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -19,7 +24,13 @@ export function formatDate(ts: number | string | null | undefined): string {
 /** Format ISO date string → "Apr 9, 2026" */
 export function formatDateStr(s: string | null | undefined): string {
   if (!s) return '—';
-  const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(s) ? s + 'T00:00' : s);
+  let d: Date;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const [y, m, day] = s.split('-').map(Number);
+    d = new Date(y, m - 1, day);
+  } else {
+    d = new Date(s);
+  }
   if (isNaN(d.getTime())) return s;
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
