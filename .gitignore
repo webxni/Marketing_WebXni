@@ -12,3 +12,5 @@ frontend/.svelte-kit/
 *.json.bak
 .clawhub/
 discord-bot/.env
+scripts/config.sh
+scripts/strategy/

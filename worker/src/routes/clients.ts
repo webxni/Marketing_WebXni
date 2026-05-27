@@ -209,7 +209,13 @@ clientRoutes.get('/:id/connection-check', async (c) => {
           .filter((row) => row.platform === 'linkedin' && row.page_id)
           .map((row) => row.page_id as string);
         const returned = (payload.pages ?? []).map((page) => String(page.id ?? page.page_id ?? page.urn ?? ''));
-        const missing = expected.filter((pageId) => !returned.includes(pageId));
+        // Normalize URN comparison: "112939025" should match "urn:li:organization:112939025"
+        const normalizeId = (id: string) => id.replace(/^urn:li:[^:]+:/, '');
+        const returnedNorm = returned.map(normalizeId);
+        const missing = expected.filter((pageId) => !returnedNorm.includes(normalizeId(pageId)));
+        if (returned.length === 0 && expected.length === 0) {
+          return { ok: true, message: 'LinkedIn connected (no page targeting configured).', details: { expected, returned } };
+        }
         return missing.length === 0
           ? { ok: true, message: 'Configured LinkedIn pages are available.', details: { expected, returned } }
           : { ok: false, message: `Missing LinkedIn pages: ${missing.join(', ')}`, details: { expected, returned, missing } };

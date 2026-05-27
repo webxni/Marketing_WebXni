@@ -88,7 +88,9 @@ import { runPosting } from './loader/posting-run';
 import { runRecurringGbp } from './loader/recurring-gbp-run';
 import { runContentRequests } from './loader/content-request-run';
 import { runFetchUrls } from './routes/run';
-import { notifyPostingComplete, discordDM } from './services/discord';
+import { notifyPostingComplete, discordDM, discordSend, DISCORD_COLORS } from './services/discord';
+import { runPlatformHealthCheck, buildHealthDiscordMessage } from './modules/platform-health';
+import { getLatestAuditMarker, writeAuditLog } from './db/queries';
 
 async function resolveOpenAiKeyCron(env: Env): Promise<string> {
   let key = env.OPENAI_API_KEY || '';
@@ -185,6 +187,54 @@ export default {
           }
         } catch (err) {
           console.error('Cron posting error:', err);
+        }
+      })());
+    } else if (event.cron === '0 9 * * *') {
+      // Daily 9AM — platform health check + Discord notification if issues
+      ctx.waitUntil((async () => {
+        try {
+          const summary = await runPlatformHealthCheck(env as any);
+          const msg = buildHealthDiscordMessage(summary);
+
+          // Always notify on issues; on clean days, only send on Sundays
+          const today = new Date();
+          const isSunday = today.getUTCDay() === 0;
+          if (summary.total_failed > 0 || isSunday) {
+            const channelId = env.DISCORD_CHANNEL_ID;
+            const token = env.DISCORD_BOT_TOKEN;
+            if (channelId && token) {
+              const dedupeKey = `platform-health:${today.toISOString().slice(0, 13)}`;
+              const previous = await getLatestAuditMarker(env.DB, 'agent.platform_health.sent', 'agent_execution', dedupeKey);
+              if (!previous) {
+                const color = msg.status === 'error'
+                  ? DISCORD_COLORS.error
+                  : msg.status === 'warning'
+                    ? DISCORD_COLORS.warning
+                    : DISCORD_COLORS.success;
+                await discordSend({
+                  channelId,
+                  token,
+                  embeds: [{
+                    title: msg.title,
+                    description: msg.description,
+                    color,
+                    fields: msg.fields,
+                    timestamp: new Date().toISOString(),
+                    footer: { text: 'WebXni Platform Health — Heartbeat diario' },
+                  }],
+                });
+                await writeAuditLog(env.DB, {
+                  action: 'agent.platform_health.sent',
+                  entity_type: 'agent_execution',
+                  entity_id: dedupeKey,
+                  new_value: { status: msg.status, clients_checked: summary.clients_checked, total_failed: summary.total_failed },
+                });
+              }
+            }
+          }
+          console.log(`Platform health cron: ${summary.clients_checked} clients, ${summary.total_failed} failed`);
+        } catch (err) {
+          console.error('Platform health cron error:', err);
         }
       })());
     }

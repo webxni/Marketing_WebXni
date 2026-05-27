@@ -402,7 +402,17 @@ Return ONLY JSON matching the requested schema. Keep captions concise and platfo
 
   prompt += `\n- "ai_image_prompt": MUST BE IN SPANISH. Designer brief with ${assetSpec}${brandColors ? ` Colores de marca: ${brandColors}.` : ''} Include style, composition, mood, visual elements, overlay text, and recommended tool in 3-4 sentences.`;
   if (isVideo) {
-    prompt += `\n- "ai_video_prompt": MUST BE IN SPANISH. Video concept with camera movement, pacing, visual style, transitions, audio direction, and CTA in 3-4 sentences.`;
+    const isReel = contentType === 'reel';
+    prompt += `\n- "ai_video_prompt": MUST BE IN SPANISH. Production-ready AI video prompt structured as follows — each element on its own line prefixed with a label:
+FORMATO: aspect ratio (${isReel ? '9:16 vertical, 1080x1920' : '16:9 horizontal, 1920x1080'}), duration (15–30 sec for reels, 30–60 sec for video).
+ESCENA: vivid description of the main scene, subject, action, and setting.
+CÁMARA: specific camera movements (e.g., dolly-in, handheld tracking, crane shot, close-up cutaway sequence).
+ESTILO: visual style, color grading, lighting mood (e.g., cálido, cinematográfico, golden hour, high-contrast).
+TEXTO: exact overlay text copy with font style direction (bold, minimal, brand colors).
+AUDIO: music genre, BPM range, mood, and whether voiceover is included.
+TRANSICIONES: cut style and transition types between scenes.
+CTA: final call-to-action shown on screen with duration.
+Write each section as a clear, actionable instruction a designer or AI tool can follow directly.`;
   }
 
   return prompt;

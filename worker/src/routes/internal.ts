@@ -8,7 +8,9 @@ import { executeSlotWork, prepareGenerationPlan, prebuildApprovedTerminalSlotReq
 import { isRepairKeyValid, repairExistingBlogs } from '../loader/repair-blogs';
 import { planBlogRegen, executeBlogRegenSlot, triggerBlogRegenStep } from '../loader/blog-regen';
 import { cleanupLegacyInvalidPlatformAttempts, repairOrphanScheduledPosts, syncPublishedUrls } from '../modules/published-urls';
+import { runFetchUrls } from './run';
 import { getClientProfileAnalytics } from '../modules/reporting-metrics';
+import { runPlatformHealthCheck, buildHealthDiscordMessage } from '../modules/platform-health';
 import { discordSend, DISCORD_COLORS } from '../services/discord';
 import { buildSystemPrompt, executeTool, logInteraction, runAgent } from './ai';
 import {
@@ -567,6 +569,78 @@ internalRoutes.post('/agent/send-heartbeat-notification', async (c) => {
   return c.json({ ok: true, status, dedupe_key: dedupeKey });
 });
 
+/** POST /internal/agent/platform-health-check — audit all client Upload-Post connections */
+internalRoutes.post('/agent/platform-health-check', async (c) => {
+  if (!requireAgentBearer(c)) return c.json({ error: 'Unauthorized' }, 401);
+
+  let body: { notify?: boolean; force?: boolean } = {};
+  try { body = await c.req.json(); } catch { /* optional */ }
+
+  try {
+    const summary = await runPlatformHealthCheck(c.env as any);
+
+    if (body.notify !== false && c.env.DISCORD_BOT_TOKEN && c.env.DISCORD_CHANNEL_ID) {
+      const dedupeKey = `platform-health:${new Date().toISOString().slice(0, 13)}`;
+      const previous = body.force ? null : await getLatestAuditMarker(c.env.DB, 'agent.platform_health.sent', 'agent_execution', dedupeKey);
+
+      if (!previous) {
+        const msg = buildHealthDiscordMessage(summary);
+        const color = msg.status === 'error'
+          ? DISCORD_COLORS.error
+          : msg.status === 'warning'
+            ? DISCORD_COLORS.warning
+            : DISCORD_COLORS.success;
+        await discordSend({
+          channelId: c.env.DISCORD_CHANNEL_ID,
+          token: c.env.DISCORD_BOT_TOKEN,
+          embeds: [{
+            title: msg.title,
+            description: msg.description,
+            color,
+            fields: msg.fields,
+            timestamp: new Date().toISOString(),
+            footer: { text: 'WebXni Platform Health' },
+          }],
+        });
+        await writeAuditLog(c.env.DB, {
+          action: 'agent.platform_health.sent',
+          entity_type: 'agent_execution',
+          entity_id: dedupeKey,
+          new_value: { status: msg.status, clients_checked: summary.clients_checked, total_failed: summary.total_failed },
+        });
+      }
+    }
+
+    return c.json({ ok: true, summary });
+  } catch (err) {
+    console.error('[platform-health-check] failed:', err);
+    return c.json({ error: detail(err) }, 500);
+  }
+});
+
+/** POST /internal/agent/fetch-urls — sync published URLs from Upload-Post history */
+internalRoutes.post('/agent/fetch-urls', async (c) => {
+  if (!requireAgentBearer(c)) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    const jobId = crypto.randomUUID().replace(/-/g, '');
+    await runFetchUrls(c.env as any, jobId);
+    return c.json({ ok: true, job_id: jobId });
+  } catch (err) {
+    return c.json({ error: detail(err) }, 500);
+  }
+});
+
+/** POST /internal/agent/cancel-stale-runs — cancel generation runs stuck >30min */
+internalRoutes.post('/agent/cancel-stale-runs', async (c) => {
+  if (!requireAgentBearer(c)) return c.json({ error: 'Unauthorized' }, 401);
+  const threshold = Math.floor(Date.now() / 1000) - 1800;
+  const r = await c.env.DB
+    .prepare(`UPDATE generation_runs SET status='cancelled', completed_at=? WHERE status IN ('running','pending') AND last_activity_at < ?`)
+    .bind(Math.floor(Date.now() / 1000), threshold)
+    .run();
+  return c.json({ ok: true, cancelled: r.meta.changes });
+});
+
 internalRoutes.post('/agent/run', async (c) => {
   if (!requireAgentBearer(c)) return c.json({ error: 'Unauthorized' }, 401);
 
@@ -664,5 +738,47 @@ internalRoutes.post('/agent/execute-tool', async (c) => {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[agent/execute-tool] failed:', err);
     return c.json({ error: msg }, 500);
+  }
+});
+
+// ── Discord notify (used by terminal orchestrator scripts) ─────────────────────
+internalRoutes.post('/agent/discord-notify', async (c) => {
+  if (!requireAgentBearer(c)) return c.json({ error: 'Unauthorized' }, 401);
+
+  let body: {
+    title?: string;
+    description?: string;
+    fields?: Array<{ name: string; value: string; inline?: boolean }>;
+    color?: 'ok' | 'warning' | 'error' | 'info';
+  };
+  try { body = await c.req.json() as typeof body; }
+  catch { return c.json({ error: 'Invalid JSON' }, 400); }
+
+  if (!c.env.DISCORD_BOT_TOKEN || !c.env.DISCORD_CHANNEL_ID) {
+    return c.json({ ok: false, error: 'Discord not configured' }, 200);
+  }
+
+  const colorMap: Record<string, number> = {
+    ok:      DISCORD_COLORS.success,
+    warning: DISCORD_COLORS.warning,
+    error:   DISCORD_COLORS.error,
+    info:    DISCORD_COLORS.info,
+  };
+
+  try {
+    await discordSend({
+      channelId: c.env.DISCORD_CHANNEL_ID,
+      token:     c.env.DISCORD_BOT_TOKEN,
+      embeds: [{
+        title:       body.title || 'WebXni Orchestrator',
+        description: body.description || '',
+        color:       colorMap[body.color ?? 'info'] ?? DISCORD_COLORS.info,
+        fields:      body.fields ?? [],
+        timestamp:   new Date().toISOString(),
+      }],
+    });
+    return c.json({ ok: true });
+  } catch (err) {
+    return c.json({ ok: false, error: String(err) }, 500);
   }
 });

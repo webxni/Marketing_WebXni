@@ -1216,37 +1216,98 @@
 
     {#if post.ai_image_prompt}
     <div class="card p-5">
-      <div class="flex items-center gap-2 mb-3">
-        <span class="text-lg">🖼️</span>
-        <h3 class="text-sm font-semibold text-white">Brief Visual — Imagen / Diseño</h3>
+      <div class="flex items-center justify-between gap-3 mb-3">
+        <div class="flex items-center gap-2">
+          <span class="text-lg">{post.content_type === 'reel' || post.content_type === 'video' ? '🎬' : '🖼️'}</span>
+          <h3 class="text-sm font-semibold text-white">
+            {post.content_type === 'reel' ? 'Brief Visual — Diseño del Reel'
+            : post.content_type === 'video' ? 'Brief Visual — Diseño del Video'
+            : 'Brief Visual — Imagen / Diseño'}
+          </h3>
+        </div>
+        <button
+          class="btn-ghost btn-sm text-xs flex items-center gap-1.5"
+          on:click={() => {
+            navigator.clipboard.writeText(post?.ai_image_prompt ?? '');
+            toast.success('Brief copiado al portapapeles');
+          }}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          Copiar
+        </button>
       </div>
       <p class="text-sm text-white/90 whitespace-pre-wrap leading-relaxed bg-white/5 rounded-lg p-4 border border-white/10">{post.ai_image_prompt}</p>
       <div class="mt-3 flex gap-2">
-        <span class="text-xs text-muted">Usa este prompt en:</span>
-        <span class="text-xs text-purple-300 font-medium">Midjourney · Canva · Adobe Firefly · DALL-E</span>
+        <span class="text-xs text-muted">Crea con:</span>
+        {#if post.content_type === 'reel' || post.content_type === 'video'}
+          <span class="text-xs text-purple-300 font-medium">Canva · CapCut · Runway ML · Pika Labs · Sora</span>
+        {:else}
+          <span class="text-xs text-purple-300 font-medium">Midjourney · Canva · Adobe Firefly · DALL-E</span>
+        {/if}
       </div>
     </div>
     {/if}
 
     {#if post.ai_video_prompt}
-    <div class="card p-5">
-      <div class="flex items-center gap-2 mb-3">
-        <span class="text-lg">🎬</span>
-        <h3 class="text-sm font-semibold text-white">Brief de Video</h3>
+    <div class="card p-5 border border-purple-500/30">
+      <div class="flex items-center justify-between gap-3 mb-3">
+        <div class="flex items-center gap-2">
+          <span class="text-lg">🤖</span>
+          <div>
+            <h3 class="text-sm font-semibold text-white">Dirección de Video — AI</h3>
+            <p class="text-xs text-muted">Prompt de producción listo para usar en herramientas de video IA</p>
+          </div>
+        </div>
+        <button
+          class="btn-ghost btn-sm text-xs flex items-center gap-1.5 border border-purple-500/40 text-purple-300 hover:text-purple-200 hover:border-purple-400/60"
+          on:click={() => {
+            navigator.clipboard.writeText(post?.ai_video_prompt ?? '');
+            toast.success('Prompt copiado al portapapeles');
+          }}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          Copiar Prompt
+        </button>
       </div>
-      <p class="text-sm text-white/90 whitespace-pre-wrap leading-relaxed bg-white/5 rounded-lg p-4 border border-white/10">{post.ai_video_prompt}</p>
-      <div class="mt-3 flex gap-2">
-        <span class="text-xs text-muted">Referencia para:</span>
-        <span class="text-xs text-purple-300 font-medium">Reels · TikTok · YouTube Shorts</span>
+      <div class="bg-purple-500/5 border border-purple-500/20 rounded-xl p-4 font-mono text-xs text-white/90 whitespace-pre-wrap leading-relaxed">{post.ai_video_prompt}</div>
+      <div class="mt-4">
+        <p class="text-xs text-muted mb-2 uppercase tracking-wide font-medium">Pega este prompt en:</p>
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-2">
+          {#each [
+            { name: 'Runway Gen-3', icon: '🎬', tip: 'Image to Video o Text to Video' },
+            { name: 'Pika 2.0', icon: '⚡', tip: 'Pikaffects + motion controls' },
+            { name: 'Kling 2.0', icon: '🎥', tip: 'Alta calidad de movimiento' },
+            { name: 'Sora', icon: '✨', tip: 'Cinematográfico, escenas largas' },
+            { name: 'Hailuo', icon: '🌊', tip: 'Rápido, bueno para reels' },
+          ] as tool}
+          <div class="rounded-lg border border-border bg-surface/40 p-2.5 text-center">
+            <div class="text-base mb-1">{tool.icon}</div>
+            <p class="text-xs text-white font-medium">{tool.name}</p>
+            <p class="text-[10px] text-muted mt-0.5 leading-tight">{tool.tip}</p>
+          </div>
+          {/each}
+        </div>
       </div>
     </div>
     {/if}
 
     {#if post.video_script}
     <div class="card p-5">
-      <div class="flex items-center gap-2 mb-3">
-        <span class="text-lg">🎙️</span>
-        <h3 class="text-sm font-semibold text-white">Guión del Video</h3>
+      <div class="flex items-center justify-between gap-3 mb-3">
+        <div class="flex items-center gap-2">
+          <span class="text-lg">🎙️</span>
+          <h3 class="text-sm font-semibold text-white">Guión del Video</h3>
+        </div>
+        <button
+          class="btn-ghost btn-sm text-xs flex items-center gap-1.5"
+          on:click={() => {
+            navigator.clipboard.writeText(post?.video_script ?? '');
+            toast.success('Guión copiado al portapapeles');
+          }}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          Copiar
+        </button>
       </div>
       <pre class="text-sm text-white/90 whitespace-pre-wrap leading-relaxed bg-white/5 rounded-lg p-4 border border-white/10 font-sans">{post.video_script}</pre>
     </div>

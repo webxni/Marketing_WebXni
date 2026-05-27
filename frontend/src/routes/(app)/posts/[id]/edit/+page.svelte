@@ -24,6 +24,7 @@
 
   // Core fields
   let title = '';
+  let contentType = '';
   let publishDate = '';
   let masterCaption = '';
 
@@ -66,10 +67,10 @@
 
   let activeTab: 'captions' | 'blog' | 'media' = 'captions';
 
-  $: isBlog       = post?.content_type === 'blog';
+  $: isBlog       = contentType === 'blog';
   $: isYoutube    = post ? JSON.parse(post.platforms ?? '[]').includes('youtube') : false;
-  $: isVideo      = post?.content_type === 'video' || post?.content_type === 'reel';
-  $: isImage      = post?.content_type === 'image';
+  $: isVideo      = contentType === 'video' || contentType === 'reel';
+  $: isImage      = contentType === 'image';
   $: isGbp        = post ? JSON.parse(post.platforms ?? '[]').includes('google_business') : false;
   // Multi-location GBP overrides only for ETB — extend this check when adding future multi-location clients
   $: isEtb        = post?.client_slug === 'elite-team-builders';
@@ -93,6 +94,7 @@
       if (post?.client_id) await loadConnectionHealth(post.client_id);
       // Core
       title          = post.title ?? '';
+      contentType    = post.content_type ?? 'image';
       publishDate    = post.publish_date ?? '';
       masterCaption  = post.master_caption ?? '';
       // Captions
@@ -127,7 +129,7 @@
       canva_link = post.canva_link ?? '';
 
       // Default tab based on content type
-      if (isBlog) activeTab = 'blog';
+      if (contentType === 'blog') activeTab = 'blog';
       else if (isVideo || isImage || isYoutube) activeTab = 'media';
     } catch { toast.error('Failed to load post'); }
     finally { loading = false; }
@@ -149,6 +151,7 @@
     try {
       await postsApi.update(postId, {
         title:               title || null,
+        content_type:        contentType || null,
         publish_date:        publishDate || null,
         master_caption:      masterCaption || null,
         cap_facebook:        cap_facebook || null,
@@ -265,10 +268,21 @@
         <input id="title" type="text" bind:value={title} placeholder="Post title…" class="input w-full" />
       </div>
       <div>
+        <label for="content_type" class="block text-xs text-muted mb-1.5">Content Type</label>
+        <select id="content_type" bind:value={contentType} class="input w-full">
+          <option value="image">Image</option>
+          <option value="video">Video</option>
+          <option value="reel">Reel</option>
+          <option value="text">Text only</option>
+          <option value="blog">Blog post</option>
+          <option value="google_business">Google Business</option>
+        </select>
+      </div>
+      <div>
         <label for="publish_date" class="block text-xs text-muted mb-1.5">Publish Date</label>
         <input id="publish_date" type="datetime-local" bind:value={publishDate} class="input w-full" />
       </div>
-      <div class="md:col-span-3">
+      <div class="md:col-span-2">
         <label for="canva_link" class="block text-xs text-muted mb-1.5">Canva Link (optional)</label>
         <input id="canva_link" type="url" bind:value={canva_link} placeholder="https://www.canva.com/design/…" class="input w-full" />
       </div>
@@ -528,8 +542,9 @@
       ></textarea>
     </div>
     <div class="card p-5">
-      <h3 class="section-label mb-4">AI Video Prompt (optional)</h3>
-      <label for="ai_video_prompt" class="sr-only">AI Video Prompt</label>
+      <h3 class="section-label mb-4">AI Video Direction</h3>
+      <p class="text-xs text-muted mb-3">Camera movement, pacing, visual style, transitions, audio direction — pass to your AI video tool.</p>
+      <label for="ai_video_prompt" class="sr-only">AI Video Direction</label>
       <textarea
         id="ai_video_prompt"
         bind:value={ai_video_prompt}
@@ -538,20 +553,32 @@
         class="input w-full resize-none text-xs font-mono"
       ></textarea>
     </div>
+    <div class="card p-5">
+      <h3 class="section-label mb-4">Designer Brief — Reel</h3>
+      <p class="text-xs text-muted mb-3">Visual brief for your designer: file format, dimensions, brand colors, style, composition, overlay text, and recommended tool — in Spanish.</p>
+      <label for="ai_image_prompt_reel" class="sr-only">Designer Brief</label>
+      <textarea
+        id="ai_image_prompt_reel"
+        bind:value={ai_image_prompt}
+        rows="5"
+        placeholder="Brief visual en español: tipo de archivo, dimensiones, colores, estilo, composición, texto de superposición, herramienta recomendada…"
+        class="input w-full resize-none text-xs font-mono"
+      ></textarea>
+    </div>
     {/if}
 
     {#if isImage}
     <div class="card p-5">
-      <h3 class="section-label mb-4">AI Image Prompt (optional)</h3>
-      <label for="ai_image_prompt" class="sr-only">AI Image Prompt</label>
+      <h3 class="section-label mb-4">Designer Brief</h3>
+      <p class="text-xs text-muted mb-3">Visual brief for your designer — in Spanish. Include file type, dimensions, brand colors, style, mood, overlay text, and recommended tool.</p>
+      <label for="ai_image_prompt" class="sr-only">Designer Brief</label>
       <textarea
         id="ai_image_prompt"
         bind:value={ai_image_prompt}
-        rows="4"
-        placeholder="Describe the image: style, subject, colors, mood, text overlay…"
+        rows="5"
+        placeholder="Brief visual en español: tipo de archivo, dimensiones, colores, estilo, composición, texto, herramienta…"
         class="input w-full resize-none text-xs font-mono"
       ></textarea>
-      <p class="text-xs text-muted mt-1">Used when AI image generation is triggered for this post.</p>
     </div>
     {/if}
   </div>

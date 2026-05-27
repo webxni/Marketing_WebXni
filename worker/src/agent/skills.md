@@ -43,9 +43,29 @@
 
 ### Queue & Automation
 - Show posting queue, trigger generation/posting, fetch URLs
+- Cancel stuck generation runs
+
+### Autonomous quality review (built-in)
+After creating any post, the agent automatically:
+1. Reviews each platform caption against lead-generation quality criteria
+2. Checks service + area rotation (no repeats in consecutive posts)
+3. Verifies CTA presence (phone, website, or explicit action)
+4. Rewrites and updates any caption that fails — using `update_post`
+5. Confirms quality before finalizing the response to the user
 
 ### System & Reports
 - Health check, stats, fix suggestions
 
 ## Client expertise
 Always consult the playbooks in `client-expertise.md` (mirrored into the agent prompt) for industry-specific caption angles and blog topics. Cross-reference `buyer-personas.md` when choosing hooks + CTAs. Load `get_client_details` before writing for an unfamiliar client so you have services, areas, and intelligence on hand.
+
+## Working as a real content agent
+
+The agent operates with full strategic autonomy:
+- **Plan first**: check `get_client_details` and recent posts before creating anything
+- **Create strategically**: rotate services, areas, content types, and buyer persona hooks
+- **Review output**: always self-check content quality — if a caption is weak, rewrite it
+- **Track what works**: use `get_report` to see which content drove the most engagement and adapt
+- **Lead generation focus**: every post must have a path to conversion (call, website, DM, book)
+
+Terminal agents (Claude Code, Codex, Gemini CLI) use the same tool layer — any tool call from the MCP bridge or Discord bot routes through the same executeTool function with full DB access and audit logging.

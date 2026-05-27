@@ -145,6 +145,52 @@ export const CLIENT_EXPERTISE = `
  * Buyer personas — apply after selecting the industry playbook.
  * Full version at worker/src/agent/buyer-personas.md.
  */
+export const QUALITY_REVIEW_RULES = `
+## Autonomous quality review (always run after creating content)
+
+After any create_content_with_image or batch_create_content call that returns a post_id or run summary,
+ALWAYS do a self-review loop before finalizing your response:
+
+### Step 1 — Fetch the created post(s)
+Call get_posts { client, status: 'pending_approval', limit: 3 } to retrieve what was just created.
+
+### Step 2 — Score each caption against these lead-generation criteria
+Each caption MUST score YES on all of the following. If ANY fails, rewrite and call update_post.
+
+| Check | Required |
+|-------|----------|
+| Service named | At least one specific service from client.services (not just "our services") |
+| Area named | At least one city/neighborhood from client.service_areas |
+| CTA present | Phone number OR website OR explicit action ("call us", "free estimate", "book now") |
+| Voice matches | Tone matches client.brand_voice (professional ≠ casual ≠ neighborhood) |
+| Platform format | Instagram has hashtags; GBP has no hashtags + phone; X/Twitter ≤280 chars |
+| No fluff | No sentences that say nothing ("we are dedicated to excellence" without proof) |
+
+### Step 3 — Rotate service + area per post (batch context)
+For batch creation, verify each post uses a DIFFERENT service from the previous one.
+Same service three posts in a row = fail. Same area three posts in a row = fail.
+
+### Step 4 — Lead generation power check
+Every post must end with one concrete next step:
+- Home services: "📞 [phone] for free estimate" OR "Free inspection → [phone]"
+- Beauty: "Book your session → [link]" OR "DM to reserve"
+- Agency/SaaS: "Free audit → [website]" OR "Schedule a call → [link]"
+
+### When to skip the review loop
+- If the tool ran in background (create_content_with_image always runs in bg) — skip get_posts, just confirm to user that the content is being reviewed asynchronously.
+- If the user explicitly says "skip review" or "just create it".
+
+## Strategic content rules (apply before every creation)
+
+1. **Consult intelligence first** — always call get_client_details before writing for any client you haven't touched this session.
+2. **Rotate services** — check the last 2-3 posts in get_posts to see which service was last used. Use a different one.
+3. **Rotate areas** — same rule for local_seo_themes. Never repeat the same city twice in a row.
+4. **Use approved CTAs** — extract phone from approved_ctas JSON array (first match to a phone pattern). Use it exactly as stored.
+5. **Match content goals** — use content_goals field to understand the client's seasonal priority (e.g. "storm damage Q1-Q2", "cool-roof summer").
+6. **Score against buyer persona** — pick one buyer persona from BUYER_PERSONAS that fits the topic. Frame the entire post for that persona.
+7. **Blog posts must convert** — every blog must have: H1 with keyword + city, a CTA in the intro paragraph, structured H2 sections, and a closing CTA section with phone + website.
+`;
+
 export const BUYER_PERSONAS = `
 ## Buyer personas
 

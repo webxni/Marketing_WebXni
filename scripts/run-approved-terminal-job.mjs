@@ -103,6 +103,45 @@ function buildWrappedPrompt(prompt, schema) {
   };
 }
 
+async function runClaudeAPI(prompt, schema) {
+  const systemPrompt = JSON_ONLY_SYSTEM_APPEND;
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': process.env.ANTHROPIC_API_KEY || '',
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-3-5-sonnet-20241022',
+      max_tokens: 4096,
+      system: [{ type: 'text', text: systemPrompt }],
+      messages: [{
+        role: 'user',
+        content: prompt,
+      }],
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text().catch(() => '');
+    throw new Error(`Anthropic API ${res.status}: ${err.slice(0, 300)}`);
+  }
+
+  const data = await res.json();
+  const textContent = data.content?.[0];
+  if (!textContent || textContent.type !== 'text') {
+    throw new Error(`Unexpected API response: ${JSON.stringify(data).slice(0, 300)}`);
+  }
+
+  const candidate = extractJsonObject(textContent.text) ?? textContent.text.trim();
+  try {
+    return JSON.parse(candidate);
+  } catch (err) {
+    throw new Error(`Failed to parse API response JSON: ${String(err)}\ntext: ${textContent.text.slice(0, 300)}`);
+  }
+}
+
 function runClaude(prompt, schema, plan = null) {
   const { schemaStr, wrappedPrompt } = buildWrappedPrompt(prompt, schema);
   const effort = plan?.mode === 'blog' ? 'medium' : 'low';
@@ -266,8 +305,20 @@ function runCodex(prompt, schema, plan = null) {
 
 async function runTerminalAgent(prompt, schema, plan = null) {
   const backend = resolveTerminalBackend();
-  if (backend === 'codex') return { backend, output: await runCodex(prompt, schema, plan) };
-  if (backend === 'gemini') return { backend, output: await runGemini(prompt, schema, plan) };
+
+  try {
+    if (backend === 'codex') return { backend, output: await runCodex(prompt, schema, plan) };
+    if (backend === 'gemini') return { backend, output: await runGemini(prompt, schema, plan) };
+    if (backend === 'claude') return { backend, output: await runClaude(prompt, schema, plan) };
+  } catch (err) {
+    // Fallback to API if CLI fails
+    if (backend === 'claude' && process.env.ANTHROPIC_API_KEY) {
+      console.warn(`Claude CLI failed: ${err.message}, falling back to API`);
+      return { backend: 'claude-api', output: await runClaudeAPI(prompt, schema) };
+    }
+    throw err;
+  }
+
   return { backend, output: await runClaude(prompt, schema, plan) };
 }
 

@@ -28,7 +28,7 @@ import { createContentWithImage } from '../loader/autonomous-content';
 import { discordSend, DISCORD_COLORS } from '../services/discord';
 import {
   AGENT_SKILLS, AGENT_MEMORY, RESPONSE_RULES,
-  CLIENT_EXPERTISE, BUYER_PERSONAS, NL_INTENT_MAP,
+  CLIENT_EXPERTISE, BUYER_PERSONAS, NL_INTENT_MAP, QUALITY_REVIEW_RULES,
 } from '../agent/context';
 
 export const aiRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
@@ -2640,6 +2640,7 @@ ${clientList}
 ${AGENT_SKILLS}
 ${NL_INTENT_MAP}
 ${AGENT_MEMORY}
+${QUALITY_REVIEW_RULES}
 ${CLIENT_EXPERTISE}
 ${BUYER_PERSONAS}
 ${RESPONSE_RULES}
@@ -2693,10 +2694,10 @@ export async function runAgent(opts: {
   let   finalMessage                    = '';
   let   jobId:           string | undefined;
 
-  // Up to 4 iterations so the agent can chain tools from a single natural-language
-  // request (e.g. "add these topics then generate 5 posts" → add_client_topics +
-  // batch_create_content + final message).
-  for (let iter = 0; iter < 4; iter++) {
+  // Up to 8 iterations — allows create → review → improve autonomous cycles.
+  // (e.g. "add these topics then generate 5 posts" → add_client_topics +
+  // batch_create_content + get_posts (quality review) + update_post + final message)
+  for (let iter = 0; iter < 8; iter++) {
     console.log(`[agent] OpenAI call iter ${iter + 1}`);
 
     let resp: Response;
@@ -2709,12 +2710,12 @@ export async function runAgent(opts: {
           signal: ctrl.signal,
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openAiKey}` },
           body: JSON.stringify({
-            model: 'gpt-4o-mini',
+            model: 'gpt-4o',
             messages,
             tools: AGENT_TOOLS,
             tool_choice: 'auto',
-            temperature: 0.1,
-            max_tokens: 1200,
+            temperature: 0.3,
+            max_tokens: 2000,
           }),
         });
       } finally { clearTimeout(to); }
