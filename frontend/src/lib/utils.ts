@@ -3,7 +3,15 @@ import type { PostStatus } from './types';
 /** Format Unix timestamp → "Apr 9, 2026" */
 export function formatDate(ts: number | string | null | undefined): string {
   if (!ts) return '—';
-  const d = typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts);
+  let d: Date;
+  if (typeof ts === 'number') {
+    d = new Date(ts * 1000);
+  } else {
+    // Date-only strings ("YYYY-MM-DD") are parsed as UTC midnight by JS spec,
+    // which shifts them one day back in negative-UTC timezones. Append T00:00
+    // (no Z) so the browser treats them as local midnight instead.
+    d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(ts) ? ts + 'T00:00' : ts);
+  }
   if (isNaN(d.getTime())) return '—';
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
@@ -11,7 +19,7 @@ export function formatDate(ts: number | string | null | undefined): string {
 /** Format ISO date string → "Apr 9, 2026" */
 export function formatDateStr(s: string | null | undefined): string {
   if (!s) return '—';
-  const d = new Date(s);
+  const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(s) ? s + 'T00:00' : s);
   if (isNaN(d.getTime())) return s;
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
