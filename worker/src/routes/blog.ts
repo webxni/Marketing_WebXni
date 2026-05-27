@@ -24,6 +24,8 @@ blogRoutes.post('/:id/publish-blog', requirePermission('posts.edit'), async (c) 
       status: body.status === 'publish' || body.status === 'draft' || body.status === 'pending'
         ? body.status
         : undefined,
+      userId: c.get('user')?.userId,
+      ip: c.req.header('cf-connecting-ip') ?? c.req.header('x-forwarded-for') ?? undefined,
     });
 
     return c.json({
@@ -61,7 +63,10 @@ blogRoutes.post('/:id/sync-blog', requirePermission('posts.edit'), async (c) => 
     } as Parameters<typeof updatePost>[2]);
     const refreshed = await getPostById(c.env.DB, post.id);
     if (refreshed && wpPost.link) {
-      await syncBlogDistributionPost(c.env, { ...refreshed, wp_post_url: wpPost.link }, client);
+      await syncBlogDistributionPost(c.env, { ...refreshed, wp_post_url: wpPost.link }, client, {
+        userId: c.get('user')?.userId,
+        ip: c.req.header('cf-connecting-ip') ?? c.req.header('x-forwarded-for') ?? undefined,
+      });
     }
 
     return c.json({

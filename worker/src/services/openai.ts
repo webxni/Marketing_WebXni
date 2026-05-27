@@ -9,6 +9,7 @@ import {
   type BlogSection,
   type StructuredBlogContent,
 } from './wordpress';
+import { sanitizeStructuredBlogContent } from '../modules/blog-quality';
 
 export interface GeneratedPost {
   title:               string;
@@ -706,7 +707,7 @@ export function normalizeGeneratedPost(value: unknown, ctx: GenerationContext): 
     if (!intro) throw new Error('Generation missing intro');
     if (sections.length < 3) throw new Error('Generation missing blog sections');
     const conclusionRaw = typeof parsed['conclusion'] === 'string' ? parsed['conclusion'].trim() : '';
-    const structured: StructuredBlogContent = {
+    const structuredDraft: StructuredBlogContent = {
       title: normalized.title,
       excerpt: normalized.blog_excerpt!,
       focusKeyword: normalized.target_keyword!,
@@ -723,6 +724,7 @@ export function normalizeGeneratedPost(value: unknown, ctx: GenerationContext): 
       ctaButtonLabel: typeof parsed['cta_button_label'] === 'string' ? String(parsed['cta_button_label']).trim() : (ctx.client.cta_text ?? 'Contact Us Today'),
       imagePrompt: normalized.ai_image_prompt,
     };
+    const structured = sanitizeStructuredBlogContent(structuredDraft).blog;
     normalized.blog_content = renderStructuredBlogHtml({
       templateKey: inferBusinessTemplateKey({
         wp_template_key: ctx.client.wp_template_key,

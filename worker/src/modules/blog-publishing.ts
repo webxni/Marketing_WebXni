@@ -1,5 +1,5 @@
 import type { ClientPlatformRow, ClientRow, Env, PostRow } from '../types';
-import { createPost, getClientWithConfig, getPostByAutomationSlotKey, getPostById, updatePost } from '../db/queries';
+import { createPost, getClientWithConfig, getPostByAutomationSlotKey, getPostById, updatePost, writeAuditLog } from '../db/queries';
 import {
   BLOG_BODY_IMAGE_PLACEHOLDER,
   buildWordPressClient,
@@ -18,6 +18,14 @@ import { parseBlogBodyImages, serializeBlogBodyImages } from './blog-body-images
 import { ensureBlogBodyImagesGenerated } from '../loader/autonomous-content';
 import { getBlogDistributionPlatforms } from './platform-compatibility';
 import { resolveStabilityApiKeys } from '../services/stability';
+import {
+  buildBlogSocialCaption,
+  getCompatibleBlogDistributionPlatforms,
+  sanitizeStructuredBlogContent,
+  uniqueImageHtmlBySource,
+  validateBlogPublishingContent,
+  type BlogPublishingValidationContext,
+} from './blog-quality';
 
 export interface BlogPreflightResult {
   ok: boolean;
@@ -29,6 +37,8 @@ export interface PublishBlogOptions {
   status?: 'draft' | 'publish' | 'pending';
   forceUpdate?: boolean;
   defaultStatus?: 'draft' | 'publish' | 'pending';
+  userId?: string;
+  ip?: string;
 }
 
 export interface PublishBlogResult {
@@ -76,7 +86,7 @@ export function normalizeBlogDraftPayload(
     : excerpt;
   const slug = typeof data['slug'] === 'string' ? data['slug'].trim() : '';
 
-  const structured = extractStructuredBlogContent(rawHtml, {
+  const structured = sanitizeStructuredBlogContent(extractStructuredBlogContent(rawHtml, {
     title,
     excerpt,
     focusKeyword: fallbackKeyword,
@@ -91,7 +101,7 @@ export function normalizeBlogDraftPayload(
     ctaBody: `Connect with ${client.canonical_name} for guidance tailored to your goals and project needs.`,
     ctaButtonLabel: client.cta_text ?? 'Contact Us Today',
     imagePrompt: typeof data['ai_image_prompt'] === 'string' ? data['ai_image_prompt'] : undefined,
-  });
+  })).blog;
 
   return {
     ...data,
@@ -126,21 +136,9 @@ export function preflightBlogPost(post: {
   slug: string | null;
   blog_excerpt: string | null;
   ai_image_prompt?: string | null;
-}): BlogPreflightResult {
-  const errors: string[] = [];
-  const warnings: string[] = [];
-
-  if (post.content_type !== 'blog') errors.push('Post content_type is not "blog"');
-  if (!post.blog_content || post.blog_content.length < 200) errors.push('Blog content is missing or too short');
-  if (!post.title) errors.push('Post title is required');
-  if (!post.seo_title) warnings.push('SEO title missing — WordPress will use the post title');
-  if (!post.meta_description) warnings.push('Meta description missing — Rank Math will generate one');
-  if (!post.target_keyword) errors.push('Target keyword is required for Rank Math integration');
-  if (!post.slug) warnings.push('URL slug missing — WordPress will auto-generate one');
-  if (!post.blog_excerpt) warnings.push('Blog excerpt missing — WordPress excerpt field will be empty');
-  if (!post.ai_image_prompt) warnings.push('Image prompt missing — alt text and body image context may be weaker');
-
-  return { ok: errors.length === 0, errors, warnings };
+}, context: BlogPublishingValidationContext = { clientName: '' }): BlogPreflightResult {
+  const result = validateBlogPublishingContent(post, context);
+  return { ok: result.ok, errors: result.errors, warnings: result.warnings };
 }
 
 export function isBlogAutomationEligible(post: Pick<PostRow, 'content_type' | 'status' | 'ready_for_automation'>): boolean {
@@ -214,35 +212,88 @@ function getDistributionCaption(post: PostRow, platform: string): string | null 
   }
 }
 
+async function loadBlogValidationContext(db: D1Database, client: ClientRow): Promise<BlogPublishingValidationContext> {
+  const [serviceRows, areaRows, categoryRows] = await Promise.all([
+    db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC LIMIT 30')
+      .bind(client.id)
+      .all<{ name: string }>(),
+    db.prepare('SELECT city FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 30')
+      .bind(client.id)
+      .all<{ city: string }>(),
+    db.prepare('SELECT name FROM client_categories WHERE client_id = ? ORDER BY sort_order ASC LIMIT 30')
+      .bind(client.id)
+      .all<{ name: string }>(),
+  ]);
+
+  return {
+    clientName: client.canonical_name,
+    industry: client.industry,
+    state: client.state,
+    serviceNames: serviceRows.results.map((row) => row.name).filter(Boolean),
+    serviceAreas: areaRows.results.map((row) => row.city).filter(Boolean),
+    categoryNames: categoryRows.results.map((row) => row.name).filter(Boolean),
+  };
+}
+
+async function auditBlogStep(
+  db: D1Database,
+  options: Pick<PublishBlogOptions, 'userId' | 'ip'>,
+  action: string,
+  postId: string,
+  newValue: Record<string, unknown>,
+): Promise<void> {
+  await writeAuditLog(db, {
+    user_id: options.userId,
+    action,
+    entity_type: 'post',
+    entity_id: postId,
+    new_value: newValue,
+    ip: options.ip,
+  });
+}
+
 export async function syncBlogDistributionPost(
   env: Env,
   blogPost: PostRow,
   client: ClientRow & { platforms: unknown[] },
+  options: Pick<PublishBlogOptions, 'userId' | 'ip'> = {},
 ): Promise<{ action: 'created' | 'updated' | 'skipped'; postId: string | null; platforms: string[] }> {
+  if (!blogPost.wp_post_url) return { action: 'skipped', postId: null, platforms: [] };
   const clientPlatforms = (client.platforms ?? []) as ClientPlatformRow[];
-  const platforms = getBlogDistributionPlatforms(clientPlatforms);
+  const distributionContentType = blogPost.asset_r2_key ? 'image' : 'text';
+  const platforms = getCompatibleBlogDistributionPlatforms({
+    candidatePlatforms: getBlogDistributionPlatforms(clientPlatforms),
+    contentType: distributionContentType,
+  });
   if (platforms.length === 0) return { action: 'skipped', postId: null, platforms: [] };
 
   const automationSlotKey = `blog_distribution:${blogPost.id}`;
   const existing = await getPostByAutomationSlotKey(env.DB, client.id, automationSlotKey);
-  const distributionContentType = blogPost.asset_r2_key ? 'image' : 'text';
   const title = blogPost.title?.trim()
     ? `${blogPost.title.trim()} — Blog Promo`
     : `${client.canonical_name} Blog Promo`;
+  const captionFor = (platform: string): string => buildBlogSocialCaption({
+    platform,
+    title: blogPost.title,
+    excerpt: blogPost.blog_excerpt ?? blogPost.master_caption,
+    clientName: client.canonical_name,
+    blogUrl: blogPost.wp_post_url!,
+    existing: getDistributionCaption(blogPost, platform),
+  });
   const payload: Omit<Partial<PostRow>, 'title' | 'client_id'> = {
     status: existing?.status ?? 'pending_approval',
     content_type: distributionContentType,
     platforms: JSON.stringify(platforms),
     publish_date: blogPost.publish_date,
-    master_caption: getDistributionCaption(blogPost, platforms[0] ?? '') ?? blogPost.master_caption,
-    cap_google_business: platforms.includes('google_business') ? getDistributionCaption(blogPost, 'google_business') : null,
-    cap_facebook: platforms.includes('facebook') ? getDistributionCaption(blogPost, 'facebook') : null,
-    cap_instagram: platforms.includes('instagram') ? getDistributionCaption(blogPost, 'instagram') : null,
-    cap_linkedin: platforms.includes('linkedin') ? getDistributionCaption(blogPost, 'linkedin') : null,
-    cap_x: platforms.includes('x') ? getDistributionCaption(blogPost, 'x') : null,
-    cap_threads: platforms.includes('threads') ? getDistributionCaption(blogPost, 'threads') : null,
-    cap_pinterest: platforms.includes('pinterest') ? getDistributionCaption(blogPost, 'pinterest') : null,
-    cap_bluesky: platforms.includes('bluesky') ? getDistributionCaption(blogPost, 'bluesky') : null,
+    master_caption: captionFor(platforms[0] ?? 'facebook'),
+    cap_google_business: platforms.includes('google_business') ? captionFor('google_business') : null,
+    cap_facebook: platforms.includes('facebook') ? captionFor('facebook') : null,
+    cap_instagram: platforms.includes('instagram') ? captionFor('instagram') : null,
+    cap_linkedin: platforms.includes('linkedin') ? captionFor('linkedin') : null,
+    cap_x: platforms.includes('x') ? captionFor('x') : null,
+    cap_threads: platforms.includes('threads') ? captionFor('threads') : null,
+    cap_pinterest: platforms.includes('pinterest') ? captionFor('pinterest') : null,
+    cap_bluesky: platforms.includes('bluesky') ? captionFor('bluesky') : null,
     asset_r2_key: blogPost.asset_r2_key,
     asset_r2_bucket: blogPost.asset_r2_bucket,
     asset_type: blogPost.asset_r2_key ? 'image' : null,
@@ -259,6 +310,12 @@ export async function syncBlogDistributionPost(
 
   if (existing) {
     await updatePost(env.DB, existing.id, payload);
+    await auditBlogStep(env.DB, options, 'blog.social_summary.updated', existing.id, {
+      source_blog_id: blogPost.id,
+      client_id: client.id,
+      platforms,
+      wp_post_url: blogPost.wp_post_url,
+    });
     return { action: 'updated', postId: existing.id, platforms };
   }
 
@@ -266,6 +323,12 @@ export async function syncBlogDistributionPost(
     client_id: client.id,
     title,
     ...payload,
+  });
+  await auditBlogStep(env.DB, options, 'blog.social_summary.created', created.id, {
+    source_blog_id: blogPost.id,
+    client_id: client.id,
+    platforms,
+    wp_post_url: blogPost.wp_post_url,
   });
   return { action: 'created', postId: created.id, platforms };
 }
@@ -348,7 +411,7 @@ async function ensureFeaturedMedia(env: Env, post: PostRow, client: ClientRow, w
   }
 
   // Per-slot body images from posts.blog_body_images JSON.
-  const slotHtml: { slot1?: string; slot2?: string; slot3?: string } = {};
+  let slotHtml: { slot1?: string; slot2?: string; slot3?: string } = {};
   const stored = parseBlogBodyImages(post.blog_body_images);
   let mutatedStored = false;
 
@@ -395,6 +458,8 @@ async function ensureFeaturedMedia(env: Env, post: PostRow, client: ClientRow, w
   if (!slotHtml.slot1 && legacyMedia) {
     slotHtml.slot1 = buildBodyImageHtml(legacyMedia, post.title ?? client.canonical_name);
   }
+
+  slotHtml = uniqueImageHtmlBySource(slotHtml);
 
   const bodyImageHtml =
     slotHtml.slot1 ?? (legacyMedia ? buildBodyImageHtml(legacyMedia, post.title ?? client.canonical_name) : '');
@@ -443,6 +508,22 @@ async function buildPublishHtml(
   }
 
   if (!appliedCustomTemplate && post.blog_content) {
+    const structured = sanitizeStructuredBlogContent(extractStructuredBlogContent(post.blog_content, {
+      title: post.title ?? '',
+      excerpt: post.blog_excerpt ?? post.master_caption ?? '',
+      focusKeyword: post.target_keyword?.trim() || client.industry?.trim() || post.title?.trim() || '',
+      secondaryKeywords: post.secondary_keywords?.trim() ?? '',
+      seoTitle: post.seo_title?.trim() || post.title?.trim() || '',
+      metaDescription: post.meta_description?.trim() || (post.blog_excerpt?.trim() ?? '').slice(0, 155),
+      slug: post.slug ?? '',
+      intro: post.blog_excerpt ?? post.master_caption ?? '',
+      sections: [{ heading: post.title ?? 'Overview', html: post.blog_content }],
+      faq: [],
+      ctaHeading: client.cta_text ?? 'Talk With Our Team',
+      ctaBody: `Contact ${client.canonical_name} for guidance tailored to your needs.`,
+      ctaButtonLabel: client.cta_text ?? 'Contact Us Today',
+      imagePrompt: post.ai_image_prompt ?? undefined,
+    })).blog;
     htmlContent = renderStructuredBlogHtml({
       templateKey: inferBusinessTemplateKey({
         wp_template_key: templateKey ?? null,
@@ -454,22 +535,7 @@ async function buildPublishHtml(
       ctaDefault: client.cta_text,
       bodyImageHtml,
       bodyImages: slotHtml,
-      blog: extractStructuredBlogContent(post.blog_content, {
-        title: post.title ?? '',
-        excerpt: post.blog_excerpt ?? post.master_caption ?? '',
-        focusKeyword: post.target_keyword?.trim() || client.industry?.trim() || post.title?.trim() || '',
-        secondaryKeywords: post.secondary_keywords?.trim() ?? '',
-        seoTitle: post.seo_title?.trim() || post.title?.trim() || '',
-        metaDescription: post.meta_description?.trim() || (post.blog_excerpt?.trim() ?? '').slice(0, 155),
-        slug: post.slug ?? '',
-        intro: post.blog_excerpt ?? post.master_caption ?? '',
-        sections: [{ heading: post.title ?? 'Overview', html: post.blog_content }],
-        faq: [],
-        ctaHeading: client.cta_text ?? 'Talk With Our Team',
-        ctaBody: `Contact ${client.canonical_name} for guidance tailored to your needs.`,
-        ctaButtonLabel: client.cta_text ?? 'Contact Us Today',
-        imagePrompt: post.ai_image_prompt ?? undefined,
-      }),
+      blog: structured,
     });
   }
 
@@ -489,13 +555,23 @@ export async function publishBlogPost(env: Env, postId: string, options: Publish
   const post = await getPostById(env.DB, postId);
   if (!post) throw new Error('Post not found');
 
-  const check = preflightBlogPost(post);
-  if (!check.ok) {
-    throw new Error(`Blog preflight failed: ${check.errors.join('; ')}`);
-  }
-
   const client = await getClientWithConfig(env.DB, post.client_id);
   if (!client) throw new Error('Client not found');
+
+  const validationContext = await loadBlogValidationContext(env.DB, client);
+  const check = preflightBlogPost(post, validationContext);
+  if (!check.ok) {
+    await auditBlogStep(env.DB, options, 'blog.validation.failed', post.id, {
+      client_id: client.id,
+      errors: check.errors,
+      warnings: check.warnings,
+    });
+    throw new Error(`Blog preflight failed: ${check.errors.join('; ')}`);
+  }
+  await auditBlogStep(env.DB, options, 'blog.validation.passed', post.id, {
+    client_id: client.id,
+    warnings: check.warnings,
+  });
 
   const wp = buildWordPressClient(client);
   if (!wp) {
@@ -509,6 +585,12 @@ export async function publishBlogPost(env: Env, postId: string, options: Publish
   const warnings = [...check.warnings];
   const postWithImages = await ensurePostBodyImages(env, post, client, warnings);
   const { featuredMediaId, bodyImageHtml, slotHtml } = await ensureFeaturedMedia(env, postWithImages, client, warnings);
+  await auditBlogStep(env.DB, options, 'blog.images.selected', post.id, {
+    client_id: client.id,
+    featured_media_id: featuredMediaId,
+    body_image_slots: Object.keys(slotHtml).filter((key) => Boolean(slotHtml[key as keyof typeof slotHtml])),
+    warnings,
+  });
 
   let categoryIds: number[] = [];
   try {
@@ -542,6 +624,12 @@ export async function publishBlogPost(env: Env, postId: string, options: Publish
 
   const htmlContent = await buildPublishHtml(env, postWithImages, client, bodyImageHtml, slotHtml);
   const excerpt = postWithImages.blog_excerpt ?? postWithImages.master_caption ?? '';
+  await auditBlogStep(env.DB, options, 'blog.created', post.id, {
+    client_id: client.id,
+    title: postWithImages.title,
+    target_keyword: postWithImages.target_keyword,
+    slug: postWithImages.slug,
+  });
 
   let existingWpId = post.wp_post_id ?? null;
   if (!existingWpId && postWithImages.slug) {
@@ -571,6 +659,13 @@ export async function publishBlogPost(env: Env, postId: string, options: Publish
         author: (client as ClientRow & { wp_default_author_id?: number | null }).wp_default_author_id ?? undefined,
         categories: categoryIds.length > 0 ? categoryIds : undefined,
       });
+  await auditBlogStep(env.DB, options, 'blog.published', post.id, {
+    client_id: client.id,
+    wp_post_id: wpPost.id,
+    wp_post_url: wpPost.link,
+    wp_post_status: wpPost.status,
+    featured_media_id: featuredMediaId ?? wpPost.featured_media ?? null,
+  });
 
   const nextStatus = wpPost.status === 'publish' ? 'posted' : (wpPost.status === 'draft' ? 'draft' : post.status);
   const now = Math.floor(Date.now() / 1000);
@@ -613,7 +708,7 @@ export async function publishBlogPost(env: Env, postId: string, options: Publish
 
   const refreshed = await getPostById(env.DB, post.id);
   if (!refreshed) throw new Error('Post disappeared after WordPress sync');
-  const distributionResult = await syncBlogDistributionPost(env, refreshed, client);
+  const distributionResult = await syncBlogDistributionPost(env, refreshed, client, options);
   if (distributionResult.action === 'skipped') {
     warnings.push('No connected non-video distribution platforms available for this client');
   } else {

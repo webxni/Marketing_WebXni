@@ -5,7 +5,7 @@
 import { UploadPostClient, UploadPostError } from '../services/uploadpost';
 import { getConnectionHealth, type UploadPostProfileResponse } from './posting-diagnostics';
 import { listClients, getClientPlatforms, getClientGbpLocations } from '../db/queries';
-import type { ClientPlatformRow, Env } from '../types';
+import type { Env } from '../types';
 
 export interface PlatformIssue {
   platform: string;

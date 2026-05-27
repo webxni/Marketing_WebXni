@@ -1191,19 +1191,34 @@ export function injectBodyImageIntoHtml(html: string, imageHtml: string): string
   return `${imageHtml}\n${html}`;
 }
 
+function replaceFirstPlaceholderOnly(html: string, placeholder: string, value: string): string {
+  let used = false;
+  return html.split(placeholder).reduce((acc, part, idx) => {
+    if (idx === 0) return part;
+    if (!used) {
+      used = true;
+      return `${acc}${value}${part}`;
+    }
+    return `${acc}${part}`;
+  }, '');
+}
+
 /**
  * Inject up to three body images at their numbered placeholders.
  * Missing images resolve to empty string so placeholders never leak to WP.
+ * Repeated placeholders are cleared after the first use to avoid duplicated
+ * images in regenerated or repaired blog HTML.
  */
 export function injectBodyImagesIntoHtml(
   html: string,
   images: { slot1?: string; slot2?: string; slot3?: string },
 ): string {
-  return html
-    .replace(BLOG_BODY_IMAGE_1_PLACEHOLDER, images.slot1 ?? '')
-    .replace(BLOG_BODY_IMAGE_2_PLACEHOLDER, images.slot2 ?? '')
-    .replace(BLOG_BODY_IMAGE_3_PLACEHOLDER, images.slot3 ?? '')
-    .replace(BLOG_BODY_IMAGE_PLACEHOLDER,   images.slot1 ?? '');
+  return [
+    [BLOG_BODY_IMAGE_1_PLACEHOLDER, images.slot1 ?? ''],
+    [BLOG_BODY_IMAGE_2_PLACEHOLDER, images.slot2 ?? ''],
+    [BLOG_BODY_IMAGE_3_PLACEHOLDER, images.slot3 ?? ''],
+    [BLOG_BODY_IMAGE_PLACEHOLDER,   images.slot1 ?? ''],
+  ].reduce((acc, [placeholder, value]) => replaceFirstPlaceholderOnly(acc, placeholder, value), html);
 }
 
 function stripRestPath(wpUrl: string): string {
