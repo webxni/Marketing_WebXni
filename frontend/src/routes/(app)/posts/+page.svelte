@@ -5,6 +5,7 @@
   import PlatformBadge from '$lib/components/ui/PlatformBadge.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
+  import DateRangePicker from '$lib/components/ui/DateRangePicker.svelte';
   import { can, hasRole } from '$lib/stores/auth';
   import { toast } from '$lib/stores/ui';
   import { formatDate, parsePlatforms } from '$lib/utils';
@@ -156,7 +157,7 @@
   </div>
 
   <!-- Filter row -->
-  <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+  <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
     <select bind:value={filterStatus} class="input text-sm" on:change={applyFilters}>
       <option value="">All statuses</option>
       {#each statuses as s}
@@ -178,8 +179,11 @@
       {/each}
     </select>
 
-    <input type="date" bind:value={filterDateFrom} class="input text-sm" title="From date" on:change={applyFilters} />
-    <input type="date" bind:value={filterDateTo}   class="input text-sm" title="To date"   on:change={applyFilters} />
+    <DateRangePicker
+      bind:from={filterDateFrom}
+      bind:to={filterDateTo}
+      on:change={applyFilters}
+    />
 
     <select bind:value={filterSort} class="input text-sm" on:change={applyFilters}>
       <option value="desc">Newest first</option>
