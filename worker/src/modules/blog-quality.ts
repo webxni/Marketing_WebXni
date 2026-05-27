@@ -45,6 +45,15 @@ const BLOG_SOCIAL_LIMITS: Record<string, number> = {
   linkedin: 3000,
 };
 
+const SERVICE_FAMILIES: Record<string, string[]> = {
+  locksmith: ['locksmith', 'lockout', 'rekey', 'smart lock', 'keyless', 'deadbolt', 'door lock', 'security door'],
+  remodeling: ['remodel', 'renovation', 'kitchen', 'bathroom', 'countertop', 'tile', 'adu', 'addition', 'plumbing', 'fireplace', 'bidet'],
+  roofing: ['roof', 'roofing', 'shingle', 'flashing', 'gutter', 'leak'],
+  landscaping: ['landscape', 'garden', 'irrigation', 'planting', 'drought', 'lawn', 'outdoor'],
+  marketing: ['marketing', 'seo', 'advertising', 'lead generation', 'google business'],
+  beauty: ['makeup', 'beauty', 'skin', 'wedding', 'event', 'artist'],
+};
+
 function normalizeComparableText(value: string | null | undefined): string {
   return stripHtml(value ?? '')
     .toLowerCase()
@@ -81,6 +90,30 @@ function sameOrNearDuplicate(a: string, b: string): boolean {
   const overlap = bWords.filter((word) => aWords.has(word)).length;
   return normalizeComparableText(a) === normalizeComparableText(b)
     || (aWords.size >= 8 && bWords.length >= 8 && overlap / Math.min(aWords.size, bWords.length) >= 0.82);
+}
+
+function matchingServiceFamilies(text: string): string[] {
+  return Object.entries(SERVICE_FAMILIES)
+    .filter(([, terms]) => terms.some((term) => phraseMatches(text, term)))
+    .map(([family]) => family);
+}
+
+function allowedServiceFamilies(context: BlogPublishingValidationContext): string[] {
+  const source = normalizeComparableText([
+    context.industry ?? '',
+    ...(context.serviceNames ?? []),
+    ...(context.categoryNames ?? []),
+  ].join(' '));
+  return Object.keys(SERVICE_FAMILIES).filter((family) => {
+    if (family === 'remodeling' && /\bconstruction\b|builder|remodel|renovat|kitchen|bathroom/.test(source)) return true;
+    return SERVICE_FAMILIES[family].some((term) => phraseMatches(source, term));
+  });
+}
+
+function extractImageSources(html: string | null | undefined): string[] {
+  return [...(html ?? '').matchAll(/<img\b[^>]*\ssrc=["']([^"']+)["']/gi)]
+    .map((match) => match[1]?.trim())
+    .filter((src): src is string => Boolean(src));
 }
 
 function dedupeHtmlBlocks(html: string, seenBlocks: Set<string>, warnings: BlogQualityIssue[]): string {
@@ -210,6 +243,12 @@ export function validateBlogPublishingContent(
   if (serviceMatches.length > 3) {
     warnings.push('Blog mentions several unrelated services; review topic focus before publishing');
   }
+  const detectedFamilies = matchingServiceFamilies(titleAndBody);
+  const allowedFamilies = allowedServiceFamilies(context);
+  const unrelatedFamilies = detectedFamilies.filter((family) => allowedFamilies.length > 0 && !allowedFamilies.includes(family));
+  if (unrelatedFamilies.length > 0) {
+    errors.push(`Blog mixes unrelated service families: ${unrelatedFamilies.join(', ')}`);
+  }
 
   const areaNames = [...(context.serviceAreas ?? []), context.state ?? ''].filter(Boolean) as string[];
   if (areaNames.length > 0 && !areaNames.some((area) => phraseMatches(titleAndBody, area))) {
@@ -232,6 +271,25 @@ export function validateBlogPublishingContent(
     .filter((value) => value.length > 60);
   const duplicateParagraphs = paragraphs.filter((paragraph, idx) => paragraphs.indexOf(paragraph) !== idx);
   if (duplicateParagraphs.length > 0) errors.push('Blog contains duplicate paragraphs');
+
+  const faqQuestions = [...(post.blog_content ?? '').matchAll(/<h3\b[^>]*>([\s\S]*?)<\/h3>/gi)]
+    .map((match) => normalizeComparableText(match[1] ?? ''))
+    .filter(Boolean);
+  if (faqQuestions.some((question, idx) => faqQuestions.indexOf(question) !== idx)) {
+    errors.push('Blog contains duplicate FAQ questions');
+  }
+
+  const ctaBlocks = [...(post.blog_content ?? '').matchAll(/<section\b[^>]*class=["'][^"']*wx-blog-cta[^"']*["'][^>]*>([\s\S]*?)<\/section>/gi)]
+    .map((match) => normalizeComparableText(match[1] ?? ''))
+    .filter(Boolean);
+  if (ctaBlocks.length > 1 && ctaBlocks.some((cta, idx) => ctaBlocks.indexOf(cta) !== idx)) {
+    errors.push('Blog contains duplicate CTA blocks');
+  }
+
+  const imageSources = extractImageSources(post.blog_content);
+  if (imageSources.some((src, idx) => imageSources.indexOf(src) !== idx)) {
+    errors.push('Blog contains duplicate images');
+  }
 
   return { ok: errors.length === 0, errors, warnings };
 }

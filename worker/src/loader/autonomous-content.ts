@@ -266,7 +266,7 @@ export async function createContentWithImage(
   } else {
     try {
       topicResearch = await researchTopic(openAiKey, {
-        client:        { canonical_name: client.canonical_name, industry: client.industry, state: client.state, language: client.language },
+        client:        { slug: client.slug, canonical_name: client.canonical_name, industry: client.industry, state: client.state, language: client.language },
         intelligence:  intel ? { service_priorities: intel.service_priorities, seasonal_notes: intel.seasonal_notes, local_seo_themes: intel.local_seo_themes } : null,
         contentType,
         contentIntent: 'educational',
@@ -283,6 +283,7 @@ export async function createContentWithImage(
   // ── 6. Generate post content (OpenAI) ───────────────────────────────────────
   const ctx: GenerationContext = {
     client: {
+      slug:                client.slug,
       canonical_name:      client.canonical_name,
       notes:               client.notes,
       brand_json:          client.brand_json,

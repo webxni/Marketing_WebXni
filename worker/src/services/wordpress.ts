@@ -2,6 +2,7 @@
  * WordPress REST API client — per-client application password authentication
  * Each client stores their own WP credentials in the clients table.
  */
+import type { BlogTemplateConfig } from '../modules/blog-templates';
 
 export interface WpClientConfig {
   baseUrl:             string;   // 'https://example.com'
@@ -48,6 +49,8 @@ export type BusinessTemplateKey =
   | 'locksmith'
   | 'accounting'
   | 'agency-marketing'
+  | 'landscaping'
+  | 'beauty'
   | 'generic-service';
 
 export interface BlogSection {
@@ -464,6 +467,22 @@ function getTemplateChrome(templateKey: BusinessTemplateKey): {
         footerTitle: 'Build A Stronger Marketing Foundation',
         ctaKicker: 'Talk With The Marketing Team',
       };
+    case 'landscaping':
+      return {
+        eyebrow: 'Landscape Field Guide',
+        supportTitle: 'Outdoor Decisions That Last',
+        supportBody: 'Climate-aware design notes, material guidance, and practical planning for healthier outdoor spaces.',
+        footerTitle: 'Plan A Better Outdoor Space',
+        ctaKicker: 'Talk With The Landscape Team',
+      };
+    case 'beauty':
+      return {
+        eyebrow: 'Beauty Preparation',
+        supportTitle: 'Look Ready, Feel Prepared',
+        supportBody: 'Event-ready guidance on timing, skin preparation, inspiration, and the details that affect the final look.',
+        footerTitle: 'Prepare With Confidence',
+        ctaKicker: 'Talk With The Artist',
+      };
     default:
       return {
         eyebrow: 'Professional Insights',
@@ -566,6 +585,26 @@ function renderEtbImageBlock(imageHtml: string, prompt: string): string {
 function extractImageSrc(imageHtml: string): string | null {
   const match = imageHtml.match(/<img\b[^>]*\ssrc="([^"]+)"/i);
   return match?.[1] ?? null;
+}
+
+function enhanceImageHtml(imageHtml: string, variant: 'featured' | 'body' = 'body'): string {
+  if (!imageHtml) return '';
+  const imageStyle = inlineStyle({
+    display: 'block',
+    width: '100%',
+    height: variant === 'featured' ? '100%' : 'auto',
+    minHeight: variant === 'featured' ? '320px' : undefined,
+    objectFit: variant === 'featured' ? 'cover' : 'contain',
+    objectPosition: 'center',
+  });
+  return imageHtml.replace(/<img\b([^>]*)>/i, (_full, attrs: string) => {
+    const cleanAttrs = attrs
+      .replace(/\sloading="[^"]*"/i, '')
+      .replace(/\sdecoding="[^"]*"/i, '')
+      .replace(/\sstyle="[^"]*"/i, '')
+      .replace(/\ssizes="[^"]*"/i, '');
+    return `<img${cleanAttrs} loading="lazy" decoding="async" sizes="(max-width: 760px) 100vw, 760px" style="${imageStyle}">`;
+  });
 }
 
 function buildEtbImagePrompt(subject: string, locationHint: string): string {
@@ -980,6 +1019,8 @@ export function inferBusinessTemplateKey(client: {
   industry?: string | null;
 }): BusinessTemplateKey {
   const raw = `${client.wp_template_key ?? ''} ${client.industry ?? ''}`.toLowerCase();
+  if (/landscap|garden|outdoor|lawn/.test(raw)) return 'landscaping';
+  if (/makeup|beauty|cosmetic|artist/.test(raw)) return 'beauty';
   if (/etb|elite team builders|builder|remodel|renovat|construction|kitchen|bathroom/.test(raw)) return 'builders-remodeling';
   if (/roof/.test(raw)) return 'roofing';
   if (/locksmith|lock|key/.test(raw)) return 'locksmith';
@@ -988,12 +1029,49 @@ export function inferBusinessTemplateKey(client: {
   return 'generic-service';
 }
 
+function resolveTemplateProfile(input: {
+  templateKey: BusinessTemplateKey;
+  template?: BlogTemplateConfig;
+  clientName: string;
+  industry?: string | null;
+  primaryColor: string;
+  accentColor?: string;
+}): BlogTemplateConfig {
+  const chrome = getTemplateChrome(input.templateKey);
+  return {
+    key: input.templateKey,
+    label: input.template?.label ?? chrome.eyebrow,
+    industryLabel: input.template?.industryLabel ?? input.industry ?? 'Professional Service',
+    audience: input.template?.audience ?? 'local customers comparing service options and next steps',
+    tone: input.template?.tone ?? 'professional, clear, practical',
+    authorLabel: input.template?.authorLabel ?? input.clientName,
+    categoryLabel: input.template?.categoryLabel ?? chrome.eyebrow,
+    primaryColor: input.template?.primaryColor ?? input.primaryColor,
+    accentColor: input.template?.accentColor ?? input.accentColor,
+    quickFacts: input.template?.quickFacts?.length ? input.template.quickFacts : ['Service focus', 'Local context', 'Practical next steps'],
+    relatedServices: input.template?.relatedServices?.length ? input.template.relatedServices : [input.industry ?? 'Professional services'],
+    shareTitle: input.template?.shareTitle ?? `${input.clientName} article`,
+  };
+}
+
+function formatBlogDate(value: string | null | undefined): string {
+  if (!value) return new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value.slice(0, 10);
+  return parsed.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+}
+
 export function renderStructuredBlogHtml(input: {
   templateKey: BusinessTemplateKey;
   primaryColor: string;
+  accentColor?: string;
   clientName: string;
+  clientSlug?: string;
+  industry?: string | null;
+  publishDate?: string | null;
   phone?: string | null;
   ctaDefault?: string | null;
+  template?: BlogTemplateConfig;
   /** Legacy single-slot body image (slot 1 equivalent). Prefer bodyImages. */
   bodyImageHtml?: string;
   /**
@@ -1012,24 +1090,48 @@ export function renderStructuredBlogHtml(input: {
   const chrome = getTemplateChrome(input.templateKey);
   const ctaHref = input.phone ? `tel:${input.phone}` : '#contact';
   const primaryColor = normalizePrimaryColor(input.primaryColor);
+  const profile = resolveTemplateProfile({
+    templateKey: input.templateKey,
+    template: input.template,
+    clientName: input.clientName,
+    industry: input.industry,
+    primaryColor,
+    accentColor: input.accentColor,
+  });
+  const accentColor = normalizePrimaryColor(profile.accentColor ?? input.accentColor ?? primaryColor);
+  const publishedDate = formatBlogDate(input.publishDate);
 
   const slot1Html = input.bodyImages?.slot1 ?? input.bodyImageHtml ?? BLOG_BODY_IMAGE_1_PLACEHOLDER;
   const slot2Html = input.bodyImages?.slot2 ?? BLOG_BODY_IMAGE_2_PLACEHOLDER;
   const slot3Html = input.bodyImages?.slot3 ?? BLOG_BODY_IMAGE_3_PLACEHOLDER;
 
-  const wrapFigure = (imageHtml: string): string => {
+  const wrapFigure = (imageHtml: string, variant: 'featured' | 'body' = 'body'): string => {
     if (!imageHtml) return '';
     return `<figure class="wx-blog-body-image" style="${inlineStyle({
-      margin: '0 0 24px',
+      margin: variant === 'featured' ? '0 0 28px' : '0 0 24px',
       border: '1px solid #d9e1ea',
-      borderRadius: '16px',
+      borderRadius: variant === 'featured' ? '18px' : '16px',
       overflow: 'hidden',
       background: '#ffffff',
-    })}">${imageHtml}</figure>`;
+      aspectRatio: variant === 'featured' ? '16/9' : undefined,
+    })}">${enhanceImageHtml(imageHtml, variant)}</figure>`;
   };
-  const slot1Section = wrapFigure(slot1Html);
+  const slot1Section = wrapFigure(slot1Html, 'featured');
   const slot2Section = wrapFigure(slot2Html);
   const slot3Section = wrapFigure(slot3Html);
+  const quickFactsHtml = profile.quickFacts.map((fact) => `<li style="${inlineStyle({ margin: '0 0 10px', paddingLeft: '0' })}">${escapeHtml(fact)}</li>`).join('');
+  const relatedServicesHtml = profile.relatedServices.map((service) => `<span style="${inlineStyle({
+    display: 'inline-block',
+    padding: '7px 10px',
+    border: `1px solid ${withAlpha(primaryColor, '33')}`,
+    borderRadius: '999px',
+    color: '#132033',
+    background: '#ffffff',
+    fontFamily: 'Arial, Helvetica, sans-serif',
+    fontSize: '.84rem',
+    lineHeight: '1',
+    margin: '0 6px 8px 0',
+  })}">${escapeHtml(service)}</span>`).join('');
   const faqHtml = input.blog.faq.length
     ? `
       <section class="wx-blog-faq" style="${inlineStyle({ margin: '32px 0 0' })}">
@@ -1098,6 +1200,19 @@ export function renderStructuredBlogHtml(input: {
           maxWidth: '58ch',
           margin: '0',
         })}">${escapeHtml(input.blog.excerpt)}</p>
+        <div class="wx-blog-meta" style="${inlineStyle({
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: '10px 18px',
+          marginTop: '22px',
+          color: '#5b6678',
+          fontFamily: 'Arial, Helvetica, sans-serif',
+          fontSize: '.92rem',
+        })}">
+          <span>${escapeHtml(profile.authorLabel)}</span>
+          <span>${escapeHtml(publishedDate)}</span>
+          <span>${escapeHtml(profile.categoryLabel)}</span>
+        </div>
       </header>
       <div class="wx-blog-layout" style="${inlineStyle({
         display: 'flex',
@@ -1147,6 +1262,37 @@ export function renderStructuredBlogHtml(input: {
             <h3 style="${inlineStyle({ color: '#0f172a', fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '1.08rem', lineHeight: '1.3', margin: '0 0 8px' })}">${chrome.supportTitle}</h3>
             <p style="${inlineStyle({ margin: '0', color: '#132033', fontSize: '1rem', lineHeight: '1.75' })}">${chrome.supportBody}</p>
           </div>
+          <section class="wx-blog-keyword-box" style="${inlineStyle({
+            margin: '0 0 20px',
+            padding: '22px 24px',
+            borderRadius: '16px',
+            border: `1px solid ${withAlpha(accentColor, '55')}`,
+            background: `linear-gradient(135deg, ${withAlpha(accentColor, '12')}, #ffffff)`,
+          })}">
+            <div style="${inlineStyle({ color: accentColor, fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '12px', fontWeight: '700', letterSpacing: '.12em', textTransform: 'uppercase', margin: '0 0 10px' })}">Keyword Focus</div>
+            <strong style="${inlineStyle({ display: 'block', color: '#0f172a', fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '1.05rem', lineHeight: '1.35', margin: '0 0 8px' })}">${escapeHtml(input.blog.focusKeyword)}</strong>
+            <p style="${inlineStyle({ margin: '0', color: '#5b6678', fontSize: '.92rem', lineHeight: '1.65' })}">${escapeHtml(profile.industryLabel)} article for ${escapeHtml(profile.audience)}.</p>
+          </section>
+          <section class="wx-blog-quick-info" style="${inlineStyle({
+            margin: '0 0 20px',
+            padding: '22px 24px',
+            borderRadius: '16px',
+            background: '#ffffff',
+            border: '1px solid #d9e1ea',
+          })}">
+            <h3 style="${inlineStyle({ color: '#0f172a', fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '1rem', lineHeight: '1.3', margin: '0 0 12px' })}">Quick Information</h3>
+            <ul style="${inlineStyle({ listStyle: 'none', padding: '0', margin: '0', color: '#132033', fontSize: '.94rem', lineHeight: '1.55' })}">${quickFactsHtml}</ul>
+          </section>
+          <section class="wx-blog-related-services" style="${inlineStyle({
+            margin: '0 0 20px',
+            padding: '22px 24px',
+            borderRadius: '16px',
+            background: withAlpha(primaryColor, '08'),
+            border: '1px solid #d9e1ea',
+          })}">
+            <h3 style="${inlineStyle({ color: '#0f172a', fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '1rem', lineHeight: '1.3', margin: '0 0 12px' })}">Related Services</h3>
+            <div>${relatedServicesHtml}</div>
+          </section>
           <section class="wx-blog-cta" style="${inlineStyle({
             margin: '0',
             padding: '26px 24px',
@@ -1170,6 +1316,7 @@ export function renderStructuredBlogHtml(input: {
               lineHeight: '1',
             })}">${escapeHtml(input.blog.ctaButtonLabel || input.ctaDefault || 'Contact Us Today')}</a>
           </section>
+          <div class="wx-blog-share-meta" data-share-title="${escapeHtml(profile.shareTitle)}" data-share-keyword="${escapeHtml(input.blog.focusKeyword)}" data-share-client="${escapeHtml(input.clientName)}" style="${inlineStyle({ display: 'none' })}"></div>
         </aside>
       </div>
     </article>

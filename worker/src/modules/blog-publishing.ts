@@ -18,6 +18,7 @@ import { parseBlogBodyImages, serializeBlogBodyImages } from './blog-body-images
 import { ensureBlogBodyImagesGenerated } from '../loader/autonomous-content';
 import { getBlogDistributionPlatforms } from './platform-compatibility';
 import { resolveStabilityApiKeys } from '../services/stability';
+import { resolveBlogTemplateConfig } from './blog-templates';
 import {
   buildBlogSocialCaption,
   getCompatibleBlogDistributionPlatforms,
@@ -55,6 +56,7 @@ export interface PublishBlogResult {
 }
 
 type BlogDraftClient = Pick<ClientRow, 'canonical_name' | 'industry' | 'state' | 'phone' | 'cta_text' | 'brand_json' | 'wp_template_key'> & {
+  slug?: string | null;
   brand_primary_color?: string | null;
 };
 
@@ -102,6 +104,16 @@ export function normalizeBlogDraftPayload(
     ctaButtonLabel: client.cta_text ?? 'Contact Us Today',
     imagePrompt: typeof data['ai_image_prompt'] === 'string' ? data['ai_image_prompt'] : undefined,
   })).blog;
+  const templateConfig = resolveBlogTemplateConfig({
+    slug: client.slug ?? '',
+    canonical_name: client.canonical_name,
+    industry: client.industry ?? null,
+    state: client.state ?? null,
+    brand_json: client.brand_json ?? null,
+    wp_template_key: client.wp_template_key ?? null,
+    cta_text: client.cta_text ?? null,
+    brand_primary_color: client.brand_primary_color ?? null,
+  });
 
   return {
     ...data,
@@ -111,9 +123,13 @@ export function normalizeBlogDraftPayload(
         industry: client.industry ?? null,
       }),
       primaryColor: getPrimaryColor(client),
+      accentColor: templateConfig.accentColor,
       clientName: client.canonical_name,
+      clientSlug: client.slug ?? undefined,
+      industry: client.industry,
       phone: client.phone ?? null,
       ctaDefault: client.cta_text ?? null,
+      template: templateConfig,
       blog: structured,
     }),
     blog_excerpt: data['blog_excerpt'] ?? structured.excerpt,
@@ -186,7 +202,7 @@ function getPrimaryColor(client: Pick<ClientRow, 'brand_json'> & { brand_primary
 function buildBodyImageHtml(media: WpMediaItem | null, caption: string): string {
   if (!media?.source_url) return '';
   const alt = (media.alt_text || caption).replace(/"/g, '&quot;');
-  return `<img src="${media.source_url}" alt="${alt}" /><figcaption>${caption.replace(/</g, '&lt;')}</figcaption>`;
+  return `<img src="${media.source_url}" alt="${alt}" loading="lazy" decoding="async" sizes="(max-width: 760px) 100vw, 760px" /><figcaption>${caption.replace(/</g, '&lt;')}</figcaption>`;
 }
 
 function getDistributionCaption(post: PostRow, platform: string): string | null {
@@ -280,20 +296,45 @@ export async function syncBlogDistributionPost(
     blogUrl: blogPost.wp_post_url!,
     existing: getDistributionCaption(blogPost, platform),
   });
+  const usedCaptions = new Map<string, string>();
+  const captionCache = new Map<string, string>();
+  const uniqueCaptionFor = (platform: string): string => {
+    const cached = captionCache.get(platform);
+    if (cached) return cached;
+    const base = captionFor(platform);
+    const key = base.replace(blogPost.wp_post_url!, '[url]').replace(/\s+/g, ' ').trim().toLowerCase();
+    const previous = usedCaptions.get(key);
+    if (!previous) {
+      usedCaptions.set(key, platform);
+      captionCache.set(platform, base);
+      return base;
+    }
+    const revised = buildBlogSocialCaption({
+      platform,
+      title: `${blogPost.title ?? client.canonical_name} (${platform.replace(/_/g, ' ')})`,
+      excerpt: blogPost.blog_excerpt ?? blogPost.master_caption,
+      clientName: client.canonical_name,
+      blogUrl: blogPost.wp_post_url!,
+      existing: null,
+    });
+    captionCache.set(platform, revised);
+    return revised;
+  };
+  const masterPlatform = platforms[0] ?? 'facebook';
   const payload: Omit<Partial<PostRow>, 'title' | 'client_id'> = {
     status: existing?.status ?? 'pending_approval',
     content_type: distributionContentType,
     platforms: JSON.stringify(platforms),
     publish_date: blogPost.publish_date,
-    master_caption: captionFor(platforms[0] ?? 'facebook'),
-    cap_google_business: platforms.includes('google_business') ? captionFor('google_business') : null,
-    cap_facebook: platforms.includes('facebook') ? captionFor('facebook') : null,
-    cap_instagram: platforms.includes('instagram') ? captionFor('instagram') : null,
-    cap_linkedin: platforms.includes('linkedin') ? captionFor('linkedin') : null,
-    cap_x: platforms.includes('x') ? captionFor('x') : null,
-    cap_threads: platforms.includes('threads') ? captionFor('threads') : null,
-    cap_pinterest: platforms.includes('pinterest') ? captionFor('pinterest') : null,
-    cap_bluesky: platforms.includes('bluesky') ? captionFor('bluesky') : null,
+    master_caption: captionFor(masterPlatform),
+    cap_google_business: platforms.includes('google_business') ? uniqueCaptionFor('google_business') : null,
+    cap_facebook: platforms.includes('facebook') ? uniqueCaptionFor('facebook') : null,
+    cap_instagram: platforms.includes('instagram') ? uniqueCaptionFor('instagram') : null,
+    cap_linkedin: platforms.includes('linkedin') ? uniqueCaptionFor('linkedin') : null,
+    cap_x: platforms.includes('x') ? uniqueCaptionFor('x') : null,
+    cap_threads: platforms.includes('threads') ? uniqueCaptionFor('threads') : null,
+    cap_pinterest: platforms.includes('pinterest') ? uniqueCaptionFor('pinterest') : null,
+    cap_bluesky: platforms.includes('bluesky') ? uniqueCaptionFor('bluesky') : null,
     asset_r2_key: blogPost.asset_r2_key,
     asset_r2_bucket: blogPost.asset_r2_bucket,
     asset_type: blogPost.asset_r2_key ? 'image' : null,
@@ -307,6 +348,12 @@ export async function syncBlogDistributionPost(
     automation_slot_key: automationSlotKey,
     generation_run_id: blogPost.generation_run_id,
   };
+  await auditBlogStep(env.DB, options, 'blog.social_summary.generated', blogPost.id, {
+    client_id: client.id,
+    distribution_content_type: distributionContentType,
+    platforms,
+    wp_post_url: blogPost.wp_post_url,
+  });
 
   if (existing) {
     await updatePost(env.DB, existing.id, payload);
@@ -524,15 +571,30 @@ async function buildPublishHtml(
       ctaButtonLabel: client.cta_text ?? 'Contact Us Today',
       imagePrompt: post.ai_image_prompt ?? undefined,
     })).blog;
+    const templateConfig = resolveBlogTemplateConfig({
+      slug: client.slug,
+      canonical_name: client.canonical_name,
+      industry: client.industry,
+      state: client.state,
+      brand_json: client.brand_json,
+      wp_template_key: templateKey ?? client.wp_template_key,
+      cta_text: client.cta_text,
+      brand_primary_color: (client as ClientRow & { brand_primary_color?: string | null }).brand_primary_color ?? null,
+    });
     htmlContent = renderStructuredBlogHtml({
       templateKey: inferBusinessTemplateKey({
         wp_template_key: templateKey ?? null,
         industry: client.industry,
       }),
       primaryColor: getPrimaryColor(client),
+      accentColor: templateConfig.accentColor,
       clientName: client.canonical_name,
+      clientSlug: client.slug,
+      industry: client.industry,
+      publishDate: post.publish_date,
       phone: client.phone,
       ctaDefault: client.cta_text,
+      template: templateConfig,
       bodyImageHtml,
       bodyImages: slotHtml,
       blog: structured,
@@ -583,6 +645,22 @@ export async function publishBlogPost(env: Env, postId: string, options: Publish
     ?? ((client as ClientRow & { wp_default_post_status?: string | null }).wp_default_post_status === 'publish' ? 'publish' : 'draft');
 
   const warnings = [...check.warnings];
+  const templateConfig = resolveBlogTemplateConfig({
+    slug: client.slug,
+    canonical_name: client.canonical_name,
+    industry: client.industry,
+    state: client.state,
+    brand_json: client.brand_json,
+    wp_template_key: client.wp_template_key,
+    cta_text: client.cta_text,
+    brand_primary_color: (client as ClientRow & { brand_primary_color?: string | null }).brand_primary_color ?? null,
+  });
+  await auditBlogStep(env.DB, options, 'blog.template.selected', post.id, {
+    client_id: client.id,
+    client_slug: client.slug,
+    template_key: templateConfig.key,
+    template_label: templateConfig.label,
+  });
   const postWithImages = await ensurePostBodyImages(env, post, client, warnings);
   const { featuredMediaId, bodyImageHtml, slotHtml } = await ensureFeaturedMedia(env, postWithImages, client, warnings);
   await auditBlogStep(env.DB, options, 'blog.images.selected', post.id, {

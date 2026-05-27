@@ -847,6 +847,7 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
   const settings = await loadSystemSettings(env);
   const researchParams = {
     client: {
+      slug: client.slug,
       canonical_name: client.canonical_name,
       industry: client.industry,
       state: client.state,
@@ -924,6 +925,7 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
 
   const ctx: GenerationContext = {
     client: {
+      slug: client.slug,
       canonical_name: client.canonical_name,
       notes: client.notes,
       brand_json: client.brand_json,
@@ -1325,6 +1327,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         if (!topicResearch) {
           topicResearch = await researchTopicWithProvider(provider, apiKey, {
           client: {
+            slug: client.slug,
             canonical_name: client.canonical_name,
             industry:       client.industry,
             state:          client.state,
@@ -1378,6 +1381,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
 
       const ctx: GenerationContext = {
         client: {
+          slug:                client.slug,
           canonical_name:      client.canonical_name,
           notes:               client.notes,
           brand_json:          client.brand_json,

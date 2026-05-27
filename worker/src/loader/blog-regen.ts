@@ -346,6 +346,7 @@ export async function executeBlogRegenSlot(
     try {
       topicResearch = await researchTopic(apiKey, {
         client: {
+          slug:           client.slug,
           canonical_name: client.canonical_name,
           industry:       client.industry,
           state:          client.state,
@@ -374,6 +375,7 @@ export async function executeBlogRegenSlot(
 
     const ctx: GenerationContext = {
       client: {
+        slug:                client.slug,
         canonical_name:      client.canonical_name,
         notes:               client.notes,
         brand_json:          client.brand_json,

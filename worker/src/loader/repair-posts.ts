@@ -361,6 +361,7 @@ export async function repairExistingPosts(env: Env, opts?: { overwrite?: boolean
 
       const ctx: GenerationContext = {
         client: {
+          slug: client.slug,
           canonical_name: client.canonical_name,
           notes: client.notes,
           brand_json: client.brand_json,

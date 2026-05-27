@@ -10,6 +10,7 @@ import {
   type StructuredBlogContent,
 } from './wordpress';
 import { sanitizeStructuredBlogContent } from '../modules/blog-quality';
+import { resolveBlogTemplateConfig } from '../modules/blog-templates';
 
 export interface GeneratedPost {
   title:               string;
@@ -67,6 +68,7 @@ export interface TopicResearch {
 
 export interface TopicResearchParams {
   client: {
+    slug?: string;
     canonical_name: string;
     industry?:      string | null;
     state?:         string | null;
@@ -104,6 +106,7 @@ export interface ContentProvider {
 
 export interface GenerationContext {
   client: {
+    slug?:                string;
     canonical_name:      string;
     notes?:              string | null;
     brand_json?:         string | null;
@@ -424,6 +427,16 @@ function buildBlogPrompt(ctx: GenerationContext): string {
     wp_template_key: ctx.client.wp_template_key,
     industry: ctx.client.industry,
   });
+  const templateConfig = resolveBlogTemplateConfig({
+    slug: ctx.client.slug ?? '',
+    canonical_name: ctx.client.canonical_name,
+    industry: ctx.client.industry ?? null,
+    state: ctx.client.state ?? null,
+    brand_json: ctx.client.brand_json ?? null,
+    wp_template_key: ctx.client.wp_template_key ?? null,
+    cta_text: ctx.client.cta_text ?? null,
+    brand_primary_color: ctx.client.brand_primary_color ?? null,
+  });
   const serviceAreasForBlog = (ctx.serviceAreas ?? []).slice(0, 6).join(', ') || (ctx.client.state ?? '');
   const distributionPlatforms = ctx.platforms.filter((platform) => platform !== 'website_blog');
   const distributionCaptionRules: string[] = [];
@@ -501,7 +514,11 @@ CONTENT RULES:
 - No markdown syntax, no code fences, no <html>/<body>/<style> tags
 
 TEMPLATE CONTEXT:
-- Business template: ${templateKey}
+- Business template: ${templateKey} / ${templateConfig.label}
+- Intended audience: ${templateConfig.audience}
+- Editorial tone: ${templateConfig.tone}
+- Category label: ${templateConfig.categoryLabel}
+- Related services to stay near: ${templateConfig.relatedServices.join(', ')}
 - Do NOT generate page-level HTML or CSS — structured content only; the platform renders the layout`;
 }
 
@@ -725,15 +742,30 @@ export function normalizeGeneratedPost(value: unknown, ctx: GenerationContext): 
       imagePrompt: normalized.ai_image_prompt,
     };
     const structured = sanitizeStructuredBlogContent(structuredDraft).blog;
+    const templateConfig = resolveBlogTemplateConfig({
+      slug: ctx.client.slug ?? '',
+      canonical_name: ctx.client.canonical_name,
+      industry: ctx.client.industry ?? null,
+      state: ctx.client.state ?? null,
+      brand_json: ctx.client.brand_json ?? null,
+      wp_template_key: ctx.client.wp_template_key ?? null,
+      cta_text: ctx.client.cta_text ?? null,
+      brand_primary_color: ctx.client.brand_primary_color ?? null,
+    });
     normalized.blog_content = renderStructuredBlogHtml({
       templateKey: inferBusinessTemplateKey({
         wp_template_key: ctx.client.wp_template_key,
         industry: ctx.client.industry,
       }),
       primaryColor: getPrimaryColor(ctx),
+      accentColor: templateConfig.accentColor,
       clientName: ctx.client.canonical_name,
+      clientSlug: ctx.client.slug ?? undefined,
+      industry: ctx.client.industry,
+      publishDate: ctx.publishDate,
       phone: ctx.client.phone,
       ctaDefault: ctx.client.cta_text,
+      template: templateConfig,
       blog: structured,
     });
   } else {
