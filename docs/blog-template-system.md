@@ -54,6 +54,29 @@ article with:
 Images are wrapped with responsive sizing, lazy loading, decoding hints, and
 object-fit behavior for full-width featured-image presentation.
 
+## Blog Images
+
+Blog images now have two supported sources:
+
+- AI-generated images from the Stability path
+- manually uploaded images from the blog image routes
+
+Image roles:
+
+- `posts.asset_r2_key`: main / WordPress featured / social sharing image
+- `posts.blog_body_images`: body slots 1-3, with slot 1 also usable as the
+  hero fallback when no featured image has been selected
+
+The slot JSON stores source metadata (`ai`, `upload`, or `assigned`), role,
+alt text, caption, file details, WordPress media ID, generation attempts, and
+whether duplicate reuse was intentional. Manual slot assignment rejects
+accidental duplicate reuse unless `allow_duplicate` is explicitly set.
+
+Publishing uploads the selected featured image to WordPress first, sets it as
+the WordPress featured image, uploads body slot images as needed, then replaces
+body placeholders. WordPress media `srcset` data is used when available, with
+lazy loading and responsive `sizes` attributes preserved in the rendered HTML.
+
 ## Generation And Validation
 
 Blog prompts now receive the resolved template profile so the AI writes for the
@@ -73,6 +96,10 @@ preflight validates:
 Blog-to-social distribution still creates a separate pending approval post for
 non-video platforms only, using the published blog URL in platform-specific
 captions.
+
+The social distribution post reuses the selected featured image. If no explicit
+featured image exists, body slot 1 is promoted as the social image fallback. No
+social distribution post is created until WordPress returns a valid blog URL.
 
 ## Tests
 

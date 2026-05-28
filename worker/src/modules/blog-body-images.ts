@@ -23,6 +23,13 @@ export interface BlogBodyImage {
   wp_media_id?:          number | null;
   attempts?:             number;
   status:                'generated' | 'failed' | 'pending';
+  source?:               'ai' | 'upload' | 'assigned';
+  role?:                 'body' | 'hero';
+  alt_text?:             string;
+  caption?:              string;
+  filename?:             string;
+  content_type?:         string;
+  allow_duplicate?:      boolean;
   error?:                string;
   updated_at?:           number;
   prompt_quality_score?: number;
@@ -49,6 +56,13 @@ export function parseBlogBodyImages(raw: string | null | undefined): BlogBodyIma
         wp_media_id:           typeof it.wp_media_id === 'number' ? it.wp_media_id : null,
         attempts:              typeof it.attempts === 'number' ? it.attempts : 0,
         status:                (it.status === 'generated' || it.status === 'failed' || it.status === 'pending') ? it.status : 'pending',
+        source:                it.source === 'ai' || it.source === 'upload' || it.source === 'assigned' ? it.source : undefined,
+        role:                  it.role === 'hero' || it.role === 'body' ? it.role : undefined,
+        alt_text:              typeof it.alt_text === 'string' ? it.alt_text : undefined,
+        caption:               typeof it.caption === 'string' ? it.caption : undefined,
+        filename:              typeof it.filename === 'string' ? it.filename : undefined,
+        content_type:          typeof it.content_type === 'string' ? it.content_type : undefined,
+        allow_duplicate:       it.allow_duplicate === true,
         error:                 typeof it.error === 'string' ? it.error : undefined,
         updated_at:            typeof it.updated_at === 'number' ? it.updated_at : undefined,
         prompt_quality_score:  typeof it.prompt_quality_score === 'number' ? it.prompt_quality_score : undefined,
@@ -74,4 +88,9 @@ export function upsertBlogBodyImage(existing: BlogBodyImage[], next: BlogBodyIma
 export function getBlogBodyImage(post: Pick<PostRow, 'blog_body_images'>, slot: BlogImageSlot): BlogBodyImage | null {
   const images = parseBlogBodyImages(post.blog_body_images);
   return images.find((img) => img.slot === slot) ?? null;
+}
+
+export function findDuplicateBlogImageSlot(images: BlogBodyImage[], r2Key: string, exceptSlot?: BlogImageSlot): BlogImageSlot | null {
+  const duplicate = images.find((img) => img.r2_key === r2Key && img.slot !== exceptSlot && img.allow_duplicate !== true);
+  return duplicate?.slot ?? null;
 }

@@ -727,6 +727,8 @@ export async function generateBlogSlotImage(
           attempts:              cumulativeAttempts,
           attempts_remaining:    Math.max(0, MAX_BLOG_IMAGE_ATTEMPTS - cumulativeAttempts),
           status:                'generated',
+          source:                'ai',
+          role:                  ctx.slot === 1 ? 'hero' : 'body',
           prompt_quality_score:  promptRelevance.score,
           prompt_quality_label:  promptRelevance.label,
           regeneration_reason:   regenerationReason,

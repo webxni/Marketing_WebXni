@@ -93,6 +93,12 @@ export const postsApi = {
   generateBlogImageSlot: (id: string, slot: 1 | 2 | 3, prompt?: string) =>
     api.post<{ ok: boolean; image: BlogBodyImage }>(`/api/posts/${id}/blog-images/${slot}`, prompt ? { prompt } : {}),
 
+  assignFeaturedBlogImage: (id: string, r2_key: string, bucket: 'MEDIA' | 'IMAGES' = 'MEDIA') =>
+    api.put<{ ok: boolean; image: { r2_key: string; bucket: string; url: string | null } }>(`/api/posts/${id}/blog-images/featured`, { r2_key, bucket }),
+
+  assignBlogImageSlot: (id: string, slot: 1 | 2 | 3, r2_key: string, allow_duplicate = false) =>
+    api.put<{ ok: boolean; image: BlogBodyImageWithUrl }>(`/api/posts/${id}/blog-images/${slot}/assign`, { r2_key, allow_duplicate }),
+
   updateBlogImagePrompt: (id: string, slot: 1 | 2 | 3, prompt: string) =>
     api.put<{ ok: boolean; image: BlogBodyImage }>(`/api/posts/${id}/blog-images/${slot}`, { prompt }),
 

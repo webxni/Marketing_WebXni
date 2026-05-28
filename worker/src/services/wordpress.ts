@@ -41,6 +41,11 @@ export interface WpMediaItem {
   id:         number;
   source_url: string;
   alt_text:   string;
+  media_details?: {
+    sizes?: Record<string, { source_url?: string; width?: number; height?: number }>;
+    width?: number;
+    height?: number;
+  };
 }
 
 export type BusinessTemplateKey =

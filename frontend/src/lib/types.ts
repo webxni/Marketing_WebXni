@@ -21,6 +21,13 @@ export interface BlogBodyImage {
   wp_media_id?:          number | null;
   attempts?:             number;
   status:                'generated' | 'failed' | 'pending';
+  source?:               'ai' | 'upload' | 'assigned';
+  role?:                 'body' | 'hero';
+  alt_text?:             string;
+  caption?:              string;
+  filename?:             string;
+  content_type?:         string;
+  allow_duplicate?:      boolean;
   error?:                string;
   updated_at?:           number;
   prompt_quality_score?: number;

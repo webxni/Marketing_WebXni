@@ -46,6 +46,8 @@ const wordpress = loadTsModule(path.join(repoRoot, 'worker/src/services/wordpres
 const templates = loadTsModule(path.join(repoRoot, 'worker/src/modules/blog-templates.ts'));
 const quality = loadTsModule(path.join(repoRoot, 'worker/src/modules/blog-quality.ts'));
 const platform = loadTsModule(path.join(repoRoot, 'worker/src/modules/platform-compatibility.ts'));
+const blogImages = loadTsModule(path.join(repoRoot, 'worker/src/modules/blog-body-images.ts'));
+const blogPublishing = loadTsModule(path.join(repoRoot, 'worker/src/modules/blog-publishing.ts'));
 
 const activeSlugs = [
   '247-lockout-pasadena',
@@ -133,6 +135,7 @@ assert.match(html, /Related Services/);
 assert.match(html, /loading="lazy"/);
 assert.match(html, /object-fit:cover/);
 assert.match(html, /data-share-title=/);
+assert(!html.includes('<!-- BLOG_BODY_IMAGE_1 -->'));
 
 const duplicateValidation = quality.validateBlogPublishingContent({
   content_type: 'blog',
@@ -202,5 +205,51 @@ const distribution = platform.getBlogDistributionPlatforms([
   { platform: 'instagram', paused: 1, connection_status: 'connected' },
 ]);
 assert.deepEqual(distribution, ['facebook', 'linkedin']);
+
+const imageJson = blogImages.serializeBlogBodyImages([
+  {
+    slot: 1,
+    r2_key: 'client/post/generated-slot1.webp',
+    prompt: 'Generated hero prompt',
+    wp_media_id: null,
+    attempts: 1,
+    status: 'generated',
+    source: 'ai',
+    role: 'hero',
+  },
+  {
+    slot: 2,
+    r2_key: 'client/post/uploaded-slot2.webp',
+    prompt: '',
+    wp_media_id: null,
+    attempts: 0,
+    status: 'generated',
+    source: 'upload',
+    role: 'body',
+    allow_duplicate: true,
+  },
+]);
+const parsedImages = blogImages.parseBlogBodyImages(imageJson);
+assert.equal(parsedImages[0].source, 'ai');
+assert.equal(parsedImages[0].role, 'hero');
+assert.equal(parsedImages[1].source, 'upload');
+assert.equal(parsedImages[1].allow_duplicate, true);
+
+const generatedFeatured = blogPublishing.resolveBlogSocialImage({
+  asset_r2_key: null,
+  asset_r2_bucket: null,
+  blog_body_images: imageJson,
+});
+assert.deepEqual(generatedFeatured, { r2Key: 'client/post/generated-slot1.webp', bucket: 'MEDIA', source: 'slot1' });
+
+const uploadedFeatured = blogPublishing.resolveBlogSocialImage({
+  asset_r2_key: 'client/post/uploaded-featured.jpg',
+  asset_r2_bucket: 'MEDIA',
+  blog_body_images: imageJson,
+});
+assert.deepEqual(uploadedFeatured, { r2Key: 'client/post/uploaded-featured.jpg', bucket: 'MEDIA', source: 'featured' });
+
+assert.equal(blogImages.findDuplicateBlogImageSlot(parsedImages, 'client/post/generated-slot1.webp', 2), 1);
+assert.equal(blogImages.findDuplicateBlogImageSlot(parsedImages, 'client/post/uploaded-slot2.webp', 1), null);
 
 console.log('Blog system tests passed');
