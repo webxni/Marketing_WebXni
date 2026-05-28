@@ -635,11 +635,25 @@ function buildEtbTestimonials(blog: StructuredBlogContent): Array<{ text: string
 
 function renderEliteTeamBuildersHtml(input: {
   clientName: string;
+  industry?: string | null;
+  publishDate?: string | null;
   phone?: string | null;
+  template?: BlogTemplateConfig;
   blog: StructuredBlogContent;
   bodyImages?: { slot1?: string; slot2?: string; slot3?: string };
   bodyImageHtml?: string;
 }): string {
+  const profile = resolveTemplateProfile({
+    templateKey: 'builders-remodeling',
+    template: input.template,
+    clientName: input.clientName,
+    industry: input.industry,
+    primaryColor: '#007a7a',
+    accentColor: '#f2b824',
+  });
+  const quickFactsHtml = profile.quickFacts.map((fact) => `<li>${escapeHtml(fact)}</li>`).join('');
+  const relatedServicesHtml = profile.relatedServices.map((service) => `<span>${escapeHtml(service)}</span>`).join('');
+  const publishedDate = formatBlogDate(input.publishDate);
   const slot1Html = input.bodyImages?.slot1 ?? input.bodyImageHtml ?? BLOG_BODY_IMAGE_1_PLACEHOLDER;
   const slot2Html = input.bodyImages?.slot2 ?? BLOG_BODY_IMAGE_2_PLACEHOLDER;
   const slot3Html = input.bodyImages?.slot3 ?? BLOG_BODY_IMAGE_3_PLACEHOLDER;
@@ -727,6 +741,72 @@ function renderEliteTeamBuildersHtml(input: {
         font-style: italic;
         font-size: 1.1rem;
       }
+      .wx-blog.etb-blog .wx-blog-meta {
+        display:flex;
+        justify-content:center;
+        gap:14px 22px;
+        flex-wrap:wrap;
+        color:rgba(255,255,255,.82);
+        font-size:.92rem;
+        margin-top:24px;
+      }
+      .wx-blog.etb-blog .wx-blog-keyword-box,
+      .wx-blog.etb-blog .wx-blog-quick-info,
+      .wx-blog.etb-blog .wx-blog-related-services {
+        margin:0 0 28px;
+        padding:24px;
+        border-radius:16px;
+        border:1px solid var(--border-color);
+        background:#fff;
+      }
+      .wx-blog.etb-blog .wx-blog-keyword-box {
+        border-left:4px solid var(--brand-gold);
+      }
+      .wx-blog.etb-blog .wx-blog-kicker {
+        display:block;
+        color:var(--brand-gold);
+        font-size:.76rem;
+        font-weight:800;
+        letter-spacing:.14em;
+        text-transform:uppercase;
+        margin-bottom:8px;
+      }
+      .wx-blog.etb-blog .wx-blog-keyword-box strong {
+        display:block;
+        color:var(--brand-dark);
+        font-size:1.12rem;
+        margin-bottom:8px;
+      }
+      .wx-blog.etb-blog .wx-blog-quick-info ul {
+        list-style:none;
+        padding:0;
+        margin:0;
+        display:grid;
+        grid-template-columns:repeat(3,1fr);
+        gap:12px;
+      }
+      .wx-blog.etb-blog .wx-blog-quick-info li {
+        background:#f8fafc;
+        border:1px solid var(--border-color);
+        border-radius:12px;
+        padding:12px;
+        font-size:.92rem;
+      }
+      .wx-blog.etb-blog .wx-blog-related-services div {
+        display:flex;
+        flex-wrap:wrap;
+        gap:8px;
+      }
+      .wx-blog.etb-blog .wx-blog-related-services span {
+        display:inline-flex;
+        padding:8px 11px;
+        border-radius:999px;
+        background:#f8fafc;
+        border:1px solid var(--border-color);
+        color:var(--brand-dark);
+        font-size:.88rem;
+        font-weight:700;
+      }
       .wx-blog.etb-blog h2 {
         color: var(--brand-dark);
         font-size: 1.85rem;
@@ -799,6 +879,7 @@ function renderEliteTeamBuildersHtml(input: {
       @media (max-width:1024px) { .wx-blog.etb-blog .info-grid { grid-template-columns:1fr 1fr; } }
       @media (max-width:768px) {
         .wx-blog.etb-blog .info-grid { grid-template-columns:1fr; }
+        .wx-blog.etb-blog .wx-blog-quick-info ul { grid-template-columns:1fr; }
         .wx-blog.etb-blog .hero { padding:60px 24px; }
         .wx-blog.etb-blog .article-content { padding:24px; }
       }
@@ -809,10 +890,28 @@ function renderEliteTeamBuildersHtml(input: {
         <div class="wx-blog-eyebrow eyebrow">${inferEtbEyebrow(input.blog)}</div>
         <h1>${escapeHtml(input.blog.title)}</h1>
         <p class="wx-blog-excerpt hero-excerpt">${escapeHtml(input.blog.excerpt)}</p>
+        <div class="wx-blog-meta">
+          <span>${escapeHtml(profile.authorLabel)}</span>
+          <span>${escapeHtml(publishedDate)}</span>
+          <span>${escapeHtml(profile.categoryLabel)}</span>
+        </div>
       </header>
       <main class="article-content">
         <section class="wx-blog-intro intro-box">
           <p>${escapeHtml(input.blog.intro)}</p>
+        </section>
+        <section class="wx-blog-keyword-box">
+          <span class="wx-blog-kicker">Keyword Focus</span>
+          <strong>${escapeHtml(input.blog.focusKeyword)}</strong>
+          <p>${escapeHtml(profile.industryLabel)} article for ${escapeHtml(profile.audience)}.</p>
+        </section>
+        <section class="wx-blog-quick-info">
+          <span class="wx-blog-kicker">Quick Information</span>
+          <ul>${quickFactsHtml}</ul>
+        </section>
+        <section class="wx-blog-related-services">
+          <span class="wx-blog-kicker">Related Services</span>
+          <div>${relatedServicesHtml}</div>
         </section>
         ${renderEtbImageBlock(slot1Html, imagePrompt1)}
         ${sectionHtml}

@@ -93,8 +93,16 @@ function sameOrNearDuplicate(a: string, b: string): boolean {
 }
 
 function matchingServiceFamilies(text: string): string[] {
+  const termAppears = (term: string): boolean => {
+    const pattern = term
+      .trim()
+      .split(/\s+/)
+      .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join('\\s+');
+    return new RegExp(`(^|\\b)${pattern}(\\b|$)`, 'i').test(text);
+  };
   return Object.entries(SERVICE_FAMILIES)
-    .filter(([, terms]) => terms.some((term) => phraseMatches(text, term)))
+    .filter(([, terms]) => terms.some((term) => termAppears(term)))
     .map(([family]) => family);
 }
 
@@ -106,7 +114,7 @@ function allowedServiceFamilies(context: BlogPublishingValidationContext): strin
   ].join(' '));
   return Object.keys(SERVICE_FAMILIES).filter((family) => {
     if (family === 'remodeling' && /\bconstruction\b|builder|remodel|renovat|kitchen|bathroom/.test(source)) return true;
-    return SERVICE_FAMILIES[family].some((term) => phraseMatches(source, term));
+    return matchingServiceFamilies(source).includes(family);
   });
 }
 
