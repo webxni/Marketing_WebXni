@@ -395,6 +395,7 @@ export interface AgentDefinitionRow {
   last_error:                 string | null;
   stale_after_minutes:        number;
   next_expected_heartbeat_at: number | null;
+  backend_priority:           string | null;
   created_at:      number;
   updated_at:      number;
 }

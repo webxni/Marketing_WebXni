@@ -5,11 +5,15 @@ compatibility_flags = ["nodejs_compat"]
 
 [triggers]
 crons = [
-  "0 7 * * SUN",  # Weekly generation — Sunday 7AM
   "0 2 * * *",    # Fetch real URLs from Upload-Post history — daily 2AM
   "0 * * * *",    # Recurring GBP offers/events — top of every hour
   "*/1 * * * *",  # Exact-time posting — polls every minute for due posts
-  "0 9 * * *",    # Platform health check — daily 9AM, Discord alert if issues
+  "0 9 * * *",    # Platform health check + agency stale check — daily 9AM
+  "0 20 * * FRI", # Agency weekend sequence begins — Friday 8PM UTC
+  "0 8 * * SAT",  # Agency Saturday morning — research + strategy
+  "0 16 * * SAT", # Agency Saturday afternoon — blog drafts + editorial
+  "0 7 * * SUN",  # Agency Sunday morning — social copy + editorial
+  "0 16 * * SUN", # Agency Sunday afternoon — orchestrator wrap-up
 ]
 
 [[d1_databases]]

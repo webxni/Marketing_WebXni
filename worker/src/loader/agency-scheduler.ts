@@ -24,8 +24,20 @@ const AGENT_COMMANDS: Record<string, string> = {
   'editorial-review': 'agency_editorial_review',
 };
 
-const DAILY_AGENTS = ['security-sentinel', 'system-reliability', 'client-research'];
-const WEEKLY_AGENTS = ['strategy', 'blog-writer', 'social-copy', 'editorial-review', 'agency-orchestrator'];
+// Weekend schedule — tasks run Friday night through Sunday.
+// Mon–Thu: stale detection only, no job enqueueing.
+const SCHEDULE: Record<string, string[]> = {
+  // Friday 10PM UTC — kick off the weekend sequence
+  'fri-night':  ['security-sentinel', 'system-reliability', 'client-research'],
+  // Saturday morning (UTC midnight–1PM) — research + strategy
+  'sat-morning': ['client-research', 'strategy'],
+  // Saturday afternoon (UTC 14+) — blog drafts + editorial
+  'sat-afternoon': ['blog-writer', 'editorial-review'],
+  // Sunday morning (UTC midnight–1PM) — social copy + editorial
+  'sun-morning': ['social-copy', 'editorial-review'],
+  // Sunday afternoon (UTC 14+) — orchestrator wrap-up
+  'sun-afternoon': ['agency-orchestrator'],
+};
 
 export interface AgencySchedulerStats {
   enabled: boolean;
@@ -48,9 +60,17 @@ async function agencySchedulerEnabled(env: Env): Promise<boolean> {
 }
 
 function requestedAgents(now: Date): string[] {
-  const today = now.getUTCDay();
-  if (today === 0) return [...DAILY_AGENTS, ...WEEKLY_AGENTS];
-  return DAILY_AGENTS;
+  const day  = now.getUTCDay();   // 0=Sun 1=Mon … 5=Fri 6=Sat
+  const hour = now.getUTCHours();
+
+  if (day === 5 && hour >= 20) return SCHEDULE['fri-night']!;      // Fri 8PM+
+  if (day === 6 && hour < 14)  return SCHEDULE['sat-morning']!;    // Sat AM
+  if (day === 6 && hour >= 14) return SCHEDULE['sat-afternoon']!;  // Sat PM
+  if (day === 0 && hour < 14)  return SCHEDULE['sun-morning']!;    // Sun AM
+  if (day === 0 && hour >= 14) return SCHEDULE['sun-afternoon']!;  // Sun PM
+
+  // Mon–Thu and early Fri: nothing to schedule — stale check still runs
+  return [];
 }
 
 export async function runAgencyScheduler(env: Env, now = new Date()): Promise<AgencySchedulerStats> {

@@ -262,11 +262,25 @@ function isoDate(offsetDays = 0) {
   return date.toISOString().slice(0, 10);
 }
 
-function preferredBackend(agentSlug, fallback) {
-  if (agentSlug === 'client-research') return process.env.AGENCY_RESEARCH_BACKEND || 'gemini';
-  if (fallback === 'gemini_cli') return 'gemini';
-  if (fallback === 'claude_code') return 'claude';
-  return process.env.AGENCY_TERMINAL_AGENT || fallback || 'auto';
+// Per-agent backend priority chains.
+// Each array is tried in order; the first available backend wins.
+// OpenAI is included as a fallback on all chains when OPENAI_API_KEY is set.
+const AGENT_BACKEND_PRIORITY = {
+  'agency-orchestrator': ['openai', 'claude', 'codex'],
+  'system-reliability':  ['codex', 'claude', 'openai'],
+  'security-sentinel':   ['codex', 'claude', 'openai'],
+  'editorial-review':    ['codex', 'claude', 'openai'],
+  'strategy':            ['claude', 'openai', 'codex'],
+  'social-copy':         ['claude', 'openai', 'codex'],
+  'blog-writer':         ['claude', 'openai', 'codex'],
+  'client-research':     ['gemini', 'claude', 'openai'],
+};
+
+function preferredBackend(agentSlug, _fallback) {
+  // Return priority array from hardcoded map (backed by DB backend_priority when available)
+  const envOverride = process.env.AGENCY_TERMINAL_AGENT;
+  if (envOverride && envOverride !== 'auto') return [envOverride];
+  return AGENT_BACKEND_PRIORITY[agentSlug] ?? ['claude', 'openai', 'codex'];
 }
 
 async function runStructuredAgent(kind, agentSlug, backend, client, snapshot, task) {

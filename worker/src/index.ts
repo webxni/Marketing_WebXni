@@ -112,25 +112,37 @@ export default {
   fetch: app.fetch,
 
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
-    if (event.cron === '0 7 * * SUN') {
-      // Sunday 7AM — Phase 1 content generation (not yet implemented)
-      console.log('Generation cron triggered');
-      ctx.waitUntil((async () => {
-        try {
-          const stats = await runAgencyScheduler(env);
-          if (stats.enabled) console.log('Agency scheduler stats:', stats);
-          if (stats.stale_marked.length > 0 && env.DISCORD_BOT_TOKEN && env.DISCORD_CHANNEL_ID) {
-            const staleList = stats.stale_marked.map((s: string) => `• \`${s}\``).join('\n');
-            await discordSend({
-              channelId: env.DISCORD_CHANNEL_ID, token: env.DISCORD_BOT_TOKEN,
-              embeds: [{ title: '⚠️ Agency Heartbeat Alert', description: `${stats.stale_marked.length} agent(s) marked stale:\n${staleList}`, color: 0xf59e0b }],
-            }).catch(() => { /* non-critical */ });
-          }
-        } catch (err) {
-          console.error('Agency scheduler cron error:', err);
+    const AGENCY_CRONS = new Set(['0 20 * * FRI', '0 8 * * SAT', '0 16 * * SAT', '0 7 * * SUN', '0 16 * * SUN', '0 9 * * *']);
+
+    async function runSchedulerWithAlert() {
+      try {
+        const stats = await runAgencyScheduler(env);
+        if (stats.queued > 0 || stats.stale_marked.length > 0) {
+          console.log(`Agency scheduler: queued=${stats.queued} skipped=${stats.skipped} stale=${stats.stale_marked.length}`);
         }
-      })());
-    } else if (event.cron === '0 2 * * *') {
+        if (stats.stale_marked.length > 0 && env.DISCORD_BOT_TOKEN && env.DISCORD_CHANNEL_ID) {
+          const staleList = stats.stale_marked.map((s: string) => `• \`${s}\``).join('\n');
+          await discordSend({
+            channelId: env.DISCORD_CHANNEL_ID, token: env.DISCORD_BOT_TOKEN,
+            embeds: [{ title: '⚠️ Agency Heartbeat Alert', description: `${stats.stale_marked.length} agent(s) marked stale:\n${staleList}`, color: 0xf59e0b }],
+          }).catch(() => { /* non-critical */ });
+        }
+        if (stats.queued > 0 && env.DISCORD_BOT_TOKEN && env.DISCORD_CHANNEL_ID) {
+          await discordSend({
+            channelId: env.DISCORD_CHANNEL_ID, token: env.DISCORD_BOT_TOKEN,
+            embeds: [{ title: '🤖 Agency Jobs Queued', description: `${stats.queued} agent job(s) queued from scheduler.\nSchedule window: \`${event.cron}\``, color: 0x6366f1 }],
+          }).catch(() => { /* non-critical */ });
+        }
+      } catch (err) {
+        console.error('Agency scheduler cron error:', err);
+      }
+    }
+
+    if (AGENCY_CRONS.has(event.cron)) {
+      ctx.waitUntil(runSchedulerWithAlert());
+    }
+
+    if (event.cron === '0 2 * * *') {
       // Daily 2AM — fetch real post URLs from Upload-Post history
       ctx.waitUntil((async () => {
         try {
@@ -208,23 +220,10 @@ export default {
           console.error('Cron posting error:', err);
         }
       })());
-    } else if (event.cron === '0 9 * * *') {
-      // Daily 9AM — platform health check + agency heartbeat stale check
-      ctx.waitUntil((async () => {
-        try {
-          const stats = await runAgencyScheduler(env);
-          if (stats.enabled) console.log('Agency scheduler stats:', stats);
-          if (stats.stale_marked.length > 0 && env.DISCORD_BOT_TOKEN && env.DISCORD_CHANNEL_ID) {
-            const staleList = stats.stale_marked.map((s: string) => `• \`${s}\``).join('\n');
-            await discordSend({
-              channelId: env.DISCORD_CHANNEL_ID, token: env.DISCORD_BOT_TOKEN,
-              embeds: [{ title: '⚠️ Agency Heartbeat Alert', description: `${stats.stale_marked.length} agent(s) marked stale:\n${staleList}`, color: 0xf59e0b }],
-            }).catch(() => { /* non-critical */ });
-          }
-        } catch (err) {
-          console.error('Agency scheduler cron error:', err);
-        }
-      })());
+    }
+
+    if (event.cron === '0 9 * * *') {
+      // Daily 9AM — platform health check (agency scheduler handled above via AGENCY_CRONS)
       ctx.waitUntil((async () => {
         try {
           const summary = await runPlatformHealthCheck(env as any);
