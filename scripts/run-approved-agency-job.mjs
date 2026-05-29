@@ -23,6 +23,23 @@ if (!botSecret) {
   process.exit(2);
 }
 
+async function loadAiConfig() {
+  try {
+    const res = await fetch(`${apiBaseUrl}/internal/agency/ai-config`, {
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${botSecret}` },
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.openai_api_key && !process.env.OPENAI_API_KEY) {
+      process.env.OPENAI_API_KEY = data.openai_api_key;
+      console.log(`[agency] OpenAI key loaded from KV settings (model: ${data.openai_model})`);
+    }
+    if (data.openai_model && !process.env.OPENAI_MODEL) {
+      process.env.OPENAI_MODEL = data.openai_model;
+    }
+  } catch { /* non-fatal — OpenAI remains unavailable if fetch fails */ }
+}
+
 async function request(pathname, options = {}) {
   const res = await fetch(`${apiBaseUrl}${pathname}`, {
     ...options,
@@ -479,6 +496,7 @@ async function createFindingsForResult(agentSlug, taskId, result) {
 }
 
 try {
+  await loadAiConfig();
   const context = await request(`/internal/agency/jobs/${jobId}/context`);
   const job = context.job;
   const args = JSON.parse(job.args_json || '{}');

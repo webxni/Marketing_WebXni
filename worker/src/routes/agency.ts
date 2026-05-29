@@ -638,6 +638,27 @@ agencyInternalRoutes.post('/draft-post', async (c) => {
   return c.json({ ok: true, post_id: post.id });
 });
 
+agencyInternalRoutes.get('/ai-config', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  let openaiKey = '';
+  let openaiModel = 'gpt-4o-mini';
+  let provider = 'openai';
+  try {
+    const raw = await c.env.KV_BINDING.get('settings:system');
+    const s: Record<string, string> = raw ? JSON.parse(raw) as Record<string, string> : {};
+    provider = s['ai_provider'] || 'openai';
+    // Use provider-specific key first, fall back to shared ai_api_key
+    openaiKey =
+      s['ai_openai_api_key'] ||
+      (provider === 'openai' ? s['ai_api_key'] || '' : '') ||
+      '';
+    openaiModel =
+      s['ai_openai_model'] ||
+      (provider === 'openai' ? s['ai_model'] || 'gpt-4o-mini' : 'gpt-4o-mini');
+  } catch { /* ignore */ }
+  return c.json({ ok: true, openai_api_key: openaiKey, openai_model: openaiModel, ai_provider: provider });
+});
+
 const VALID_HEARTBEAT_STATUSES = new Set([
   'healthy', 'idle', 'running', 'waiting_for_approval', 'waiting_for_designer',
   'warning', 'stale', 'failed', 'paused',
