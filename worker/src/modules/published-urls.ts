@@ -161,7 +161,7 @@ export async function syncPublishedUrls(
   const up = new UploadPostClient(env.UPLOAD_POST_API_KEY);
   const filters: string[] = [
     'real_url IS NULL',
-    "status IN ('sent','idempotent','posted')",
+    "pp.status IN ('sent','idempotent','posted')",
     '(tracking_id IS NOT NULL OR platform_post_id IS NOT NULL)',
   ];
   const binds: unknown[] = [];
