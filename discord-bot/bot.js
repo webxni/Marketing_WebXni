@@ -308,6 +308,7 @@ async function postInternal(pathname, body) {
 const VALID_AGENT_SLUGS = new Set([
   'agency-orchestrator', 'system-reliability', 'security-sentinel',
   'client-research', 'strategy', 'social-copy', 'blog-writer', 'editorial-review',
+  'client-onboarding',
 ]);
 
 function parseAgencyRequest(text) {
@@ -317,6 +318,12 @@ function parseAgencyRequest(text) {
     .replace(/^webxni[,:\s]+/, '')
     .replace(/^\//, '')
     .trim();
+
+  // Platform sync: "webxni, sync platforms" / "webxni, sync platforms for caliview-landscape"
+  if (/\bsync\b.*\bplatform\b|\bplatform\b.*\bsync\b|\bonboard\b/.test(normalized)) {
+    const slugMatch = normalized.match(/(?:client|for)[:\s]+([a-z0-9-]+)/);
+    return { kind: 'sync_platforms', client_slug: slugMatch ? slugMatch[1] : null };
+  }
 
   // Slash-style heartbeat commands: /agency-heartbeat, /agency-health, /agency-stale, /agency-ping agent:<slug>
   if (/^agency-heartbeat\b/.test(normalized) || /\bheartbeat\b/.test(normalized)) {
@@ -390,6 +397,11 @@ async function handleAgencyRequest(parsed, username) {
     const result = await postInternal('/internal/agency/status', {});
     return result.content || 'AI Agency status unavailable.';
   }
+  if (parsed.kind === 'sync_platforms') {
+    const body = parsed.client_slug ? { client_slug: parsed.client_slug } : {};
+    const result = await postInternal('/internal/agency/sync-client-platforms', body);
+    return result.content || 'Platform sync complete.';
+  }
   if (parsed.kind === 'heartbeat') {
     const result = await postInternal('/internal/agency/stale-check', {});
     const agents = result.agents || [];
@@ -442,6 +454,7 @@ async function runApprovedJob(job) {
     agency_blog_generation: ['scripts/run-approved-agency-job.mjs'],
     agency_editorial_review: ['scripts/run-approved-agency-job.mjs'],
     agency_orchestrator: ['scripts/run-approved-agency-job.mjs'],
+    agency_client_onboarding: ['scripts/run-approved-agency-job.mjs'],
   };
   const scriptPathParts = allowed[job.command_name];
   if (!scriptPathParts) throw new Error(`Unapproved command: ${job.command_name}`);

@@ -237,6 +237,18 @@ function buildResult(agentSlug, commandName, snapshot) {
     };
   }
 
+  if (agentSlug === 'client-onboarding') {
+    const noConnections = snapshot.coverage.filter((c) => !c.last_research_date);
+    return {
+      summary: `Onboarding scan: ${noConnections.length} client(s) need platform connections and/or research. Enable AGENCY_EXECUTE_AI=1 to run the full onboarding.`,
+      agent_slug: agentSlug,
+      command_name: commandName,
+      clients_needing_onboarding: noConnections.map((c) => ({ client_name: c.client_name, client_id: c.client_id })),
+      next_actions: ['Run the client-onboarding agent with AGENCY_EXECUTE_AI=1 to sync Upload-Post connections and build intelligence profiles.'],
+      safety,
+    };
+  }
+
   return {
     summary: `Agency orchestration completed: ${overview.waiting_marvin_approval} approval item(s), ${overview.waiting_designer_assets} designer item(s), ${summary.failed_jobs} failed agency job(s).`,
     agent_slug: agentSlug,
@@ -291,6 +303,7 @@ const AGENT_BACKEND_PRIORITY = {
   'social-copy':         ['claude', 'openai', 'codex'],
   'blog-writer':         ['claude', 'openai', 'codex'],
   'client-research':     ['gemini', 'claude', 'openai'],
+  'client-onboarding':   ['openai', 'claude', 'codex'],
 };
 
 function preferredBackend(agentSlug, _fallback) {
@@ -316,6 +329,41 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
     return {
       ...buildResult(agentSlug, commandName, snapshot),
       ai_execution_enabled: false,
+    };
+  }
+
+  if (agentSlug === 'client-onboarding') {
+    // Step 1: sync platform connections from Upload-Post for all clients
+    const syncResult = await post('/internal/agency/sync-client-platforms', {});
+    const created = syncResult.created ?? 0;
+    const syncErrors = syncResult.errors ?? [];
+
+    // Step 2: for each client with no intelligence profile, run AI to build one
+    const candidates = snapshot.coverage.filter((c) => !c.last_research_date).slice(0, 3);
+    const profiled = [];
+    for (const client of candidates) {
+      try {
+        const result = await runStructuredAgent('research', agentSlug, backend, client, snapshot, taskInput);
+        await post('/internal/agency/research-note', {
+          agent_slug: agentSlug,
+          task_id: taskId,
+          client_id: client.client_id,
+          source: result.backend,
+          freshness_date: isoDate(),
+          research_json: result.output,
+        });
+        profiled.push({ client_name: client.client_name, backend: result.backend });
+      } catch { /* skip failed clients */ }
+    }
+
+    return {
+      summary: `Onboarding: ${created} platform connection(s) synced from Upload-Post. ${profiled.length} client profile(s) built.`,
+      agent_slug: agentSlug,
+      command_name: commandName,
+      platforms_created: created,
+      sync_errors: syncErrors.slice(0, 5),
+      profiles_built: profiled,
+      safety: { no_arbitrary_shell: true, preserve_marvin_approval: true, preserve_designer_gate: true },
     };
   }
 

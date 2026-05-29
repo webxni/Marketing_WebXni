@@ -22,6 +22,7 @@ const AGENT_COMMANDS: Record<string, string> = {
   'social-copy': 'agency_social_generation',
   'blog-writer': 'agency_blog_generation',
   'editorial-review': 'agency_editorial_review',
+  'client-onboarding': 'agency_client_onboarding',
 };
 
 // Weekend schedule — tasks run Friday night through Sunday.
