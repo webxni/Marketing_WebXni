@@ -12,12 +12,14 @@
     AgencyTimelineItem,
     AgentDefinition,
     AgentFinding,
+    AgentHealthSummary,
     AgentTask,
     HarnessFlowStep,
   } from '$lib/types';
 
   let overview: AgencyOverview | null = null;
   let agents: AgentDefinition[] = [];
+  let health: AgentHealthSummary | null = null;
   let tasks: AgentTask[] = [];
   let findings: AgentFinding[] = [];
   let clients: AgencyClientCoverage[] = [];
@@ -46,9 +48,10 @@
     loading = true;
     error = '';
     try {
-      const [overviewRes, agentsRes, tasksRes, findingsRes, clientsRes, timelineRes, logsRes, skillsRes, flowRes] = await Promise.all([
+      const [overviewRes, agentsRes, healthRes, tasksRes, findingsRes, clientsRes, timelineRes, logsRes, skillsRes, flowRes] = await Promise.all([
         agencyApi.overview(),
         agencyApi.agents(),
+        agencyApi.health(),
         agencyApi.tasks(),
         agencyApi.findings(),
         agencyApi.clientCoverage(),
@@ -59,6 +62,7 @@
       ]);
       overview = overviewRes;
       agents = agentsRes.agents;
+      health = healthRes;
       tasks = tasksRes.tasks;
       findings = findingsRes.findings;
       clients = clientsRes.clients;
@@ -118,6 +122,37 @@
   function progressWidth(value: number) {
     return `width: ${Math.max(0, Math.min(100, value))}%`;
   }
+
+  function heartbeatDotClass(hs: string): string {
+    if (hs === 'healthy' || hs === 'running') return 'hb-dot-green';
+    if (hs === 'idle' || hs === 'paused') return 'hb-dot-gray';
+    if (hs === 'waiting_for_approval' || hs === 'waiting_for_designer' || hs === 'warning') return 'hb-dot-yellow';
+    if (hs === 'stale' || hs === 'failed') return 'hb-dot-red';
+    return 'hb-dot-gray';
+  }
+
+  function heartbeatLabel(hs: string): string {
+    return hs.replace(/_/g, ' ');
+  }
+
+  function fmtHbTime(ts: number | null): string {
+    if (!ts) return 'Never';
+    return timeAgo(ts);
+  }
+
+  function fmtNextHb(ts: number | null): string {
+    if (!ts) return '—';
+    const nowSec = Math.floor(Date.now() / 1000);
+    const diffMin = Math.floor((ts - nowSec) / 60);
+    if (diffMin < 0) return 'Overdue';
+    if (diffMin < 60) return `in ${diffMin}m`;
+    return `in ${Math.floor(diffMin / 60)}h`;
+  }
+
+  $: staleCount = health ? (health.summary['stale'] ?? 0) : 0;
+  $: failedHbCount = health ? (health.summary['failed'] ?? 0) : 0;
+  $: runningCount = health ? (health.summary['running'] ?? 0) : 0;
+  $: healthyCount = health ? (health.summary['healthy'] ?? 0) : 0;
 </script>
 
 <svelte:head><title>AI Agency — WebXni</title></svelte:head>
@@ -143,11 +178,58 @@
 {:else if error}
   <div class="alert-error rounded-lg mb-6">{error}</div>
 {:else}
-  {#if overview && (overview.failed_agent_jobs > 0 || overview.waiting_marvin_approval > 0 || overview.waiting_designer_assets > 0)}
+  {#if staleCount > 0 || failedHbCount > 0}
+    <div class="alert-error mb-4 flex items-center gap-3">
+      <span class="font-semibold">⚠️ Agent health alert</span>
+      <span>{staleCount} stale{failedHbCount > 0 ? `, ${failedHbCount} failed heartbeat` : ''} — check the Agent Health section below.</span>
+    </div>
+  {:else if overview && (overview.failed_agent_jobs > 0 || overview.waiting_marvin_approval > 0 || overview.waiting_designer_assets > 0)}
     <div class="alert-warning mb-5">
       <span class="font-semibold">Agency attention needed</span>
       <span>{overview.failed_agent_jobs} failed jobs, {overview.waiting_marvin_approval} approvals, {overview.waiting_designer_assets} designer assets.</span>
     </div>
+  {/if}
+
+  {#if health}
+    <section id="agent-health" class="card mb-5">
+      <div class="px-5 py-4 border-b border-border flex items-center justify-between">
+        <h2 class="section-title">Agent Health</h2>
+        <span class="text-xs text-muted">Heartbeat monitoring</span>
+      </div>
+      <div class="p-4">
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+          <div class="rounded-lg bg-surface/50 border border-border p-3 text-center">
+            <div class="text-lg font-bold text-green-400">{healthyCount}</div>
+            <div class="text-xs text-muted mt-1">Healthy</div>
+          </div>
+          <div class="rounded-lg bg-surface/50 border border-border p-3 text-center">
+            <div class="text-lg font-bold text-blue-400">{runningCount}</div>
+            <div class="text-xs text-muted mt-1">Running</div>
+          </div>
+          <div class="rounded-lg bg-surface/50 border border-border p-3 text-center">
+            <div class="text-lg font-bold {staleCount > 0 ? 'text-red-400' : 'text-muted'}">{staleCount}</div>
+            <div class="text-xs text-muted mt-1">Stale</div>
+          </div>
+          <div class="rounded-lg bg-surface/50 border border-border p-3 text-center">
+            <div class="text-lg font-bold {failedHbCount > 0 ? 'text-red-400' : 'text-muted'}">{failedHbCount}</div>
+            <div class="text-xs text-muted mt-1">Failed</div>
+          </div>
+        </div>
+        {#if health.stale_agents.length > 0}
+          <div class="rounded-lg bg-red-500/10 border border-red-500/30 p-3">
+            <div class="text-xs font-semibold text-red-400 mb-2">Stale agents — missed heartbeat window</div>
+            <div class="space-y-1">
+              {#each health.stale_agents as sa}
+                <div class="flex items-center justify-between text-xs">
+                  <span class="text-white">{sa.name}</span>
+                  <span class="text-muted">Last: {fmtHbTime(sa.last_heartbeat_at)} · Window: {sa.stale_after_minutes}m</span>
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/if}
+      </div>
+    </section>
   {/if}
 
   {#if overview}
@@ -173,20 +255,31 @@
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-3 p-3">
           {#each agents as agent}
-            <div class="border border-border rounded-lg p-4 bg-surface/40">
+            {@const hbStatus = agent.heartbeat_status ?? 'idle'}
+            <div class="border border-border rounded-lg p-4 bg-surface/40 {hbStatus === 'stale' || hbStatus === 'failed' ? 'border-red-500/40' : ''}">
               <div class="flex items-start justify-between gap-3 mb-2">
                 <div class="min-w-0">
                   <h3 class="text-sm font-semibold text-white truncate">{agent.name}</h3>
                   <p class="text-xs text-muted mt-1 line-clamp-2">{agent.purpose}</p>
                 </div>
-                <span class={statusClass(agent.status)}>{agent.status}</span>
+                <div class="flex flex-col items-end gap-1 shrink-0">
+                  <span class={statusClass(agent.status)}>{agent.status}</span>
+                  <span class="hb-badge">
+                    <span class="hb-dot {heartbeatDotClass(hbStatus)}"></span>
+                    {heartbeatLabel(hbStatus)}
+                  </span>
+                </div>
               </div>
               <div class="space-y-2 text-xs text-muted">
                 <div class="flex justify-between gap-3"><span>Backend</span><span class="text-white">{agent.default_backend.replace(/_/g, ' ')}</span></div>
                 <div class="flex justify-between gap-3"><span>Current task</span><span class="text-white truncate">{agent.current_task ?? 'Idle'}</span></div>
                 <div class="flex justify-between gap-3"><span>Last run</span><span class="text-white">{agent.last_run_at ? timeAgo(agent.last_run_at) : 'Never'}</span></div>
-                <div class="flex justify-between gap-3"><span>Next run</span><span class="text-white">{agent.next_run_at ? timeAgo(agent.next_run_at) : 'Not scheduled'}</span></div>
+                <div class="flex justify-between gap-3"><span>Last heartbeat</span><span class="text-white">{fmtHbTime(agent.last_heartbeat_at)}</span></div>
+                <div class="flex justify-between gap-3"><span>Next expected</span><span class="text-white">{fmtNextHb(agent.next_expected_heartbeat_at)}</span></div>
               </div>
+              {#if agent.heartbeat_message}
+                <div class="mt-2 text-xs text-muted truncate" title={agent.heartbeat_message}>{agent.heartbeat_message}</div>
+              {/if}
               <div class="h-1.5 bg-bg rounded-full overflow-hidden mt-3">
                 <div class="h-full bg-accent" style={progressWidth(agent.progress)}></div>
               </div>
@@ -377,3 +470,24 @@
     </div>
   </div>
 {/if}
+
+<style>
+  .hb-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--color-muted, #6b7280);
+    white-space: nowrap;
+  }
+  .hb-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .hb-dot-green  { background: #4ade80; box-shadow: 0 0 4px #4ade8080; }
+  .hb-dot-gray   { background: #6b7280; }
+  .hb-dot-yellow { background: #facc15; box-shadow: 0 0 4px #facc1580; }
+  .hb-dot-red    { background: #f87171; box-shadow: 0 0 4px #f8717180; }
+</style>

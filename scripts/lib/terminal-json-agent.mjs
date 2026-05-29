@@ -54,7 +54,7 @@ function runClaude(prompt, schema, mode) {
     '--output-format', 'json',
     '--effort', mode === 'blog' ? 'medium' : 'low',
     '--model', 'sonnet',
-    '--tools', '',
+    '--max-turns', '1',
     '--append-system-prompt', JSON_ONLY_SYSTEM_APPEND,
     '--json-schema', schemaStr,
     wrappedPrompt,

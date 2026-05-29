@@ -1180,6 +1180,69 @@ export async function listAgentDefinitions(db: D1Database): Promise<AgentDefinit
   return rows.results;
 }
 
+export async function updateAgentHeartbeat(
+  db: D1Database,
+  slug: string,
+  status: string,
+  message: string | null,
+  error: string | null,
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  const active = status === 'running';
+  await db
+    .prepare(
+      `UPDATE agent_definitions
+       SET heartbeat_status            = ?,
+           heartbeat_message           = ?,
+           last_error                  = CASE WHEN ? IS NOT NULL THEN ? ELSE last_error END,
+           last_heartbeat_at           = ?,
+           next_expected_heartbeat_at  = CASE WHEN ? THEN unixepoch() + (stale_after_minutes * 60) ELSE NULL END,
+           updated_at                  = ?
+       WHERE slug = ?`,
+    )
+    .bind(status, message, error, error, now, active ? 1 : 0, now, slug)
+    .run();
+}
+
+export async function checkStaleAgents(db: D1Database): Promise<AgentDefinitionRow[]> {
+  const now = Math.floor(Date.now() / 1000);
+  const rows = await db
+    .prepare(
+      `SELECT * FROM agent_definitions
+       WHERE enabled = 1
+         AND heartbeat_status NOT IN ('idle', 'paused', 'stale', 'healthy')
+         AND next_expected_heartbeat_at IS NOT NULL
+         AND next_expected_heartbeat_at < ?`,
+    )
+    .bind(now)
+    .all<AgentDefinitionRow>();
+  return rows.results;
+}
+
+export async function markAgentStale(db: D1Database, slug: string, message: string): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await db
+    .prepare(
+      `UPDATE agent_definitions
+       SET heartbeat_status = 'stale', heartbeat_message = ?, updated_at = ?
+       WHERE slug = ?`,
+    )
+    .bind(message, now, slug)
+    .run();
+}
+
+export async function getAgentHealthSummary(db: D1Database): Promise<Record<string, number>> {
+  const rows = await db
+    .prepare(
+      `SELECT heartbeat_status, COUNT(*) as cnt
+       FROM agent_definitions
+       WHERE enabled = 1
+       GROUP BY heartbeat_status`,
+    )
+    .all<{ heartbeat_status: string; cnt: number }>();
+  return Object.fromEntries(rows.results.map((r) => [r.heartbeat_status, r.cnt]));
+}
+
 export async function listAgentRuns(db: D1Database, limit = 30): Promise<AgentRunRow[]> {
   const rows = await db
     .prepare('SELECT * FROM agent_runs ORDER BY created_at DESC LIMIT ?')

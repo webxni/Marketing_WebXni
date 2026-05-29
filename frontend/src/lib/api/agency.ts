@@ -7,6 +7,7 @@ import type {
   AgencyTimelineItem,
   AgentDefinition,
   AgentFinding,
+  AgentHealthSummary,
   AgentRun,
   AgentTask,
   HarnessFlowStep,
@@ -68,4 +69,7 @@ export const agencyApi = {
 
   harnessFlow: () =>
     api.get<{ steps: HarnessFlowStep[] }>('/api/agency/harness-flow'),
+
+  health: () =>
+    api.get<AgentHealthSummary>('/api/agency/health'),
 };

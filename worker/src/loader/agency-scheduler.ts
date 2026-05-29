@@ -1,10 +1,14 @@
 import type { Env } from '../types';
 import {
   appendAgencyLog,
+  checkStaleAgents,
+  createAgentFinding,
   createAgentTask,
   createApprovedCommandJob,
+  getAgentHealthSummary,
   getLatestAuditMarker,
   listAgentDefinitions,
+  markAgentStale,
   updateAgentTask,
   writeAuditLog,
 } from '../db/queries';
@@ -28,6 +32,8 @@ export interface AgencySchedulerStats {
   requested: string[];
   queued: number;
   skipped: number;
+  stale_marked: string[];
+  health_summary: Record<string, number>;
 }
 
 async function agencySchedulerEnabled(env: Env): Promise<boolean> {
@@ -50,7 +56,32 @@ function requestedAgents(now: Date): string[] {
 export async function runAgencyScheduler(env: Env, now = new Date()): Promise<AgencySchedulerStats> {
   const requested = requestedAgents(now);
   const enabled = await agencySchedulerEnabled(env);
-  if (!enabled) return { enabled, requested, queued: 0, skipped: requested.length };
+  if (!enabled) {
+    const staleAgents = await checkStaleAgents(env.DB);
+    const stale_marked: string[] = [];
+    for (const agent of staleAgents) {
+      const msg = `Missed heartbeat window (${agent.stale_after_minutes}m)`;
+      await markAgentStale(env.DB, agent.slug, msg);
+      await createAgentFinding(env.DB, {
+        agent_slug: agent.slug,
+        task_id: null,
+        client_id: null,
+        severity: 'medium',
+        title: `${agent.name} is stale`,
+        finding_json: JSON.stringify({ last_heartbeat_at: agent.last_heartbeat_at, stale_after_minutes: agent.stale_after_minutes }),
+      });
+      await appendAgencyLog(env.DB, {
+        agent_slug: agent.slug,
+        task_id: null,
+        status: 'stale',
+        step: 'stale_check',
+        summary: `${agent.name} marked stale — ${msg}`,
+      });
+      stale_marked.push(agent.slug);
+    }
+    const health_summary = await getAgentHealthSummary(env.DB);
+    return { enabled, requested, queued: 0, skipped: requested.length, stale_marked, health_summary };
+  }
 
   const agents = await listAgentDefinitions(env.DB);
   let queued = 0;
@@ -113,5 +144,35 @@ export async function runAgencyScheduler(env: Env, now = new Date()): Promise<Ag
     queued++;
   }
 
-  return { enabled, requested, queued, skipped };
+  // Stale detection — runs every cron tick regardless of scheduler enabled flag
+  const staleAgents = await checkStaleAgents(env.DB);
+  const stale_marked: string[] = [];
+  for (const agent of staleAgents) {
+    const msg = `Missed heartbeat window (${agent.stale_after_minutes}m)`;
+    await markAgentStale(env.DB, agent.slug, msg);
+    await createAgentFinding(env.DB, {
+      agent_slug: agent.slug,
+      task_id: null,
+      client_id: null,
+      severity: 'medium',
+      title: `${agent.name} is stale`,
+      finding_json: JSON.stringify({
+        last_heartbeat_at: agent.last_heartbeat_at,
+        stale_after_minutes: agent.stale_after_minutes,
+        previous_status: agent.heartbeat_status,
+      }),
+    });
+    await appendAgencyLog(env.DB, {
+      agent_slug: agent.slug,
+      task_id: null,
+      status: 'stale',
+      step: 'stale_check',
+      summary: `${agent.name} marked stale — ${msg}`,
+    });
+    stale_marked.push(agent.slug);
+  }
+
+  const health_summary = await getAgentHealthSummary(env.DB);
+
+  return { enabled, requested, queued, skipped, stale_marked, health_summary };
 }

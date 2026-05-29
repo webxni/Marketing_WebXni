@@ -306,20 +306,9 @@ function runCodex(prompt, schema, plan = null) {
 async function runTerminalAgent(prompt, schema, plan = null) {
   const backend = resolveTerminalBackend();
 
-  try {
-    if (backend === 'codex') return { backend, output: await runCodex(prompt, schema, plan) };
-    if (backend === 'gemini') return { backend, output: await runGemini(prompt, schema, plan) };
-    if (backend === 'claude') return { backend, output: await runClaude(prompt, schema, plan) };
-  } catch (err) {
-    // Fallback to API if CLI fails
-    if (backend === 'claude' && process.env.ANTHROPIC_API_KEY) {
-      console.warn(`Claude CLI failed: ${err.message}, falling back to API`);
-      return { backend: 'claude-api', output: await runClaudeAPI(prompt, schema) };
-    }
-    throw err;
-  }
-
-  return { backend, output: await runClaude(prompt, schema, plan) };
+  if (backend === 'codex') return { backend, output: await runCodex(prompt, schema, plan) };
+  if (backend === 'gemini') return { backend, output: await runGemini(prompt, schema, plan) };
+  return { backend: 'claude', output: await runClaude(prompt, schema, plan) };
 }
 
 async function processSlot(summary, args, total) {

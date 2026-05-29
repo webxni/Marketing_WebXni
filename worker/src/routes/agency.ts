@@ -23,8 +23,12 @@ import {
   listAgentTasks,
   listApprovedCommandJobs,
   updateAgentFinding,
+  updateAgentHeartbeat,
   updateAgentRun,
   updateAgentTask,
+  checkStaleAgents,
+  markAgentStale,
+  getAgentHealthSummary,
   writeAuditLog,
 } from '../db/queries';
 import { redactSecrets } from '../modules/redaction';
@@ -118,6 +122,16 @@ agencyRoutes.get('/timeline', async (c) => c.json({ items: TIMELINE.map((item) =
 agencyRoutes.get('/logs', async (c) => c.json({ logs: await getAgencyLogs(c.env.DB) }));
 agencyRoutes.get('/skills', async (c) => c.json({ skills: agencySkills() }));
 agencyRoutes.get('/harness-flow', async (c) => c.json({ steps: harnessFlow() }));
+agencyRoutes.get('/health', async (c) => {
+  const [agents, summary] = await Promise.all([
+    listAgentDefinitions(c.env.DB),
+    getAgentHealthSummary(c.env.DB),
+  ]);
+  const stale = agents.filter((a) => a.heartbeat_status === 'stale');
+  const failed = agents.filter((a) => a.heartbeat_status === 'failed');
+  const running = agents.filter((a) => a.heartbeat_status === 'running');
+  return c.json({ summary, stale_agents: stale, failed_agents: failed, running_agents: running, agents });
+});
 
 const createTaskSchema = z.object({
   agent_slug: z.string().min(1),
@@ -622,6 +636,111 @@ agencyInternalRoutes.post('/draft-post', async (c) => {
     summary: `Draft ${post.content_type} post created for review: ${post.title}`,
   });
   return c.json({ ok: true, post_id: post.id });
+});
+
+const VALID_HEARTBEAT_STATUSES = new Set([
+  'healthy', 'idle', 'running', 'waiting_for_approval', 'waiting_for_designer',
+  'warning', 'stale', 'failed', 'paused',
+]);
+
+const internalHeartbeatSchema = z.object({
+  agent_slug: z.string().min(1),
+  status: z.string().refine((s) => VALID_HEARTBEAT_STATUSES.has(s), { message: 'Invalid heartbeat status' }),
+  message: z.string().max(500).nullable().optional(),
+  error: z.string().max(2000).nullable().optional(),
+  task_id: z.string().optional(),
+});
+
+agencyInternalRoutes.post('/heartbeat', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const parsed = internalHeartbeatSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json({ error: 'Invalid input', issues: parsed.error.issues }, 400);
+  const { agent_slug, status, message, error, task_id } = parsed.data;
+  const safeError = error ? redactSecrets(error) : null;
+  await updateAgentHeartbeat(c.env.DB, agent_slug, status, message ?? null, safeError);
+  await appendAgencyLog(c.env.DB, {
+    agent_slug,
+    task_id: task_id ?? null,
+    status: 'heartbeat',
+    step: 'heartbeat',
+    summary: `Heartbeat ${status}${message ? ` — ${message}` : ''}`,
+    error: safeError,
+  });
+  return c.json({ ok: true });
+});
+
+agencyInternalRoutes.post('/stale-check', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const staleAgents = await checkStaleAgents(c.env.DB);
+  const marked: string[] = [];
+  for (const agent of staleAgents) {
+    const msg = `Missed heartbeat window (${agent.stale_after_minutes}m)`;
+    await markAgentStale(c.env.DB, agent.slug, msg);
+    await createAgentFinding(c.env.DB, {
+      agent_slug: agent.slug,
+      task_id: null,
+      client_id: null,
+      severity: 'medium',
+      title: `${agent.name} is stale`,
+      finding_json: JSON.stringify({
+        last_heartbeat_at: agent.last_heartbeat_at,
+        stale_after_minutes: agent.stale_after_minutes,
+        previous_status: agent.heartbeat_status,
+      }),
+    });
+    await appendAgencyLog(c.env.DB, {
+      agent_slug: agent.slug,
+      task_id: null,
+      status: 'stale',
+      step: 'stale_check',
+      summary: `${agent.name} marked stale — ${msg}`,
+    });
+    marked.push(agent.slug);
+  }
+  const [agents, summary] = await Promise.all([
+    listAgentDefinitions(c.env.DB),
+    getAgentHealthSummary(c.env.DB),
+  ]);
+  const staleCount = summary['stale'] ?? 0;
+  const failedCount = summary['failed'] ?? 0;
+  const content = staleCount === 0 && failedCount === 0
+    ? 'All agents healthy — no stale or failed heartbeats.'
+    : `⚠️ Agent health alert\nStale: ${staleCount} | Failed: ${failedCount}\n${marked.map((s) => `• ${s} — stale`).join('\n')}`;
+  return c.json({ ok: true, marked, stale_count: staleCount, failed_count: failedCount, content, agents, summary });
+});
+
+agencyInternalRoutes.post('/ping', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  let body: { agent_slug?: string } = {};
+  try { body = await c.req.json(); } catch { /* optional */ }
+  const slug = body.agent_slug ?? '';
+  const agents = await listAgentDefinitions(c.env.DB);
+  const agent = agents.find((a) => a.slug === slug);
+  if (!agent) return c.json({ error: 'Unknown agent_slug' }, 400);
+  const now = Math.floor(Date.now() / 1000);
+  const nextHb = agent.next_expected_heartbeat_at;
+  const sinceHb = agent.last_heartbeat_at ? now - agent.last_heartbeat_at : null;
+  return c.json({
+    ok: true,
+    content: [
+      `**${agent.name}** — \`${agent.slug}\``,
+      `Heartbeat: **${agent.heartbeat_status}**`,
+      agent.heartbeat_message ? `Message: ${agent.heartbeat_message}` : null,
+      sinceHb !== null ? `Last heartbeat: ${Math.floor(sinceHb / 60)}m ago` : 'Last heartbeat: never',
+      nextHb ? `Next expected: <t:${nextHb}:R>` : 'Next expected: —',
+      agent.last_error ? `Last error: ${redactSecrets(agent.last_error).slice(0, 200)}` : null,
+    ].filter(Boolean).join('\n'),
+    agent: {
+      slug: agent.slug,
+      name: agent.name,
+      heartbeat_status: agent.heartbeat_status,
+      heartbeat_message: agent.heartbeat_message,
+      last_heartbeat_at: agent.last_heartbeat_at,
+      next_expected_heartbeat_at: agent.next_expected_heartbeat_at,
+      last_error: agent.last_error ? redactSecrets(agent.last_error) : null,
+      stale_after_minutes: agent.stale_after_minutes,
+    },
+  });
 });
 
 agencyInternalRoutes.get('/jobs/:id/context', async (c) => {

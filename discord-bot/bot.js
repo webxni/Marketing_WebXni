@@ -305,12 +305,38 @@ async function postInternal(pathname, body) {
   return res.json();
 }
 
+const VALID_AGENT_SLUGS = new Set([
+  'agency-orchestrator', 'system-reliability', 'security-sentinel',
+  'client-research', 'strategy', 'social-copy', 'blog-writer', 'editorial-review',
+]);
+
 function parseAgencyRequest(text) {
-  const normalized = String(text || '')
+  const raw = String(text || '').trim();
+  const normalized = raw
     .toLowerCase()
     .replace(/^webxni[,:\s]+/, '')
+    .replace(/^\//, '')
     .trim();
 
+  // Slash-style heartbeat commands: /agency-heartbeat, /agency-health, /agency-stale, /agency-ping agent:<slug>
+  if (/^agency-heartbeat\b/.test(normalized) || /\bheartbeat\b/.test(normalized)) {
+    return { kind: 'heartbeat' };
+  }
+  if (/^agency-health\b/.test(normalized) || /\bagent.?health\b/.test(normalized)) {
+    return { kind: 'health' };
+  }
+  if (/^agency-stale\b/.test(normalized) || /\bstale.agent\b/.test(normalized)) {
+    return { kind: 'stale' };
+  }
+  const pingMatch = normalized.match(/^agency-ping\s+agent:([a-z-]+)/);
+  if (pingMatch || /\bagency.?ping\b/.test(normalized)) {
+    const slugFromCmd = pingMatch ? pingMatch[1] : null;
+    const slugFromText = normalized.match(/\bagent:([a-z-]+)/)?.[1] ?? null;
+    const slug = slugFromCmd ?? slugFromText ?? null;
+    return { kind: 'ping', agent_slug: slug && VALID_AGENT_SLUGS.has(slug) ? slug : null };
+  }
+
+  // Existing agency commands
   if (!/\bagency\b|\bsecurity check\b|\bsystem review\b|\bclient research\b|\beditorial review\b|\bweekly strategy\b/.test(normalized)) {
     return null;
   }
@@ -320,7 +346,7 @@ function parseAgencyRequest(text) {
   if (/\bsecurity\b/.test(normalized)) {
     return { kind: 'run', agent_slug: 'security-sentinel' };
   }
-  if (/\bsystem\b|\breliability\b|\bhealth\b/.test(normalized)) {
+  if (/\bsystem\b|\breliability\b/.test(normalized)) {
     return { kind: 'run', agent_slug: 'system-reliability' };
   }
   if (/\bresearch\b/.test(normalized)) {
@@ -344,10 +370,55 @@ function parseAgencyRequest(text) {
   return null;
 }
 
+function formatHeartbeatStatus(agents) {
+  if (!Array.isArray(agents) || agents.length === 0) return 'No agents found.';
+  const lines = agents.map((a) => {
+    const dot = a.heartbeat_status === 'healthy' || a.heartbeat_status === 'running' ? '🟢'
+      : a.heartbeat_status === 'stale' || a.heartbeat_status === 'failed' ? '🔴'
+      : a.heartbeat_status === 'warning' ? '🟡'
+      : '⚪';
+    const last = a.last_heartbeat_at
+      ? `${Math.floor((Date.now() / 1000 - a.last_heartbeat_at) / 60)}m ago`
+      : 'never';
+    return `${dot} **${a.name}** — \`${a.heartbeat_status}\` · last: ${last}`;
+  });
+  return `**Agent Heartbeat Status**\n\n${lines.join('\n')}`;
+}
+
 async function handleAgencyRequest(parsed, username) {
   if (parsed.kind === 'status') {
     const result = await postInternal('/internal/agency/status', {});
     return result.content || 'AI Agency status unavailable.';
+  }
+  if (parsed.kind === 'heartbeat') {
+    const result = await postInternal('/internal/agency/stale-check', {});
+    const agents = result.agents || [];
+    return formatHeartbeatStatus(agents);
+  }
+  if (parsed.kind === 'health') {
+    const result = await postInternal('/internal/agency/stale-check', {});
+    const stale = result.stale_count ?? 0;
+    const failed = result.failed_count ?? 0;
+    const lines = [
+      '**Agent Health Summary**',
+      '',
+      result.content || 'Health check complete.',
+      '',
+      `Stale: **${stale}** | Failed: **${failed}**`,
+    ];
+    if (stale === 0 && failed === 0) lines.push('✅ All agents are healthy or idle.');
+    return lines.join('\n');
+  }
+  if (parsed.kind === 'stale') {
+    const result = await postInternal('/internal/agency/stale-check', {});
+    const marked = result.marked || [];
+    if (marked.length === 0) return '✅ No stale agents detected.';
+    return `**Stale Agents** (just marked)\n\n${marked.map((s) => `• \`${s}\``).join('\n')}`;
+  }
+  if (parsed.kind === 'ping') {
+    if (!parsed.agent_slug) return '❌ Unknown agent slug. Use: `agent:<slug>` with a valid agent name.';
+    const result = await postInternal('/internal/agency/ping', { agent_slug: parsed.agent_slug });
+    return result.content || `Pinged ${parsed.agent_slug}.`;
   }
   const result = await postInternal('/internal/agency/enqueue', {
     agent_slug: parsed.agent_slug,
@@ -363,7 +434,6 @@ async function runApprovedJob(job) {
     regenerate_content_terminal: ['scripts/run-approved-terminal-job.mjs'],
     weekly_content_claude: ['scripts/run-approved-terminal-job.mjs'],
     regenerate_content_claude: ['scripts/run-approved-terminal-job.mjs'],
-    agency_status: ['scripts/run-approved-agency-job.mjs'],
     agency_system_review: ['scripts/run-approved-agency-job.mjs'],
     agency_security_review: ['scripts/run-approved-agency-job.mjs'],
     agency_client_research: ['scripts/run-approved-agency-job.mjs'],

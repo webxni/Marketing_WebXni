@@ -389,6 +389,12 @@ export interface AgentDefinitionRow {
   next_run_at:     number | null;
   skills_json:     string | null;
   command_name:    string | null;
+  last_heartbeat_at:          number | null;
+  heartbeat_status:           string;
+  heartbeat_message:          string | null;
+  last_error:                 string | null;
+  stale_after_minutes:        number;
+  next_expected_heartbeat_at: number | null;
   created_at:      number;
   updated_at:      number;
 }

@@ -119,6 +119,13 @@ export default {
         try {
           const stats = await runAgencyScheduler(env);
           if (stats.enabled) console.log('Agency scheduler stats:', stats);
+          if (stats.stale_marked.length > 0 && env.DISCORD_BOT_TOKEN && env.DISCORD_CHANNEL_ID) {
+            const staleList = stats.stale_marked.map((s: string) => `• \`${s}\``).join('\n');
+            await discordSend({
+              channelId: env.DISCORD_CHANNEL_ID, token: env.DISCORD_BOT_TOKEN,
+              embeds: [{ title: '⚠️ Agency Heartbeat Alert', description: `${stats.stale_marked.length} agent(s) marked stale:\n${staleList}`, color: 0xf59e0b }],
+            }).catch(() => { /* non-critical */ });
+          }
         } catch (err) {
           console.error('Agency scheduler cron error:', err);
         }
@@ -202,11 +209,18 @@ export default {
         }
       })());
     } else if (event.cron === '0 9 * * *') {
-      // Daily 9AM — platform health check + Discord notification if issues
+      // Daily 9AM — platform health check + agency heartbeat stale check
       ctx.waitUntil((async () => {
         try {
           const stats = await runAgencyScheduler(env);
           if (stats.enabled) console.log('Agency scheduler stats:', stats);
+          if (stats.stale_marked.length > 0 && env.DISCORD_BOT_TOKEN && env.DISCORD_CHANNEL_ID) {
+            const staleList = stats.stale_marked.map((s: string) => `• \`${s}\``).join('\n');
+            await discordSend({
+              channelId: env.DISCORD_CHANNEL_ID, token: env.DISCORD_BOT_TOKEN,
+              embeds: [{ title: '⚠️ Agency Heartbeat Alert', description: `${stats.stale_marked.length} agent(s) marked stale:\n${staleList}`, color: 0xf59e0b }],
+            }).catch(() => { /* non-critical */ });
+          }
         } catch (err) {
           console.error('Agency scheduler cron error:', err);
         }
