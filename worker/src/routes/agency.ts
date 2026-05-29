@@ -3,18 +3,21 @@ import { z } from 'zod';
 import type { Env, SessionData } from '../types';
 import {
   appendAgencyLog,
+  createAgentFinding,
   createAgentRun,
   createAgentTask,
   createApprovedCommandJob,
   getAgencyClientCoverage,
   getAgencyLogs,
   getApprovedCommandJobById,
+  getAgentSystemHealthSnapshot,
   getAgentTask,
   listAgencyOverview,
   listAgentDefinitions,
   listAgentFindings,
   listAgentRuns,
   listAgentTasks,
+  listApprovedCommandJobs,
   updateAgentFinding,
   updateAgentRun,
   updateAgentTask,
@@ -237,6 +240,7 @@ async function requireBotSecret(c: { req: { header(name: string): string | undef
 const internalUpdateSchema = z.object({
   agent_slug: z.string(),
   task_id: z.string().optional(),
+  run_id: z.string().optional(),
   job_id: z.string().optional(),
   status: z.string(),
   progress: z.number().int().min(0).max(100).optional(),
@@ -244,6 +248,15 @@ const internalUpdateSchema = z.object({
   output_json: z.record(z.unknown()).nullable().optional(),
   error: z.string().nullable().optional(),
   backend: z.string().optional(),
+});
+
+const internalFindingSchema = z.object({
+  agent_slug: z.string(),
+  task_id: z.string().optional(),
+  client_id: z.string().nullable().optional(),
+  severity: z.enum(['info', 'low', 'medium', 'high', 'critical']),
+  title: z.string().min(1).max(200),
+  finding_json: z.record(z.unknown()).nullable().optional(),
 });
 
 function formatAgencyStatusText(overview: Awaited<ReturnType<typeof listAgencyOverview>>, agents: Awaited<ReturnType<typeof listAgentDefinitions>>): string {
@@ -343,9 +356,10 @@ agencyInternalRoutes.post('/task-update', async (c) => {
       error: body.error ? redactSecrets(body.error) : null,
     });
   }
-  if (body.status === 'completed' || body.status === 'failed') {
-    const latest = await listAgentRuns(c.env.DB, 1);
-    const run = latest.find((item) => item.agent_slug === body.agent_slug && item.task_id === (body.task_id ?? null));
+  if ((body.status === 'completed' || body.status === 'failed') && (body.run_id || body.task_id)) {
+    const run = body.run_id
+      ? { id: body.run_id }
+      : (await listAgentRuns(c.env.DB, 5)).find((item) => item.agent_slug === body.agent_slug && item.task_id === (body.task_id ?? null));
     if (run) await updateAgentRun(c.env.DB, run.id, { status: body.status, summary_json: body.output_json ? JSON.stringify(body.output_json) : null, error: body.error ?? null });
   }
   await appendAgencyLog(c.env.DB, {
@@ -359,7 +373,7 @@ agencyInternalRoutes.post('/task-update', async (c) => {
     error: body.error ?? null,
     backend: body.backend ?? null,
   });
-  return c.json({ ok: true });
+  return c.json({ ok: true, run_id: runId });
 });
 
 agencyInternalRoutes.post('/status', async (c) => {
@@ -387,6 +401,67 @@ agencyInternalRoutes.post('/enqueue', async (c) => {
     approved_job_id: queued.job.id,
     command_name: queued.command_name,
   }, 202);
+});
+
+agencyInternalRoutes.post('/snapshot', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const [overview, agents, tasks, findings, coverage, logs, approved_jobs, system_health] = await Promise.all([
+    listAgencyOverview(c.env.DB),
+    listAgentDefinitions(c.env.DB),
+    listAgentTasks(c.env.DB, 50),
+    listAgentFindings(c.env.DB, 50),
+    getAgencyClientCoverage(c.env.DB),
+    getAgencyLogs(c.env.DB, 40),
+    listApprovedCommandJobs(c.env.DB, 30),
+    getAgentSystemHealthSnapshot(c.env.DB, { lookbackHours: 168 }),
+  ]);
+  return c.json({
+    ok: true,
+    snapshot: {
+      generated_at: new Date().toISOString(),
+      overview,
+      agents,
+      tasks,
+      findings,
+      coverage,
+      logs,
+      approved_jobs: approved_jobs
+        .filter((job) => job.command_name.startsWith('agency_') || job.command_name.includes('terminal'))
+        .map((job) => ({
+          id: job.id,
+          command_name: job.command_name,
+          provider: job.provider,
+          status: job.status,
+          progress_message: job.progress_message,
+          created_at: job.created_at,
+          updated_at: job.updated_at,
+          error_log: job.error_log ? redactSecrets(job.error_log) : null,
+        })),
+      system_health,
+    },
+  });
+});
+
+agencyInternalRoutes.post('/finding', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const parsed = internalFindingSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json({ error: 'Invalid input', issues: parsed.error.issues }, 400);
+  const finding = await createAgentFinding(c.env.DB, {
+    agent_slug: parsed.data.agent_slug,
+    task_id: parsed.data.task_id ?? null,
+    client_id: parsed.data.client_id ?? null,
+    severity: parsed.data.severity,
+    title: parsed.data.title,
+    finding_json: parsed.data.finding_json ? JSON.stringify(parsed.data.finding_json) : null,
+  });
+  await appendAgencyLog(c.env.DB, {
+    agent_slug: parsed.data.agent_slug,
+    task_id: parsed.data.task_id ?? null,
+    status: 'finding',
+    step: 'finding',
+    summary: `${parsed.data.severity.toUpperCase()} finding created: ${parsed.data.title}`,
+  });
+  return c.json({ ok: true, finding });
 });
 
 agencyInternalRoutes.get('/jobs/:id/context', async (c) => {
