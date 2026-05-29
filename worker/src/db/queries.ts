@@ -11,11 +11,17 @@ import type {
   PostPlatformRow,
   PostingJobRow,
   ApprovedCommandJobRow,
+  AgentDefinitionRow,
+  AgentRunRow,
+  AgentTaskRow,
+  AgentFindingRow,
+  AgencyLogRow,
   ContentRequestRow,
   ClientTopicRow,
   ClientMonthlyTopicRow,
   ClientMonthlyContentPlanRow,
 } from '../types';
+import { redactSecrets } from '../modules/redaction';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CLIENTS
@@ -1082,6 +1088,417 @@ export async function completeApprovedCommandJob(
      SET status = ?, result_json = ?, error_log = ?, completed_at = ?, updated_at = ?
      WHERE id = ?`,
   ).bind(status, result_json, error_log, now, now, id).run();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI AGENCY
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface AgencyOverviewSnapshot {
+  active_agents: number;
+  running_tasks: number;
+  waiting_marvin_approval: number;
+  waiting_designer_assets: number;
+  failed_agent_jobs: number;
+  completed_this_week: number;
+  research_completed_this_week: number;
+  posts_generated_this_week: number;
+  blogs_generated_this_week: number;
+}
+
+export interface AgencyClientCoverageRow {
+  client_id: string;
+  client_slug: string;
+  client_name: string;
+  package: string | null;
+  last_research_date: string | null;
+  research_freshness: string;
+  current_strategy_status: string;
+  posts_planned: number;
+  posts_generated: number;
+  posts_waiting_approval: number;
+  posts_waiting_designer: number;
+  blogs_planned: number;
+  blogs_drafted: number;
+  next_agent_action: string;
+  risk_issues: string | null;
+}
+
+function unixWeekStart(): number {
+  const now = new Date();
+  const day = now.getUTCDay();
+  const diff = day === 0 ? 6 : day - 1;
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  start.setUTCDate(start.getUTCDate() - diff);
+  return Math.floor(start.getTime() / 1000);
+}
+
+export async function listAgencyOverview(db: D1Database): Promise<AgencyOverviewSnapshot> {
+  const weekStart = unixWeekStart();
+  const today = new Date().toISOString().slice(0, 10);
+  const [
+    activeAgents,
+    runningTasks,
+    waitingApproval,
+    waitingDesigner,
+    failedTasks,
+    failedJobs,
+    completedWeek,
+    researchWeek,
+    postsWeek,
+    blogsWeek,
+  ] = await Promise.all([
+    db.prepare('SELECT COUNT(*) AS n FROM agent_definitions WHERE enabled = 1').first<{ n: number }>(),
+    db.prepare("SELECT COUNT(*) AS n FROM agent_tasks WHERE status = 'running'").first<{ n: number }>(),
+    db.prepare("SELECT COUNT(*) AS n FROM posts WHERE status = 'pending_approval'").first<{ n: number }>(),
+    db.prepare("SELECT COUNT(*) AS n FROM posts WHERE status IN ('approved', 'ready') AND COALESCE(asset_delivered, 0) = 0 AND content_type != 'blog'").first<{ n: number }>(),
+    db.prepare("SELECT COUNT(*) AS n FROM agent_tasks WHERE status = 'failed'").first<{ n: number }>(),
+    db.prepare("SELECT COUNT(*) AS n FROM approved_command_jobs WHERE command_name LIKE 'agency_%' AND status = 'failed'").first<{ n: number }>(),
+    db.prepare("SELECT COUNT(*) AS n FROM agent_tasks WHERE status = 'completed' AND updated_at >= ?").bind(weekStart).first<{ n: number }>(),
+    db.prepare('SELECT COUNT(*) AS n FROM client_research_notes WHERE freshness_date >= ?').bind(today.slice(0, 8) + '01').first<{ n: number }>(),
+    db.prepare("SELECT COUNT(*) AS n FROM posts WHERE scheduled_by_automation = 1 AND content_type != 'blog' AND created_at >= ?").bind(weekStart).first<{ n: number }>(),
+    db.prepare("SELECT COUNT(*) AS n FROM posts WHERE content_type = 'blog' AND created_at >= ?").bind(weekStart).first<{ n: number }>(),
+  ]);
+
+  return {
+    active_agents: activeAgents?.n ?? 0,
+    running_tasks: runningTasks?.n ?? 0,
+    waiting_marvin_approval: waitingApproval?.n ?? 0,
+    waiting_designer_assets: waitingDesigner?.n ?? 0,
+    failed_agent_jobs: (failedTasks?.n ?? 0) + (failedJobs?.n ?? 0),
+    completed_this_week: completedWeek?.n ?? 0,
+    research_completed_this_week: researchWeek?.n ?? 0,
+    posts_generated_this_week: postsWeek?.n ?? 0,
+    blogs_generated_this_week: blogsWeek?.n ?? 0,
+  };
+}
+
+export async function listAgentDefinitions(db: D1Database): Promise<AgentDefinitionRow[]> {
+  const rows = await db
+    .prepare('SELECT * FROM agent_definitions ORDER BY created_at ASC')
+    .all<AgentDefinitionRow>();
+  return rows.results;
+}
+
+export async function listAgentRuns(db: D1Database, limit = 30): Promise<AgentRunRow[]> {
+  const rows = await db
+    .prepare('SELECT * FROM agent_runs ORDER BY created_at DESC LIMIT ?')
+    .bind(limit)
+    .all<AgentRunRow>();
+  return rows.results.map((run) => ({
+    ...run,
+    summary_json: run.summary_json ? redactSecrets(run.summary_json) : null,
+    error: run.error ? redactSecrets(run.error) : null,
+  }));
+}
+
+export async function listAgentTasks(db: D1Database, limit = 80): Promise<AgentTaskRow[]> {
+  const rows = await db
+    .prepare(
+      `SELECT t.*, c.canonical_name AS client_name, d.name AS agent_name
+       FROM agent_tasks t
+       LEFT JOIN clients c ON c.id = t.client_id
+       LEFT JOIN agent_definitions d ON d.slug = t.agent_slug
+       ORDER BY t.updated_at DESC
+       LIMIT ?`,
+    )
+    .bind(limit)
+    .all<AgentTaskRow>();
+  return rows.results.map((task) => ({
+    ...task,
+    input_json: task.input_json ? redactSecrets(task.input_json) : null,
+    output_json: task.output_json ? redactSecrets(task.output_json) : null,
+  }));
+}
+
+export async function getAgentTask(db: D1Database, id: string): Promise<AgentTaskRow | null> {
+  const row = await db
+    .prepare(
+      `SELECT t.*, c.canonical_name AS client_name, d.name AS agent_name
+       FROM agent_tasks t
+       LEFT JOIN clients c ON c.id = t.client_id
+       LEFT JOIN agent_definitions d ON d.slug = t.agent_slug
+       WHERE t.id = ?`,
+    )
+    .bind(id)
+    .first<AgentTaskRow>();
+  if (!row) return null;
+  return {
+    ...row,
+    input_json: row.input_json ? redactSecrets(row.input_json) : null,
+    output_json: row.output_json ? redactSecrets(row.output_json) : null,
+  };
+}
+
+export async function createAgentTask(
+  db: D1Database,
+  data: {
+    agent_slug: string;
+    client_id?: string | null;
+    related_post_id?: string | null;
+    related_blog_id?: string | null;
+    approved_job_id?: string | null;
+    title: string;
+    status?: string;
+    priority?: string;
+    progress?: number;
+    input_json?: string | null;
+    due_at?: number | null;
+  },
+): Promise<AgentTaskRow> {
+  const id = crypto.randomUUID().replace(/-/g, '').toLowerCase();
+  const now = Math.floor(Date.now() / 1000);
+  await db.prepare(
+    `INSERT INTO agent_tasks
+     (id, agent_slug, client_id, related_post_id, related_blog_id, approved_job_id, title, status, priority, progress, input_json, due_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(
+    id,
+    data.agent_slug,
+    data.client_id ?? null,
+    data.related_post_id ?? null,
+    data.related_blog_id ?? null,
+    data.approved_job_id ?? null,
+    data.title,
+    data.status ?? 'queued',
+    data.priority ?? 'medium',
+    data.progress ?? 0,
+    data.input_json ?? null,
+    data.due_at ?? null,
+    now,
+    now,
+  ).run();
+  return (await getAgentTask(db, id))!;
+}
+
+export async function updateAgentTask(
+  db: D1Database,
+  id: string,
+  data: { status?: string; progress?: number; output_json?: string | null; approved_job_id?: string | null; error?: string | null },
+): Promise<AgentTaskRow | null> {
+  const now = Math.floor(Date.now() / 1000);
+  const existing = await getAgentTask(db, id);
+  if (!existing) return null;
+  const nextStatus = data.status ?? existing.status;
+  await db.prepare(
+    `UPDATE agent_tasks
+     SET status = ?,
+         progress = ?,
+         output_json = COALESCE(?, output_json),
+         approved_job_id = COALESCE(?, approved_job_id),
+         started_at = CASE WHEN ? = 'running' AND started_at IS NULL THEN ? ELSE started_at END,
+         finished_at = CASE WHEN ? IN ('completed', 'failed', 'cancelled') THEN ? ELSE finished_at END,
+         updated_at = ?
+     WHERE id = ?`,
+  ).bind(
+    nextStatus,
+    data.progress ?? existing.progress,
+    data.output_json ?? null,
+    data.approved_job_id ?? null,
+    nextStatus,
+    now,
+    nextStatus,
+    now,
+    now,
+    id,
+  ).run();
+  if (data.error) await appendAgencyLog(db, { task_id: id, status: 'error', summary: data.error });
+  return getAgentTask(db, id);
+}
+
+export async function createAgentRun(
+  db: D1Database,
+  data: { agent_slug: string; task_id?: string | null; status?: string; backend?: string; created_by?: string | null },
+): Promise<AgentRunRow> {
+  const id = crypto.randomUUID().replace(/-/g, '').toLowerCase();
+  const now = Math.floor(Date.now() / 1000);
+  await db.prepare(
+    `INSERT INTO agent_runs (id, agent_slug, task_id, status, backend, started_at, created_by, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(id, data.agent_slug, data.task_id ?? null, data.status ?? 'running', data.backend ?? 'internal', now, data.created_by ?? null, now).run();
+  const row = await db.prepare('SELECT * FROM agent_runs WHERE id = ?').bind(id).first<AgentRunRow>();
+  return row!;
+}
+
+export async function updateAgentRun(
+  db: D1Database,
+  id: string,
+  data: { status: string; summary_json?: string | null; error?: string | null },
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  const run = await db.prepare('SELECT started_at FROM agent_runs WHERE id = ?').bind(id).first<{ started_at: number | null }>();
+  const duration = run?.started_at ? (now - run.started_at) * 1000 : null;
+  await db.prepare(
+    `UPDATE agent_runs
+     SET status = ?, finished_at = ?, duration_ms = ?, summary_json = ?, error = ?
+     WHERE id = ?`,
+  ).bind(data.status, now, duration, data.summary_json ? redactSecrets(data.summary_json) : null, data.error ? redactSecrets(data.error) : null, id).run();
+}
+
+export async function listAgentFindings(db: D1Database, limit = 60): Promise<AgentFindingRow[]> {
+  const rows = await db
+    .prepare(
+      `SELECT f.*, c.canonical_name AS client_name, d.name AS agent_name
+       FROM agent_findings f
+       LEFT JOIN clients c ON c.id = f.client_id
+       LEFT JOIN agent_definitions d ON d.slug = f.agent_slug
+       ORDER BY
+         CASE f.status WHEN 'open' THEN 0 WHEN 'acknowledged' THEN 1 ELSE 2 END,
+         CASE f.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
+         f.created_at DESC
+       LIMIT ?`,
+    )
+    .bind(limit)
+    .all<AgentFindingRow>();
+  return rows.results.map((finding) => ({
+    ...finding,
+    finding_json: finding.finding_json ? redactSecrets(finding.finding_json) : null,
+  }));
+}
+
+export async function createAgentFinding(
+  db: D1Database,
+  data: { agent_slug: string; client_id?: string | null; task_id?: string | null; severity: string; title: string; finding_json?: string | null },
+): Promise<AgentFindingRow> {
+  const id = crypto.randomUUID().replace(/-/g, '').toLowerCase();
+  const now = Math.floor(Date.now() / 1000);
+  await db.prepare(
+    `INSERT INTO agent_findings (id, agent_slug, client_id, task_id, severity, title, finding_json, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
+  ).bind(id, data.agent_slug, data.client_id ?? null, data.task_id ?? null, data.severity, data.title, data.finding_json ? redactSecrets(data.finding_json) : null, now, now).run();
+  const row = await db.prepare('SELECT * FROM agent_findings WHERE id = ?').bind(id).first<AgentFindingRow>();
+  return row!;
+}
+
+export async function updateAgentFinding(db: D1Database, id: string, status: string): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await db.prepare('UPDATE agent_findings SET status = ?, updated_at = ? WHERE id = ?').bind(status, now, id).run();
+}
+
+export async function saveClientResearch(
+  db: D1Database,
+  clientId: string,
+  source: string,
+  researchJson: string,
+  freshnessDate: string,
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await db.prepare(
+    `INSERT INTO client_research_notes (client_id, source, research_json, freshness_date, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).bind(clientId, source, redactSecrets(researchJson), freshnessDate, now, now).run();
+}
+
+export async function saveClientStrategy(
+  db: D1Database,
+  clientId: string,
+  periodStart: string,
+  periodEnd: string,
+  strategyJson: string,
+  status = 'draft',
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await db.prepare(
+    `INSERT INTO client_strategy_plans (client_id, period_start, period_end, strategy_json, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(clientId, periodStart, periodEnd, redactSecrets(strategyJson), status, now, now).run();
+}
+
+export async function saveContentReview(
+  db: D1Database,
+  data: { post_id?: string | null; blog_id?: string | null; agent_task_id?: string | null; severity: string; notes_json: string },
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await db.prepare(
+    `INSERT INTO content_review_notes (post_id, blog_id, agent_task_id, severity, notes_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).bind(data.post_id ?? null, data.blog_id ?? null, data.agent_task_id ?? null, data.severity, redactSecrets(data.notes_json), now).run();
+}
+
+export async function getAgencyClientCoverage(db: D1Database): Promise<AgencyClientCoverageRow[]> {
+  const rows = await db.prepare(
+    `SELECT
+       c.id AS client_id,
+       c.slug AS client_slug,
+       c.canonical_name AS client_name,
+       c.package AS package,
+       (SELECT MAX(r.freshness_date) FROM client_research_notes r WHERE r.client_id = c.id) AS last_research_date,
+       COALESCE((SELECT s.status FROM client_strategy_plans s WHERE s.client_id = c.id ORDER BY s.created_at DESC LIMIT 1), 'none') AS current_strategy_status,
+       (SELECT COUNT(*) FROM client_monthly_topics mt WHERE mt.client_id = c.id AND COALESCE(mt.content_type_preference, '') != 'blog') AS posts_planned,
+       (SELECT COUNT(*) FROM posts p WHERE p.client_id = c.id AND p.content_type != 'blog' AND p.scheduled_by_automation = 1) AS posts_generated,
+       (SELECT COUNT(*) FROM posts p WHERE p.client_id = c.id AND p.status = 'pending_approval') AS posts_waiting_approval,
+       (SELECT COUNT(*) FROM posts p WHERE p.client_id = c.id AND p.status IN ('approved', 'ready') AND COALESCE(p.asset_delivered, 0) = 0 AND p.content_type != 'blog') AS posts_waiting_designer,
+       (SELECT COUNT(*) FROM client_monthly_topics mt WHERE mt.client_id = c.id AND mt.content_type_preference = 'blog') AS blogs_planned,
+       (SELECT COUNT(*) FROM posts p WHERE p.client_id = c.id AND p.content_type = 'blog' AND p.status IN ('draft', 'pending_approval')) AS blogs_drafted
+     FROM clients c
+     WHERE c.status = 'active'
+     ORDER BY c.canonical_name ASC`,
+  ).all<AgencyClientCoverageRow & { last_research_date: string | null }>();
+
+  return rows.results.map((row) => {
+    const researchFreshness = row.last_research_date
+      ? 'recorded'
+      : 'not started';
+    const nextAction = !row.last_research_date
+      ? 'Run client research'
+      : row.current_strategy_status === 'none'
+        ? 'Create strategy'
+        : row.posts_waiting_approval > 0
+          ? 'Marvin approval'
+          : row.posts_waiting_designer > 0
+            ? 'Designer asset'
+            : 'Monitor';
+    return {
+      ...row,
+      posts_planned: row.posts_planned ?? 0,
+      posts_generated: row.posts_generated ?? 0,
+      posts_waiting_approval: row.posts_waiting_approval ?? 0,
+      posts_waiting_designer: row.posts_waiting_designer ?? 0,
+      blogs_planned: row.blogs_planned ?? 0,
+      blogs_drafted: row.blogs_drafted ?? 0,
+      research_freshness: researchFreshness,
+      next_agent_action: nextAction,
+      risk_issues: null,
+    };
+  });
+}
+
+export async function appendAgencyLog(
+  db: D1Database,
+  data: { agent_slug?: string | null; task_id?: string | null; run_id?: string | null; job_id?: string | null; status?: string; step?: string | null; summary: string; error?: string | null; backend?: string | null; duration_ms?: number | null },
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await db.prepare(
+    `INSERT INTO agency_logs (agent_slug, task_id, run_id, job_id, status, step, summary, error, backend, duration_ms, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(
+    data.agent_slug ?? null,
+    data.task_id ?? null,
+    data.run_id ?? null,
+    data.job_id ?? null,
+    data.status ?? 'info',
+    data.step ?? null,
+    redactSecrets(data.summary).slice(0, 2000),
+    data.error ? redactSecrets(data.error).slice(0, 4000) : null,
+    data.backend ?? null,
+    data.duration_ms ?? null,
+    now,
+  ).run();
+}
+
+export async function getAgencyLogs(db: D1Database, limit = 80): Promise<AgencyLogRow[]> {
+  const rows = await db.prepare(
+    `SELECT l.*, d.name AS agent_name
+     FROM agency_logs l
+     LEFT JOIN agent_definitions d ON d.slug = l.agent_slug
+     ORDER BY l.created_at DESC
+     LIMIT ?`,
+  ).bind(limit).all<AgencyLogRow>();
+  return rows.results.map((log) => ({
+    ...log,
+    summary: redactSecrets(log.summary),
+    error: log.error ? redactSecrets(log.error) : null,
+  }));
 }
 
 export interface AgentAuditMarkerRow {

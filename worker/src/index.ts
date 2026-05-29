@@ -29,6 +29,7 @@ import { blogImageRoutes }   from './routes/blog-images';
 import { gbpRoutes }         from './routes/gbp';
 import { internalRoutes }    from './routes/internal';
 import { aiRoutes }          from './routes/ai';
+import { agencyRoutes, agencyInternalRoutes } from './routes/agency';
 import { discordInteractRoute, discordInternalRoute } from './routes/discord';
 
 const app = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
@@ -36,6 +37,7 @@ const app = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 // ─── Internal routes (no auth — Worker-to-Worker only) ───────────────────────
 app.route('/internal', internalRoutes);
 app.route('/internal/discord', discordInternalRoute); // register/notify
+app.route('/internal/agency', agencyInternalRoutes);
 app.route('/media', publicAssetRoutes);
 
 // Discord interaction endpoint — NO auth middleware (Discord signs with Ed25519)
@@ -65,6 +67,7 @@ app.route('/api/settings',  settingsRoutes);
 app.route('/api/notion',    notionRoutes);
 app.route('/api/portal',    portalRoutes);
 app.route('/api/ai',        aiRoutes);
+app.route('/api/agency',    agencyRoutes);
 
 app.get('/api/health', (c) =>
   c.json({ status: 'ok', ts: Date.now(), version: '2.0.0' }),

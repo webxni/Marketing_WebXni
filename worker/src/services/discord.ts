@@ -423,6 +423,30 @@ export const SLASH_COMMANDS = [
       { name: 'active_only', description: 'Show only active + not-paused',      type: 5, required: false },
     ],
   },
+  {
+    name:        'agency-status',
+    description: 'Show the AI Agency status, bottlenecks, and next action',
+  },
+  {
+    name:        'agency-run',
+    description: 'Queue a fixed AI Agency agent through the approved job harness',
+    options: [{
+      name:        'agent',
+      description: 'Agency agent to run',
+      type:        3,
+      required:    true,
+      choices: [
+        { name: 'orchestrator', value: 'orchestrator' },
+        { name: 'system',       value: 'system' },
+        { name: 'security',     value: 'security' },
+        { name: 'research',     value: 'research' },
+        { name: 'strategy',     value: 'strategy' },
+        { name: 'social',       value: 'social' },
+        { name: 'blog',         value: 'blog' },
+        { name: 'editorial',    value: 'editorial' },
+      ],
+    }],
+  },
 ];
 
 export async function registerSlashCommands(applicationId: string, botToken: string): Promise<void> {

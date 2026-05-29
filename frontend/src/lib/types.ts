@@ -387,6 +387,177 @@ export interface ApprovedCommandJob {
   updated_at: number;
 }
 
+export interface AgentDefinition {
+  id: string;
+  slug: string;
+  name: string;
+  purpose: string;
+  enabled: number;
+  schedule_kind: string | null;
+  default_backend: string;
+  status: string;
+  current_task: string | null;
+  progress: number;
+  last_run_at: number | null;
+  next_run_at: number | null;
+  skills_json: string | null;
+  command_name: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface AgentRun {
+  id: string;
+  agent_slug: string;
+  task_id: string | null;
+  status: string;
+  backend: string;
+  started_at: number | null;
+  finished_at: number | null;
+  duration_ms: number | null;
+  summary_json: string | null;
+  error: string | null;
+  created_by: string | null;
+  created_at: number;
+}
+
+export interface AgentTask {
+  id: string;
+  agent_slug: string;
+  client_id: string | null;
+  related_post_id: string | null;
+  related_blog_id: string | null;
+  approved_job_id: string | null;
+  title: string;
+  status: string;
+  priority: string;
+  progress: number;
+  input_json: string | null;
+  output_json: string | null;
+  due_at: number | null;
+  started_at: number | null;
+  finished_at: number | null;
+  created_at: number;
+  updated_at: number;
+  client_name?: string | null;
+  agent_name?: string | null;
+}
+
+export interface AgentFinding {
+  id: string;
+  agent_slug: string;
+  client_id: string | null;
+  task_id: string | null;
+  severity: string;
+  title: string;
+  finding_json: string | null;
+  status: string;
+  created_at: number;
+  updated_at: number;
+  client_name?: string | null;
+  agent_name?: string | null;
+}
+
+export interface ClientResearchNote {
+  id: string;
+  client_id: string;
+  source: string;
+  research_json: string;
+  freshness_date: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ClientStrategyPlan {
+  id: string;
+  client_id: string;
+  period_start: string;
+  period_end: string;
+  strategy_json: string;
+  status: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ContentReviewNote {
+  id: string;
+  post_id: string | null;
+  blog_id: string | null;
+  agent_task_id: string | null;
+  severity: string;
+  notes_json: string;
+  created_at: number;
+}
+
+export interface AgencyOverview {
+  active_agents: number;
+  running_tasks: number;
+  waiting_marvin_approval: number;
+  waiting_designer_assets: number;
+  failed_agent_jobs: number;
+  completed_this_week: number;
+  research_completed_this_week: number;
+  posts_generated_this_week: number;
+  blogs_generated_this_week: number;
+}
+
+export interface AgencyTimelineItem {
+  day: string;
+  title: string;
+  agent_slug: string;
+  status: string;
+  summary: string;
+}
+
+export interface AgencyClientCoverage {
+  client_id: string;
+  client_slug: string;
+  client_name: string;
+  package: string | null;
+  last_research_date: string | null;
+  research_freshness: string;
+  current_strategy_status: string;
+  posts_planned: number;
+  posts_generated: number;
+  posts_waiting_approval: number;
+  posts_waiting_designer: number;
+  blogs_planned: number;
+  blogs_drafted: number;
+  next_agent_action: string;
+  risk_issues: string | null;
+}
+
+export interface AgencySkill {
+  name: string;
+  purpose: string;
+  agent_slug: string;
+  backend: string;
+  last_used: number | null;
+  status: string;
+}
+
+export interface HarnessFlowStep {
+  order: number;
+  title: string;
+  summary: string;
+}
+
+export interface AgencyLog {
+  id: string;
+  agent_slug: string | null;
+  task_id: string | null;
+  run_id: string | null;
+  job_id: string | null;
+  status: string;
+  step: string | null;
+  summary: string;
+  error: string | null;
+  backend: string | null;
+  duration_ms: number | null;
+  created_at: number;
+  agent_name?: string | null;
+}
+
 export interface OverviewStats {
   clients:           number;
   total_posts:       number;

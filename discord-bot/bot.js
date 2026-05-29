@@ -305,12 +305,73 @@ async function postInternal(pathname, body) {
   return res.json();
 }
 
+function parseAgencyRequest(text) {
+  const normalized = String(text || '')
+    .toLowerCase()
+    .replace(/^webxni[,:\s]+/, '')
+    .trim();
+
+  if (!/\bagency\b|\bsecurity check\b|\bsystem review\b|\bclient research\b|\beditorial review\b|\bweekly strategy\b/.test(normalized)) {
+    return null;
+  }
+  if (/\b(status|progress|week)\b/.test(normalized)) {
+    return { kind: 'status' };
+  }
+  if (/\bsecurity\b/.test(normalized)) {
+    return { kind: 'run', agent_slug: 'security-sentinel' };
+  }
+  if (/\bsystem\b|\breliability\b|\bhealth\b/.test(normalized)) {
+    return { kind: 'run', agent_slug: 'system-reliability' };
+  }
+  if (/\bresearch\b/.test(normalized)) {
+    return { kind: 'run', agent_slug: 'client-research' };
+  }
+  if (/\bstrategy\b|\bplan\b/.test(normalized)) {
+    return { kind: 'run', agent_slug: 'strategy' };
+  }
+  if (/\bsocial\b|\bdrafts?\b/.test(normalized)) {
+    return { kind: 'run', agent_slug: 'social-copy' };
+  }
+  if (/\bblog\b/.test(normalized)) {
+    return { kind: 'run', agent_slug: 'blog-writer' };
+  }
+  if (/\beditorial\b|\breview\b/.test(normalized)) {
+    return { kind: 'run', agent_slug: 'editorial-review' };
+  }
+  if (/\borchestrator\b|\bcontinue\b/.test(normalized)) {
+    return { kind: 'run', agent_slug: 'agency-orchestrator' };
+  }
+  return null;
+}
+
+async function handleAgencyRequest(parsed, username) {
+  if (parsed.kind === 'status') {
+    const result = await postInternal('/internal/agency/status', {});
+    return result.content || 'AI Agency status unavailable.';
+  }
+  const result = await postInternal('/internal/agency/enqueue', {
+    agent_slug: parsed.agent_slug,
+    requested_by: `discord:${username}`,
+    source: 'discord_natural_language',
+  });
+  return result.content || `Queued ${parsed.agent_slug}.`;
+}
+
 async function runApprovedJob(job) {
   const allowed = {
     weekly_content_terminal: ['scripts/run-approved-terminal-job.mjs'],
     regenerate_content_terminal: ['scripts/run-approved-terminal-job.mjs'],
     weekly_content_claude: ['scripts/run-approved-terminal-job.mjs'],
     regenerate_content_claude: ['scripts/run-approved-terminal-job.mjs'],
+    agency_status: ['scripts/run-approved-agency-job.mjs'],
+    agency_system_review: ['scripts/run-approved-agency-job.mjs'],
+    agency_security_review: ['scripts/run-approved-agency-job.mjs'],
+    agency_client_research: ['scripts/run-approved-agency-job.mjs'],
+    agency_strategy: ['scripts/run-approved-agency-job.mjs'],
+    agency_social_generation: ['scripts/run-approved-agency-job.mjs'],
+    agency_blog_generation: ['scripts/run-approved-agency-job.mjs'],
+    agency_editorial_review: ['scripts/run-approved-agency-job.mjs'],
+    agency_orchestrator: ['scripts/run-approved-agency-job.mjs'],
   };
   const scriptPathParts = allowed[job.command_name];
   if (!scriptPathParts) throw new Error(`Unapproved command: ${job.command_name}`);
@@ -405,6 +466,18 @@ client.on(Events.MessageCreate, async (message) => {
 
   // Show typing indicator
   try { await message.channel.sendTyping(); } catch { /* ignore */ }
+
+  const agencyRequest = parseAgencyRequest(text);
+  if (agencyRequest) {
+    try {
+      const content = await handleAgencyRequest(agencyRequest, username);
+      await message.reply({ content, allowedMentions: { repliedUser: false } });
+    } catch (err) {
+      console.error('[bot] agency command error:', err);
+      await message.reply({ content: '❌ Agency command failed — check bot logs.', allowedMentions: { repliedUser: false } });
+    }
+    return;
+  }
 
   // Upload attachments to R2 (up to 3 media files)
   const uploadedAssets = [];

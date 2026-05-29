@@ -373,6 +373,124 @@ export interface ApprovedCommandJobRow {
   updated_at:        number;
 }
 
+export interface AgentDefinitionRow {
+  id:              string;
+  slug:            string;
+  name:            string;
+  purpose:         string;
+  enabled:         number;
+  schedule_kind:   string | null;
+  default_backend: string;
+  status:          string;
+  current_task:    string | null;
+  progress:        number;
+  last_run_at:     number | null;
+  next_run_at:     number | null;
+  skills_json:     string | null;
+  command_name:    string | null;
+  created_at:      number;
+  updated_at:      number;
+}
+
+export interface AgentRunRow {
+  id:           string;
+  agent_slug:   string;
+  task_id:      string | null;
+  status:       string;
+  backend:      string;
+  started_at:   number | null;
+  finished_at:  number | null;
+  duration_ms:  number | null;
+  summary_json: string | null;
+  error:        string | null;
+  created_by:   string | null;
+  created_at:   number;
+}
+
+export interface AgentTaskRow {
+  id:              string;
+  agent_slug:      string;
+  client_id:       string | null;
+  related_post_id: string | null;
+  related_blog_id: string | null;
+  approved_job_id: string | null;
+  title:           string;
+  status:          string;
+  priority:        string;
+  progress:        number;
+  input_json:      string | null;
+  output_json:     string | null;
+  due_at:          number | null;
+  started_at:      number | null;
+  finished_at:     number | null;
+  created_at:      number;
+  updated_at:      number;
+  client_name?:    string | null;
+  agent_name?:     string | null;
+}
+
+export interface AgentFindingRow {
+  id:           string;
+  agent_slug:   string;
+  client_id:    string | null;
+  task_id:      string | null;
+  severity:     string;
+  title:        string;
+  finding_json: string | null;
+  status:       string;
+  created_at:   number;
+  updated_at:   number;
+  client_name?: string | null;
+  agent_name?:  string | null;
+}
+
+export interface ClientResearchNoteRow {
+  id:             string;
+  client_id:      string;
+  source:         string;
+  research_json:  string;
+  freshness_date: string;
+  created_at:     number;
+  updated_at:     number;
+}
+
+export interface ClientStrategyPlanRow {
+  id:            string;
+  client_id:     string;
+  period_start:  string;
+  period_end:    string;
+  strategy_json: string;
+  status:        string;
+  created_at:    number;
+  updated_at:    number;
+}
+
+export interface ContentReviewNoteRow {
+  id:            string;
+  post_id:       string | null;
+  blog_id:       string | null;
+  agent_task_id: string | null;
+  severity:      string;
+  notes_json:    string;
+  created_at:    number;
+}
+
+export interface AgencyLogRow {
+  id:          string;
+  agent_slug:  string | null;
+  task_id:     string | null;
+  run_id:      string | null;
+  job_id:      string | null;
+  status:      string;
+  step:        string | null;
+  summary:     string;
+  error:       string | null;
+  backend:     string | null;
+  duration_ms: number | null;
+  created_at:  number;
+  agent_name?: string | null;
+}
+
 // ─── Recurring content requests (migration 0026) ─────────────────────────────
 export interface ContentRequestRow {
   id:                string;

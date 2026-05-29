@@ -11,3 +11,4 @@ export * from './packages';
 export * from './notion';
 export * from './portal';
 export * from './agent';
+export * from './agency';

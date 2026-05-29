@@ -31,6 +31,11 @@ import {
   completeApprovedCommandJob,
   markApprovedCommandJobRunning,
   updateApprovedCommandJobProgress,
+  listAgencyOverview,
+  listAgentDefinitions,
+  createAgentTask,
+  updateAgentTask,
+  appendAgencyLog,
 } from '../db/queries';
 import { prepareGenerationPlan, prebuildApprovedTerminalSlotRequests, buildSlotGenerationRequest, saveGeneratedSlotResult, type PreparedApprovedSlotRequest, type SlotTopicSelection } from '../loader/generation-run';
 import { createContentWithImage } from '../loader/autonomous-content';
@@ -74,6 +79,28 @@ interface ApprovedTerminalJobArgs {
   requested_in: 'discord';
   prepared_slots?: PreparedApprovedSlotRequest[];
 }
+
+const DISCORD_AGENCY_AGENTS: Record<string, string> = {
+  orchestrator: 'agency-orchestrator',
+  system: 'system-reliability',
+  security: 'security-sentinel',
+  research: 'client-research',
+  strategy: 'strategy',
+  social: 'social-copy',
+  blog: 'blog-writer',
+  editorial: 'editorial-review',
+};
+
+const DISCORD_AGENCY_COMMANDS: Record<string, string> = {
+  'agency-orchestrator': 'agency_orchestrator',
+  'system-reliability': 'agency_system_review',
+  'security-sentinel': 'agency_security_review',
+  'client-research': 'agency_client_research',
+  strategy: 'agency_strategy',
+  'social-copy': 'agency_social_generation',
+  'blog-writer': 'agency_blog_generation',
+  'editorial-review': 'agency_editorial_review',
+};
 
 // ── Routes ─────────────────────────────────────────────────────────────────────
 
@@ -448,6 +475,92 @@ async function handleCommand(
       await discordPatchInteraction({ applicationId: appId, token, botToken, content: `❌ Failed to start generation: ${msg.slice(0, 200)}` });
     }
     return;
+  } else if (commandName === 'agency-status') {
+    const overview = await listAgencyOverview(env.DB);
+    const agents = await listAgentDefinitions(env.DB);
+    const activeLines = agents
+      .filter((agent) => ['running', 'failed', 'waiting'].includes(agent.status))
+      .slice(0, 5)
+      .map((agent) => `- ${agent.name}: ${agent.status}${agent.current_task ? `, ${agent.current_task}` : ''}`)
+      .join('\n') || '- No active agent work right now.';
+
+    await discordPatchInteraction({
+      applicationId: appId, token, botToken,
+      content: [
+        '**AI Agency Status**',
+        '',
+        `Active agents: **${overview.active_agents}**`,
+        `Running tasks: **${overview.running_tasks}**`,
+        `Waiting for Marvin approval: **${overview.waiting_marvin_approval}**`,
+        `Waiting for designer assets: **${overview.waiting_designer_assets}**`,
+        `Failed agent jobs: **${overview.failed_agent_jobs}**`,
+        '',
+        '**Today**',
+        activeLines,
+        '',
+        '**Next action**',
+        overview.waiting_marvin_approval > 0
+          ? 'Marvin approval queue needs attention.'
+          : overview.waiting_designer_assets > 0
+            ? 'Designer asset queue needs attention.'
+            : 'Run `/agency-run agent:orchestrator` to plan the next batch.',
+      ].join('\n'),
+    });
+    return;
+  } else if (commandName === 'agency-run') {
+    const opts = interaction.data?.options ?? [];
+    const agentChoice = ((opts.find(o => o.name === 'agent')?.value as string | undefined) ?? '').trim();
+    const agentSlug = DISCORD_AGENCY_AGENTS[agentChoice] ?? agentChoice;
+    const command = DISCORD_AGENCY_COMMANDS[agentSlug];
+    if (!command) {
+      await discordPatchInteraction({ applicationId: appId, token, botToken, content: '❌ Unknown agency agent.' });
+      return;
+    }
+
+    const agents = await listAgentDefinitions(env.DB);
+    const agent = agents.find((item) => item.slug === agentSlug);
+    if (!agent || agent.enabled !== 1) {
+      await discordPatchInteraction({ applicationId: appId, token, botToken, content: '❌ Agency agent is disabled or missing.' });
+      return;
+    }
+
+    const task = await createAgentTask(env.DB, {
+      agent_slug: agentSlug,
+      title: `${agent.name} requested from Discord`,
+      input_json: JSON.stringify({ requested_from: 'discord_slash', username }),
+    });
+    const job = await createApprovedCommandJob(env.DB, {
+      generation_run_id: null,
+      command_name: command,
+      provider: agent.default_backend,
+      requested_by: `discord:${username}`,
+      args_json: JSON.stringify({
+        agent_slug: agentSlug,
+        task_id: task.id,
+        source: 'discord_slash',
+        safety: {
+          no_arbitrary_shell: true,
+          preserve_marvin_approval: true,
+          preserve_designer_gate: true,
+        },
+      }),
+    });
+    await updateAgentTask(env.DB, task.id, { approved_job_id: job.id, status: 'queued', progress: 0 });
+    await appendAgencyLog(env.DB, {
+      agent_slug: agentSlug,
+      task_id: task.id,
+      job_id: job.id,
+      status: 'queued',
+      step: 'discord',
+      summary: `${agent.name} queued from Discord slash command as ${command}.`,
+      backend: agent.default_backend,
+    });
+
+    await discordPatchInteraction({
+      applicationId: appId, token, botToken,
+      content: `✅ Queued **${agent.name}** through approved command \`${command}\`.\nTask ID: \`${task.id}\`\nJob ID: \`${job.id}\`\nNo arbitrary shell, publishing, approval, or designer gate bypass is allowed.`,
+    });
+    return;
   }
 
   if (agentMessage) {
@@ -758,7 +871,7 @@ discordInternalRoute.post('/register', async (c) => {
 
   try {
     await registerSlashCommands(appId, botToken);
-    return c.json({ ok: true, message: 'Slash commands registered: /ask, /status, /queue, /failed, /create-post, /create-blog, /weekly-content, /batch, /schedule, /schedules, /topics' });
+    return c.json({ ok: true, message: 'Slash commands registered: /ask, /status, /queue, /failed, /create-post, /create-blog, /weekly-content, /batch, /schedule, /schedules, /topics, /agency-status, /agency-run' });
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }

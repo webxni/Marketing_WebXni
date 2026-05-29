@@ -1,0 +1,379 @@
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import { agencyApi } from '$lib/api';
+  import Spinner from '$lib/components/ui/Spinner.svelte';
+  import { toast } from '$lib/stores/ui';
+  import { timeAgo } from '$lib/utils';
+  import type {
+    AgencyClientCoverage,
+    AgencyLog,
+    AgencyOverview,
+    AgencySkill,
+    AgencyTimelineItem,
+    AgentDefinition,
+    AgentFinding,
+    AgentTask,
+    HarnessFlowStep,
+  } from '$lib/types';
+
+  let overview: AgencyOverview | null = null;
+  let agents: AgentDefinition[] = [];
+  let tasks: AgentTask[] = [];
+  let findings: AgentFinding[] = [];
+  let clients: AgencyClientCoverage[] = [];
+  let timeline: AgencyTimelineItem[] = [];
+  let logs: AgencyLog[] = [];
+  let skills: AgencySkill[] = [];
+  let flow: HarnessFlowStep[] = [];
+  let loading = true;
+  let error = '';
+  let runningSlug = '';
+
+  const boardColumns = [
+    ['queued', 'Queued'],
+    ['running', 'Running'],
+    ['needs_review', 'Needs Review'],
+    ['waiting_marvin', 'Waiting for Marvin'],
+    ['waiting_designer', 'Waiting for Designer'],
+    ['ready_for_automation', 'Ready for Automation'],
+    ['completed', 'Completed'],
+    ['failed', 'Failed'],
+  ];
+
+  onMount(loadAgency);
+
+  async function loadAgency() {
+    loading = true;
+    error = '';
+    try {
+      const [overviewRes, agentsRes, tasksRes, findingsRes, clientsRes, timelineRes, logsRes, skillsRes, flowRes] = await Promise.all([
+        agencyApi.overview(),
+        agencyApi.agents(),
+        agencyApi.tasks(),
+        agencyApi.findings(),
+        agencyApi.clientCoverage(),
+        agencyApi.timeline(),
+        agencyApi.logs(),
+        agencyApi.skills(),
+        agencyApi.harnessFlow(),
+      ]);
+      overview = overviewRes;
+      agents = agentsRes.agents;
+      tasks = tasksRes.tasks;
+      findings = findingsRes.findings;
+      clients = clientsRes.clients;
+      timeline = timelineRes.items;
+      logs = logsRes.logs;
+      skills = skillsRes.skills;
+      flow = flowRes.steps;
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function runAgent(slug: string) {
+    runningSlug = slug;
+    try {
+      const result = await agencyApi.runAgent(slug);
+      toast.success(`Queued ${result.command_name}`);
+      await loadAgency();
+    } catch (e) {
+      toast.error(`Failed to queue agent: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      runningSlug = '';
+    }
+  }
+
+  async function acknowledge(id: string) {
+    try {
+      await agencyApi.acknowledgeFinding(id);
+      findings = findings.map((finding) => finding.id === id ? { ...finding, status: 'acknowledged' } : finding);
+      toast.success('Finding acknowledged');
+    } catch (e) {
+      toast.error(`Failed to acknowledge: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  function taskColumn(status: string) {
+    if (status === 'reviewed') return 'completed';
+    if (status === 'pending_approval') return 'waiting_marvin';
+    return status;
+  }
+
+  function tasksFor(status: string) {
+    return tasks.filter((task) => taskColumn(task.status) === status).slice(0, 8);
+  }
+
+  function statusClass(status: string) {
+    if (status === 'running') return 'badge-running';
+    if (status === 'completed') return 'badge-completed';
+    if (status === 'failed' || status === 'critical' || status === 'high') return 'badge-failed';
+    if (status === 'waiting' || status === 'queued' || status === 'medium') return 'badge-pending';
+    if (status === 'upcoming' || status === 'idle') return 'badge-draft';
+    return 'badge-approved';
+  }
+
+  function progressWidth(value: number) {
+    return `width: ${Math.max(0, Math.min(100, value))}%`;
+  }
+</script>
+
+<svelte:head><title>AI Agency — WebXni</title></svelte:head>
+
+<div class="page-header">
+  <div>
+    <h1 class="page-title">AI Agency</h1>
+    <p class="page-subtitle">Autonomous marketing operations with Marvin approval and designer asset gates</p>
+  </div>
+  <div class="flex gap-2 shrink-0">
+    <button class="btn-secondary btn-sm" on:click={loadAgency}>Refresh</button>
+    <button class="btn-primary btn-sm" disabled={runningSlug !== ''} on:click={() => runAgent('agency-orchestrator')}>
+      {runningSlug === 'agency-orchestrator' ? 'Queuing...' : 'Run Orchestrator'}
+    </button>
+  </div>
+</div>
+
+{#if loading}
+  <div class="flex flex-col items-center justify-center py-24 gap-3">
+    <Spinner size="lg" />
+    <p class="text-sm text-muted">Loading agency dashboard...</p>
+  </div>
+{:else if error}
+  <div class="alert-error rounded-lg mb-6">{error}</div>
+{:else}
+  {#if overview && (overview.failed_agent_jobs > 0 || overview.waiting_marvin_approval > 0 || overview.waiting_designer_assets > 0)}
+    <div class="alert-warning mb-5">
+      <span class="font-semibold">Agency attention needed</span>
+      <span>{overview.failed_agent_jobs} failed jobs, {overview.waiting_marvin_approval} approvals, {overview.waiting_designer_assets} designer assets.</span>
+    </div>
+  {/if}
+
+  {#if overview}
+    <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-9 gap-3 mb-5">
+      <a href="#agents" class="metric-card"><div class="metric-value">{overview.active_agents}</div><div class="metric-label">Active Agents</div></a>
+      <a href="#tasks" class="metric-card"><div class="metric-value">{overview.running_tasks}</div><div class="metric-label">Running Tasks</div></a>
+      <a href="/approvals" class="metric-card"><div class="metric-value">{overview.waiting_marvin_approval}</div><div class="metric-label">Marvin Approval</div></a>
+      <a href="/posts" class="metric-card"><div class="metric-value">{overview.waiting_designer_assets}</div><div class="metric-label">Designer Assets</div></a>
+      <a href="#findings" class="metric-card"><div class="metric-value">{overview.failed_agent_jobs}</div><div class="metric-label">Failed Jobs</div></a>
+      <a href="#tasks" class="metric-card"><div class="metric-value">{overview.completed_this_week}</div><div class="metric-label">Done This Week</div></a>
+      <a href="#coverage" class="metric-card"><div class="metric-value">{overview.research_completed_this_week}</div><div class="metric-label">Research</div></a>
+      <a href="/posts" class="metric-card"><div class="metric-value">{overview.posts_generated_this_week}</div><div class="metric-label">Posts Generated</div></a>
+      <a href="/posts?content_type=blog" class="metric-card"><div class="metric-value">{overview.blogs_generated_this_week}</div><div class="metric-label">Blogs Generated</div></a>
+    </div>
+  {/if}
+
+  <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.65fr)] gap-5">
+    <div class="space-y-5">
+      <section id="agents" class="card">
+        <div class="px-5 py-4 border-b border-border flex items-center justify-between">
+          <h2 class="section-title">Agent Status</h2>
+          <span class="text-xs text-muted">{agents.length} agents</span>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 p-3">
+          {#each agents as agent}
+            <div class="border border-border rounded-lg p-4 bg-surface/40">
+              <div class="flex items-start justify-between gap-3 mb-2">
+                <div class="min-w-0">
+                  <h3 class="text-sm font-semibold text-white truncate">{agent.name}</h3>
+                  <p class="text-xs text-muted mt-1 line-clamp-2">{agent.purpose}</p>
+                </div>
+                <span class={statusClass(agent.status)}>{agent.status}</span>
+              </div>
+              <div class="space-y-2 text-xs text-muted">
+                <div class="flex justify-between gap-3"><span>Backend</span><span class="text-white">{agent.default_backend.replace(/_/g, ' ')}</span></div>
+                <div class="flex justify-between gap-3"><span>Current task</span><span class="text-white truncate">{agent.current_task ?? 'Idle'}</span></div>
+                <div class="flex justify-between gap-3"><span>Last run</span><span class="text-white">{agent.last_run_at ? timeAgo(agent.last_run_at) : 'Never'}</span></div>
+                <div class="flex justify-between gap-3"><span>Next run</span><span class="text-white">{agent.next_run_at ? timeAgo(agent.next_run_at) : 'Not scheduled'}</span></div>
+              </div>
+              <div class="h-1.5 bg-bg rounded-full overflow-hidden mt-3">
+                <div class="h-full bg-accent" style={progressWidth(agent.progress)}></div>
+              </div>
+              <div class="flex gap-2 mt-3">
+                <button class="btn-secondary btn-sm flex-1 justify-center" on:click={() => runAgent(agent.slug)} disabled={runningSlug !== ''}>
+                  {runningSlug === agent.slug ? 'Queuing...' : 'Run Now'}
+                </button>
+                <a class="btn-ghost btn-sm" href="#logs">Logs</a>
+              </div>
+            </div>
+          {/each}
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="px-5 py-4 border-b border-border">
+          <h2 class="section-title">Weekly Agency Timeline</h2>
+        </div>
+        <div class="divide-y divide-border">
+          {#each timeline as item}
+            <div class="px-5 py-3 flex items-center gap-3">
+              <div class="w-20 text-xs font-medium text-white shrink-0">{item.day}</div>
+              <div class="min-w-0 flex-1">
+                <div class="text-sm text-white">{item.title}</div>
+                <div class="text-xs text-muted">{item.summary}</div>
+              </div>
+              <span class={statusClass(item.status)}>{item.status}</span>
+            </div>
+          {/each}
+        </div>
+      </section>
+
+      <section id="tasks" class="card">
+        <div class="px-5 py-4 border-b border-border">
+          <h2 class="section-title">Agent Task Board</h2>
+        </div>
+        <div class="overflow-x-auto p-3">
+          <div class="grid grid-cols-8 gap-3 min-w-[1180px]">
+            {#each boardColumns as column}
+              <div class="bg-surface/45 border border-border rounded-lg min-h-56">
+                <div class="px-3 py-2 border-b border-border text-xs font-semibold text-muted uppercase">{column[1]}</div>
+                <div class="p-2 space-y-2">
+                  {#each tasksFor(column[0]) as task}
+                    <div class="rounded-md bg-card border border-border p-3">
+                      <div class="text-xs font-medium text-white line-clamp-2">{task.title}</div>
+                      <div class="text-[11px] text-muted mt-1">{task.agent_name ?? task.agent_slug}</div>
+                      {#if task.client_name}<div class="text-[11px] text-muted">{task.client_name}</div>{/if}
+                      <div class="flex items-center justify-between mt-2">
+                        <span class={statusClass(task.priority)}>{task.priority}</span>
+                        <span class="text-[11px] text-muted">{task.progress}%</span>
+                      </div>
+                    </div>
+                  {:else}
+                    <div class="text-xs text-muted p-2">No tasks.</div>
+                  {/each}
+                </div>
+              </div>
+            {/each}
+          </div>
+        </div>
+      </section>
+
+      <section id="coverage" class="card">
+        <div class="px-5 py-4 border-b border-border">
+          <h2 class="section-title">Client Coverage</h2>
+        </div>
+        <div class="table-wrapper border-0 rounded-none">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Client</th>
+                <th>Research</th>
+                <th>Strategy</th>
+                <th>Posts</th>
+                <th>Approvals</th>
+                <th>Designer</th>
+                <th>Blogs</th>
+                <th>Next Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each clients as client}
+                <tr>
+                  <td>
+                    <div class="font-medium text-white">{client.client_name}</div>
+                    <div class="text-xs text-muted">{client.package ?? 'No package'}</div>
+                  </td>
+                  <td>{client.last_research_date ?? 'None'}</td>
+                  <td>{client.current_strategy_status}</td>
+                  <td>{client.posts_generated}/{client.posts_planned}</td>
+                  <td>{client.posts_waiting_approval}</td>
+                  <td>{client.posts_waiting_designer}</td>
+                  <td>{client.blogs_drafted}/{client.blogs_planned}</td>
+                  <td>{client.next_agent_action}</td>
+                </tr>
+              {:else}
+                <tr><td colspan="8" class="text-center text-muted py-10">No active client coverage yet.</td></tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <div class="space-y-5">
+      <section class="card">
+        <div class="px-5 py-4 border-b border-border"><h2 class="section-title">Approval Pipeline</h2></div>
+        <div class="p-4 space-y-3">
+          {#each ['Research complete', 'Strategy complete', 'Copy generated', 'Editorial reviewed', 'Waiting for Marvin approval', 'Waiting for designer asset', 'Ready for automation', 'Scheduled / Posted'] as step, index}
+            <div class="flex items-center gap-3">
+              <div class="w-6 h-6 rounded-full bg-accent/10 text-accent flex items-center justify-center text-xs font-semibold">{index + 1}</div>
+              <div class="text-sm text-white">{step}</div>
+            </div>
+          {/each}
+        </div>
+      </section>
+
+      <section id="findings" class="card">
+        <div class="px-5 py-4 border-b border-border"><h2 class="section-title">Agent Findings</h2></div>
+        <div class="divide-y divide-border">
+          {#each findings.slice(0, 8) as finding}
+            <div class="px-5 py-3">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="text-sm text-white">{finding.title}</div>
+                  <div class="text-xs text-muted">{finding.agent_name ?? finding.agent_slug}{finding.client_name ? ` · ${finding.client_name}` : ''}</div>
+                </div>
+                <span class={statusClass(finding.severity)}>{finding.severity}</span>
+              </div>
+              {#if finding.status === 'open'}
+                <button class="btn-ghost btn-sm mt-2" on:click={() => acknowledge(finding.id)}>Acknowledge</button>
+              {/if}
+            </div>
+          {:else}
+            <p class="px-5 py-10 text-center text-sm text-muted">No findings.</p>
+          {/each}
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="px-5 py-4 border-b border-border"><h2 class="section-title">Claude Skills</h2></div>
+        <div class="p-3 grid grid-cols-1 gap-2">
+          {#each skills as skill}
+            <div class="border border-border rounded-lg p-3 bg-surface/40">
+              <div class="flex justify-between gap-3">
+                <div class="text-sm font-medium text-white truncate">{skill.name}</div>
+                <span class={statusClass(skill.status)}>{skill.status}</span>
+              </div>
+              <div class="text-xs text-muted mt-1">{skill.purpose}</div>
+              <div class="text-xs text-muted mt-2">Backend: {skill.backend}</div>
+            </div>
+          {/each}
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="px-5 py-4 border-b border-border"><h2 class="section-title">Harness Flow</h2></div>
+        <div class="p-4 space-y-3">
+          {#each flow as step}
+            <div class="flex gap-3">
+              <div class="text-xs text-accent font-semibold w-6 shrink-0">{step.order}</div>
+              <div>
+                <div class="text-sm text-white">{step.title}</div>
+                <div class="text-xs text-muted">{step.summary}</div>
+              </div>
+            </div>
+          {/each}
+        </div>
+      </section>
+
+      <section id="logs" class="card">
+        <div class="px-5 py-4 border-b border-border"><h2 class="section-title">Recent Agent Logs</h2></div>
+        <div class="divide-y divide-border">
+          {#each logs.slice(0, 10) as log}
+            <div class="px-5 py-3">
+              <div class="flex items-center justify-between gap-3">
+                <div class="text-sm text-white">{log.agent_name ?? log.agent_slug ?? 'Agency'}</div>
+                <span class={statusClass(log.status)}>{log.status}</span>
+              </div>
+              <div class="text-xs text-muted mt-1">{log.summary}</div>
+              <div class="text-[11px] text-muted mt-1">{timeAgo(log.created_at)}</div>
+            </div>
+          {:else}
+            <p class="px-5 py-10 text-center text-sm text-muted">No agent logs yet.</p>
+          {/each}
+        </div>
+      </section>
+    </div>
+  </div>
+{/if}
