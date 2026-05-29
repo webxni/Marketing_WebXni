@@ -27,7 +27,7 @@ Production actions completed:
 
 ## Current Runner Behavior
 
-`scripts/run-approved-agency-job.mjs` is still conservative. It does not call Claude Code, Gemini CLI, Anthropic API, OpenAI, or Codex yet.
+`scripts/run-approved-agency-job.mjs` is conservative by default. It does not call Claude Code, Gemini CLI, OpenAI, Anthropic API, or Codex unless `AGENCY_EXECUTE_AI=1` is set in the bot environment.
 
 It now:
 
@@ -35,8 +35,30 @@ It now:
 - reads a protected agency snapshot from `/internal/agency/snapshot`
 - builds structured JSON output from current platform data
 - creates agent findings for system/security/orchestrator issues
+- can run agent-specific JSON-schema prompts through terminal Gemini, Claude, or Codex when explicitly enabled
+- can save client research, strategy plans, content review notes, and draft posts through protected internal endpoints
 - updates agent task/run/log records
 - completes or fails the approved command job cleanly
+
+Draft content creation has a second explicit gate: `AGENCY_ALLOW_DRAFT_POSTS=1`. Without it, social/blog agents can analyze and report but will not create draft posts.
+
+## Protected Internal Save Endpoints
+
+- `POST /internal/agency/research-note` -> `client_research_notes`
+- `POST /internal/agency/strategy-plan` -> `client_strategy_plans`
+- `POST /internal/agency/content-review` -> `content_review_notes`
+- `POST /internal/agency/draft-post` -> `posts` with `status='draft'`, `ready_for_automation=0`, and `asset_delivered=0`
+
+All endpoints require the Discord bot bearer secret and redact through existing query helpers.
+
+## Scheduler State
+
+`worker/src/loader/agency-scheduler.ts` is wired into the Worker scheduled handler, but it is disabled unless one of these is true:
+
+- Worker env var `AGENCY_SCHEDULER_ENABLED=true`
+- KV setting `settings:system.agency_scheduler_enabled=true`
+
+When enabled, daily cron queues `security-sentinel`, `system-reliability`, and `client-research`. Sunday also queues `strategy`, `blog-writer`, `social-copy`, `editorial-review`, and `agency-orchestrator`. It dedupes per agent/day with audit markers.
 
 ## Safety Guarantees Preserved
 
@@ -54,14 +76,12 @@ All agent runs still go through `approved_command_jobs` and fixed script mapping
 
 ## Next Phases
 
-1. Add JSON schemas and prompt builders for each agent.
-2. Wire Gemini CLI for quota-limited Client Research.
-3. Wire Claude Code for strategy, reliability, security review, social drafts, blog drafts, and editorial review.
-4. Save research to `client_research_notes`.
-5. Save strategy to `client_strategy_plans`.
-6. Save review notes to `content_review_notes`.
-7. Add schedule enqueueing through Worker cron only after each runner path is proven safe.
-8. Add deeper UI task detail drawers and retry controls.
+1. Enable `AGENCY_EXECUTE_AI=1` in the bot environment after CLI credentials are confirmed.
+2. Run one manual `client-research` job and inspect the saved note.
+3. Run one manual `strategy` job and inspect the saved draft plan.
+4. Enable `AGENCY_ALLOW_DRAFT_POSTS=1` only after draft quality is accepted.
+5. Enable `agency_scheduler_enabled=true` only after manual runs are proven safe.
+6. Add deeper UI task detail drawers and retry controls.
 
 ## Manual Verification Commands
 

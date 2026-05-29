@@ -7,11 +7,15 @@ import {
   createAgentRun,
   createAgentTask,
   createApprovedCommandJob,
+  createPost,
   getAgencyClientCoverage,
   getAgencyLogs,
   getApprovedCommandJobById,
   getAgentSystemHealthSnapshot,
   getAgentTask,
+  saveClientResearch,
+  saveClientStrategy,
+  saveContentReview,
   listAgencyOverview,
   listAgentDefinitions,
   listAgentFindings,
@@ -259,6 +263,54 @@ const internalFindingSchema = z.object({
   finding_json: z.record(z.unknown()).nullable().optional(),
 });
 
+const internalResearchSchema = z.object({
+  agent_slug: z.string(),
+  task_id: z.string().optional(),
+  client_id: z.string(),
+  source: z.string().min(1).max(80).optional(),
+  freshness_date: z.string().min(8).max(20),
+  research_json: z.record(z.unknown()),
+});
+
+const internalStrategySchema = z.object({
+  agent_slug: z.string(),
+  task_id: z.string().optional(),
+  client_id: z.string(),
+  period_start: z.string().min(8).max(20),
+  period_end: z.string().min(8).max(20),
+  status: z.enum(['draft', 'needs_review', 'approved', 'archived']).optional(),
+  strategy_json: z.record(z.unknown()),
+});
+
+const internalReviewSchema = z.object({
+  agent_slug: z.string(),
+  task_id: z.string().optional(),
+  post_id: z.string().nullable().optional(),
+  blog_id: z.string().nullable().optional(),
+  severity: z.enum(['info', 'low', 'medium', 'high', 'critical']),
+  notes_json: z.record(z.unknown()),
+});
+
+const internalDraftPostSchema = z.object({
+  agent_slug: z.string(),
+  task_id: z.string().optional(),
+  client_id: z.string(),
+  title: z.string().min(1).max(200),
+  content_type: z.enum(['image', 'reel', 'video', 'blog']),
+  platforms: z.array(z.string()).default([]),
+  master_caption: z.string().nullable().optional(),
+  platform_captions: z.record(z.string()).nullable().optional(),
+  blog_content: z.string().nullable().optional(),
+  blog_excerpt: z.string().nullable().optional(),
+  seo_title: z.string().nullable().optional(),
+  meta_description: z.string().nullable().optional(),
+  slug: z.string().nullable().optional(),
+  target_keyword: z.string().nullable().optional(),
+  ai_image_prompt: z.string().nullable().optional(),
+  ai_video_prompt: z.string().nullable().optional(),
+  skarleth_notes: z.string().nullable().optional(),
+});
+
 function formatAgencyStatusText(overview: Awaited<ReturnType<typeof listAgencyOverview>>, agents: Awaited<ReturnType<typeof listAgentDefinitions>>): string {
   const today = agents
     .filter((agent) => ['running', 'failed', 'waiting'].includes(agent.status))
@@ -462,6 +514,114 @@ agencyInternalRoutes.post('/finding', async (c) => {
     summary: `${parsed.data.severity.toUpperCase()} finding created: ${parsed.data.title}`,
   });
   return c.json({ ok: true, finding });
+});
+
+agencyInternalRoutes.post('/research-note', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const parsed = internalResearchSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json({ error: 'Invalid input', issues: parsed.error.issues }, 400);
+  await saveClientResearch(
+    c.env.DB,
+    parsed.data.client_id,
+    parsed.data.source ?? parsed.data.agent_slug,
+    JSON.stringify(parsed.data.research_json),
+    parsed.data.freshness_date,
+  );
+  await appendAgencyLog(c.env.DB, {
+    agent_slug: parsed.data.agent_slug,
+    task_id: parsed.data.task_id ?? null,
+    status: 'saved',
+    step: 'research-note',
+    summary: 'Client research note saved.',
+  });
+  return c.json({ ok: true });
+});
+
+agencyInternalRoutes.post('/strategy-plan', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const parsed = internalStrategySchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json({ error: 'Invalid input', issues: parsed.error.issues }, 400);
+  await saveClientStrategy(
+    c.env.DB,
+    parsed.data.client_id,
+    parsed.data.period_start,
+    parsed.data.period_end,
+    JSON.stringify(parsed.data.strategy_json),
+    parsed.data.status ?? 'draft',
+  );
+  await appendAgencyLog(c.env.DB, {
+    agent_slug: parsed.data.agent_slug,
+    task_id: parsed.data.task_id ?? null,
+    status: 'saved',
+    step: 'strategy-plan',
+    summary: 'Client strategy plan saved as draft.',
+  });
+  return c.json({ ok: true });
+});
+
+agencyInternalRoutes.post('/content-review', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const parsed = internalReviewSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json({ error: 'Invalid input', issues: parsed.error.issues }, 400);
+  await saveContentReview(c.env.DB, {
+    post_id: parsed.data.post_id ?? null,
+    blog_id: parsed.data.blog_id ?? null,
+    agent_task_id: parsed.data.task_id ?? null,
+    severity: parsed.data.severity,
+    notes_json: JSON.stringify(parsed.data.notes_json),
+  });
+  await appendAgencyLog(c.env.DB, {
+    agent_slug: parsed.data.agent_slug,
+    task_id: parsed.data.task_id ?? null,
+    status: 'saved',
+    step: 'content-review',
+    summary: `${parsed.data.severity.toUpperCase()} content review note saved.`,
+  });
+  return c.json({ ok: true });
+});
+
+agencyInternalRoutes.post('/draft-post', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const parsed = internalDraftPostSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json({ error: 'Invalid input', issues: parsed.error.issues }, 400);
+  const captions = parsed.data.platform_captions ?? {};
+  const post = await createPost(c.env.DB, {
+    client_id: parsed.data.client_id,
+    title: parsed.data.title,
+    status: 'draft',
+    content_type: parsed.data.content_type,
+    platforms: JSON.stringify(parsed.data.platforms),
+    master_caption: parsed.data.master_caption ?? null,
+    cap_facebook: captions.facebook ?? null,
+    cap_instagram: captions.instagram ?? null,
+    cap_linkedin: captions.linkedin ?? null,
+    cap_x: captions.x ?? null,
+    cap_threads: captions.threads ?? null,
+    cap_tiktok: captions.tiktok ?? null,
+    cap_pinterest: captions.pinterest ?? null,
+    cap_bluesky: captions.bluesky ?? null,
+    cap_google_business: captions.google_business ?? null,
+    blog_content: parsed.data.blog_content ?? null,
+    blog_excerpt: parsed.data.blog_excerpt ?? null,
+    seo_title: parsed.data.seo_title ?? null,
+    meta_description: parsed.data.meta_description ?? null,
+    slug: parsed.data.slug ?? null,
+    target_keyword: parsed.data.target_keyword ?? null,
+    ai_image_prompt: parsed.data.ai_image_prompt ?? null,
+    ai_video_prompt: parsed.data.ai_video_prompt ?? null,
+    skarleth_notes: parsed.data.skarleth_notes ?? null,
+    ready_for_automation: 0,
+    asset_delivered: 0,
+    scheduled_by_automation: 1,
+  });
+  await appendAgencyLog(c.env.DB, {
+    agent_slug: parsed.data.agent_slug,
+    task_id: parsed.data.task_id ?? null,
+    status: 'saved',
+    step: 'draft-post',
+    summary: `Draft ${post.content_type} post created for review: ${post.title}`,
+  });
+  return c.json({ ok: true, post_id: post.id });
 });
 
 agencyInternalRoutes.get('/jobs/:id/context', async (c) => {

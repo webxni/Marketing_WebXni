@@ -14,7 +14,7 @@ The AI Agency OS is an additive control layer for WebXni. It tracks first-class 
 
 ## Current Phase
 
-This foundation includes the `/agency` dashboard, database records, redacted APIs, fixed agency command names, and a conservative approved runner. The runner reads live platform status and writes structured task output/findings, but agent-specific Claude/Gemini prompts are intentionally deferred so this phase does not introduce autonomous production content changes.
+This foundation includes the `/agency` dashboard, database records, redacted APIs, fixed agency command names, protected save endpoints, and a conservative approved runner. The runner reads live platform status and writes structured task output/findings by default. Agent-specific terminal AI execution is available only when `AGENCY_EXECUTE_AI=1`; draft post creation also requires `AGENCY_ALLOW_DRAFT_POSTS=1`.
 
 ## Gates
 
@@ -22,6 +22,6 @@ Agents must never mark posts as Marvin-approved, mark `asset_delivered`, set `re
 
 ## Quick Disable
 
-Set `AGENCY_ENABLED=false` in the bot environment and avoid using `/agency` Run Now buttons. Individual agents can also be disabled by setting `agent_definitions.enabled = 0`.
+Set `AGENCY_ENABLED=false` in the bot environment and avoid using `/agency` Run Now buttons. Keep `AGENCY_EXECUTE_AI`, `AGENCY_ALLOW_DRAFT_POSTS`, and `AGENCY_SCHEDULER_ENABLED` unset or false. Individual agents can also be disabled by setting `agent_definitions.enabled = 0`.
 
 See `docs/agency-implementation-log.md` for the current deployed state and next phases.

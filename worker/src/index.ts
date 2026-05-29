@@ -90,6 +90,7 @@ app.all('/*', async (c) => {
 import { runPosting } from './loader/posting-run';
 import { runRecurringGbp } from './loader/recurring-gbp-run';
 import { runContentRequests } from './loader/content-request-run';
+import { runAgencyScheduler } from './loader/agency-scheduler';
 import { runFetchUrls } from './routes/run';
 import { notifyPostingComplete, discordDM, discordSend, DISCORD_COLORS } from './services/discord';
 import { runPlatformHealthCheck, buildHealthDiscordMessage } from './modules/platform-health';
@@ -114,6 +115,14 @@ export default {
     if (event.cron === '0 7 * * SUN') {
       // Sunday 7AM — Phase 1 content generation (not yet implemented)
       console.log('Generation cron triggered');
+      ctx.waitUntil((async () => {
+        try {
+          const stats = await runAgencyScheduler(env);
+          if (stats.enabled) console.log('Agency scheduler stats:', stats);
+        } catch (err) {
+          console.error('Agency scheduler cron error:', err);
+        }
+      })());
     } else if (event.cron === '0 2 * * *') {
       // Daily 2AM — fetch real post URLs from Upload-Post history
       ctx.waitUntil((async () => {
@@ -194,6 +203,14 @@ export default {
       })());
     } else if (event.cron === '0 9 * * *') {
       // Daily 9AM — platform health check + Discord notification if issues
+      ctx.waitUntil((async () => {
+        try {
+          const stats = await runAgencyScheduler(env);
+          if (stats.enabled) console.log('Agency scheduler stats:', stats);
+        } catch (err) {
+          console.error('Agency scheduler cron error:', err);
+        }
+      })());
       ctx.waitUntil((async () => {
         try {
           const summary = await runPlatformHealthCheck(env as any);

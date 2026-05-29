@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { redactSecrets } from './lib/agency-redaction.mjs';
+import { AGENCY_SCHEMAS, buildAgencyPrompt } from './lib/agency-agent-prompts.mjs';
+import { runTerminalJsonAgent } from './lib/terminal-json-agent.mjs';
 
 function arg(name) {
   const idx = process.argv.indexOf(name);
@@ -9,6 +11,8 @@ function arg(name) {
 const jobId = arg('--job-id');
 const apiBaseUrl = arg('--api-base-url') || process.env.API_BASE_URL || 'https://marketing.webxni.com';
 const botSecret = arg('--bot-secret') || process.env.DISCORD_BOT_SECRET || '';
+const EXECUTE_AI = process.env.AGENCY_EXECUTE_AI === '1';
+const ALLOW_DRAFT_POSTS = process.env.AGENCY_ALLOW_DRAFT_POSTS === '1';
 
 if (!jobId) {
   console.error('Missing --job-id');
@@ -252,6 +256,199 @@ function buildResult(agentSlug, commandName, snapshot) {
   };
 }
 
+function isoDate(offsetDays = 0) {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() + offsetDays);
+  return date.toISOString().slice(0, 10);
+}
+
+function preferredBackend(agentSlug, fallback) {
+  if (agentSlug === 'client-research') return process.env.AGENCY_RESEARCH_BACKEND || 'gemini';
+  if (fallback === 'gemini_cli') return 'gemini';
+  if (fallback === 'claude_code') return 'claude';
+  return process.env.AGENCY_TERMINAL_AGENT || fallback || 'auto';
+}
+
+async function runStructuredAgent(kind, agentSlug, backend, client, snapshot, task) {
+  const prompt = buildAgencyPrompt(kind, { client, snapshot, task });
+  const schema = AGENCY_SCHEMAS[kind];
+  return runTerminalJsonAgent({
+    prompt,
+    schema,
+    preferredBackend: preferredBackend(agentSlug, backend),
+    mode: kind === 'blogDraft' ? 'blog' : 'default',
+  });
+}
+
+async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, taskInput) {
+  if (!EXECUTE_AI) {
+    return {
+      ...buildResult(agentSlug, commandName, snapshot),
+      ai_execution_enabled: false,
+    };
+  }
+
+  if (agentSlug === 'system-reliability' || agentSlug === 'security-sentinel' || agentSlug === 'agency-orchestrator') {
+    const result = await runStructuredAgent('operationalReview', agentSlug, backend, snapshot.system_health || snapshot.overview, snapshot, taskInput);
+    return {
+      summary: result.output.summary,
+      agent_slug: agentSlug,
+      command_name: commandName,
+      risk_level: result.output.severity,
+      findings: result.output.findings,
+      recommended_actions: result.output.recommended_actions,
+      backend: result.backend,
+      safety: { no_arbitrary_shell: true, preserve_marvin_approval: true, preserve_designer_gate: true, no_auto_publish: true },
+    };
+  }
+
+  if (agentSlug === 'client-research') {
+    const candidates = snapshot.coverage
+      .filter((client) => !client.last_research_date)
+      .slice(0, Number(process.env.AGENCY_DAILY_RESEARCH_CLIENT_LIMIT || process.env.GEMINI_DAILY_CLIENT_LIMIT || 2));
+    const saved = [];
+    for (const client of candidates) {
+      const result = await runStructuredAgent('research', agentSlug, backend, client, snapshot, taskInput);
+      await post('/internal/agency/research-note', {
+        agent_slug: agentSlug,
+        task_id: taskId,
+        client_id: client.client_id,
+        source: result.backend,
+        freshness_date: isoDate(),
+        research_json: result.output,
+      });
+      saved.push({ client_id: client.client_id, client_name: client.client_name, backend: result.backend });
+    }
+    return {
+      summary: `Client research completed for ${saved.length} client(s).`,
+      agent_slug: agentSlug,
+      command_name: commandName,
+      saved_research: saved,
+      safety: { no_arbitrary_shell: true, preserve_marvin_approval: true, preserve_designer_gate: true, no_auto_publish: true },
+    };
+  }
+
+  if (agentSlug === 'strategy') {
+    const candidates = snapshot.coverage
+      .filter((client) => client.current_strategy_status === 'none')
+      .slice(0, Number(process.env.AGENCY_DAILY_STRATEGY_CLIENT_LIMIT || 3));
+    const saved = [];
+    for (const client of candidates) {
+      const result = await runStructuredAgent('strategy', agentSlug, backend, client, snapshot, taskInput);
+      await post('/internal/agency/strategy-plan', {
+        agent_slug: agentSlug,
+        task_id: taskId,
+        client_id: client.client_id,
+        period_start: isoDate(),
+        period_end: isoDate(30),
+        status: 'draft',
+        strategy_json: result.output,
+      });
+      saved.push({ client_id: client.client_id, client_name: client.client_name, backend: result.backend });
+    }
+    return {
+      summary: `Strategy draft saved for ${saved.length} client(s).`,
+      agent_slug: agentSlug,
+      command_name: commandName,
+      saved_strategies: saved,
+      safety: { no_arbitrary_shell: true, preserve_marvin_approval: true, preserve_designer_gate: true, no_auto_publish: true },
+    };
+  }
+
+  if (agentSlug === 'social-copy') {
+    if (!ALLOW_DRAFT_POSTS) {
+      return {
+        ...buildResult(agentSlug, commandName, snapshot),
+        ai_execution_enabled: true,
+        draft_creation_enabled: false,
+      };
+    }
+    const client = topCoverageGaps(snapshot.coverage)[0];
+    if (!client) return buildResult(agentSlug, commandName, snapshot);
+    const result = await runStructuredAgent('socialDraft', agentSlug, backend, client, snapshot, taskInput);
+    const draft = result.output;
+    const saved = await post('/internal/agency/draft-post', {
+      agent_slug: agentSlug,
+      task_id: taskId,
+      client_id: client.client_id,
+      title: draft.title,
+      content_type: draft.content_type,
+      platforms: draft.platforms,
+      master_caption: draft.master_caption,
+      platform_captions: draft.platform_captions,
+      ai_image_prompt: draft.content_type === 'image' ? draft.designer_prompt_es : null,
+      ai_video_prompt: draft.content_type !== 'image' ? draft.designer_prompt_es : null,
+      skarleth_notes: draft.review_notes?.join('\n') || null,
+    });
+    return {
+      summary: `Social draft created for ${client.client_name}.`,
+      agent_slug: agentSlug,
+      command_name: commandName,
+      draft_post_id: saved.post_id,
+      backend: result.backend,
+      safety: { status: 'draft', ready_for_automation: 0, asset_delivered: 0, no_auto_publish: true },
+    };
+  }
+
+  if (agentSlug === 'blog-writer') {
+    if (!ALLOW_DRAFT_POSTS) {
+      return {
+        ...buildResult(agentSlug, commandName, snapshot),
+        ai_execution_enabled: true,
+        draft_creation_enabled: false,
+      };
+    }
+    const client = topCoverageGaps(snapshot.coverage)[0];
+    if (!client) return buildResult(agentSlug, commandName, snapshot);
+    const result = await runStructuredAgent('blogDraft', agentSlug, backend, client, snapshot, taskInput);
+    const draft = result.output;
+    const saved = await post('/internal/agency/draft-post', {
+      agent_slug: agentSlug,
+      task_id: taskId,
+      client_id: client.client_id,
+      title: draft.title,
+      content_type: 'blog',
+      platforms: ['website_blog'],
+      blog_content: draft.html,
+      blog_excerpt: draft.excerpt,
+      seo_title: draft.seo_title,
+      meta_description: draft.meta_description,
+      slug: draft.slug,
+      target_keyword: draft.target_keyword,
+      skarleth_notes: draft.review_notes?.join('\n') || null,
+    });
+    return {
+      summary: `Blog draft created for ${client.client_name}.`,
+      agent_slug: agentSlug,
+      command_name: commandName,
+      draft_post_id: saved.post_id,
+      backend: result.backend,
+      safety: { status: 'draft', wordpress_published: false, no_auto_publish: true },
+    };
+  }
+
+  if (agentSlug === 'editorial-review') {
+    const target = snapshot.tasks.find((task) => task.status === 'completed') || snapshot.tasks[0] || null;
+    const result = await runStructuredAgent('editorialReview', agentSlug, backend, target, snapshot, taskInput);
+    await post('/internal/agency/content-review', {
+      agent_slug: agentSlug,
+      task_id: taskId,
+      severity: result.output.severity,
+      notes_json: result.output,
+    });
+    return {
+      summary: `Editorial review note saved with ${result.output.severity} severity.`,
+      agent_slug: agentSlug,
+      command_name: commandName,
+      reviewed_task_id: target?.id ?? null,
+      backend: result.backend,
+      safety: { approval_status_changed: false, no_auto_publish: true },
+    };
+  }
+
+  return buildResult(agentSlug, commandName, snapshot);
+}
+
 async function createFindingsForResult(agentSlug, taskId, result) {
   const findings = Array.isArray(result.findings) ? result.findings : Array.isArray(result.bottlenecks) ? result.bottlenecks : [];
   for (const finding of findings.slice(0, 5)) {
@@ -294,7 +491,7 @@ try {
   });
 
   const snapshotResponse = await post('/internal/agency/snapshot', {});
-  const result = buildResult(agentSlug, job.command_name, snapshotResponse.snapshot);
+  const result = await runAiPhase(agentSlug, job.command_name, backend, taskId, snapshotResponse.snapshot, args);
   await createFindingsForResult(agentSlug, taskId, result);
 
   await post('/internal/agency/task-update', {
