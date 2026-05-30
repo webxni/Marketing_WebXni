@@ -35,7 +35,20 @@ export const AGENCY_SCHEMAS = {
       content_type: { type: 'string', enum: ['image', 'reel', 'video'] },
       platforms: { type: 'array', items: { type: 'string' } },
       master_caption: { type: 'string' },
-      platform_captions: { type: 'object', additionalProperties: { type: 'string' } },
+      platform_captions: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['facebook', 'instagram'],
+        properties: {
+          facebook:        { type: 'string' },
+          instagram:       { type: 'string' },
+          tiktok:          { type: 'string' },
+          x:               { type: 'string' },
+          threads:         { type: 'string' },
+          google_business: { type: 'string' },
+          linkedin:        { type: 'string' },
+        },
+      },
       designer_prompt_es: { type: 'string' },
       review_notes: { type: 'array', items: { type: 'string' } },
     },
@@ -100,7 +113,7 @@ export function buildAgencyPrompt(kind, { client, snapshot, task }) {
     return `${shared}\n\nCreate a reviewable draft strategy plan. Use existing research signals when present. Keep it practical for local SEO and social content.`;
   }
   if (kind === 'socialDraft') {
-    return `${shared}\n\nDraft one reviewable social content item. It must remain pending Marvin approval and waiting for designer asset upload.`;
+    return `${shared}\n\nDraft one reviewable social content item for this client.\n\nRULES:\n- Use the client's real services and local service areas.\n- Avoid generic captions. Be specific, local, and conversion-focused.\n- Vary the hook — do not start with the business name.\n- Include a clear CTA (call, text, visit, book).\n- platform_captions must include BOTH facebook AND instagram keys with distinct, platform-appropriate text.\n  facebook: slightly longer, conversational, allows emojis.\n  instagram: shorter, punchy, hashtag-friendly.\n  tiktok: casual and energetic if relevant to client.\n  google_business: concise, local SEO focused, no emojis.\n- designer_prompt_es: write the image/video prompt in Spanish for the designer.\n- Do not claim to publish, approve, or schedule. Status remains draft.`;
   }
   if (kind === 'blogDraft') {
     return `${shared}\n\nDraft one local SEO blog as HTML body content only. Use inline-safe article markup and do not include style tags. It must remain a draft and not publish to WordPress.`;
