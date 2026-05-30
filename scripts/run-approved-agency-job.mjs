@@ -602,12 +602,14 @@ async function createFindingsForResult(agentSlug, taskId, result) {
   }
 }
 
+let _agentSlug = 'unknown';
 try {
   await loadAiConfig();
   const context = await request(`/internal/agency/jobs/${jobId}/context`);
   const job = context.job;
   const args = JSON.parse(job.args_json || '{}');
   const agentSlug = args.agent_slug;
+  _agentSlug = agentSlug || 'unknown';
   const taskId = args.task_id;
   const backend = job.provider || 'internal';
 
@@ -619,6 +621,15 @@ try {
     level: 'START',
     message: `Agency job started: ${agentSlug}`,
   });
+
+  // Heartbeat: mark agent as running
+  await post('/internal/agency/heartbeat', {
+    agent_slug: agentSlug,
+    task_id: taskId,
+    status: 'running',
+    message: `${agentSlug} job claimed and running`,
+  }).catch(() => {});
+
   const started = await post('/internal/agency/task-update', {
     agent_slug: agentSlug,
     task_id: taskId,
@@ -632,6 +643,14 @@ try {
   const snapshotResponse = await post('/internal/agency/snapshot', {});
   const result = await runAiPhase(agentSlug, job.command_name, backend, taskId, snapshotResponse.snapshot, args);
   await createFindingsForResult(agentSlug, taskId, result);
+
+  // Heartbeat: mark agent as healthy after successful run
+  await post('/internal/agency/heartbeat', {
+    agent_slug: agentSlug,
+    task_id: taskId,
+    status: 'healthy',
+    message: result.summary?.slice(0, 200) || `${agentSlug} completed successfully`,
+  }).catch(() => {});
 
   await post('/internal/agency/task-update', {
     agent_slug: agentSlug,
@@ -649,6 +668,14 @@ try {
 } catch (err) {
   const message = redactSecrets(err instanceof Error ? err.stack || err.message : String(err));
   console.error(message);
+  try {
+    await post('/internal/agency/heartbeat', {
+      agent_slug: _agentSlug,
+      status: 'failed',
+      message: message.slice(0, 200),
+      error: message.slice(0, 500),
+    });
+  } catch { /* ignore */ }
   try {
     await post(`/internal/discord/approved-jobs/${jobId}/fail`, { error: message });
   } catch (failErr) {
