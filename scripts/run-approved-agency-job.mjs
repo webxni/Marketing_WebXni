@@ -367,7 +367,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
     };
   }
 
-  if (agentSlug === 'system-reliability' || agentSlug === 'security-sentinel' || agentSlug === 'agency-orchestrator') {
+  if (agentSlug === 'system-reliability' || agentSlug === 'security-sentinel') {
     const result = await runStructuredAgent('operationalReview', agentSlug, backend, snapshot.system_health || snapshot.overview, snapshot, taskInput);
     return {
       summary: result.output.summary,
@@ -377,6 +377,65 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
       findings: result.output.findings,
       recommended_actions: result.output.recommended_actions,
       backend: result.backend,
+      safety: { no_arbitrary_shell: true, preserve_marvin_approval: true, preserve_designer_gate: true, no_auto_publish: true },
+    };
+  }
+
+  if (agentSlug === 'agency-orchestrator') {
+    const result = await runStructuredAgent('operationalReview', agentSlug, backend, snapshot.system_health || snapshot.overview, snapshot, taskInput);
+    const out = result.output;
+
+    // Build Discord report from today's findings + orchestrator output
+    const todayFindings = snapshot.findings.filter((f) => {
+      const created = f.created_at * 1000;
+      const dayAgo = Date.now() - 86400000;
+      return created > dayAgo && f.status === 'open';
+    });
+
+    const riskEmoji = { low: '🟢', medium: '🟡', high: '🔴', critical: '🚨', info: '⚪' };
+    const findingLines = todayFindings.slice(0, 8).map((f) => {
+      const emoji = riskEmoji[f.severity] ?? '⚪';
+      return `${emoji} **${f.agent_slug}** — ${f.title}`;
+    });
+
+    const overview = snapshot.overview;
+    const fields = [
+      { name: 'Risk', value: String(out.severity ?? 'low'), inline: true },
+      { name: 'Backend', value: result.backend, inline: true },
+      { name: 'Approval Queue', value: String(overview.waiting_marvin_approval), inline: true },
+      { name: 'Designer Queue', value: String(overview.waiting_designer_assets), inline: true },
+      { name: 'Failed Jobs', value: String(overview.failed_agent_jobs), inline: true },
+      { name: 'Posts This Week', value: String(overview.posts_generated_this_week), inline: true },
+    ];
+
+    const bodyLines = [
+      out.summary ?? '',
+      '',
+      findingLines.length ? `**Today's findings (${findingLines.length}):**\n${findingLines.join('\n')}` : '',
+      '',
+      (out.recommended_actions ?? []).slice(0, 3).map((a) => `→ ${a}`).join('\n'),
+    ].filter(Boolean);
+
+    const colorMap = { low: 0x22c55e, medium: 0xf59e0b, high: 0xef4444, critical: 0xdc2626, info: 0x6366f1 };
+    const color = colorMap[out.severity] ?? 0x6366f1;
+
+    await post('/internal/agency/notify-discord', {
+      title: `🤖 Agency Daily Report — ${new Date().toISOString().slice(0, 10)}`,
+      body: bodyLines.join('\n').slice(0, 3800),
+      color,
+      fields,
+      agent_slug: 'agency-orchestrator',
+    }).catch((err) => console.warn('[agency] Discord notify failed (non-fatal):', err.message));
+
+    return {
+      summary: out.summary,
+      agent_slug: agentSlug,
+      command_name: commandName,
+      risk_level: out.severity,
+      findings: out.findings,
+      recommended_actions: out.recommended_actions,
+      backend: result.backend,
+      discord_notified: true,
       safety: { no_arbitrary_shell: true, preserve_marvin_approval: true, preserve_designer_gate: true, no_auto_publish: true },
     };
   }

@@ -35,6 +35,7 @@ import {
 } from '../db/queries';
 import { redactSecrets } from '../modules/redaction';
 import { UploadPostClient } from '../services/uploadpost';
+import { discordSend } from '../services/discord';
 
 export const agencyRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 export const agencyInternalRoutes = new Hono<{ Bindings: Env; Variables: Record<string, unknown> }>();
@@ -872,6 +873,51 @@ agencyInternalRoutes.post('/sync-client-platforms', async (c) => {
   ].join('\n');
 
   return c.json({ ok: true, created: created.length, synced, errors, content });
+});
+
+const internalNotifySchema = z.object({
+  title:       z.string().max(200),
+  body:        z.string().max(3800),
+  color:       z.number().int().optional(),
+  fields:      z.array(z.object({ name: z.string(), value: z.string(), inline: z.boolean().optional() })).optional(),
+  agent_slug:  z.string().optional(),
+});
+
+agencyInternalRoutes.post('/notify-discord', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const parsed = internalNotifySchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json({ error: 'Invalid input', issues: parsed.error.issues }, 400);
+
+  // Use agency-specific channel if configured, else fall back to the main Discord channel
+  const channelId = c.env.AGENCY_NOTIFY_CHANNEL_ID || c.env.DISCORD_CHANNEL_ID;
+  const token = c.env.DISCORD_BOT_TOKEN;
+  if (!channelId || !token) return c.json({ ok: false, reason: 'No Discord channel or token configured' });
+
+  const { title, body, color, fields, agent_slug } = parsed.data;
+  try {
+    await discordSend({
+      channelId,
+      token,
+      embeds: [{
+        title,
+        description: body,
+        color: color ?? 0x6366f1,
+        fields: fields ?? [],
+        footer: { text: agent_slug ? `Agent: ${agent_slug}` : 'WebXni AI Agency' },
+        timestamp: new Date().toISOString(),
+      }],
+    });
+    await appendAgencyLog(c.env.DB, {
+      agent_slug: agent_slug ?? 'agency',
+      task_id: null,
+      status: 'notified',
+      step: 'discord-notify',
+      summary: `Discord notification sent: ${title}`,
+    });
+    return c.json({ ok: true });
+  } catch (err) {
+    return c.json({ ok: false, error: redactSecrets(err instanceof Error ? err.message : String(err)) });
+  }
 });
 
 agencyInternalRoutes.get('/jobs/:id/context', async (c) => {

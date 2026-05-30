@@ -27,9 +27,12 @@ const AGENT_COMMANDS: Record<string, string> = {
 
 // Weekend schedule — tasks run Friday night through Sunday.
 // Mon–Thu: stale detection only, no job enqueueing.
+// Orchestrator always runs daily after review agents so it can compile findings and notify Discord.
+const DAILY_REVIEW_AGENTS = ['security-sentinel', 'system-reliability', 'agency-orchestrator'];
+
 const SCHEDULE: Record<string, string[]> = {
   // Friday 10PM UTC — kick off the weekend sequence
-  'fri-night':  ['security-sentinel', 'system-reliability', 'client-research'],
+  'fri-night':  [...DAILY_REVIEW_AGENTS, 'client-research'],
   // Saturday morning (UTC midnight–1PM) — research + strategy
   'sat-morning': ['client-research', 'strategy'],
   // Saturday afternoon (UTC 14+) — blog drafts + editorial
@@ -70,8 +73,8 @@ function requestedAgents(now: Date): string[] {
   if (day === 0 && hour < 14)  return SCHEDULE['sun-morning']!;    // Sun AM
   if (day === 0 && hour >= 14) return SCHEDULE['sun-afternoon']!;  // Sun PM
 
-  // Mon–Thu and early Fri: nothing to schedule — stale check still runs
-  return [];
+  // Mon–Thu: security + system review + orchestrator report runs daily
+  return DAILY_REVIEW_AGENTS;
 }
 
 export async function runAgencyScheduler(env: Env, now = new Date()): Promise<AgencySchedulerStats> {

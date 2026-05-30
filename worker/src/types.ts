@@ -16,7 +16,8 @@ export interface Env {
   OPENAI_API_KEY: string;
   ANTHROPIC_API_KEY?: string;
   AGENT_INTERNAL_TOKEN?: string;
-  AGENCY_SCHEDULER_ENABLED?: string;
+  AGENCY_SCHEDULER_ENABLED?:   string;
+  AGENCY_NOTIFY_CHANNEL_ID?:   string;
   R2_MEDIA_PUBLIC_URL: string;
   NOTION_API_TOKEN?: string;       // optional — only needed for Notion import
   // Discord
