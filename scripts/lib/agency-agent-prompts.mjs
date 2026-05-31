@@ -53,6 +53,43 @@ export const AGENCY_SCHEMAS = {
       review_notes: { type: 'array', items: { type: 'string' } },
     },
   },
+  socialWeeklyBatch: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['posts'],
+    properties: {
+      posts: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['title', 'content_type', 'day_of_week', 'master_caption', 'platform_captions', 'designer_prompt_es'],
+          properties: {
+            title: { type: 'string' },
+            content_type: { type: 'string', enum: ['image', 'reel', 'video'] },
+            day_of_week: { type: 'string', enum: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] },
+            master_caption: { type: 'string' },
+            platform_captions: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['facebook', 'instagram'],
+              properties: {
+                facebook:        { type: 'string' },
+                instagram:       { type: 'string' },
+                tiktok:          { type: 'string' },
+                x:               { type: 'string' },
+                threads:         { type: 'string' },
+                google_business: { type: 'string' },
+                linkedin:        { type: 'string' },
+              },
+            },
+            designer_prompt_es: { type: 'string' },
+            review_notes: { type: 'array', items: { type: 'string' } },
+          },
+        },
+      },
+    },
+  },
   blogDraft: {
     type: 'object',
     additionalProperties: false,
@@ -111,6 +148,10 @@ export function buildAgencyPrompt(kind, { client, snapshot, task }) {
   }
   if (kind === 'strategy') {
     return `${shared}\n\nCreate a reviewable draft strategy plan. Use existing research signals when present. Keep it practical for local SEO and social content.`;
+  }
+  if (kind === 'socialWeeklyBatch') {
+    const schedule = client?.weekly_schedule_text || 'No package schedule provided.';
+    return `${shared}\n\nGenerate ALL social posts for this client's upcoming week based on their package schedule.\n\nPACKAGE SCHEDULE:\n${schedule}\n\nRULES:\n- Create exactly one post per slot in the schedule (exclude blog slots — those are handled separately).\n- Each post must use the correct content_type (image, reel, or video) and day_of_week.\n- Use the client's REAL services and local service areas. Be specific — avoid generic captions.\n- Vary the hook across posts — do not repeat the same opening.\n- Each post needs a clear CTA (call, text, book, visit).\n- platform_captions must include facebook AND instagram with distinct tones:\n  facebook: conversational, slightly longer, emojis ok.\n  instagram: short, punchy, hashtags at the end.\n  google_business: concise, local SEO focused, no emojis.\n- designer_prompt_es: write the visual concept in Spanish for the designer.\n- Status must remain draft — do not approve, publish, or schedule.`;
   }
   if (kind === 'socialDraft') {
     return `${shared}\n\nDraft one reviewable social content item for this client.\n\nRULES:\n- Use the client's real services and local service areas.\n- Avoid generic captions. Be specific, local, and conversion-focused.\n- Vary the hook — do not start with the business name.\n- Include a clear CTA (call, text, visit, book).\n- platform_captions must include BOTH facebook AND instagram keys with distinct, platform-appropriate text.\n  facebook: slightly longer, conversational, allows emojis.\n  instagram: shorter, punchy, hashtag-friendly.\n  tiktok: casual and energetic if relevant to client.\n  google_business: concise, local SEO focused, no emojis.\n- designer_prompt_es: write the image/video prompt in Spanish for the designer.\n- Do not claim to publish, approve, or schedule. Status remains draft.`;

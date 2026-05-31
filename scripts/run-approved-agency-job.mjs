@@ -337,14 +337,15 @@ function preferredBackend(agentSlug, _fallback) {
   return AGENT_BACKEND_PRIORITY[agentSlug] ?? ['claude', 'openai', 'codex'];
 }
 
-async function runStructuredAgent(kind, agentSlug, backend, client, snapshot, task) {
+async function runStructuredAgent(kind, agentSlug, backend, client, snapshot, task, modeOverride) {
   const prompt = buildAgencyPrompt(kind, { client, snapshot, task });
   const schema = AGENCY_SCHEMAS[kind];
+  const mode = modeOverride ?? (kind === 'blogDraft' ? 'blog' : 'default');
   return runTerminalJsonAgent({
     prompt,
     schema,
     preferredBackend: preferredBackend(agentSlug, backend),
-    mode: kind === 'blogDraft' ? 'blog' : 'default',
+    mode,
   });
 }
 
@@ -526,7 +527,6 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
       };
     }
     const socialLimit = Number(process.env.AGENCY_DAILY_SOCIAL_CLIENT_LIMIT || 3);
-    // Use full sorted coverage (not topCoverageGaps which caps at 5)
     const clients = [...snapshot.coverage]
       .sort((a, b) => {
         const score = (c) => (c.last_research_date ? 0 : 3) + (c.current_strategy_status === 'none' ? 2 : 0);
@@ -535,34 +535,96 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
       .slice(0, socialLimit);
     if (!clients.length) return buildResult(agentSlug, commandName, snapshot);
 
-    const schedule = upcomingWeekSchedule(clients.length);
-    const savedDrafts = [];
-    for (let i = 0; i < clients.length; i++) {
-      const client = clients[i];
-      const result = await runStructuredAgent('socialDraft', agentSlug, backend, client, snapshot, taskInput);
-      const draft = result.output;
-      const saved = await post('/internal/agency/draft-post', {
-        agent_slug: agentSlug,
-        task_id: taskId,
-        client_id: client.client_id,
-        title: draft.title,
-        content_type: draft.content_type,
-        platforms: draft.platforms,
-        master_caption: draft.master_caption,
-        platform_captions: draft.platform_captions,
-        ai_image_prompt: draft.content_type === 'image' ? draft.designer_prompt_es : null,
-        ai_video_prompt: draft.content_type !== 'image' ? draft.designer_prompt_es : null,
-        skarleth_notes: draft.review_notes?.join('\n') || null,
-        publish_date: schedule[i] || null,
-      });
-      savedDrafts.push({ client_name: client.client_name, post_id: saved.post_id, publish_date: schedule[i], backend: result.backend });
+    // day-name → next occurrence date (Nicaragua time stored as-is)
+    const DAY_IDX = { monday:0, tuesday:1, wednesday:2, thursday:3, friday:4, saturday:5 };
+    function dayDate(dayName) {
+      const now = new Date();
+      const utcDay = now.getUTCDay();
+      const daysToMonday = utcDay === 0 ? 1 : (8 - utcDay) % 7 || 7;
+      const offset = DAY_IDX[String(dayName).toLowerCase()] ?? 0;
+      const d = new Date(now);
+      d.setUTCDate(now.getUTCDate() + daysToMonday + offset);
+      return d.toISOString().slice(0, 10);
     }
+
+    const savedDrafts = [];
+    const errors = [];
+    for (const client of clients) {
+      try {
+        // Parse package weekly_schedule from coverage
+        let weeklySchedule = {};
+        try { weeklySchedule = JSON.parse(client.weekly_schedule || '{}'); } catch { /* ignore */ }
+
+        // Collect social (non-blog) slots
+        const socialSlots = [];
+        for (const [day, types] of Object.entries(weeklySchedule)) {
+          for (const type of (Array.isArray(types) ? types : [])) {
+            if (type !== 'blog') socialSlots.push({ day, type });
+          }
+        }
+
+        // Fallback: Mon/Wed/Fri image if no schedule found
+        if (!socialSlots.length) {
+          socialSlots.push({ day: 'monday', type: 'image' }, { day: 'wednesday', type: 'image' }, { day: 'friday', type: 'image' });
+        }
+
+        const scheduleText = socialSlots.map((s) => `${s.day}: ${s.type}`).join('\n');
+        const clientWithSchedule = { ...client, weekly_schedule_text: scheduleText };
+
+        // Re-check OpenAI availability (key may need refresh between clients)
+        if (!process.env.OPENAI_API_KEY) await loadAiConfig();
+
+        // One AI call generates ALL posts for this client's week (batch mode = 4096 token budget)
+        const result = await runStructuredAgent('socialWeeklyBatch', agentSlug, backend, clientWithSchedule, snapshot, taskInput, 'batch');
+        const posts = Array.isArray(result.output?.posts) ? result.output.posts : [];
+
+        for (const draft of posts) {
+          const matchedSlot = socialSlots.find(
+            (s) => s.day.toLowerCase() === (draft.day_of_week || '').toLowerCase() && s.type === draft.content_type,
+          ) || socialSlots.find((s) => s.day.toLowerCase() === (draft.day_of_week || '').toLowerCase())
+            || { day: draft.day_of_week || 'monday', type: draft.content_type || 'image' };
+
+          const publishDate = `${dayDate(matchedSlot.day)}T09:00`;
+          const saved = await post('/internal/agency/draft-post', {
+            agent_slug: agentSlug,
+            task_id: taskId,
+            client_id: client.client_id,
+            title: draft.title,
+            content_type: draft.content_type || 'image',
+            platforms: ['facebook', 'instagram'],
+            master_caption: draft.master_caption,
+            platform_captions: draft.platform_captions,
+            ai_image_prompt: draft.content_type === 'image' ? draft.designer_prompt_es : null,
+            ai_video_prompt: draft.content_type !== 'image' ? draft.designer_prompt_es : null,
+            skarleth_notes: draft.review_notes?.join('\n') || null,
+            publish_date: publishDate,
+          });
+          savedDrafts.push({
+            client_name: client.client_name,
+            post_id: saved.post_id,
+            content_type: draft.content_type,
+            day: matchedSlot.day,
+            publish_date: publishDate,
+            backend: result.backend,
+          });
+        }
+      } catch (clientErr) {
+        const msg = redactSecrets(clientErr instanceof Error ? clientErr.message : String(clientErr)).slice(0, 200);
+        console.warn(`[social-copy] ${client.client_name} failed (skipping): ${msg}`);
+        errors.push({ client: client.client_name, error: msg });
+      }
+    }
+
+    const clientNames = [...new Set(savedDrafts.map((s) => s.client_name))];
+    const summary = savedDrafts.length
+      ? `${savedDrafts.length} post(s) for ${clientNames.length} client(s)${errors.length ? ` (${errors.length} skipped)` : ''}.`
+      : `No drafts created${errors.length ? ` — ${errors.length} client(s) failed` : ''}.`;
     return {
-      summary: `Social draft(s) created for ${savedDrafts.length} client(s): ${savedDrafts.map((s) => s.client_name).join(', ')}.`,
+      summary,
       agent_slug: agentSlug,
       command_name: commandName,
       saved_drafts: savedDrafts,
-      backend: savedDrafts[0]?.backend,
+      client_errors: errors,
       safety: { status: 'draft', ready_for_automation: 0, asset_delivered: 0, no_auto_publish: true },
     };
   }

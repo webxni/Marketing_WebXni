@@ -137,7 +137,9 @@ function runCodex(prompt, schema, mode) {
 async function runOpenAI(prompt, schema, mode) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error('OPENAI_API_KEY not set');
-  const model = mode === 'blog'
+  // 'batch' and 'blog' modes use gpt-4o with higher token budget for large outputs
+  const isBig = mode === 'blog' || mode === 'batch';
+  const model = isBig
     ? (process.env.OPENAI_BLOG_MODEL || 'gpt-4o')
     : (process.env.OPENAI_MODEL || 'gpt-4o-mini');
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -156,7 +158,7 @@ async function runOpenAI(prompt, schema, mode) {
         { role: 'user', content: prompt },
       ],
       response_format: { type: 'json_object' },
-      max_tokens: mode === 'blog' ? 4096 : 2048,
+      max_tokens: isBig ? 4096 : 2048,
     }),
   });
   if (!res.ok) {

@@ -1111,6 +1111,7 @@ export interface AgencyClientCoverageRow {
   client_slug: string;
   client_name: string;
   package: string | null;
+  weekly_schedule: string | null;
   last_research_date: string | null;
   research_freshness: string;
   current_strategy_status: string;
@@ -1485,6 +1486,7 @@ export async function getAgencyClientCoverage(db: D1Database): Promise<AgencyCli
        c.slug AS client_slug,
        c.canonical_name AS client_name,
        c.package AS package,
+       pkg.weekly_schedule AS weekly_schedule,
        (SELECT MAX(r.freshness_date) FROM client_research_notes r WHERE r.client_id = c.id) AS last_research_date,
        COALESCE((SELECT s.status FROM client_strategy_plans s WHERE s.client_id = c.id ORDER BY s.created_at DESC LIMIT 1), 'none') AS current_strategy_status,
        (SELECT COUNT(*) FROM client_monthly_topics mt WHERE mt.client_id = c.id AND COALESCE(mt.content_type_preference, '') != 'blog') AS posts_planned,
@@ -1494,6 +1496,7 @@ export async function getAgencyClientCoverage(db: D1Database): Promise<AgencyCli
        (SELECT COUNT(*) FROM client_monthly_topics mt WHERE mt.client_id = c.id AND mt.content_type_preference = 'blog') AS blogs_planned,
        (SELECT COUNT(*) FROM posts p WHERE p.client_id = c.id AND p.content_type = 'blog' AND p.status IN ('draft', 'pending_approval')) AS blogs_drafted
      FROM clients c
+     LEFT JOIN packages pkg ON pkg.slug = c.package
      WHERE c.status = 'active'
      ORDER BY c.canonical_name ASC`,
   ).all<AgencyClientCoverageRow & { last_research_date: string | null }>();
@@ -1520,6 +1523,7 @@ export async function getAgencyClientCoverage(db: D1Database): Promise<AgencyCli
       blogs_planned: row.blogs_planned ?? 0,
       blogs_drafted: row.blogs_drafted ?? 0,
       research_freshness: researchFreshness,
+      weekly_schedule: row.weekly_schedule ?? null,
       next_agent_action: nextAction,
       risk_issues: null,
     };

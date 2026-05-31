@@ -525,6 +525,7 @@ export interface AgencyTimelineItem {
 }
 
 export interface AgencyClientCoverage {
+  weekly_schedule: string | null;
   client_id: string;
   client_slug: string;
   client_name: string;
