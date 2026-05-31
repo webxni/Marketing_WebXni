@@ -502,7 +502,13 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
       };
     }
     const socialLimit = Number(process.env.AGENCY_DAILY_SOCIAL_CLIENT_LIMIT || 3);
-    const clients = topCoverageGaps(snapshot.coverage).slice(0, socialLimit);
+    // Use full sorted coverage (not topCoverageGaps which caps at 5)
+    const clients = [...snapshot.coverage]
+      .sort((a, b) => {
+        const score = (c) => (c.last_research_date ? 0 : 3) + (c.current_strategy_status === 'none' ? 2 : 0);
+        return score(b) - score(a);
+      })
+      .slice(0, socialLimit);
     if (!clients.length) return buildResult(agentSlug, commandName, snapshot);
     const savedDrafts = [];
     for (const client of clients) {
