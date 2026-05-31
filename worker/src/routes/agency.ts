@@ -328,6 +328,7 @@ const internalDraftPostSchema = z.object({
   ai_image_prompt: z.string().nullable().optional(),
   ai_video_prompt: z.string().nullable().optional(),
   skarleth_notes: z.string().nullable().optional(),
+  publish_date: z.string().nullable().optional(),
 });
 
 function formatAgencyStatusText(overview: Awaited<ReturnType<typeof listAgencyOverview>>, agents: Awaited<ReturnType<typeof listAgentDefinitions>>): string {
@@ -629,6 +630,7 @@ agencyInternalRoutes.post('/draft-post', async (c) => {
     ai_image_prompt: parsed.data.ai_image_prompt ?? null,
     ai_video_prompt: parsed.data.ai_video_prompt ?? null,
     skarleth_notes: parsed.data.skarleth_notes ?? null,
+    publish_date: parsed.data.publish_date ?? null,
     ready_for_automation: 0,
     asset_delivered: 0,
     scheduled_by_automation: 1,

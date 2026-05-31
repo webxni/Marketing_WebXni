@@ -291,6 +291,30 @@ function isoDate(offsetDays = 0) {
   return date.toISOString().slice(0, 10);
 }
 
+/**
+ * Returns publish_date strings for the upcoming Mon–Sat in Nicaragua time (CST = UTC-6).
+ * Spreads totalClients evenly across 6 days at staggered times for natural variety.
+ */
+function upcomingWeekSchedule(totalClients) {
+  const now = new Date();
+  const dayOfWeek = now.getUTCDay(); // 0=Sun … 6=Sat
+  const daysToMonday = dayOfWeek === 0 ? 1 : (8 - dayOfWeek) % 7 || 7;
+  // Good posting times in Nicaragua time (stored as-is, no UTC conversion needed)
+  const times = ['09:00', '12:00', '15:00', '18:00'];
+  const slotsPerDay = Math.max(1, Math.ceil(totalClients / 6));
+  const schedule = [];
+  for (let i = 0; i < totalClients; i++) {
+    const dayIndex  = Math.floor(i / slotsPerDay);
+    const slotIndex = i % slotsPerDay;
+    const d = new Date(now);
+    d.setUTCDate(now.getUTCDate() + daysToMonday + Math.min(dayIndex, 5));
+    const dateStr = d.toISOString().slice(0, 10);
+    const time    = times[slotIndex % times.length];
+    schedule.push(`${dateStr}T${time}`);
+  }
+  return schedule;
+}
+
 // Per-agent backend priority chains.
 // Each array is tried in order; the first available backend wins.
 // OpenAI is included as a fallback on all chains when OPENAI_API_KEY is set.
@@ -510,8 +534,11 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
       })
       .slice(0, socialLimit);
     if (!clients.length) return buildResult(agentSlug, commandName, snapshot);
+
+    const schedule = upcomingWeekSchedule(clients.length);
     const savedDrafts = [];
-    for (const client of clients) {
+    for (let i = 0; i < clients.length; i++) {
+      const client = clients[i];
       const result = await runStructuredAgent('socialDraft', agentSlug, backend, client, snapshot, taskInput);
       const draft = result.output;
       const saved = await post('/internal/agency/draft-post', {
@@ -526,8 +553,9 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
         ai_image_prompt: draft.content_type === 'image' ? draft.designer_prompt_es : null,
         ai_video_prompt: draft.content_type !== 'image' ? draft.designer_prompt_es : null,
         skarleth_notes: draft.review_notes?.join('\n') || null,
+        publish_date: schedule[i] || null,
       });
-      savedDrafts.push({ client_name: client.client_name, post_id: saved.post_id, backend: result.backend });
+      savedDrafts.push({ client_name: client.client_name, post_id: saved.post_id, publish_date: schedule[i], backend: result.backend });
     }
     return {
       summary: `Social draft(s) created for ${savedDrafts.length} client(s): ${savedDrafts.map((s) => s.client_name).join(', ')}.`,
