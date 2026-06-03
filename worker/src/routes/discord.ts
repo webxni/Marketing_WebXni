@@ -842,7 +842,25 @@ discordInternalRoute.post('/approved-jobs/:id/complete', async (c) => {
   if (!(await requireDiscordBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
   let body: { result_json?: Record<string, unknown> | null } = {};
   try { body = await c.req.json(); } catch { /* */ }
-  await completeApprovedCommandJob(c.env.DB, c.req.param('id'), 'completed', JSON.stringify(body.result_json ?? {}), null);
+  const result = body.result_json ?? {};
+  await completeApprovedCommandJob(c.env.DB, c.req.param('id'), 'completed', JSON.stringify(result), null);
+  const runId = typeof result.run_id === 'string' ? result.run_id : '';
+  const completedSlots = typeof result.completed_slots === 'number' ? result.completed_slots : null;
+  const requestedSlots = typeof result.requested_slots === 'number' ? result.requested_slots : null;
+  if (runId && completedSlots !== null && requestedSlots !== null && completedSlots > 0) {
+    const now = Math.floor(Date.now() / 1000);
+    const finalStatus = completedSlots >= requestedSlots ? 'completed' : 'completed_with_errors';
+    await c.env.DB.prepare(
+      `UPDATE generation_runs
+       SET status = ?,
+           current_slot_idx = CASE WHEN ? = 'completed' THEN COALESCE(total_slots, current_slot_idx) ELSE current_slot_idx END,
+           completed_at = ?,
+           last_activity_at = ?,
+           error_log = CASE WHEN ? = 'completed' THEN NULL ELSE error_log END
+       WHERE id = ?`,
+    ).bind(finalStatus, finalStatus, now, now, finalStatus, runId).run();
+    await appendGenerationLog(c.env.DB, runId, 'DONE', `Terminal job complete: saved ${completedSlots}/${requestedSlots} slot(s), status=${finalStatus}`);
+  }
   return c.json({ ok: true });
 });
 
