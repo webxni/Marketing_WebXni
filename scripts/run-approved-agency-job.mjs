@@ -93,6 +93,49 @@ function summarizeSnapshot(snapshot) {
   };
 }
 
+function clientWorkScore(client) {
+  const researchAge = client.last_research_date ? Date.parse(client.last_research_date) || 0 : 0;
+  const needsStrategy = client.current_strategy_status === 'none' ? 3 : client.current_strategy_status === 'draft' ? 1 : 0;
+  return {
+    missingResearch: client.last_research_date ? 0 : 5,
+    researchAge,
+    needsStrategy,
+    queuePressure: (client.posts_waiting_approval || 0) + (client.posts_waiting_designer || 0),
+  };
+}
+
+function selectResearchClients(coverage, limit) {
+  return [...coverage]
+    .sort((a, b) => {
+      const aScore = clientWorkScore(a);
+      const bScore = clientWorkScore(b);
+      return (bScore.missingResearch - aScore.missingResearch)
+        || (aScore.researchAge - bScore.researchAge)
+        || (bScore.queuePressure - aScore.queuePressure);
+    })
+    .slice(0, limit);
+}
+
+function selectStrategyClients(coverage, limit) {
+  return [...coverage]
+    .filter((client) => client.current_strategy_status !== 'approved')
+    .sort((a, b) => {
+      const aScore = clientWorkScore(a);
+      const bScore = clientWorkScore(b);
+      return (bScore.needsStrategy - aScore.needsStrategy)
+        || (aScore.researchAge - bScore.researchAge)
+        || (bScore.queuePressure - aScore.queuePressure);
+    })
+    .slice(0, limit);
+}
+
+function selectEditorialTarget(tasks) {
+  const completed = tasks.filter((task) => task.status === 'completed');
+  const generatedContent = completed.find((task) => ['blog-writer', 'social-copy'].includes(task.agent_slug));
+  if (generatedContent) return generatedContent;
+  return completed[0] || tasks.find((task) => task.status === 'needs_review') || tasks[0] || null;
+}
+
 function buildResult(agentSlug, commandName, snapshot) {
   const summary = summarizeSnapshot(snapshot);
   const overview = snapshot.overview;
@@ -156,9 +199,10 @@ function buildResult(agentSlug, commandName, snapshot) {
   }
 
   if (agentSlug === 'client-research') {
-    const candidates = snapshot.coverage
-      .filter((client) => !client.last_research_date)
-      .slice(0, Number(process.env.AGENCY_DAILY_RESEARCH_CLIENT_LIMIT || process.env.GEMINI_DAILY_CLIENT_LIMIT || 2));
+    const candidates = selectResearchClients(
+      snapshot.coverage,
+      Number(process.env.AGENCY_DAILY_RESEARCH_CLIENT_LIMIT || process.env.GEMINI_DAILY_CLIENT_LIMIT || 2),
+    );
     return {
       summary: `Research batch planned for ${candidates.length} client(s). No external research call was made in this safe runner pass.`,
       agent_slug: agentSlug,
@@ -169,18 +213,16 @@ function buildResult(agentSlug, commandName, snapshot) {
         next_agent_action: client.next_agent_action,
       })),
       next_actions: candidates.length
-        ? ['Wire Gemini CLI research execution with source capture and daily quotas.']
-        : ['All active clients have at least one research note recorded.'],
+        ? ['Refresh the oldest or missing client research with source capture and daily quotas.']
+        : ['No active clients are available for research.'],
       safety,
     };
   }
 
   if (agentSlug === 'strategy') {
-    const candidates = snapshot.coverage
-      .filter((client) => client.current_strategy_status === 'none')
-      .slice(0, Number(process.env.AGENCY_DAILY_STRATEGY_CLIENT_LIMIT || 3));
+    const candidates = selectStrategyClients(snapshot.coverage, Number(process.env.AGENCY_DAILY_STRATEGY_CLIENT_LIMIT || 3));
     return {
-      summary: `Strategy planning identified ${candidates.length} client(s) needing strategy records.`,
+      summary: `Strategy planning identified ${candidates.length} client(s) needing draft strategy work.`,
       agent_slug: agentSlug,
       command_name: commandName,
       planned_clients: candidates.map((client) => ({
@@ -188,7 +230,7 @@ function buildResult(agentSlug, commandName, snapshot) {
         client_name: client.client_name,
         last_research_date: client.last_research_date,
       })),
-      next_actions: ['Wire Claude Code strategy prompt to save client_strategy_plans as draft only.'],
+      next_actions: ['Save strategy updates as draft only; do not approve or publish automatically.'],
       safety,
     };
   }
@@ -222,8 +264,9 @@ function buildResult(agentSlug, commandName, snapshot) {
     const reviewCandidates = snapshot.tasks
       .filter((task) => ['needs_review', 'queued', 'completed'].includes(task.status))
       .slice(0, 10);
+    const target = selectEditorialTarget(snapshot.tasks);
     return {
-      summary: `Editorial review scan found ${reviewCandidates.length} task candidate(s) for future review workflow.`,
+      summary: `Editorial review scan found ${reviewCandidates.length} task candidate(s); preferred target is ${target?.title || 'none'}.`,
       agent_slug: agentSlug,
       command_name: commandName,
       review_candidates: reviewCandidates.map((task) => ({
@@ -232,6 +275,7 @@ function buildResult(agentSlug, commandName, snapshot) {
         status: task.status,
         agent_slug: task.agent_slug,
       })),
+      preferred_target_task_id: target?.id ?? null,
       next_actions: ['Wire editorial checks to content_review_notes without approving as Marvin.'],
       safety,
     };
@@ -288,6 +332,17 @@ function buildResult(agentSlug, commandName, snapshot) {
 function isoDate(offsetDays = 0) {
   const date = new Date();
   date.setUTCDate(date.getUTCDate() + offsetDays);
+  return date.toISOString().slice(0, 10);
+}
+
+function nextScheduledDate(dayName) {
+  const dayIdx = { monday: 0, tuesday: 1, wednesday: 2, thursday: 3, friday: 4, saturday: 5, sunday: 6 };
+  const now = new Date();
+  const utcDay = now.getUTCDay();
+  const daysToMonday = utcDay === 0 ? 1 : (8 - utcDay) % 7 || 7;
+  const offset = dayIdx[String(dayName).toLowerCase()] ?? 0;
+  const date = new Date(now);
+  date.setUTCDate(now.getUTCDate() + daysToMonday + offset);
   return date.toISOString().slice(0, 10);
 }
 
@@ -493,9 +548,10 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
   }
 
   if (agentSlug === 'client-research') {
-    const candidates = snapshot.coverage
-      .filter((client) => !client.last_research_date)
-      .slice(0, Number(process.env.AGENCY_DAILY_RESEARCH_CLIENT_LIMIT || process.env.GEMINI_DAILY_CLIENT_LIMIT || 2));
+    const candidates = selectResearchClients(
+      snapshot.coverage,
+      Number(process.env.AGENCY_DAILY_RESEARCH_CLIENT_LIMIT || process.env.GEMINI_DAILY_CLIENT_LIMIT || 2),
+    );
     const saved = [];
     for (const client of candidates) {
       const result = await runStructuredAgent('research', agentSlug, backend, client, snapshot, taskInput);
@@ -519,9 +575,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
   }
 
   if (agentSlug === 'strategy') {
-    const candidates = snapshot.coverage
-      .filter((client) => client.current_strategy_status === 'none')
-      .slice(0, Number(process.env.AGENCY_DAILY_STRATEGY_CLIENT_LIMIT || 3));
+    const candidates = selectStrategyClients(snapshot.coverage, Number(process.env.AGENCY_DAILY_STRATEGY_CLIENT_LIMIT || 3));
     const saved = [];
     for (const client of candidates) {
       const result = await runStructuredAgent('strategy', agentSlug, backend, client, snapshot, taskInput);
@@ -562,18 +616,6 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
       .slice(0, socialLimit);
     if (!clients.length) return buildResult(agentSlug, commandName, snapshot);
 
-    // day-name → next occurrence date (Nicaragua time stored as-is)
-    const DAY_IDX = { monday:0, tuesday:1, wednesday:2, thursday:3, friday:4, saturday:5 };
-    function dayDate(dayName) {
-      const now = new Date();
-      const utcDay = now.getUTCDay();
-      const daysToMonday = utcDay === 0 ? 1 : (8 - utcDay) % 7 || 7;
-      const offset = DAY_IDX[String(dayName).toLowerCase()] ?? 0;
-      const d = new Date(now);
-      d.setUTCDate(now.getUTCDate() + daysToMonday + offset);
-      return d.toISOString().slice(0, 10);
-    }
-
     const savedDrafts = [];
     const errors = [];
     for (const client of clients) {
@@ -611,7 +653,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
           ) || socialSlots.find((s) => s.day.toLowerCase() === (draft.day_of_week || '').toLowerCase())
             || { day: draft.day_of_week || 'monday', type: draft.content_type || 'image' };
 
-          const publishDate = `${dayDate(matchedSlot.day)}T09:00`;
+          const publishDate = `${nextScheduledDate(matchedSlot.day)}T09:00`;
           const saved = await post('/internal/agency/draft-post', {
             agent_slug: agentSlug,
             task_id: taskId,
@@ -646,6 +688,9 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
     const summary = savedDrafts.length
       ? `${savedDrafts.length} post(s) for ${clientNames.length} client(s)${errors.length ? ` (${errors.length} skipped)` : ''}.`
       : `No drafts created${errors.length ? ` — ${errors.length} client(s) failed` : ''}.`;
+    if (!savedDrafts.length && errors.length) {
+      throw new Error(`${summary}; first error: ${errors[0].error}`);
+    }
     return {
       summary,
       agent_slug: agentSlug,
@@ -695,7 +740,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
 
         for (const draft of blogs) {
           const blogDay = String(draft.day_of_week || blogSlots[0] || 'thursday');
-          const publishDate = `${dayDate(blogDay)}T09:00`;
+          const publishDate = `${nextScheduledDate(blogDay)}T09:00`;
           const saved = await post('/internal/agency/draft-post', {
             agent_slug: agentSlug,
             task_id: taskId,
@@ -723,8 +768,12 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
       }
     }
     const clientNames = [...new Set(savedBlogs.map((s) => s.client_name))];
+    const summary = `${savedBlogs.length} blog draft(s) for ${clientNames.length} client(s)${blogErrors.length ? ` (${blogErrors.length} skipped)` : ''}.`;
+    if (!savedBlogs.length && blogErrors.length) {
+      throw new Error(`${summary}; first error: ${blogErrors[0].error}`);
+    }
     return {
-      summary: `${savedBlogs.length} blog draft(s) for ${clientNames.length} client(s)${blogErrors.length ? ` (${blogErrors.length} skipped)` : ''}.`,
+      summary,
       agent_slug: agentSlug,
       command_name: commandName,
       saved_blogs: savedBlogs,
@@ -734,7 +783,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
   }
 
   if (agentSlug === 'editorial-review') {
-    const target = snapshot.tasks.find((task) => task.status === 'completed') || snapshot.tasks[0] || null;
+    const target = selectEditorialTarget(snapshot.tasks);
     const result = await runStructuredAgent('editorialReview', agentSlug, backend, target, snapshot, taskInput);
     await post('/internal/agency/content-review', {
       agent_slug: agentSlug,
