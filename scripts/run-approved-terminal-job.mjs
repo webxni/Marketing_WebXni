@@ -4,6 +4,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { expandPriority, runTerminalJsonAgent } from './lib/terminal-json-agent.mjs';
 
 function argValue(flag) {
   const idx = process.argv.indexOf(flag);
@@ -51,6 +52,28 @@ async function get(pathname) {
   return res.json();
 }
 
+async function loadAiConfig() {
+  try {
+    const res = await fetch(`${apiBaseUrl}/internal/agency/ai-config`, {
+      headers: {
+        'content-type': 'application/json',
+        'authorization': `Bearer ${botSecret}`,
+      },
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.openai_api_key && !process.env.OPENAI_API_KEY) {
+      process.env.OPENAI_API_KEY = data.openai_api_key;
+      console.log(`[terminal] OpenAI key loaded from KV settings (model: ${data.openai_model})`);
+    }
+    if (data.openai_model && !process.env.OPENAI_MODEL) {
+      process.env.OPENAI_MODEL = data.openai_model;
+    }
+  } catch {
+    // Non-fatal: terminal CLI backends may still be available.
+  }
+}
+
 const JSON_ONLY_SYSTEM_APPEND =
   'CRITICAL OUTPUT RULE: For this task you must reply with EXACTLY ONE JSON object that matches the provided JSON schema. ' +
   'No preface, no commentary, no markdown, no code fences, no trailing text. Output must start with `{` and end with `}`. ' +
@@ -82,14 +105,13 @@ function commandAvailable(command) {
 }
 
 function resolveTerminalBackend() {
+  return expandPriority(preferredTerminalBackends())[0] ?? 'unavailable';
+}
+
+function preferredTerminalBackends() {
   const requested = TERMINAL_AGENT === 'auto' ? '' : TERMINAL_AGENT;
-  const preferred = requested ? [requested] : ['codex', 'gemini', 'claude'];
-  for (const candidate of preferred) {
-    if (['codex', 'gemini', 'claude'].includes(candidate) && commandAvailable(candidate)) {
-      return candidate;
-    }
-  }
-  throw new Error(`No supported terminal CLI found. Tried: ${preferred.join(', ')}`);
+  if (requested) return [requested, 'openai'];
+  return ['claude', 'gemini', 'openai'];
 }
 
 function buildWrappedPrompt(prompt, schema) {
@@ -304,11 +326,12 @@ function runCodex(prompt, schema, plan = null) {
 }
 
 async function runTerminalAgent(prompt, schema, plan = null) {
-  const backend = resolveTerminalBackend();
-
-  if (backend === 'codex') return { backend, output: await runCodex(prompt, schema, plan) };
-  if (backend === 'gemini') return { backend, output: await runGemini(prompt, schema, plan) };
-  return { backend: 'claude', output: await runClaude(prompt, schema, plan) };
+  return runTerminalJsonAgent({
+    prompt,
+    schema,
+    preferredBackend: preferredTerminalBackends(),
+    mode: plan?.mode === 'blog' ? 'blog' : 'default',
+  });
 }
 
 async function processSlot(summary, args, total) {
@@ -360,6 +383,7 @@ async function runBatch(batch, args, total) {
 }
 
 async function main() {
+  await loadAiConfig();
   const context = await get(`/internal/discord/approved-jobs/${jobId}/context`);
   const job = context.job;
   const slotSummaries = Array.isArray(context.slots) ? context.slots : [];
@@ -397,6 +421,18 @@ async function main() {
     await post('/internal/discord/notify', {
       content: `⏳ Terminal AI (${backend}): ${completed}/${total} slots — run \`${args.run_id}\``,
     });
+  }
+
+  if (completed === 0) {
+    const error = `Terminal job completed 0/${total} slots. Marking failed so the run can be retried.`;
+    await post(`/internal/discord/approved-jobs/${jobId}/fail`, {
+      run_id: args.run_id,
+      error,
+    });
+    await post('/internal/discord/notify', {
+      content: `❌ Terminal AI weekly job saved 0/${total} slots\nRun ID: \`${args.run_id}\`\nBackend chain: \`${preferredTerminalBackends().join(' -> ')}\``,
+    });
+    throw new Error(error);
   }
 
   await post(`/internal/discord/approved-jobs/${jobId}/complete`, {
