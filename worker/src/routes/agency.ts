@@ -52,6 +52,18 @@ const AGENT_COMMANDS: Record<string, string> = {
   'client-onboarding': 'agency_client_onboarding',
 };
 
+const AGENT_BACKEND_PRIORITY: Record<string, string[]> = {
+  'agency-orchestrator': ['claude_code', 'openai'],
+  'system-reliability': ['claude_code', 'openai'],
+  'security-sentinel': ['claude_code', 'openai'],
+  'client-research': ['gemini_cli', 'openai'],
+  strategy: ['claude_code', 'openai'],
+  'social-copy': ['claude_code', 'openai'],
+  'blog-writer': ['claude_code', 'openai'],
+  'editorial-review': ['claude_code', 'openai'],
+  'client-onboarding': ['claude_code', 'openai'],
+};
+
 const TIMELINE = [
   { day: 'Monday', title: 'Security check', agent_slug: 'security-sentinel', summary: 'Defensive audit and auth signal review.' },
   { day: 'Monday', title: 'System health check', agent_slug: 'system-reliability', summary: 'Queue, generation, and posting reliability review.' },
@@ -192,6 +204,7 @@ async function enqueueAgent(c: Context<{ Bindings: Env; Variables: { user: Sessi
       agent_slug: agentSlug,
       task_id: task.id,
       source: 'agency_dashboard',
+      backend_priority: AGENT_BACKEND_PRIORITY[agentSlug] ?? ['claude_code', 'openai'],
       safety: {
         no_arbitrary_shell: true,
         preserve_marvin_approval: true,
@@ -385,6 +398,7 @@ async function enqueueInternalAgencyJob(
       agent_slug: agentSlug,
       task_id: task.id,
       source,
+      backend_priority: AGENT_BACKEND_PRIORITY[agentSlug] ?? ['claude_code', 'openai'],
       safety: {
         no_arbitrary_shell: true,
         preserve_marvin_approval: true,
@@ -604,6 +618,31 @@ agencyInternalRoutes.post('/draft-post', async (c) => {
   if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
   const parsed = internalDraftPostSchema.safeParse(await c.req.json().catch(() => ({})));
   if (!parsed.success) return c.json({ error: 'Invalid input', issues: parsed.error.issues }, 400);
+
+  // Deduplication guard: skip if a draft already exists for this client/date/type slot
+  if (parsed.data.publish_date) {
+    const datePrefix = parsed.data.publish_date.slice(0, 10);
+    const existing = await c.env.DB
+      .prepare(
+        `SELECT id FROM posts
+         WHERE client_id = ? AND content_type = ? AND status = 'draft'
+           AND substr(publish_date, 1, 10) = ? AND scheduled_by_automation = 1
+         LIMIT 1`,
+      )
+      .bind(parsed.data.client_id, parsed.data.content_type, datePrefix)
+      .first<{ id: string }>();
+    if (existing) {
+      await appendAgencyLog(c.env.DB, {
+        agent_slug: parsed.data.agent_slug,
+        task_id: parsed.data.task_id ?? null,
+        status: 'skipped',
+        step: 'draft-post',
+        summary: `Draft skipped (slot already filled): ${parsed.data.content_type} on ${datePrefix} for client ${parsed.data.client_id}`,
+      });
+      return c.json({ ok: true, post_id: existing.id, skipped: true });
+    }
+  }
+
   const captions = parsed.data.platform_captions ?? {};
   const post = await createPost(c.env.DB, {
     client_id: parsed.data.client_id,

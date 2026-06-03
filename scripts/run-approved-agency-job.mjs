@@ -317,36 +317,63 @@ function upcomingWeekSchedule(totalClients) {
 
 // Per-agent backend priority chains.
 // Each array is tried in order; the first available backend wins.
-// OpenAI is included as a fallback on all chains when OPENAI_API_KEY is set.
+// Codex is reserved for implementation/refactor work and is not used for
+// routine agency operation unless explicitly forced with AGENCY_TERMINAL_AGENT.
 const AGENT_BACKEND_PRIORITY = {
-  'agency-orchestrator': ['openai', 'claude', 'codex'],
-  'system-reliability':  ['codex', 'claude', 'openai'],
-  'security-sentinel':   ['codex', 'claude', 'openai'],
-  'editorial-review':    ['codex', 'claude', 'openai'],
-  'strategy':            ['claude', 'openai', 'codex'],
-  'social-copy':         ['claude', 'openai', 'codex'],
-  'blog-writer':         ['claude', 'openai', 'codex'],
-  'client-research':     ['gemini', 'claude', 'openai'],
-  'client-onboarding':   ['openai', 'claude', 'codex'],
+  'agency-orchestrator': ['claude', 'openai'],
+  'system-reliability':  ['claude', 'openai'],
+  'security-sentinel':   ['claude', 'openai'],
+  'editorial-review':    ['claude', 'openai'],
+  'strategy':            ['claude', 'openai'],
+  'social-copy':         ['claude', 'openai'],
+  'blog-writer':         ['claude', 'openai'],
+  'client-research':     ['gemini', 'openai'],
+  'client-onboarding':   ['claude', 'openai'],
 };
 
-function preferredBackend(agentSlug, _fallback) {
-  // Return priority array from hardcoded map (backed by DB backend_priority when available)
+function parseBackendPriority(value) {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map((v) => String(v)) : null;
+  } catch {
+    return null;
+  }
+}
+
+function preferredBackend(agentSlug, fallback, taskInput = {}) {
   const envOverride = process.env.AGENCY_TERMINAL_AGENT;
   if (envOverride && envOverride !== 'auto') return [envOverride];
-  return AGENT_BACKEND_PRIORITY[agentSlug] ?? ['claude', 'openai', 'codex'];
+  const fromJob = parseBackendPriority(taskInput.backend_priority);
+  if (fromJob?.length) return fromJob;
+  if (fallback && fallback !== 'internal') return [fallback, ...(AGENT_BACKEND_PRIORITY[agentSlug] ?? ['claude', 'openai'])];
+  return AGENT_BACKEND_PRIORITY[agentSlug] ?? ['claude', 'openai'];
 }
 
 async function runStructuredAgent(kind, agentSlug, backend, client, snapshot, task, modeOverride) {
   const prompt = buildAgencyPrompt(kind, { client, snapshot, task });
   const schema = AGENCY_SCHEMAS[kind];
   const mode = modeOverride ?? (kind === 'blogDraft' ? 'blog' : 'default');
-  return runTerminalJsonAgent({
+  const result = await runTerminalJsonAgent({
     prompt,
     schema,
-    preferredBackend: preferredBackend(agentSlug, backend),
+    preferredBackend: preferredBackend(agentSlug, backend, task),
     mode,
   });
+  if (result.fallback_used) {
+    await post('/internal/agency/notify-discord', {
+      title: 'Agency backend fallback used',
+      body: `${agentSlug} primary backend failed; completed with ${result.backend}.`,
+      color: 0xf59e0b,
+      fields: (result.attempts ?? []).slice(0, 4).map((a) => ({
+        name: a.backend,
+        value: a.status === 'completed' ? 'completed' : `failed: ${String(a.error || '').slice(0, 120)}`,
+        inline: false,
+      })),
+      agent_slug: agentSlug,
+    }).catch(() => {});
+  }
+  return result;
 }
 
 async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, taskInput) {
@@ -637,31 +664,71 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
         draft_creation_enabled: false,
       };
     }
-    const client = topCoverageGaps(snapshot.coverage)[0];
-    if (!client) return buildResult(agentSlug, commandName, snapshot);
-    const result = await runStructuredAgent('blogDraft', agentSlug, backend, client, snapshot, taskInput);
-    const draft = result.output;
-    const saved = await post('/internal/agency/draft-post', {
-      agent_slug: agentSlug,
-      task_id: taskId,
-      client_id: client.client_id,
-      title: draft.title,
-      content_type: 'blog',
-      platforms: ['website_blog'],
-      blog_content: draft.html,
-      blog_excerpt: draft.excerpt,
-      seo_title: draft.seo_title,
-      meta_description: draft.meta_description,
-      slug: draft.slug,
-      target_keyword: draft.target_keyword,
-      skarleth_notes: draft.review_notes?.join('\n') || null,
-    });
+    const blogLimit = Number(process.env.AGENCY_DAILY_BLOG_LIMIT || 3);
+    const clients = [...snapshot.coverage]
+      .sort((a, b) => {
+        const score = (c) => (c.last_research_date ? 0 : 3) + (c.current_strategy_status === 'none' ? 2 : 0);
+        return score(b) - score(a);
+      })
+      .slice(0, blogLimit);
+    if (!clients.length) return buildResult(agentSlug, commandName, snapshot);
+
+    const savedBlogs = [];
+    const blogErrors = [];
+    for (const client of clients) {
+      try {
+        // Parse blog slots from package weekly_schedule
+        let weeklySchedule = {};
+        try { weeklySchedule = JSON.parse(client.weekly_schedule || '{}'); } catch { /* ignore */ }
+        const blogSlots = [];
+        for (const [day, types] of Object.entries(weeklySchedule)) {
+          if (Array.isArray(types) && types.includes('blog')) blogSlots.push(day);
+        }
+        if (!blogSlots.length) blogSlots.push('thursday'); // fallback
+
+        const blogScheduleText = blogSlots.map((d) => `${d}: blog`).join('\n');
+        const clientWithSchedule = { ...client, blog_schedule_text: blogScheduleText };
+
+        if (!process.env.OPENAI_API_KEY) await loadAiConfig();
+        const result = await runStructuredAgent('blogWeeklyBatch', agentSlug, backend, clientWithSchedule, snapshot, taskInput, 'batch');
+        const blogs = Array.isArray(result.output?.blogs) ? result.output.blogs : [];
+
+        for (const draft of blogs) {
+          const blogDay = String(draft.day_of_week || blogSlots[0] || 'thursday');
+          const publishDate = `${dayDate(blogDay)}T09:00`;
+          const saved = await post('/internal/agency/draft-post', {
+            agent_slug: agentSlug,
+            task_id: taskId,
+            client_id: client.client_id,
+            title: draft.title,
+            content_type: 'blog',
+            platforms: ['website_blog'],
+            blog_content: draft.html,
+            blog_excerpt: draft.excerpt,
+            seo_title: draft.seo_title,
+            meta_description: draft.meta_description,
+            slug: draft.slug,
+            target_keyword: draft.target_keyword,
+            skarleth_notes: draft.review_notes?.join('\n') || null,
+            publish_date: publishDate,
+          });
+          if (!saved.skipped) {
+            savedBlogs.push({ client_name: client.client_name, post_id: saved.post_id, day: blogDay, publish_date: publishDate, backend: result.backend });
+          }
+        }
+      } catch (err) {
+        const msg = redactSecrets(err instanceof Error ? err.message : String(err)).slice(0, 200);
+        console.warn(`[blog-writer] ${client.client_name} failed: ${msg}`);
+        blogErrors.push({ client: client.client_name, error: msg });
+      }
+    }
+    const clientNames = [...new Set(savedBlogs.map((s) => s.client_name))];
     return {
-      summary: `Blog draft created for ${client.client_name}.`,
+      summary: `${savedBlogs.length} blog draft(s) for ${clientNames.length} client(s)${blogErrors.length ? ` (${blogErrors.length} skipped)` : ''}.`,
       agent_slug: agentSlug,
       command_name: commandName,
-      draft_post_id: saved.post_id,
-      backend: result.backend,
+      saved_blogs: savedBlogs,
+      client_errors: blogErrors,
       safety: { status: 'draft', wordpress_published: false, no_auto_publish: true },
     };
   }
@@ -704,6 +771,9 @@ async function createFindingsForResult(agentSlug, taskId, result) {
 }
 
 let _agentSlug = 'unknown';
+let _taskId = '';
+let _runId = '';
+let _backend = 'internal';
 try {
   await loadAiConfig();
   const context = await request(`/internal/agency/jobs/${jobId}/context`);
@@ -712,7 +782,9 @@ try {
   const agentSlug = args.agent_slug;
   _agentSlug = agentSlug || 'unknown';
   const taskId = args.task_id;
+  _taskId = taskId || '';
   const backend = job.provider || 'internal';
+  _backend = backend;
 
   if (!agentSlug || !taskId) {
     throw new Error('Agency job context is missing agent_slug or task_id');
@@ -740,9 +812,16 @@ try {
     summary: `Started ${agentSlug} through the approved agency harness.`,
     backend,
   });
+  _runId = started.run_id || '';
 
   const snapshotResponse = await post('/internal/agency/snapshot', {});
   const result = await runAiPhase(agentSlug, job.command_name, backend, taskId, snapshotResponse.snapshot, args);
+  if (result.fallback_used) {
+    await post(`/internal/discord/approved-jobs/${jobId}/log`, {
+      level: 'WARN',
+      message: `Fallback backend used: ${result.primary_backend} -> ${result.backend}`,
+    });
+  }
   await createFindingsForResult(agentSlug, taskId, result);
 
   // Heartbeat: mark agent as healthy after successful run
@@ -772,11 +851,29 @@ try {
   try {
     await post('/internal/agency/heartbeat', {
       agent_slug: _agentSlug,
+      task_id: _taskId || undefined,
       status: 'failed',
       message: message.slice(0, 200),
       error: message.slice(0, 500),
     });
   } catch { /* ignore */ }
+  try {
+    if (_taskId) {
+      await post('/internal/agency/task-update', {
+        agent_slug: _agentSlug,
+        task_id: _taskId,
+        run_id: _runId || undefined,
+        job_id: jobId,
+        status: 'failed',
+        progress: 100,
+        summary: `${_agentSlug} failed in approved agency harness.`,
+        error: message.slice(0, 2000),
+        backend: _backend,
+      });
+    }
+  } catch (taskErr) {
+    console.error(redactSecrets(taskErr instanceof Error ? taskErr.message : String(taskErr)));
+  }
   try {
     await post(`/internal/discord/approved-jobs/${jobId}/fail`, { error: message });
   } catch (failErr) {

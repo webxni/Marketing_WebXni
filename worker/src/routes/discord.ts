@@ -43,6 +43,17 @@ import type { GeneratedPost } from '../services/openai';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
+const DISCORD_AGENCY_BACKEND_PRIORITY: Record<string, string[]> = {
+  'agency-orchestrator': ['claude_code', 'openai'],
+  'system-reliability': ['claude_code', 'openai'],
+  'security-sentinel': ['claude_code', 'openai'],
+  'client-research': ['gemini_cli', 'openai'],
+  strategy: ['claude_code', 'openai'],
+  'social-copy': ['claude_code', 'openai'],
+  'blog-writer': ['claude_code', 'openai'],
+  'editorial-review': ['claude_code', 'openai'],
+};
+
 interface DiscordInteractionOption {
   name:    string;
   type:    number;
@@ -538,6 +549,7 @@ async function handleCommand(
         agent_slug: agentSlug,
         task_id: task.id,
         source: 'discord_slash',
+        backend_priority: DISCORD_AGENCY_BACKEND_PRIORITY[agentSlug] ?? ['claude_code', 'openai'],
         safety: {
           no_arbitrary_shell: true,
           preserve_marvin_approval: true,

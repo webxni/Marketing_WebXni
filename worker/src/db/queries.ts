@@ -1366,6 +1366,21 @@ export async function updateAgentTask(
     now,
     id,
   ).run();
+  await db.prepare(
+    `UPDATE agent_definitions
+     SET status = ?,
+         current_task = CASE WHEN ? IN ('completed', 'failed', 'cancelled') THEN NULL ELSE ? END,
+         progress = ?,
+         updated_at = ?
+     WHERE slug = ?`,
+  ).bind(
+    nextStatus,
+    nextStatus,
+    existing.title,
+    data.progress ?? existing.progress,
+    now,
+    existing.agent_slug,
+  ).run();
   if (data.error) await appendAgencyLog(db, { task_id: id, status: 'error', summary: data.error });
   return getAgentTask(db, id);
 }
@@ -1397,6 +1412,18 @@ export async function updateAgentRun(
      SET status = ?, finished_at = ?, duration_ms = ?, summary_json = ?, error = ?
      WHERE id = ?`,
   ).bind(data.status, now, duration, data.summary_json ? redactSecrets(data.summary_json) : null, data.error ? redactSecrets(data.error) : null, id).run();
+  const runRow = await db.prepare('SELECT agent_slug FROM agent_runs WHERE id = ?').bind(id).first<{ agent_slug: string }>();
+  if (runRow?.agent_slug) {
+    await db.prepare(
+      `UPDATE agent_definitions
+       SET last_run_at = ?,
+           status = CASE WHEN ? = 'failed' THEN 'failed' ELSE 'idle' END,
+           current_task = NULL,
+           progress = CASE WHEN ? = 'failed' THEN progress ELSE 100 END,
+           updated_at = ?
+       WHERE slug = ?`,
+    ).bind(now, data.status, data.status, now, runRow.agent_slug).run();
+  }
 }
 
 export async function listAgentFindings(db: D1Database, limit = 60): Promise<AgentFindingRow[]> {

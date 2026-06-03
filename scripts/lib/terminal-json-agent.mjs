@@ -18,9 +18,18 @@ function commandAvailable(cmd) {
   return r.status === 0;
 }
 
+function normalizeBackendName(backend) {
+  const b = String(backend || '').trim().toLowerCase();
+  if (b === 'claude_code' || b === 'claude-code') return 'claude';
+  if (b === 'gemini_cli' || b === 'gemini-cli') return 'gemini';
+  if (b === 'openai_api' || b === 'openai-api') return 'openai';
+  return b;
+}
+
 function isBackendAvailable(backend) {
-  if (backend === 'openai') return !!process.env.OPENAI_API_KEY;
-  if (backend === 'claude' || backend === 'gemini' || backend === 'codex') return commandAvailable(backend);
+  const b = normalizeBackendName(backend);
+  if (b === 'openai') return !!process.env.OPENAI_API_KEY;
+  if (b === 'claude' || b === 'gemini' || b === 'codex') return commandAvailable(b);
   return false;
 }
 
@@ -29,17 +38,21 @@ function isBackendAvailable(backend) {
  * 'auto' expands to all available backends in default order.
  */
 function expandPriority(backends) {
-  const AUTO_ORDER = ['codex', 'claude', 'gemini', 'openai'];
+  const AUTO_ORDER = ['claude', 'openai'];
   const seen = new Set();
   const result = [];
   for (const b of backends) {
-    const candidates = b === 'auto' ? AUTO_ORDER : [b];
+    const normalized = normalizeBackendName(b);
+    const candidates = normalized === 'auto' ? AUTO_ORDER : [normalized];
     for (const c of candidates) {
       if (!seen.has(c) && isBackendAvailable(c)) {
         seen.add(c);
         result.push(c);
       }
     }
+  }
+  if (!seen.has('openai') && isBackendAvailable('openai')) {
+    result.push('openai');
   }
   if (result.length === 0) {
     const tried = backends.join(', ');
@@ -221,6 +234,7 @@ export async function runTerminalJsonAgent({ prompt, schema, preferredBackend, m
 
   const priority = expandPriority(rawPriority);
   const errors = [];
+  const attempts = [];
 
   for (const backend of priority) {
     try {
@@ -230,10 +244,18 @@ export async function runTerminalJsonAgent({ prompt, schema, preferredBackend, m
       else if (backend === 'codex') output = await runCodex(prompt, schema, mode);
       else if (backend === 'openai') output = await runOpenAI(prompt, schema, mode);
       else throw new Error(`Unknown backend: ${backend}`);
-      return { backend, output };
+      attempts.push({ backend, status: 'completed' });
+      return {
+        backend,
+        output,
+        attempts,
+        fallback_used: attempts.length > 1,
+        primary_backend: priority[0] ?? backend,
+      };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       errors.push(`[${backend}] ${msg.slice(0, 200)}`);
+      attempts.push({ backend, status: 'failed', error: msg.slice(0, 300) });
       console.warn(`[agency] backend ${backend} failed, trying next: ${msg.slice(0, 120)}`);
     }
   }
@@ -241,4 +263,4 @@ export async function runTerminalJsonAgent({ prompt, schema, preferredBackend, m
   throw new Error(`All backends failed:\n${errors.join('\n')}`);
 }
 
-export { isBackendAvailable, expandPriority };
+export { isBackendAvailable, expandPriority, normalizeBackendName };

@@ -25,6 +25,18 @@ const AGENT_COMMANDS: Record<string, string> = {
   'client-onboarding': 'agency_client_onboarding',
 };
 
+const AGENT_BACKEND_PRIORITY: Record<string, string[]> = {
+  'agency-orchestrator': ['claude_code', 'openai'],
+  'system-reliability': ['claude_code', 'openai'],
+  'security-sentinel': ['claude_code', 'openai'],
+  'client-research': ['gemini_cli', 'openai'],
+  strategy: ['claude_code', 'openai'],
+  'social-copy': ['claude_code', 'openai'],
+  'blog-writer': ['claude_code', 'openai'],
+  'editorial-review': ['claude_code', 'openai'],
+  'client-onboarding': ['claude_code', 'openai'],
+};
+
 // Weekend schedule — tasks run Friday night through Sunday.
 // Mon–Thu: stale detection only, no job enqueueing.
 // Orchestrator always runs daily after review agents so it can compile findings and notify Discord.
@@ -142,6 +154,7 @@ export async function runAgencyScheduler(env: Env, now = new Date()): Promise<Ag
         task_id: task.id,
         source: 'agency_scheduler',
         day_key: dayKey,
+        backend_priority: AGENT_BACKEND_PRIORITY[agentSlug] ?? ['claude_code', 'openai'],
         safety: {
           no_arbitrary_shell: true,
           preserve_marvin_approval: true,
