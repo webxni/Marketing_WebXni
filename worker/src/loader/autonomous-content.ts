@@ -78,6 +78,7 @@ export interface CreateContentParams {
   triggeredBy?:  string;
   reuseSimilarDraft?: boolean;
   generateImage?: boolean;
+  sourceCaption?: string;
 }
 
 export interface CreateContentResult {
@@ -108,10 +109,15 @@ interface IntelRow {
   humanization_style?: string | null;
 }
 
+interface PackageRow {
+  slug: string;
+  platforms_included: string | null;
+}
+
 const DEFAULT_AUTONOMOUS_PLATFORMS: Record<'image' | 'reel' | 'video' | 'blog', string[]> = {
   image: ['facebook', 'instagram', 'google_business'],
-  reel: ['facebook', 'instagram', 'threads'],
-  video: ['facebook', 'instagram', 'youtube'],
+  reel: ['facebook', 'instagram', 'tiktok', 'youtube', 'threads', 'google_business'],
+  video: ['facebook', 'instagram', 'youtube', 'linkedin', 'google_business'],
   blog: ['website_blog'],
 };
 
@@ -170,13 +176,25 @@ export async function createContentWithImage(
   const contentType = normalizeContentType(params.contentType);
   const clientPlatforms = withImplicitBlogPlatform(await getClientPlatforms(db, client.id), client);
   const blogDistributionPlatforms = getBlogDistributionPlatforms(clientPlatforms);
+  let packagePlatforms: string[] = [];
+  if (client.package) {
+    const pkg = await db.prepare('SELECT slug, platforms_included FROM packages WHERE slug = ? AND active = 1 LIMIT 1')
+      .bind(client.package)
+      .first<PackageRow>();
+    try {
+      packagePlatforms = pkg?.platforms_included ? JSON.parse(pkg.platforms_included) as string[] : [];
+    } catch {
+      packagePlatforms = [];
+    }
+  }
 
   // ── 2. Resolve platforms ────────────────────────────────────────────────────
   const requestedPlatforms = (params.platforms ?? []).map((platform) => normalizePlatform(platform));
   const defaultPlatforms = DEFAULT_AUTONOMOUS_PLATFORMS[contentType];
   const selection = resolvePlatformSelection({
     contentType,
-    requestedPlatforms: requestedPlatforms.length > 0 ? requestedPlatforms : defaultPlatforms,
+    requestedPlatforms: requestedPlatforms.length > 0 ? requestedPlatforms : undefined,
+    packagePlatforms: requestedPlatforms.length > 0 ? undefined : packagePlatforms,
     clientPlatforms,
   });
   if (requestedPlatforms.length > 0) {
@@ -200,6 +218,7 @@ export async function createContentWithImage(
     : resolvePlatformSelection({
       contentType,
       requestedPlatforms: defaultPlatforms,
+      packagePlatforms,
       clientPlatforms,
       allowIncompatibleOverride: false,
     }).selected;
@@ -310,6 +329,7 @@ export async function createContentWithImage(
       : platforms,
     contentIntent: 'educational',
     topicResearch,
+    sourceCaption: params.sourceCaption,
     serviceAreas,
     serviceNames,
     recentFormats,

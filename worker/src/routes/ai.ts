@@ -441,7 +441,7 @@ const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'generate_content',
-      description: 'Trigger AI content generation for clients over a date range using the approved terminal workflow.',
+      description: 'Trigger package-driven AI content generation for one or all active clients over a date range using the approved terminal workflow. Use this for "today content for all customers", weekly generation, or bulk package-based generation.',
       parameters: {
         type: 'object',
         properties: {
@@ -1105,20 +1105,19 @@ const AGENT_TOOLS = [
       description: `Autonomously create a post: write high-quality content + Spanish designer prompt + save as pending_approval + notify Discord. AI image generation is optional and off by default.
 Use for: "Create content for X about Y", "Make an Instagram post for Z", "Create a Google Business post with image", "Create a blog post answering Q".
 If the user asks for one piece of content on multiple platforms, call this tool once with a platforms array. Do not create one separate post per platform unless the user explicitly asks for separate posts.
+If the user says "post/reel", "post/reels", "content for today", or does not name exact platforms, omit platforms so the backend selects all connected compatible platforms allowed by the client's package.
+If Marvin pastes a caption or raw copy to use, pass it in source_caption and use topic only for a short label/angle.
 Runs content generation in the background — returns immediately.
 If no topic is specified, the system researches the best topic automatically.
-If platforms are omitted, use content-type defaults instead of "all platforms":
-image -> facebook + instagram + google_business
-reel -> facebook + instagram + threads
-video -> facebook + instagram + youtube
-blog -> website_blog.`,
+If platforms are omitted, the backend uses the client's package platforms + connected platform config + content-type compatibility.`,
       parameters: {
         type: 'object',
         properties: {
           client:        { type: 'string',  description: 'Client slug (required)' },
-          platforms:     { type: 'array',   items: { type: 'string' }, description: 'facebook|instagram|linkedin|google_business|x|threads|tiktok|pinterest|bluesky|youtube. Omit to use content-type defaults; if provided, use exactly these platforms.' },
+          platforms:     { type: 'array',   items: { type: 'string' }, description: 'facebook|instagram|linkedin|google_business|x|threads|tiktok|pinterest|bluesky|youtube. Omit unless Marvin named exact platforms; omitted means backend chooses package-compatible connected platforms.' },
           content_type:  { type: 'string',  description: 'image|reel|video|blog (default: image)' },
           topic:         { type: 'string',  description: 'Specific topic, question, or angle to write about. Leave empty for automatic research.' },
+          source_caption:{ type: 'string',  description: 'Raw caption/copy pasted by Marvin. Preserve it as source material and adapt it into all selected platform captions.' },
           publish_date:  { type: 'string',  description: 'YYYY-MM-DD or YYYY-MM-DDTHH:MM. Default: today at 10:00.' },
           status:        { type: 'string',  description: 'pending_approval (default) or draft' },
           notify_discord:{ type: 'boolean', description: 'Send Discord notification on creation (default: true)' },
@@ -2795,6 +2794,7 @@ Return JSON: { "caption": "..." }`;
         const platforms    = Array.isArray(args.platforms)            ? (args.platforms as string[]) : [];
         const contentType  = typeof args.content_type  === 'string'  ? args.content_type : 'image';
         const topic        = typeof args.topic         === 'string'  ? args.topic        : undefined;
+        const sourceCaption = typeof args.source_caption === 'string' ? args.source_caption : undefined;
         const publishDate  = typeof args.publish_date  === 'string'  ? args.publish_date : undefined;
         const statusArg    = typeof args.status        === 'string'  ? args.status       : 'pending_approval';
         const notifyDc     = args.notify_discord !== false;
@@ -2811,6 +2811,7 @@ Return JSON: { "caption": "..." }`;
               platforms: platforms.length > 0 ? platforms : undefined,
               contentType: contentType as 'image' | 'reel' | 'video' | 'blog',
               topicOverride: topic,
+              sourceCaption,
               publishDate,
               status: statusArg as 'draft' | 'pending_approval',
               notifyDiscord: notifyDc,
@@ -2828,9 +2829,10 @@ Return JSON: { "caption": "..." }`;
           action_summary: `Content creation started for "${clientSlug}" — running in background`,
           summary: {
             client:       clientSlug,
-            platforms:    Array.isArray(platforms) && platforms.length > 0 ? platforms : `default ${contentType} platforms`,
+            platforms:    Array.isArray(platforms) && platforms.length > 0 ? platforms : `package-compatible ${contentType} platforms`,
             content_type: contentType,
             topic:        topic ?? 'auto-researched',
+            source_caption: sourceCaption ? 'provided' : 'none',
             publish_date: publishDate ?? 'today at 10:00',
             status:       statusArg,
             generate_image: generateImage,
@@ -3292,7 +3294,9 @@ ${RESPONSE_RULES}
 Discord-specific interpretation rules:
 - If the user sends plain text like "/weekly-content client:all provider:terminal", treat it as a weekly content generation request.
 - For slash-like weekly content messages without an explicit date range, default to this week.
+- If Marvin asks for today's content for all customers/clients, call generate_content with date_from and date_to set to today's date, client_slugs empty, provider terminal, and overwrite_existing false.
 - Weekly content generation always uses the approved terminal workflow, not OpenAI.
+- For one-off post/reel creation with pasted source copy, call create_content_with_image once with source_caption. Do not pass platforms unless Marvin named exact platforms; let the backend choose package-compatible connected platforms.
 - When Marvin explicitly asks to create a new client profile, call create_client_profile first, then add/update services, service areas, intelligence, platforms, offers, or events as needed.
 - If a requested client profile update fails because the client does not exist, ask whether to create the client profile or call create_client_profile when the same message clearly requested a new client.
 - For messy client updates, first infer the client, then split facts by destination:

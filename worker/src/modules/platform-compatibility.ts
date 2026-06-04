@@ -133,6 +133,7 @@ export function getClientActivePlatforms(clientPlatforms: ClientPlatformRow[]): 
   return uniquePlatforms(
     clientPlatforms
       .filter((platform) => platform.paused !== 1)
+      .filter((platform) => platform.connection_status !== 'failed')
       .map((platform) => platform.platform),
   );
 }

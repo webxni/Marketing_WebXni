@@ -156,6 +156,7 @@ export interface GenerationContext {
   // High-quality mode — uses better model + larger token budget
   highQuality?:    boolean;
   strategicContext?: string | null;
+  sourceCaption?: string | null;
 }
 
 function line(condition: unknown, text: string): string {
@@ -363,6 +364,7 @@ function buildSocialPrompt(ctx: GenerationContext): string {
   const topicDirective = ctx.topicResearch
     ? `Write one ${contentType} post about: "${ctx.topicResearch.topic}"\nFormat: ${CONTENT_FORMAT_LABELS[ctx.topicResearch.format] ?? ctx.topicResearch.format.replace(/_/g, ' ')}\nDo not change the topic.`
     : `Create one ${contentType} post for ${publishDate}.`;
+  const sourceCaption = String(ctx.sourceCaption ?? '').trim();
 
   let prompt = `You are a professional social media content writer for ${ctx.client.canonical_name}.
 
@@ -371,6 +373,11 @@ ${buildSharedContext(ctx, 'social')}
 TASK:
 ${topicDirective}
 Target platforms: ${platforms.join(', ') || 'facebook, instagram'}.
+${sourceCaption ? `
+SOURCE CAPTION FROM MARVIN:
+${sourceCaption}
+
+Use this source caption as the canonical creative direction. Preserve the factual sequence, key message, client identity, and any useful hashtags when platform-appropriate. Adapt it into each selected platform's required caption field instead of replacing it with a generic topic. For Google Business, remove hashtags and emoji-heavy formatting while keeping the same project/update facts.` : ''}
 
 Return ONLY JSON matching the requested schema. Keep captions concise and platform-native.
 - "title": short descriptive title, 5-10 words. Make it specific to the service, customer situation, or city. Do NOT use generic listicle titles like "Top 5 Benefits..." unless that exact format was requested.
