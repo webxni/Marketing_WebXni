@@ -11,6 +11,7 @@
   let loading = true;
   let saving = false;
   let testingWp = false;
+  let archiving = false;
   let wpTestResult: { ok: boolean; user?: { name: string }; error?: string } | null = null;
   let checkingConnections = false;
   let connectionError = '';
@@ -191,6 +192,22 @@
     } catch (e) { toast.error(String(e)); }
     finally { saving = false; }
   }
+
+  async function archiveClient() {
+    if (!client) return;
+    const ok = confirm(`Archive ${client.canonical_name}? Existing posts and history will be preserved.`);
+    if (!ok) return;
+    archiving = true;
+    try {
+      await clientsApi.delete(client.slug, { confirmed: true });
+      toast.success('Client archived');
+      goto('/clients');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      archiving = false;
+    }
+  }
 </script>
 
 <svelte:head><title>Edit {client?.canonical_name ?? 'Client'} — WebXni</title></svelte:head>
@@ -211,6 +228,9 @@
     </div>
     <div class="flex gap-2">
       <a href="/clients/{client.slug}" class="btn-ghost btn-sm">Cancel</a>
+      <button class="btn-ghost btn-sm text-red-400" on:click={archiveClient} disabled={archiving || saving}>
+        {archiving ? 'Archiving…' : 'Archive'}
+      </button>
       <button class="btn-primary btn-sm" on:click={save} disabled={saving}>
         {saving ? 'Saving…' : 'Save Changes'}
       </button>

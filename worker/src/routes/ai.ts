@@ -48,6 +48,44 @@ function requireMcpBearer(c: Context<{ Bindings: Env; Variables: { user: Session
   return !!expected && token === expected;
 }
 
+const AGENT_CLIENT_FIELDS = new Set([
+  'canonical_name','package','status','language','manual_only',
+  'requires_approval_from','owner_group','never_mix_with',
+  'upload_post_profile','notes','brand_json',
+  'wp_domain','wp_url','wp_auth','wp_template',
+  'wp_admin_url','wp_base_url','wp_rest_base','wp_username','wp_application_password',
+  'wp_default_post_status','wp_default_author_id','wp_default_category_ids',
+  'wp_template_key','wp_featured_image_mode','wp_excerpt_mode',
+  'notion_page_id','logo_r2_key','logo_url','brand_primary_color','brand_accent_color',
+  'phone','email','owner_name','cta_text','cta_label','industry','state',
+]);
+
+const AGENT_CLIENT_INTELLIGENCE_FIELDS = new Set([
+  'brand_voice','tone_keywords','prohibited_terms','approved_ctas',
+  'content_goals','service_priorities','content_angles','seasonal_notes',
+  'competitor_notes','audience_notes','primary_keyword','secondary_keywords',
+  'local_seo_themes','humanization_style','monthly_snapshot','feedback_summary',
+]);
+
+function slugifyClientName(value: string): string {
+  return value
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+}
+
+function collectAllowedFields(fields: Record<string, unknown>, allowed: Set<string>): Record<string, unknown> {
+  const safe: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(fields)) {
+    if (allowed.has(k)) safe[k] = typeof v === 'boolean' ? (v ? 1 : 0) : v;
+  }
+  return safe;
+}
+
 async function resolveAgentOpenAiKey(env: Env): Promise<string> {
   let openAiKey = env.OPENAI_API_KEY || '';
   if (!openAiKey) {
@@ -566,6 +604,47 @@ const AGENT_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'create_client_profile',
+      description: 'Create a new client profile when Marvin explicitly asks for a new client. Can also save services, service areas, and client intelligence. If required fields are missing, ask Marvin a question before calling.',
+      parameters: {
+        type: 'object',
+        properties: {
+          slug: { type: 'string', description: 'Lowercase URL slug, e.g. nova-home-builders-llc. If omitted, derive from canonical_name.' },
+          canonical_name: { type: 'string', description: 'Client/business name' },
+          fields: {
+            type: 'object',
+            description: 'Writable client fields: package, status, language, manual_only, upload_post_profile, notes, brand_json, phone, email, owner_name, cta_text, cta_label, industry, state, brand_primary_color, brand_accent_color, logo_url, wp_* fields.',
+          },
+          services: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Services/categories to add to client_services.',
+          },
+          service_areas: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                city: { type: 'string' },
+                state: { type: 'string' },
+                primary_area: { type: 'boolean' },
+              },
+              required: ['city'],
+            },
+            description: 'Cities/counties/areas to add to client_service_areas.',
+          },
+          intelligence: {
+            type: 'object',
+            description: 'Optional client_intelligence fields: brand_voice, tone_keywords, prohibited_terms, approved_ctas, content_goals, service_priorities, content_angles, audience_notes, primary_keyword, secondary_keywords, local_seo_themes, humanization_style.',
+          },
+        },
+        required: ['canonical_name'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'update_client_profile',
       description: 'Update client profile fields: name, phone, email, industry, state, notes, brand colors, WordPress config, language, upload_post_profile, etc.',
       parameters: {
@@ -578,6 +657,22 @@ const AGENT_TOOLS = [
           },
         },
         required: ['client', 'fields'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_client_profile',
+      description: 'Archive or permanently delete a client profile only when Marvin explicitly asks. Requires confirmed=true. Default mode archives by setting status=inactive. Hard delete is blocked if posts exist.',
+      parameters: {
+        type: 'object',
+        properties: {
+          client: { type: 'string', description: 'Client slug' },
+          confirmed: { type: 'boolean', description: 'Must be true to archive/delete.' },
+          hard_delete: { type: 'boolean', description: 'Default false. If true, permanently deletes only when no posts exist.' },
+        },
+        required: ['client', 'confirmed'],
       },
     },
   },
@@ -1680,6 +1775,88 @@ export async function executeTool(
         }
       }
 
+      // ── CREATE CLIENT PROFILE ──────────────────────────────────────────────
+      case 'create_client_profile': {
+        const canonicalName = typeof args.canonical_name === 'string' ? args.canonical_name.trim() : '';
+        if (!canonicalName) return { success: false, error: 'canonical_name is required' };
+
+        const requestedSlug = typeof args.slug === 'string' ? args.slug.trim() : '';
+        const slug = requestedSlug ? slugifyClientName(requestedSlug) : slugifyClientName(canonicalName);
+        if (!slug) return { success: false, error: 'A valid slug is required or must be derivable from canonical_name' };
+        if (!/^[a-z0-9-]+$/.test(slug)) return { success: false, error: 'slug must be lowercase alphanumeric with hyphens only' };
+
+        const existing = await getClientBySlug(env.DB, slug);
+        if (existing) {
+          return {
+            success: false,
+            error: `Client already exists: ${slug}`,
+            suggestions: [`Use update_client_profile for ${slug} or choose a different slug.`],
+          };
+        }
+
+        const fields = collectAllowedFields((args.fields ?? {}) as Record<string, unknown>, AGENT_CLIENT_FIELDS);
+        fields.canonical_name = canonicalName;
+        if (!fields.status) fields.status = 'active';
+        const id = crypto.randomUUID().replace(/-/g, '').toLowerCase();
+        const now = Math.floor(Date.now() / 1000);
+        const extraEntries = Object.entries(fields).filter(([k]) => k !== 'canonical_name');
+        const columns = ['id', 'slug', 'canonical_name', ...extraEntries.map(([k]) => k), 'created_at', 'updated_at'];
+        const values = [id, slug, canonicalName, ...extraEntries.map(([, v]) => v ?? null), now, now];
+        await env.DB
+          .prepare(`INSERT INTO clients (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`)
+          .bind(...values)
+          .run();
+
+        const serviceNames = Array.isArray(args.services)
+          ? [...new Set((args.services as unknown[]).map((item) => String(item).trim()).filter(Boolean))]
+          : [];
+        for (const name of serviceNames) {
+          await env.DB.prepare(
+            'INSERT INTO client_services (id, client_id, name, description, active, sort_order, created_at, updated_at) VALUES (?,?,?,?,1,0,?,?)',
+          ).bind(crypto.randomUUID().replace(/-/g, ''), id, name, null, now, now).run();
+        }
+
+        const areas = Array.isArray(args.service_areas) ? args.service_areas as Array<Record<string, unknown>> : [];
+        const savedAreas: Array<{ city: string; state: string | null }> = [];
+        for (const area of areas) {
+          const city = typeof area.city === 'string' ? area.city.trim() : '';
+          if (!city) continue;
+          const state = typeof area.state === 'string' ? area.state.trim() : null;
+          await env.DB.prepare(
+            'INSERT INTO client_service_areas (id, client_id, city, state, primary_area, sort_order, created_at) VALUES (?,?,?,?,?,0,?)',
+          ).bind(crypto.randomUUID().replace(/-/g, ''), id, city, state, area.primary_area ? 1 : 0, now).run();
+          savedAreas.push({ city, state });
+        }
+
+        const intelligence = collectAllowedFields((args.intelligence ?? {}) as Record<string, unknown>, AGENT_CLIENT_INTELLIGENCE_FIELDS);
+        if (Object.keys(intelligence).length > 0) {
+          const intelId = crypto.randomUUID().replace(/-/g, '');
+          const intelColumns = ['id', 'client_id', ...Object.keys(intelligence), 'created_at', 'updated_at'];
+          const intelValues = [intelId, id, ...Object.values(intelligence).map((v) => v ?? null), now, now];
+          await env.DB
+            .prepare(`INSERT INTO client_intelligence (${intelColumns.join(', ')}) VALUES (${intelColumns.map(() => '?').join(', ')})`)
+            .bind(...intelValues)
+            .run();
+        }
+
+        await writeAuditLog(env.DB, {
+          user_id: user.userId,
+          action: 'agent_create_client',
+          entity_type: 'client',
+          entity_id: id,
+          new_value: { slug, canonical_name: canonicalName, fields, services: serviceNames, service_areas: savedAreas, intelligence_fields: Object.keys(intelligence) },
+        });
+
+        const client = await getClientBySlug(env.DB, slug);
+        return {
+          success: true,
+          data: client,
+          summary: { client_id: id, slug, services_added: serviceNames.length, service_areas_added: savedAreas.length, intelligence_fields: Object.keys(intelligence) },
+          suggestions: ['Review the new client in the dashboard before running content generation.', 'Add Upload-Post platform IDs when accounts are connected.'],
+          action_summary: `Created client profile ${canonicalName} (${slug}) with ${serviceNames.length} service(s) and ${savedAreas.length} service area(s).`,
+        };
+      }
+
       // ── UPDATE CLIENT PROFILE ──────────────────────────────────────────────
       case 'update_client_profile': {
         const slug = typeof args.client === 'string' ? args.client : '';
@@ -1687,17 +1864,7 @@ export async function executeTool(
         if (!client) return { success: false, error: `Client not found: ${slug}` };
 
         const fields = (args.fields ?? {}) as Record<string, unknown>;
-        const ALLOWED = new Set([
-          'canonical_name','package','status','language','manual_only',
-          'upload_post_profile','notes','brand_json',
-          'wp_admin_url','wp_base_url','wp_rest_base','wp_username','wp_application_password',
-          'wp_default_post_status','wp_default_author_id','wp_default_category_ids',
-          'wp_template_key','wp_featured_image_mode','wp_excerpt_mode',
-          'phone','email','owner_name','cta_text','cta_label','industry','state',
-          'brand_primary_color','brand_accent_color','logo_url',
-        ]);
-        const safe: Record<string, unknown> = {};
-        for (const [k, v] of Object.entries(fields)) if (ALLOWED.has(k)) safe[k] = v;
+        const safe = collectAllowedFields(fields, AGENT_CLIENT_FIELDS);
         if (Object.keys(safe).length === 0) return { success: false, error: 'No valid fields to update' };
 
         const now = Math.floor(Date.now() / 1000);
@@ -1716,6 +1883,76 @@ export async function executeTool(
         };
       }
 
+      // ── DELETE CLIENT PROFILE ──────────────────────────────────────────────
+      case 'delete_client_profile': {
+        const slug = typeof args.client === 'string' ? args.client : '';
+        const confirmed = args.confirmed === true;
+        const hardDelete = args.hard_delete === true;
+        if (!slug) return { success: false, error: 'client slug is required' };
+        if (!confirmed) return { success: false, error: 'Set confirmed: true to archive/delete a client profile. Ask Marvin to confirm first.' };
+
+        const client = await getClientBySlug(env.DB, slug);
+        if (!client) return { success: false, error: `Client not found: ${slug}` };
+        const postCount = await env.DB.prepare('SELECT COUNT(*) AS n FROM posts WHERE client_id = ?').bind(client.id).first<{ n: number }>();
+        if (!hardDelete) {
+          await env.DB.prepare("UPDATE clients SET status = 'inactive', updated_at = ? WHERE id = ?").bind(Math.floor(Date.now() / 1000), client.id).run();
+          await writeAuditLog(env.DB, {
+            user_id: user.userId,
+            action: 'agent_archive_client',
+            entity_type: 'client',
+            entity_id: client.id,
+            old_value: { status: client.status, slug: client.slug },
+            new_value: { status: 'inactive' },
+          });
+          return {
+            success: true,
+            summary: { slug, archived: true, posts_preserved: postCount?.n ?? 0 },
+            action_summary: `Archived client profile ${client.canonical_name}. Existing posts were preserved.`,
+          };
+        }
+
+        if ((postCount?.n ?? 0) > 0) {
+          return {
+            success: false,
+            error: `Hard delete blocked: ${client.canonical_name} has ${postCount?.n ?? 0} post(s). Archive it instead or remove posts manually first.`,
+          };
+        }
+
+        const childTables = [
+          'client_platforms',
+          'client_gbp_locations',
+          'client_restrictions',
+          'client_intelligence',
+          'client_feedback',
+          'client_categories',
+          'client_services',
+          'client_service_areas',
+          'client_offers',
+          'client_events',
+          'client_research_notes',
+          'client_strategy_plans',
+          'client_topics',
+          'client_monthly_topics',
+          'client_monthly_content_plans',
+        ];
+        for (const table of childTables) {
+          await env.DB.prepare(`DELETE FROM ${table} WHERE client_id = ?`).bind(client.id).run();
+        }
+        await env.DB.prepare('DELETE FROM clients WHERE id = ?').bind(client.id).run();
+        await writeAuditLog(env.DB, {
+          user_id: user.userId,
+          action: 'agent_delete_client',
+          entity_type: 'client',
+          entity_id: client.id,
+          old_value: { slug: client.slug, canonical_name: client.canonical_name },
+        });
+        return {
+          success: true,
+          summary: { slug, hard_deleted: true },
+          action_summary: `Permanently deleted client profile ${client.canonical_name}.`,
+        };
+      }
+
       // ── UPDATE CLIENT INTELLIGENCE ─────────────────────────────────────────
       case 'update_client_intelligence': {
         const slug = typeof args.client === 'string' ? args.client : '';
@@ -1723,14 +1960,7 @@ export async function executeTool(
         if (!client) return { success: false, error: `Client not found: ${slug}` };
 
         const fields = (args.fields ?? {}) as Record<string, unknown>;
-        const ALLOWED = new Set([
-          'brand_voice','tone_keywords','prohibited_terms','approved_ctas',
-          'content_goals','service_priorities','content_angles','seasonal_notes',
-          'competitor_notes','audience_notes','primary_keyword','secondary_keywords',
-          'local_seo_themes','humanization_style','monthly_snapshot','feedback_summary',
-        ]);
-        const safe: Record<string, unknown> = {};
-        for (const [k, v] of Object.entries(fields)) if (ALLOWED.has(k)) safe[k] = v;
+        const safe = collectAllowedFields(fields, AGENT_CLIENT_INTELLIGENCE_FIELDS);
         if (Object.keys(safe).length === 0) return { success: false, error: 'No valid intelligence fields' };
 
         const now = Math.floor(Date.now() / 1000);
@@ -2648,7 +2878,10 @@ ${RESPONSE_RULES}
 Discord-specific interpretation rules:
 - If the user sends plain text like "/weekly-content client:all provider:terminal", treat it as a weekly content generation request.
 - For slash-like weekly content messages without an explicit date range, default to this week.
-- Weekly content generation always uses the approved terminal workflow, not OpenAI.`;
+- Weekly content generation always uses the approved terminal workflow, not OpenAI.
+- When Marvin explicitly asks to create a new client profile, call create_client_profile first, then add/update services, service areas, intelligence, platforms, offers, or events as needed.
+- If a requested client profile update fails because the client does not exist, ask whether to create the client profile or call create_client_profile when the same message clearly requested a new client.
+- Never delete or archive a client unless Marvin explicitly asks and confirms it. Use delete_client_profile with confirmed=true only after that confirmation.`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

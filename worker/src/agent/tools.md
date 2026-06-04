@@ -35,7 +35,7 @@ All client/post mutations are automatically audit-logged. Always use these exact
 - Fast-track: `approve_and_publish { post_id }`
 
 ## Client ops
-- `update_client_profile`, `update_client_intelligence`, `update_client_platforms`
+- `create_client_profile`, `update_client_profile`, `update_client_intelligence`, `update_client_platforms`, `delete_client_profile`
 - `add_client_service`, `add_client_area`, `add_client_feedback`
 
 ## GBP

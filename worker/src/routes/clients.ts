@@ -319,6 +319,79 @@ clientRoutes.put('/:slug', async (c) => {
   return c.json({ client: updated });
 });
 
+/** DELETE /api/clients/:slug — archive by default; hard delete only when confirmed and no posts exist */
+clientRoutes.delete('/:slug', async (c) => {
+  const user = c.get('user');
+  if (user.role !== 'admin') {
+    return c.json({ error: 'Forbidden — only admin/manager can delete clients' }, 403);
+  }
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug'));
+  if (!client) return c.json({ error: 'Not found' }, 404);
+
+  const confirmed = c.req.query('confirmed') === 'true';
+  const hardDelete = c.req.query('hard_delete') === 'true';
+  if (!confirmed) {
+    return c.json({ error: 'confirmed=true is required to archive or delete a client profile' }, 400);
+  }
+
+  const postCount = await c.env.DB
+    .prepare('SELECT COUNT(*) AS n FROM posts WHERE client_id = ?')
+    .bind(client.id)
+    .first<{ n: number }>();
+
+  if (!hardDelete) {
+    await c.env.DB
+      .prepare("UPDATE clients SET status = 'inactive', updated_at = ? WHERE id = ?")
+      .bind(Math.floor(Date.now() / 1000), client.id)
+      .run();
+    await writeAuditLog(c.env.DB, {
+      user_id: user.userId,
+      action: 'client.archive',
+      entity_type: 'client',
+      entity_id: client.id,
+      old_value: { status: client.status, slug: client.slug },
+      new_value: { status: 'inactive', posts_preserved: postCount?.n ?? 0 },
+      ip: c.req.header('CF-Connecting-IP') ?? c.req.header('X-Forwarded-For') ?? undefined,
+    });
+    return c.json({ ok: true, archived: true, posts_preserved: postCount?.n ?? 0 });
+  }
+
+  if ((postCount?.n ?? 0) > 0) {
+    return c.json({ error: `Hard delete blocked: client has ${postCount?.n ?? 0} post(s). Archive instead or remove posts first.` }, 409);
+  }
+
+  const childTables = [
+    'client_platforms',
+    'client_gbp_locations',
+    'client_restrictions',
+    'client_intelligence',
+    'client_feedback',
+    'client_categories',
+    'client_services',
+    'client_service_areas',
+    'client_offers',
+    'client_events',
+    'client_research_notes',
+    'client_strategy_plans',
+    'client_topics',
+    'client_monthly_topics',
+    'client_monthly_content_plans',
+  ];
+  for (const table of childTables) {
+    await c.env.DB.prepare(`DELETE FROM ${table} WHERE client_id = ?`).bind(client.id).run();
+  }
+  await c.env.DB.prepare('DELETE FROM clients WHERE id = ?').bind(client.id).run();
+  await writeAuditLog(c.env.DB, {
+    user_id: user.userId,
+    action: 'client.delete',
+    entity_type: 'client',
+    entity_id: client.id,
+    old_value: { slug: client.slug, canonical_name: client.canonical_name },
+    ip: c.req.header('CF-Connecting-IP') ?? c.req.header('X-Forwarded-For') ?? undefined,
+  });
+  return c.json({ ok: true, hard_deleted: true });
+});
+
 /** GET /api/clients/:slug/platforms */
 clientRoutes.get('/:slug/platforms', async (c) => {
   const client = await getClientBySlug(c.env.DB, c.req.param('slug'));

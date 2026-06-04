@@ -51,6 +51,13 @@ export const clientsApi = {
   update: (slug: string, data: Partial<Client>) =>
     api.put<{ client: Client }>(`/api/clients/${slug}`, data),
 
+  delete: (slug: string, opts: { confirmed?: boolean; hard_delete?: boolean } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.confirmed) q.set('confirmed', 'true');
+    if (opts.hard_delete) q.set('hard_delete', 'true');
+    return api.delete<{ ok: boolean; archived?: boolean; hard_deleted?: boolean; posts_preserved?: number }>(`/api/clients/${slug}?${q}`);
+  },
+
   updatePlatform: (slug: string, platform: string, data: Record<string, unknown>) =>
     api.put<{ platform: ClientPlatform; warnings?: PlatformConfigWarning[] }>(`/api/clients/${slug}/platforms/${platform}`, data),
 
