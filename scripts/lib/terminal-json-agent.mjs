@@ -95,15 +95,18 @@ function runClaude(prompt, schema, mode) {
   const { schemaStr, wrappedPrompt } = buildWrappedPrompt(prompt, schema);
   const args = [
     '-p',
-    '--bare',
     '--output-format', 'json',
     '--effort', mode === 'blog' ? 'medium' : 'low',
     '--model', process.env.CLAUDE_CODE_MODEL || 'sonnet',
-    '--max-turns', '1',
+    '--max-turns', process.env.CLAUDE_CODE_MAX_TURNS || '3',
+    '--no-session-persistence',
     '--append-system-prompt', JSON_ONLY_SYSTEM,
     '--json-schema', schemaStr,
     wrappedPrompt,
   ];
+  if (process.env.AGENCY_CLAUDE_BARE === '1') {
+    args.splice(1, 0, '--bare');
+  }
   return runSpawnJson('claude', args, (stdout) => {
     const wrapper = JSON.parse(stdout.trim());
     if (wrapper?.is_error) throw new Error(`Claude error: api_status=${wrapper.api_error_status} stop=${wrapper.stop_reason}`);
@@ -125,10 +128,8 @@ function runCodex(prompt, schema, mode) {
   const workDir = mkdtempSync(join(tmpdir(), 'webxni-agency-codex-'));
   const schemaPath = join(workDir, 'schema.json');
   const outputPath = join(workDir, 'last-message.txt');
-  const codexHome = join(workDir, 'codex-home');
-  mkdirSync(codexHome, { recursive: true });
   writeFileSync(schemaPath, JSON.stringify(schema));
-  const model = mode === 'blog'
+  const configuredModel = mode === 'blog'
     ? (process.env.CODEX_BLOG_MODEL || 'gpt-4.1')
     : (process.env.CODEX_SOCIAL_MODEL || 'gpt-4.1-mini');
   const args = [
@@ -138,11 +139,12 @@ function runCodex(prompt, schema, mode) {
     '--output-schema', schemaPath,
     '-o', outputPath,
     '-C', process.cwd(),
-    '-m', model,
     wrappedPrompt,
   ];
+  if (process.env.CODEX_BLOG_MODEL || process.env.CODEX_SOCIAL_MODEL || process.env.CODEX_MODEL) {
+    args.splice(args.length - 1, 0, '-m', process.env.CODEX_MODEL || configuredModel);
+  }
   return runSpawnJson('codex', args, () => parseJsonFromText(readFileSync(outputPath, 'utf8')), {
-    CODEX_HOME: codexHome,
     cleanup: () => rmSync(workDir, { recursive: true, force: true }),
   });
 }
@@ -189,7 +191,7 @@ function runSpawnJson(command, args, parser, extra = {}) {
     const child = spawn(command, args, {
       cwd: process.cwd(),
       shell: false,
-      env: { ...process.env, ...(extra.CODEX_HOME ? { CODEX_HOME: extra.CODEX_HOME } : {}) },
+      env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -200,8 +202,10 @@ function runSpawnJson(command, args, parser, extra = {}) {
     child.on('exit', (code) => {
       try {
         if (code !== 0) {
+          const combined = `${stderr}\n${stdout}`;
           reject(new Error(
             `${command} exited ${code}\n` +
+            `${classifyBackendFailure(command, combined)}\n` +
             `stderr: ${stderr.slice(0, 800).trim() || '(empty)'}\n` +
             `stdout: ${stdout.slice(0, 800).trim() || '(empty)'}`,
           ));
@@ -215,6 +219,20 @@ function runSpawnJson(command, args, parser, extra = {}) {
       }
     });
   });
+}
+
+function classifyBackendFailure(command, text) {
+  const lower = text.toLowerCase();
+  if (lower.includes('401 unauthorized') || lower.includes('api_error_status":401') || lower.includes('missing bearer')) {
+    return `cause: ${command} authentication is missing or expired`;
+  }
+  if (lower.includes('model is not supported')) {
+    return `cause: ${command} model is not supported by the authenticated account`;
+  }
+  if (lower.includes('refusing to create helper binaries') || lower.includes('could not update path')) {
+    return `cause: ${command} helper/PATH setup warning; verify auth/model if the command also failed`;
+  }
+  return 'cause: unknown terminal backend failure';
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
