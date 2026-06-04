@@ -67,6 +67,12 @@ const AGENT_CLIENT_INTELLIGENCE_FIELDS = new Set([
   'local_seo_themes','humanization_style','monthly_snapshot','feedback_summary',
 ]);
 
+const AGENT_PLATFORM_FIELDS = new Set([
+  'account_id','username','page_id','upload_post_board_id','upload_post_location_id',
+  'privacy_level','privacy_status','paused','paused_reason','paused_since','notes',
+  'profile_url','profile_username','connection_status','yt_channel_id','linkedin_urn',
+]);
+
 function slugifyClientName(value: string): string {
   return value
     .normalize('NFKD')
@@ -84,6 +90,14 @@ function collectAllowedFields(fields: Record<string, unknown>, allowed: Set<stri
     if (allowed.has(k)) safe[k] = typeof v === 'boolean' ? (v ? 1 : 0) : v;
   }
   return safe;
+}
+
+function collectPlatformFields(fields: Record<string, unknown>): Record<string, unknown> {
+  const normalized = { ...fields };
+  if ('upload_post_account_id' in normalized && !('account_id' in normalized)) {
+    normalized.account_id = normalized.upload_post_account_id;
+  }
+  return collectAllowedFields(normalized, AGENT_PLATFORM_FIELDS);
 }
 
 async function resolveAgentOpenAiKey(env: Env): Promise<string> {
@@ -698,7 +712,7 @@ const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'update_client_platforms',
-      description: 'Upsert a platform configuration for a client (upload-post IDs, page IDs, etc.).',
+      description: 'Upsert a platform configuration for a client (Upload-Post account/location/board IDs, page IDs, usernames, profile URLs, pause state, connection notes, etc.).',
       parameters: {
         type: 'object',
         properties: {
@@ -706,10 +720,26 @@ const AGENT_TOOLS = [
           platform: { type: 'string', description: 'facebook|instagram|linkedin|tiktok|pinterest|bluesky|x|threads|youtube|google_business' },
           fields: {
             type: 'object',
-            description: 'upload_post_account_id, upload_post_location_id, upload_post_board_id, page_id, paused',
+            description: 'account_id or upload_post_account_id, username, page_id, upload_post_location_id, upload_post_board_id, privacy_level, privacy_status, paused, paused_reason, notes, profile_url, profile_username, connection_status, yt_channel_id, linkedin_urn',
           },
         },
         required: ['client', 'platform', 'fields'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_client_platform',
+      description: 'Delete a platform configuration row from a client when Marvin explicitly asks to remove/disconnect that platform tab.',
+      parameters: {
+        type: 'object',
+        properties: {
+          client: { type: 'string', description: 'Client slug' },
+          platform: { type: 'string', description: 'facebook|instagram|linkedin|tiktok|pinterest|bluesky|x|threads|youtube|google_business' },
+          confirmed: { type: 'boolean', description: 'Must be true to delete.' },
+        },
+        required: ['client', 'platform', 'confirmed'],
       },
     },
   },
@@ -732,6 +762,44 @@ const AGENT_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'update_client_service',
+      description: 'Update a client service by service_id or by exact/current service name.',
+      parameters: {
+        type: 'object',
+        properties: {
+          client: { type: 'string', description: 'Client slug' },
+          service_id: { type: 'string' },
+          current_name: { type: 'string', description: 'Existing service name when service_id is unknown.' },
+          fields: {
+            type: 'object',
+            description: 'name, description, active, sort_order',
+          },
+        },
+        required: ['client', 'fields'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_client_service',
+      description: 'Delete or deactivate a client service by service_id or exact/current service name. Requires confirmed=true.',
+      parameters: {
+        type: 'object',
+        properties: {
+          client: { type: 'string', description: 'Client slug' },
+          service_id: { type: 'string' },
+          current_name: { type: 'string', description: 'Existing service name when service_id is unknown.' },
+          confirmed: { type: 'boolean' },
+          deactivate_only: { type: 'boolean', description: 'Default true. Sets active=0 instead of deleting.' },
+        },
+        required: ['client', 'confirmed'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'add_client_area',
       description: 'Add a service area to a client.',
       parameters: {
@@ -743,6 +811,45 @@ const AGENT_TOOLS = [
           primary_area: { type: 'boolean' },
         },
         required: ['client', 'city'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_client_area',
+      description: 'Update a client service area by area_id or by exact/current city and optional state.',
+      parameters: {
+        type: 'object',
+        properties: {
+          client: { type: 'string', description: 'Client slug' },
+          area_id: { type: 'string' },
+          current_city: { type: 'string' },
+          current_state: { type: 'string' },
+          fields: {
+            type: 'object',
+            description: 'city, state, zip, primary_area, sort_order',
+          },
+        },
+        required: ['client', 'fields'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_client_area',
+      description: 'Delete a client service area by area_id or exact/current city and optional state. Requires confirmed=true.',
+      parameters: {
+        type: 'object',
+        properties: {
+          client: { type: 'string', description: 'Client slug' },
+          area_id: { type: 'string' },
+          current_city: { type: 'string' },
+          current_state: { type: 'string' },
+          confirmed: { type: 'boolean' },
+        },
+        required: ['client', 'confirmed'],
       },
     },
   },
@@ -804,6 +911,22 @@ const AGENT_TOOLS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_offer',
+      description: 'Delete or deactivate a GBP offer. Requires confirmed=true. Prefer deactivation unless Marvin asks for permanent removal.',
+      parameters: {
+        type: 'object',
+        properties: {
+          offer_id: { type: 'string' },
+          confirmed: { type: 'boolean' },
+          deactivate_only: { type: 'boolean', description: 'Default true. Sets active=0 and paused=1 instead of deleting.' },
+        },
+        required: ['offer_id', 'confirmed'],
+      },
+    },
+  },
 
   // ── EVENTS ────────────────────────────────────────────────────────────────
   {
@@ -843,6 +966,22 @@ const AGENT_TOOLS = [
           fields:   { type: 'object', description: 'title, description, gbp_event_title, gbp_event_start_date, gbp_event_start_time, gbp_event_end_date, gbp_event_end_time, gbp_cta_type, gbp_cta_url, active, paused, recurrence, next_run_date' },
         },
         required: ['event_id', 'fields'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_event',
+      description: 'Delete or deactivate a GBP event. Requires confirmed=true. Prefer deactivation unless Marvin asks for permanent removal.',
+      parameters: {
+        type: 'object',
+        properties: {
+          event_id: { type: 'string' },
+          confirmed: { type: 'boolean' },
+          deactivate_only: { type: 'boolean', description: 'Default true. Sets active=0 and paused=1 instead of deleting.' },
+        },
+        required: ['event_id', 'confirmed'],
       },
     },
   },
@@ -1995,9 +2134,8 @@ export async function executeTool(
         if (!platform) return { success: false, error: 'platform is required' };
 
         const fields = (args.fields ?? {}) as Record<string, unknown>;
-        const ALLOWED = new Set(['upload_post_account_id','upload_post_location_id','upload_post_board_id','page_id','paused','active']);
-        const safe: Record<string, unknown> = {};
-        for (const [k, v] of Object.entries(fields)) if (ALLOWED.has(k)) safe[k] = v;
+        const safe = collectPlatformFields(fields);
+        if (Object.keys(safe).length === 0) return { success: false, error: 'No valid platform fields' };
 
         const now = Math.floor(Date.now() / 1000);
         const existing = await env.DB.prepare('SELECT id FROM client_platforms WHERE client_id = ? AND platform = ?').bind(client.id, platform).first<{ id: string }>();
@@ -2017,6 +2155,25 @@ export async function executeTool(
           success: true,
           summary: { client: slug, platform, fields: Object.keys(safe) },
           action_summary: `Platform ${platform} config updated for ${client.canonical_name}`,
+        };
+      }
+
+      // ── DELETE CLIENT PLATFORM ─────────────────────────────────────────────
+      case 'delete_client_platform': {
+        const slug = typeof args.client === 'string' ? args.client : '';
+        const platform = typeof args.platform === 'string' ? args.platform : '';
+        if (args.confirmed !== true) return { success: false, error: 'confirmed=true is required to delete a client platform config' };
+        const client = await getClientBySlug(env.DB, slug);
+        if (!client) return { success: false, error: `Client not found: ${slug}` };
+        if (!platform) return { success: false, error: 'platform is required' };
+
+        const existing = await env.DB.prepare('SELECT id FROM client_platforms WHERE client_id = ? AND platform = ?').bind(client.id, platform).first<{ id: string }>();
+        if (!existing) return { success: false, error: `Platform config not found for ${client.canonical_name}: ${platform}` };
+        await env.DB.prepare('DELETE FROM client_platforms WHERE id = ? AND client_id = ?').bind(existing.id, client.id).run();
+        return {
+          success: true,
+          summary: { client: slug, platform, deleted: true },
+          action_summary: `Platform ${platform} config deleted for ${client.canonical_name}`,
         };
       }
 
@@ -2040,6 +2197,70 @@ export async function executeTool(
         };
       }
 
+      // ── UPDATE CLIENT SERVICE ──────────────────────────────────────────────
+      case 'update_client_service': {
+        const slug = typeof args.client === 'string' ? args.client : '';
+        const client = await getClientBySlug(env.DB, slug);
+        if (!client) return { success: false, error: `Client not found: ${slug}` };
+
+        const serviceId = typeof args.service_id === 'string' ? args.service_id : '';
+        const currentName = typeof args.current_name === 'string' ? args.current_name.trim() : '';
+        const existing = serviceId
+          ? await env.DB.prepare('SELECT id, name FROM client_services WHERE id = ? AND client_id = ?').bind(serviceId, client.id).first<{ id: string; name: string }>()
+          : currentName
+            ? await env.DB.prepare('SELECT id, name FROM client_services WHERE client_id = ? AND lower(name) = lower(?)').bind(client.id, currentName).first<{ id: string; name: string }>()
+            : null;
+        if (!existing) return { success: false, error: 'Service not found. Provide service_id or exact current_name.' };
+
+        const fields = (args.fields ?? {}) as Record<string, unknown>;
+        const allowed = new Set(['name','description','active','sort_order']);
+        const entries = Object.entries(collectAllowedFields(fields, allowed));
+        if (entries.length === 0) return { success: false, error: 'No valid service fields' };
+        const now = Math.floor(Date.now() / 1000);
+        const sets = [...entries.map(([k]) => `${k} = ?`), 'updated_at = ?'];
+        await env.DB.prepare(`UPDATE client_services SET ${sets.join(', ')} WHERE id = ? AND client_id = ?`)
+          .bind(...entries.map(([, v]) => v), now, existing.id, client.id).run();
+        const row = await env.DB.prepare('SELECT * FROM client_services WHERE id = ?').bind(existing.id).first();
+        return {
+          success: true,
+          data: row,
+          summary: { service_id: existing.id, updated_fields: entries.map(([k]) => k) },
+          action_summary: `Service "${existing.name}" updated for ${client.canonical_name}: ${entries.map(([k]) => k).join(', ')}`,
+        };
+      }
+
+      // ── DELETE CLIENT SERVICE ──────────────────────────────────────────────
+      case 'delete_client_service': {
+        const slug = typeof args.client === 'string' ? args.client : '';
+        if (args.confirmed !== true) return { success: false, error: 'confirmed=true is required to remove a service' };
+        const client = await getClientBySlug(env.DB, slug);
+        if (!client) return { success: false, error: `Client not found: ${slug}` };
+
+        const serviceId = typeof args.service_id === 'string' ? args.service_id : '';
+        const currentName = typeof args.current_name === 'string' ? args.current_name.trim() : '';
+        const existing = serviceId
+          ? await env.DB.prepare('SELECT id, name FROM client_services WHERE id = ? AND client_id = ?').bind(serviceId, client.id).first<{ id: string; name: string }>()
+          : currentName
+            ? await env.DB.prepare('SELECT id, name FROM client_services WHERE client_id = ? AND lower(name) = lower(?)').bind(client.id, currentName).first<{ id: string; name: string }>()
+            : null;
+        if (!existing) return { success: false, error: 'Service not found. Provide service_id or exact current_name.' };
+
+        const deactivateOnly = args.deactivate_only !== false;
+        if (deactivateOnly) {
+          await env.DB.prepare('UPDATE client_services SET active = 0, updated_at = ? WHERE id = ? AND client_id = ?')
+            .bind(Math.floor(Date.now() / 1000), existing.id, client.id).run();
+        } else {
+          await env.DB.prepare('DELETE FROM client_services WHERE id = ? AND client_id = ?').bind(existing.id, client.id).run();
+        }
+        return {
+          success: true,
+          summary: { service_id: existing.id, name: existing.name, deactivated: deactivateOnly, deleted: !deactivateOnly },
+          action_summary: deactivateOnly
+            ? `Service "${existing.name}" deactivated for ${client.canonical_name}`
+            : `Service "${existing.name}" deleted for ${client.canonical_name}`,
+        };
+      }
+
       // ── ADD CLIENT AREA ────────────────────────────────────────────────────
       case 'add_client_area': {
         const slug = typeof args.client === 'string' ? args.client : '';
@@ -2057,6 +2278,64 @@ export async function executeTool(
           success: true,
           summary: { area_id: id, city, state: args.state ?? null },
           action_summary: `Service area "${city}${args.state ? `, ${args.state}` : ''}" added to ${client.canonical_name}`,
+        };
+      }
+
+      // ── UPDATE CLIENT AREA ─────────────────────────────────────────────────
+      case 'update_client_area': {
+        const slug = typeof args.client === 'string' ? args.client : '';
+        const client = await getClientBySlug(env.DB, slug);
+        if (!client) return { success: false, error: `Client not found: ${slug}` };
+
+        const areaId = typeof args.area_id === 'string' ? args.area_id : '';
+        const currentCity = typeof args.current_city === 'string' ? args.current_city.trim() : '';
+        const currentState = typeof args.current_state === 'string' ? args.current_state.trim() : '';
+        const existing = areaId
+          ? await env.DB.prepare('SELECT id, city, state FROM client_service_areas WHERE id = ? AND client_id = ?').bind(areaId, client.id).first<{ id: string; city: string; state: string | null }>()
+          : currentCity
+            ? await env.DB.prepare("SELECT id, city, state FROM client_service_areas WHERE client_id = ? AND lower(city) = lower(?) AND (? = '' OR lower(coalesce(state,'')) = lower(?))")
+                .bind(client.id, currentCity, currentState, currentState).first<{ id: string; city: string; state: string | null }>()
+            : null;
+        if (!existing) return { success: false, error: 'Service area not found. Provide area_id or exact current_city.' };
+
+        const fields = (args.fields ?? {}) as Record<string, unknown>;
+        const allowed = new Set(['city','state','zip','primary_area','sort_order']);
+        const entries = Object.entries(collectAllowedFields(fields, allowed));
+        if (entries.length === 0) return { success: false, error: 'No valid area fields' };
+        const sets = entries.map(([k]) => `${k} = ?`);
+        await env.DB.prepare(`UPDATE client_service_areas SET ${sets.join(', ')} WHERE id = ? AND client_id = ?`)
+          .bind(...entries.map(([, v]) => v), existing.id, client.id).run();
+        const row = await env.DB.prepare('SELECT * FROM client_service_areas WHERE id = ?').bind(existing.id).first();
+        return {
+          success: true,
+          data: row,
+          summary: { area_id: existing.id, updated_fields: entries.map(([k]) => k) },
+          action_summary: `Service area "${existing.city}${existing.state ? `, ${existing.state}` : ''}" updated for ${client.canonical_name}: ${entries.map(([k]) => k).join(', ')}`,
+        };
+      }
+
+      // ── DELETE CLIENT AREA ─────────────────────────────────────────────────
+      case 'delete_client_area': {
+        const slug = typeof args.client === 'string' ? args.client : '';
+        if (args.confirmed !== true) return { success: false, error: 'confirmed=true is required to delete a service area' };
+        const client = await getClientBySlug(env.DB, slug);
+        if (!client) return { success: false, error: `Client not found: ${slug}` };
+
+        const areaId = typeof args.area_id === 'string' ? args.area_id : '';
+        const currentCity = typeof args.current_city === 'string' ? args.current_city.trim() : '';
+        const currentState = typeof args.current_state === 'string' ? args.current_state.trim() : '';
+        const existing = areaId
+          ? await env.DB.prepare('SELECT id, city, state FROM client_service_areas WHERE id = ? AND client_id = ?').bind(areaId, client.id).first<{ id: string; city: string; state: string | null }>()
+          : currentCity
+            ? await env.DB.prepare("SELECT id, city, state FROM client_service_areas WHERE client_id = ? AND lower(city) = lower(?) AND (? = '' OR lower(coalesce(state,'')) = lower(?))")
+                .bind(client.id, currentCity, currentState, currentState).first<{ id: string; city: string; state: string | null }>()
+            : null;
+        if (!existing) return { success: false, error: 'Service area not found. Provide area_id or exact current_city.' };
+        await env.DB.prepare('DELETE FROM client_service_areas WHERE id = ? AND client_id = ?').bind(existing.id, client.id).run();
+        return {
+          success: true,
+          summary: { area_id: existing.id, city: existing.city, state: existing.state, deleted: true },
+          action_summary: `Service area "${existing.city}${existing.state ? `, ${existing.state}` : ''}" deleted for ${client.canonical_name}`,
         };
       }
 
@@ -2134,6 +2413,27 @@ export async function executeTool(
         };
       }
 
+      // ── DELETE OFFER ──────────────────────────────────────────────────────
+      case 'delete_offer': {
+        const offerId = typeof args.offer_id === 'string' ? args.offer_id : '';
+        if (!offerId) return { success: false, error: 'offer_id is required' };
+        if (args.confirmed !== true) return { success: false, error: 'confirmed=true is required to remove an offer' };
+
+        const existing = await env.DB.prepare('SELECT id, title FROM client_offers WHERE id = ?').bind(offerId).first<{ id: string; title: string }>();
+        if (!existing) return { success: false, error: `Offer not found: ${offerId}` };
+        const deactivateOnly = args.deactivate_only !== false;
+        if (deactivateOnly) {
+          await env.DB.prepare('UPDATE client_offers SET active = 0, paused = 1 WHERE id = ?').bind(offerId).run();
+        } else {
+          await env.DB.prepare('DELETE FROM client_offers WHERE id = ?').bind(offerId).run();
+        }
+        return {
+          success: true,
+          summary: { offer_id: offerId, title: existing.title, deactivated: deactivateOnly, deleted: !deactivateOnly },
+          action_summary: deactivateOnly ? `Offer "${existing.title}" deactivated` : `Offer "${existing.title}" deleted`,
+        };
+      }
+
       // ── CREATE EVENT ───────────────────────────────────────────────────────
       case 'create_event': {
         const slug  = typeof args.client === 'string' ? args.client : '';
@@ -2190,6 +2490,28 @@ export async function executeTool(
           items: row ? [row] : [],
           summary: { updated_fields: entries.map(([k]) => k) },
           action_summary: `Event ${eventId} updated: ${entries.map(([k]) => k).join(', ')}`,
+        };
+      }
+
+      // ── DELETE EVENT ──────────────────────────────────────────────────────
+      case 'delete_event': {
+        const eventId = typeof args.event_id === 'string' ? args.event_id : '';
+        if (!eventId) return { success: false, error: 'event_id is required' };
+        if (args.confirmed !== true) return { success: false, error: 'confirmed=true is required to remove an event' };
+
+        const existing = await env.DB.prepare('SELECT id, title FROM client_events WHERE id = ?').bind(eventId).first<{ id: string; title: string }>();
+        if (!existing) return { success: false, error: `Event not found: ${eventId}` };
+        const deactivateOnly = args.deactivate_only !== false;
+        if (deactivateOnly) {
+          await env.DB.prepare('UPDATE client_events SET active = 0, paused = 1, updated_at = ? WHERE id = ?')
+            .bind(Math.floor(Date.now() / 1000), eventId).run();
+        } else {
+          await env.DB.prepare('DELETE FROM client_events WHERE id = ?').bind(eventId).run();
+        }
+        return {
+          success: true,
+          summary: { event_id: eventId, title: existing.title, deactivated: deactivateOnly, deleted: !deactivateOnly },
+          action_summary: deactivateOnly ? `Event "${existing.title}" deactivated` : `Event "${existing.title}" deleted`,
         };
       }
 
@@ -2881,7 +3203,16 @@ Discord-specific interpretation rules:
 - Weekly content generation always uses the approved terminal workflow, not OpenAI.
 - When Marvin explicitly asks to create a new client profile, call create_client_profile first, then add/update services, service areas, intelligence, platforms, offers, or events as needed.
 - If a requested client profile update fails because the client does not exist, ask whether to create the client profile or call create_client_profile when the same message clearly requested a new client.
-- Never delete or archive a client unless Marvin explicitly asks and confirms it. Use delete_client_profile with confirmed=true only after that confirmation.`;
+- For messy client updates, first infer the client, then split facts by destination:
+  Profile = legal name, package, contact info, website/WP base URL, state, industry, CTA, colors, logo, license, hours, payment methods, ownership, operational notes.
+  Platforms = platform usernames, profile URLs, page/account/location/board/channel IDs, pause state, privacy settings, connection notes, Google Guarantee or verification notes.
+  Intelligence + Plan = brand voice, audience, service priorities, SEO keywords, prohibited phrases, approved CTAs, content goals, local SEO themes, monthly/seasonal strategy.
+  Services = service/category additions, renames, descriptions, deactivations, or removals.
+  Areas = cities, counties, ZIPs, primary hub, radius, rotation/geo-targeting notes.
+  Google Business = offers, events, GBP CTA fields, coupons, validity dates, recurring GBP items, GBP location-specific notes.
+- Apply clear updates without asking for a structured form. Ask one concise follow-up only when the target client or destructive intent is ambiguous.
+- Preserve uncertain or no-column facts in profile notes, platform notes, feedback_summary, or local_seo_themes rather than dropping them. Examples: Google Guarantee status goes to the Google Business platform notes unless Marvin gives a dedicated GBP location/update target.
+- Never delete or archive a client, platform, service, area, offer, or event unless Marvin explicitly asks and confirms it. Use confirmed=true only after that confirmation.`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

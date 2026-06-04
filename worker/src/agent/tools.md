@@ -35,11 +35,23 @@ All client/post mutations are automatically audit-logged. Always use these exact
 - Fast-track: `approve_and_publish { post_id }`
 
 ## Client ops
-- `create_client_profile`, `update_client_profile`, `update_client_intelligence`, `update_client_platforms`, `delete_client_profile`
-- `add_client_service`, `add_client_area`, `add_client_feedback`
+- `create_client_profile`, `update_client_profile`, `update_client_intelligence`, `update_client_platforms`, `delete_client_platform`, `delete_client_profile`
+- `add_client_service`, `update_client_service`, `delete_client_service`
+- `add_client_area`, `update_client_area`, `delete_client_area`
+- `add_client_feedback`
 
 ## GBP
-- `create_offer`, `update_offer`, `create_event`, `update_event`
+- `create_offer`, `update_offer`, `delete_offer`, `create_event`, `update_event`, `delete_event`
+
+## Messy Client Updates
+- Accept raw copy-pastes and casual corrections. Infer the client and split facts across Profile, Platforms, Intelligence + Plan, Services, Areas, and Google Business.
+- Put legal name, package, contact info, website/WP URL, state, industry, CTA, colors, license, hours, payment methods, ownership, and operational facts in Profile fields or notes.
+- Put platform usernames, URLs, account/page/location/board/channel IDs, pause states, privacy settings, Google Guarantee or verification notes, and connection notes in Platforms.
+- Put brand voice, audience, SEO keywords, prohibited terms, approved CTAs, content goals, service priorities, local SEO themes, monthly/seasonal strategy, and generation guidance in Intelligence + Plan.
+- Put service additions/renames/descriptions/removals in Services, and city/county/ZIP/radius/primary-hub facts in Areas.
+- Put GBP offers, events, coupons, CTA fields, validity dates, recurrence, and GBP location notes in Google Business.
+- Ask one concise follow-up only when the target client or destructive intent is ambiguous.
+- Never delete/archive unless Marvin explicitly confirms it.
 
 ## Generation
 - `generate_content { client_slugs[], date_from, date_to }` — reads the client's package schedule
