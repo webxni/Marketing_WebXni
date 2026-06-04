@@ -26,6 +26,7 @@ import { prepareGenerationPlan, prebuildApprovedTerminalSlotRequests, resumeGene
 import { runFetchUrls } from './run';
 import { createContentWithImage } from '../loader/autonomous-content';
 import { discordSend, DISCORD_COLORS } from '../services/discord';
+import { syncUploadPostClientPlatforms } from '../modules/uploadpost-platform-sync';
 import {
   AGENT_SKILLS, AGENT_MEMORY, RESPONSE_RULES,
   CLIENT_EXPERTISE, BUYER_PERSONAS, NL_INTENT_MAP, QUALITY_REVIEW_RULES,
@@ -724,6 +725,20 @@ const AGENT_TOOLS = [
           },
         },
         required: ['client', 'platform', 'fields'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'sync_upload_post_platforms',
+      description: 'Pull connected platform account information from Upload-Post into the client platform tab. Use during new client onboarding after upload_post_profile is known, or when Marvin asks to sync connected platforms.',
+      parameters: {
+        type: 'object',
+        properties: {
+          client: { type: 'string', description: 'Client slug. Omit only when Marvin asks to sync all active clients.' },
+          dry_run: { type: 'boolean', description: 'Preview only; do not write changes.' },
+        },
       },
     },
   },
@@ -2158,6 +2173,33 @@ export async function executeTool(
         };
       }
 
+      // ── SYNC UPLOAD-POST PLATFORMS ────────────────────────────────────────
+      case 'sync_upload_post_platforms': {
+        const slug = typeof args.client === 'string' && args.client.trim() ? args.client.trim() : undefined;
+        if (slug) {
+          const client = await getClientBySlug(env.DB, slug);
+          if (!client) return { success: false, error: `Client not found: ${slug}` };
+          if (!client.upload_post_profile) return { success: false, error: `Upload-Post profile is not configured for ${client.canonical_name}` };
+        }
+        const result = await syncUploadPostClientPlatforms(env, {
+          client_slug: slug,
+          dry_run: args.dry_run === true,
+        });
+        return {
+          success: result.errors.length === 0,
+          data: result,
+          summary: {
+            client: slug ?? 'all active clients',
+            created: result.created,
+            updated: result.updated,
+            skipped: result.skipped,
+            errors: result.errors.length,
+          },
+          action_summary: `Upload-Post platform sync ${result.dry_run ? 'previewed' : 'completed'}: ${result.created} created, ${result.updated} updated, ${result.errors.length} error(s).`,
+          suggestions: result.errors.map((err) => `${err.client}: ${err.error}`),
+        };
+      }
+
       // ── DELETE CLIENT PLATFORM ─────────────────────────────────────────────
       case 'delete_client_platform': {
         const slug = typeof args.client === 'string' ? args.client : '';
@@ -3211,6 +3253,7 @@ Discord-specific interpretation rules:
   Areas = cities, counties, ZIPs, primary hub, radius, rotation/geo-targeting notes.
   Google Business = offers, events, GBP CTA fields, coupons, validity dates, recurring GBP items, GBP location-specific notes.
 - Apply clear updates without asking for a structured form. Ask one concise follow-up only when the target client or destructive intent is ambiguous.
+- When Marvin asks to pull/sync connected Upload-Post accounts, or during onboarding after upload_post_profile is set, call sync_upload_post_platforms for that client.
 - Preserve uncertain or no-column facts in profile notes, platform notes, feedback_summary, or local_seo_themes rather than dropping them. Examples: Google Guarantee status goes to the Google Business platform notes unless Marvin gives a dedicated GBP location/update target.
 - Never delete or archive a client, platform, service, area, offer, or event unless Marvin explicitly asks and confirms it. Use confirmed=true only after that confirmation.`;
 }

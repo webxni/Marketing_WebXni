@@ -356,6 +356,7 @@
   let showPlatformForm = false;
   let editingPlatform: Partial<ClientPlatform> & { platform: string } = { platform: '' };
   let savingPlatform = false;
+  let syncingUploadPost = false;
   let platformFormEl: HTMLElement | null = null;
 
   function openAddPlatform() {
@@ -387,6 +388,29 @@
       load();
     } catch (e) { toast.error(`Failed to save: ${e instanceof Error ? e.message : String(e)}`); }
     finally { savingPlatform = false; }
+  }
+
+  async function syncUploadPostPlatforms() {
+    if (!client) return;
+    syncingUploadPost = true;
+    try {
+      const result = await clientsApi.syncUploadPostPlatforms(client.slug);
+      platforms = result.platforms ?? platforms;
+      const parts = [`${result.created} created`, `${result.updated} updated`];
+      if (result.errors.length) parts.push(`${result.errors.length} error${result.errors.length === 1 ? '' : 's'}`);
+      if (result.created === 0 && result.updated === 0 && result.errors.length === 0) {
+        toast.success('Upload-Post platforms already synced');
+      } else if (result.errors.length) {
+        toast.error(`Upload-Post sync finished: ${parts.join(', ')}`);
+      } else {
+        toast.success(`Upload-Post sync finished: ${parts.join(', ')}`);
+      }
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      syncingUploadPost = false;
+    }
   }
 
   function hasMappedValue(value: string | null | undefined): boolean {
@@ -1038,7 +1062,17 @@
     <div class="px-5 py-3 border-b border-border flex items-center justify-between">
       <span class="text-sm font-medium text-white">{platforms.length} platforms</span>
       {#if can('clients.edit') && !showPlatformForm}
-        <button class="btn-primary btn-sm text-xs" on:click={openAddPlatform}>+ Add Platform</button>
+        <div class="flex items-center gap-2">
+          <button
+            class="btn-secondary btn-sm text-xs"
+            on:click={syncUploadPostPlatforms}
+            disabled={syncingUploadPost || !client?.upload_post_profile}
+            title={client?.upload_post_profile ? 'Pull connected accounts from Upload-Post' : 'Set Upload-Post Profile first'}
+          >
+            {syncingUploadPost ? 'Syncing…' : 'Sync Upload-Post'}
+          </button>
+          <button class="btn-primary btn-sm text-xs" on:click={openAddPlatform}>+ Add Platform</button>
+        </div>
       {/if}
     </div>
     <div class="table-wrapper">

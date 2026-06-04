@@ -21,6 +21,28 @@ export interface PlatformConfigWarning {
   message: string;
 }
 
+export interface UploadPostPlatformSyncItem {
+  client: string;
+  platform: string;
+  action: 'created' | 'updated' | 'skipped';
+  account_id: string | null;
+  username: string | null;
+  profile_url: string | null;
+  details: Record<string, string | null>;
+}
+
+export interface UploadPostPlatformSyncResult {
+  ok: boolean;
+  dry_run: boolean;
+  created: number;
+  updated: number;
+  skipped: number;
+  synced: UploadPostPlatformSyncItem[];
+  errors: Array<{ client: string; error: string }>;
+  content: string;
+  platforms: ClientPlatform[];
+}
+
 export interface WpTestResult {
   ok:     boolean;
   user?:  { id: number; name: string; email: string };
@@ -85,6 +107,9 @@ export const clientsApi = {
 
   getPlatforms: (slug: string) =>
     api.get<{ platforms: ClientPlatform[] }>(`/api/clients/${slug}/platforms`),
+
+  syncUploadPostPlatforms: (slug: string, opts: { dry_run?: boolean } = {}) =>
+    api.post<UploadPostPlatformSyncResult>(`/api/clients/${slug}/platforms/sync-upload-post`, opts),
 
   pausePlatform: (slug: string, platform: string, reason?: string) =>
     api.post<{ ok: boolean }>(`/api/clients/${slug}/platforms/${platform}/pause`, { reason }),

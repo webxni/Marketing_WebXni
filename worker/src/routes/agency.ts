@@ -30,11 +30,9 @@ import {
   markAgentStale,
   getAgentHealthSummary,
   writeAuditLog,
-  listClients,
-  getClientPlatforms,
 } from '../db/queries';
 import { redactSecrets } from '../modules/redaction';
-import { UploadPostClient } from '../services/uploadpost';
+import { syncUploadPostClientPlatforms } from '../modules/uploadpost-platform-sync';
 import { discordSend } from '../services/discord';
 
 export const agencyRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
@@ -810,110 +808,23 @@ agencyInternalRoutes.post('/ping', async (c) => {
   });
 });
 
-// Map Upload-Post social_accounts key → our platform name.
-// Upload-Post uses snake_case; we use the same names.
-function normalizeUpPlatform(raw: string): string {
-  const m: Record<string, string> = {
-    instagram_business: 'instagram',
-    instagram_creator: 'instagram',
-    tiktok_business: 'tiktok',
-    twitter: 'x',
-    'google-business': 'google_business',
-    gmb: 'google_business',
-  };
-  const lower = raw.toLowerCase().replace(/[ -]+/g, '_');
-  return m[lower] ?? lower;
-}
-
-function extractAccountDetails(details: unknown): { account_id: string | null; username: string | null; profile_url: string | null } {
-  if (!details || typeof details !== 'object') return { account_id: null, username: null, profile_url: null };
-  const d = details as Record<string, unknown>;
-  return {
-    account_id: String(d.id ?? d.account_id ?? d.user_id ?? '').slice(0, 120) || null,
-    username: String(d.username ?? d.name ?? d.display_name ?? '').slice(0, 120) || null,
-    profile_url: String(d.profile_url ?? d.url ?? d.link ?? '').slice(0, 300) || null,
-  };
-}
-
 agencyInternalRoutes.post('/sync-client-platforms', async (c) => {
   if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
 
   let body: { client_slug?: string; dry_run?: boolean } = {};
   try { body = await c.req.json(); } catch { /* optional */ }
 
-  const up = new UploadPostClient(c.env.UPLOAD_POST_API_KEY);
-  const clients = body.client_slug
-    ? await listClients(c.env.DB, 'all').then((all) => all.filter((cl) => cl.slug === body.client_slug))
-    : await listClients(c.env.DB, 'active');
-
-  const synced: Array<{ client: string; platform: string; action: 'created' | 'skipped' | 'updated'; account_id: string | null; username: string | null }> = [];
-  const errors: Array<{ client: string; error: string }> = [];
-
-  for (const client of clients) {
-    if (!client.upload_post_profile) continue;
-
-    let profile: Record<string, unknown>;
-    try {
-      profile = await up.getProfile(client.upload_post_profile) as Record<string, unknown>;
-    } catch (err) {
-      errors.push({ client: client.slug, error: redactSecrets(err instanceof Error ? err.message : String(err)) });
-      continue;
-    }
-
-    const socialAccounts: Record<string, unknown> =
-      (profile.social_accounts && typeof profile.social_accounts === 'object' && !Array.isArray(profile.social_accounts)
-        ? profile.social_accounts as Record<string, unknown>
-        : (profile.profile as Record<string, unknown>)?.social_accounts as Record<string, unknown> | undefined
-      ) ?? {};
-
-    if (Object.keys(socialAccounts).length === 0) continue;
-
-    const existing = await getClientPlatforms(c.env.DB, client.id);
-    const existingSet = new Set(existing.map((p) => p.platform));
-
-    for (const [rawPlatform, details] of Object.entries(socialAccounts)) {
-      const platform = normalizeUpPlatform(rawPlatform);
-      const { account_id, username, profile_url } = extractAccountDetails(details);
-
-      if (existingSet.has(platform)) {
-        // Update username/account_id if we now have better data
-        if (!body.dry_run && (account_id || username)) {
-          await c.env.DB
-            .prepare('UPDATE client_platforms SET account_id = COALESCE(?, account_id), username = COALESCE(?, username), profile_url = COALESCE(?, profile_url), connection_status = ? WHERE client_id = ? AND platform = ?')
-            .bind(account_id, username, profile_url, 'connected', client.id, platform)
-            .run();
-        }
-        synced.push({ client: client.slug, platform, action: 'skipped', account_id, username });
-        continue;
-      }
-
-      if (!body.dry_run) {
-        const id = crypto.randomUUID().replace(/-/g, '').toLowerCase();
-        await c.env.DB
-          .prepare('INSERT INTO client_platforms (id, client_id, platform, account_id, username, profile_url, connection_status) VALUES (?, ?, ?, ?, ?, ?, ?)')
-          .bind(id, client.id, platform, account_id, username, profile_url, 'connected')
-          .run();
-        await appendAgencyLog(c.env.DB, {
-          agent_slug: 'agency-orchestrator',
-          task_id: null,
-          status: 'saved',
-          step: 'platform-sync',
-          summary: `Created client_platforms: ${client.slug} / ${platform}${username ? ` (@${username})` : ''}`,
-        });
-      }
-      synced.push({ client: client.slug, platform, action: 'created', account_id, username });
-    }
+  const result = await syncUploadPostClientPlatforms(c.env, body);
+  for (const item of result.synced.filter((row) => row.action !== 'skipped')) {
+    await appendAgencyLog(c.env.DB, {
+      agent_slug: 'agency-orchestrator',
+      task_id: null,
+      status: 'saved',
+      step: 'platform-sync',
+      summary: `${item.action === 'created' ? 'Created' : 'Updated'} client_platforms: ${item.client} / ${item.platform}${item.username ? ` (@${item.username})` : ''}`,
+    });
   }
-
-  const created = synced.filter((s) => s.action === 'created');
-  const content = [
-    `**Platform sync ${body.dry_run ? '(dry run)' : 'complete'}**`,
-    `Created: ${created.length} new connections | Errors: ${errors.length}`,
-    ...created.map((s) => `• ${s.client} / ${s.platform}${s.username ? ` @${s.username}` : ''}`),
-    ...(errors.length ? ['', '**Errors:**', ...errors.map((e) => `• ${e.client}: ${e.error.slice(0, 100)}`)] : []),
-  ].join('\n');
-
-  return c.json({ ok: true, created: created.length, synced, errors, content });
+  return c.json(result);
 });
 
 const internalNotifySchema = z.object({

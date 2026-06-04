@@ -23,6 +23,7 @@ import {
 import { UploadPostClient, UploadPostError } from '../services/uploadpost';
 import { getConnectionHealth, type UploadPostProfileResponse } from '../modules/posting-diagnostics';
 import { getPlatformConfigWarnings } from '../modules/platform-config';
+import { syncUploadPostClientPlatforms } from '../modules/uploadpost-platform-sync';
 
 export const clientRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -398,6 +399,45 @@ clientRoutes.get('/:slug/platforms', async (c) => {
   if (!client) return c.json({ error: 'Not found' }, 404);
   const platforms = await getClientPlatforms(c.env.DB, client.id);
   return c.json({ platforms });
+});
+
+/** POST /api/clients/:slug/platforms/sync-upload-post — pull connected platforms from Upload-Post */
+clientRoutes.post('/:slug/platforms/sync-upload-post', async (c) => {
+  const user = c.get('user');
+  if (user.role !== 'admin') {
+    return c.json({ error: 'Forbidden — only admin/manager can sync Upload-Post platforms' }, 403);
+  }
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug'));
+  if (!client) return c.json({ error: 'Not found' }, 404);
+  if (!client.upload_post_profile) {
+    return c.json({ error: 'Upload-Post profile is not configured for this client.' }, 400);
+  }
+
+  let body: { dry_run?: boolean } = {};
+  try { body = await c.req.json(); } catch { /* optional */ }
+
+  const result = await syncUploadPostClientPlatforms(c.env, {
+    client_slug: client.slug,
+    dry_run: body.dry_run === true,
+  });
+  const platforms = await getClientPlatforms(c.env.DB, client.id);
+
+  await writeAuditLog(c.env.DB, {
+    user_id: user.userId,
+    action: 'client.platforms.sync_upload_post',
+    entity_type: 'client',
+    entity_id: client.id,
+    new_value: {
+      dry_run: result.dry_run,
+      created: result.created,
+      updated: result.updated,
+      skipped: result.skipped,
+      errors: result.errors.length,
+    },
+    ip: c.req.header('CF-Connecting-IP') ?? c.req.header('X-Forwarded-For') ?? undefined,
+  });
+
+  return c.json({ ...result, platforms });
 });
 
 /** PUT /api/clients/:slug/platforms/:platform — upsert a platform config */
