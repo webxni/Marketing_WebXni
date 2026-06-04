@@ -1102,10 +1102,10 @@ const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'create_content_with_image',
-      description: `Autonomously create a post: write content (OpenAI) + generate image (Stability AI) + save as pending_approval + notify Discord.
+      description: `Autonomously create a post: write high-quality content + Spanish designer prompt + save as pending_approval + notify Discord. AI image generation is optional and off by default.
 Use for: "Create content for X about Y", "Make an Instagram post for Z", "Create a Google Business post with image", "Create a blog post answering Q".
 If the user asks for one piece of content on multiple platforms, call this tool once with a platforms array. Do not create one separate post per platform unless the user explicitly asks for separate posts.
-Runs image generation in the background — returns the post ID immediately.
+Runs content generation in the background — returns immediately.
 If no topic is specified, the system researches the best topic automatically.
 If platforms are omitted, use content-type defaults instead of "all platforms":
 image -> facebook + instagram + google_business
@@ -1122,6 +1122,7 @@ blog -> website_blog.`,
           publish_date:  { type: 'string',  description: 'YYYY-MM-DD or YYYY-MM-DDTHH:MM. Default: today at 10:00.' },
           status:        { type: 'string',  description: 'pending_approval (default) or draft' },
           notify_discord:{ type: 'boolean', description: 'Send Discord notification on creation (default: true)' },
+          generate_image:{ type: 'boolean', description: 'Optional. true only when Marvin explicitly requests AI image generation. Default false; designer prompt is saved instead.' },
         },
         required: ['client'],
       },
@@ -2797,6 +2798,7 @@ Return JSON: { "caption": "..." }`;
         const publishDate  = typeof args.publish_date  === 'string'  ? args.publish_date : undefined;
         const statusArg    = typeof args.status        === 'string'  ? args.status       : 'pending_approval';
         const notifyDc     = args.notify_discord !== false;
+        const generateImage = args.generate_image === true;
 
         if (!clientSlug) return { success: false, error: 'client is required' };
         if (!openAiKey)  return { success: false, error: 'OpenAI API key not configured' };
@@ -2813,6 +2815,7 @@ Return JSON: { "caption": "..." }`;
               status: statusArg as 'draft' | 'pending_approval',
               notifyDiscord: notifyDc,
               triggeredBy: `agent:${user.email}`,
+              generateImage,
             }, openAiKey);
             console.log(`[agent] create_content_with_image done: postId=${result.postId} imageStatus=${result.imageStatus}`);
           } catch (err) {
@@ -2830,9 +2833,12 @@ Return JSON: { "caption": "..." }`;
             topic:        topic ?? 'auto-researched',
             publish_date: publishDate ?? 'today at 10:00',
             status:       statusArg,
+            generate_image: generateImage,
           },
           suggestions: [
-            'Content is being written and image is being generated.',
+            generateImage
+              ? 'Content is being written and the AI image generator will run.'
+              : 'Content is being written. A Spanish designer prompt will be saved; designer asset delivery remains required.',
             notifyDc
               ? 'You will receive a Discord notification with preview when ready.'
               : 'Check /approvals in a moment to review the created post.',

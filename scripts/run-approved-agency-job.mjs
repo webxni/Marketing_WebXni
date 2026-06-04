@@ -783,11 +783,21 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
   }
 
   if (agentSlug === 'editorial-review') {
-    const target = selectEditorialTarget(snapshot.tasks);
+    const target = taskInput.review_target
+      ? {
+        id: taskInput.post_id ?? taskId,
+        title: `Post review: ${taskInput.review_target.title ?? taskInput.post_id ?? 'new draft'}`,
+        status: 'pending_approval',
+        agent_slug: 'autonomous-content',
+        post_id: taskInput.post_id ?? null,
+        content: taskInput.review_target,
+      }
+      : selectEditorialTarget(snapshot.tasks);
     const result = await runStructuredAgent('editorialReview', agentSlug, backend, target, snapshot, taskInput);
     await post('/internal/agency/content-review', {
       agent_slug: agentSlug,
       task_id: taskId,
+      post_id: taskInput.post_id ?? null,
       severity: result.output.severity,
       notes_json: result.output,
     });

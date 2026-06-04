@@ -277,6 +277,8 @@ async function handleCommand(
 
       const imageNote = result.imageStatus === 'generated'
         ? `🖼️ Image generated (${result.imageAttempts} attempt${result.imageAttempts !== 1 ? 's' : ''})`
+        : result.imageStatus === 'skipped'
+          ? '🎨 Designer prompt saved — asset still requires designer delivery'
         : result.imageStatus === 'no_key'
           ? '⚠️ No STABILITY_API_KEY — no image'
           : `⚠️ Image generation failed after ${result.imageAttempts} attempts`;

@@ -373,8 +373,8 @@ ${topicDirective}
 Target platforms: ${platforms.join(', ') || 'facebook, instagram'}.
 
 Return ONLY JSON matching the requested schema. Keep captions concise and platform-native.
-- "title": short descriptive title, 5-10 words
-- "master_caption": fallback caption, 100-220 chars`;
+- "title": short descriptive title, 5-10 words. Make it specific to the service, customer situation, or city. Do NOT use generic listicle titles like "Top 5 Benefits..." unless that exact format was requested.
+- "master_caption": fallback caption, 120-260 chars. Mention one concrete service, area, process detail, or homeowner scenario.`;
 
   if (platforms.includes('facebook'))  prompt += '\n- "cap_facebook": Facebook caption, 140-320 chars';
   if (platforms.includes('instagram')) prompt += '\n- "cap_instagram": Instagram caption, 120-260 chars plus 8-12 hashtags';
@@ -403,6 +403,16 @@ Return ONLY JSON matching the requested schema. Keep captions concise and platfo
     prompt += '\n- "youtube_description": YouTube description, 180-320 chars';
   }
   if (isVideo) prompt += '\n- "video_script": 30-60 second script with hook, 3 beats, CTA';
+
+  prompt += `\n
+QUALITY BAR FOR THIS SOCIAL POST:
+- Write like a premium agency strategist who knows this client, not a generic social template.
+- The opening line must name a specific homeowner problem, decision, room, service, or local context.
+- Include at least one concrete credibility/process detail from the client memory when available: dedicated project managers, transparent communication, 15+ years of experience, high-end remodeling, or service-area context.
+- Do not write vague benefit stacks such as "enhance comfort, boost value, enjoy your space" unless paired with a specific remodeling decision or example.
+- Facebook and Google Business captions should read like expert guidance, not ad copy.
+- Instagram can be warmer, but still must include a specific service/local angle before hashtags.
+- If the topic is broad, narrow it to one useful homeowner decision instead of making a generic list.`;
 
   prompt += `\n- "ai_image_prompt": MUST BE IN SPANISH. Designer brief with ${assetSpec}${brandColors ? ` Colores de marca: ${brandColors}.` : ''} Include style, composition, mood, visual elements, overlay text, and recommended tool in 3-4 sentences.`;
   if (isVideo) {
@@ -784,6 +794,7 @@ function isRetryableGenerationError(err: unknown): boolean {
     msg.includes('timed out') ||
     msg.includes('invalid JSON') ||
     msg.includes('non-object payload') ||
+    msg.includes('failed quality checks') ||
     msg.includes('missing ') ||
     msg.includes('OpenAI 429') ||
     msg.includes('OpenAI 500') ||
@@ -977,6 +988,8 @@ export function validateGeneratedContent(
 
   // Generic filler patterns
   const GENERIC: RegExp[] = [
+    /top\s+\d+\s+(benefits|reasons|ways|ideas)/i,
+    /\d+\s+(benefits|reasons|ways|ideas)\s+(of|for|to)/i,
     /\d+ tips? (for|to) (your|any|every|a)/i,
     /everything you need to know/i,
     /ultimate guide/i,
@@ -1033,6 +1046,10 @@ export async function generatePostContent(
     try {
       const parsed = await callOpenAiJson(apiKey, request, attempt, options?.signal);
       const post = normalizeGeneratedPost(parsed, ctx);
+      const quality = validateGeneratedContent(post, ctx);
+      if (!quality.passed && ctx.highQuality && attempt < request.plan.retryLimit) {
+        throw new Error(`Generated content failed quality checks: ${quality.warnings.join('; ')}`);
+      }
       return {
         post,
         meta: {

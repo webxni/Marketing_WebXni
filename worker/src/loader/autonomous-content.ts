@@ -16,6 +16,9 @@
 
 import type { Env, ClientRow } from '../types';
 import {
+  appendAgencyLog,
+  createAgentTask,
+  createApprovedCommandJob,
   createPost,
   findSimilarRecentPost,
   getClientBySlug,
@@ -74,6 +77,7 @@ export interface CreateContentParams {
   notifyDiscord?: boolean;
   triggeredBy?:  string;
   reuseSimilarDraft?: boolean;
+  generateImage?: boolean;
 }
 
 export interface CreateContentResult {
@@ -316,7 +320,9 @@ export async function createContentWithImage(
   const p = genResult.post;
 
   // ── 7. Stability image generation (3-attempt loop) ──────────────────────────
-  const { stabilityKey: stabKey } = await resolveStabilityApiKeys(env);
+  const { stabilityKey: resolvedStabilityKey } = await resolveStabilityApiKeys(env);
+  const shouldGenerateImage = params.generateImage === true || contentType === 'blog';
+  const stabKey = shouldGenerateImage ? resolvedStabilityKey : null;
   let imageStatus: CreateContentResult['imageStatus'] = 'skipped';
   let imageAttempts = 0;
   let r2Key: string | null = null;
@@ -453,6 +459,8 @@ export async function createContentWithImage(
         }
       }
     }
+  } else if (!shouldGenerateImage) {
+    imageStatus = 'skipped';
   } else if (!stabKey) {
     imageStatus = 'no_key';
   }
@@ -540,6 +548,27 @@ export async function createContentWithImage(
     await markClientMonthlyTopicUsed(db, monthlyTopicId, savedPost.id);
   }
 
+  if (finalStatus === 'pending_approval') {
+    await enqueueEditorialReview(env, {
+      postId: savedPost.id,
+      clientId: client.id,
+      clientName: client.canonical_name,
+      triggeredBy: params.triggeredBy ?? 'agent',
+      post: {
+        title: savedPost.title ?? '',
+        content_type: contentType,
+        platforms,
+        master_caption: p.master_caption ?? null,
+        cap_facebook: p.cap_facebook ?? null,
+        cap_instagram: p.cap_instagram ?? null,
+        cap_google_business: p.cap_google_business ?? null,
+        ai_image_prompt: p.ai_image_prompt ?? null,
+      },
+    }).catch((err) => {
+      console.warn(`[autonomous-content] editorial review enqueue failed: ${str(err)}`);
+    });
+  }
+
   // ── 9. Discord notification ──────────────────────────────────────────────────
   if (params.notifyDiscord !== false) {
     try {
@@ -571,6 +600,78 @@ export async function createContentWithImage(
     wpCaptionGbp: p.cap_google_business ?? null,
     wpCaptionLi:  p.cap_linkedin ?? null,
   };
+}
+
+async function enqueueEditorialReview(
+  env: Env,
+  data: {
+    postId: string;
+    clientId: string;
+    clientName: string;
+    triggeredBy: string;
+    post: {
+      title: string;
+      content_type: string;
+      platforms: string[];
+      master_caption: string | null;
+      cap_facebook?: string | null;
+      cap_instagram?: string | null;
+      cap_google_business?: string | null;
+      ai_image_prompt?: string | null;
+    };
+  },
+): Promise<void> {
+  const reviewInput = {
+    requested_from: 'autonomous_content_created',
+    post_id: data.postId,
+    triggered_by: data.triggeredBy,
+    review_target: data.post,
+    safety: {
+      preserve_marvin_approval: true,
+      preserve_designer_gate: true,
+      no_auto_publish: true,
+    },
+  };
+  const task = await createAgentTask(env.DB, {
+    agent_slug: 'editorial-review',
+    client_id: data.clientId,
+    related_post_id: data.postId,
+    title: `Editorial review for ${data.clientName} post`,
+    input_json: JSON.stringify(reviewInput),
+  });
+  const job = await createApprovedCommandJob(env.DB, {
+    generation_run_id: null,
+    command_name: 'agency_editorial_review',
+    provider: 'claude_code',
+    requested_by: 'autonomous_content_created',
+    args_json: JSON.stringify({
+      agent_slug: 'editorial-review',
+      task_id: task.id,
+      source: 'autonomous_content_created',
+      post_id: data.postId,
+      review_target: data.post,
+      backend_priority: ['claude_code', 'codex', 'openai'],
+      safety: {
+        no_arbitrary_shell: true,
+        preserve_marvin_approval: true,
+        preserve_designer_gate: true,
+        no_auto_publish: true,
+      },
+    }),
+  });
+  await env.DB
+    .prepare('UPDATE agent_tasks SET approved_job_id = ?, status = ?, progress = ?, updated_at = unixepoch() WHERE id = ?')
+    .bind(job.id, 'queued', 0, task.id)
+    .run();
+  await appendAgencyLog(env.DB, {
+    agent_slug: 'editorial-review',
+    task_id: task.id,
+    job_id: job.id,
+    status: 'queued',
+    step: 'autonomous-content',
+    summary: `Editorial Review Agent queued for new post ${data.postId}.`,
+    backend: 'claude_code',
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -930,9 +1031,11 @@ async function notifyDiscordContentCreated(
   const postUrl     = `https://marketing.webxni.com/posts/${data.postId}`;
   const platformStr = data.platforms.join(', ') || '—';
   const dateStr     = data.publishDate.slice(0, 16).replace('T', ' ');
-  const imageIcon   = data.imageStatus === 'generated' ? '🖼️' : data.imageStatus === 'no_key' ? '—' : '⚠️';
+  const imageIcon   = data.imageStatus === 'generated' ? '🖼️' : data.imageStatus === 'skipped' ? '🎨' : data.imageStatus === 'no_key' ? '—' : '⚠️';
   const imageNote   = data.imageStatus === 'generated'
     ? `Generated (${data.imageAttempts} attempt${data.imageAttempts !== 1 ? 's' : ''})`
+    : data.imageStatus === 'skipped'
+      ? 'Designer prompt saved; asset still requires designer delivery'
     : data.imageStatus === 'no_key'
       ? 'No Stability key configured'
       : `Generation failed after ${data.imageAttempts} attempt${data.imageAttempts !== 1 ? 's' : ''}`;
