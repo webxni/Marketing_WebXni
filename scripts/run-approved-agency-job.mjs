@@ -372,18 +372,18 @@ function upcomingWeekSchedule(totalClients) {
 
 // Per-agent backend priority chains.
 // Each array is tried in order; the first available backend wins.
-// Codex is reserved for implementation/refactor work and is not used for
-// routine agency operation unless explicitly forced with AGENCY_TERMINAL_AGENT.
+// Claude-backed agency agents use Codex as the terminal fallback Marvin requested,
+// then OpenAI if terminal backends are unavailable or fail.
 const AGENT_BACKEND_PRIORITY = {
-  'agency-orchestrator': ['claude', 'openai'],
-  'system-reliability':  ['claude', 'openai'],
-  'security-sentinel':   ['claude', 'openai'],
-  'editorial-review':    ['claude', 'openai'],
-  'strategy':            ['claude', 'openai'],
-  'social-copy':         ['claude', 'openai'],
-  'blog-writer':         ['claude', 'openai'],
+  'agency-orchestrator': ['claude', 'codex', 'openai'],
+  'system-reliability':  ['claude', 'codex', 'openai'],
+  'security-sentinel':   ['claude', 'codex', 'openai'],
+  'editorial-review':    ['claude', 'codex', 'openai'],
+  'strategy':            ['claude', 'codex', 'openai'],
+  'social-copy':         ['claude', 'codex', 'openai'],
+  'blog-writer':         ['claude', 'codex', 'openai'],
   'client-research':     ['gemini', 'openai'],
-  'client-onboarding':   ['claude', 'openai'],
+  'client-onboarding':   ['claude', 'codex', 'openai'],
 };
 
 function parseBackendPriority(value) {

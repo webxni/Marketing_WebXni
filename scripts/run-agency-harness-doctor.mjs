@@ -15,14 +15,14 @@ const SIMULATE_FALLBACK = process.argv.includes('--simulate-fallback');
 const STALE_MINUTES = Number(process.env.AGENCY_STALE_JOB_MINUTES || 90);
 
 const AGENT_BACKEND_PRIORITY = {
-  'agency-orchestrator': ['claude_code', 'openai'],
-  'system-reliability': ['claude_code', 'openai'],
-  'security-sentinel': ['claude_code', 'openai'],
+  'agency-orchestrator': ['claude_code', 'codex', 'openai'],
+  'system-reliability': ['claude_code', 'codex', 'openai'],
+  'security-sentinel': ['claude_code', 'codex', 'openai'],
   'client-research': ['gemini_cli', 'openai'],
-  strategy: ['claude_code', 'openai'],
-  'social-copy': ['claude_code', 'openai'],
-  'blog-writer': ['claude_code', 'openai'],
-  'editorial-review': ['claude_code', 'openai'],
+  strategy: ['claude_code', 'codex', 'openai'],
+  'social-copy': ['claude_code', 'codex', 'openai'],
+  'blog-writer': ['claude_code', 'codex', 'openai'],
+  'editorial-review': ['claude_code', 'codex', 'openai'],
 };
 
 const COMMAND_WHITELIST = {

@@ -44,14 +44,14 @@ import type { GeneratedPost } from '../services/openai';
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 const DISCORD_AGENCY_BACKEND_PRIORITY: Record<string, string[]> = {
-  'agency-orchestrator': ['claude_code', 'openai'],
-  'system-reliability': ['claude_code', 'openai'],
-  'security-sentinel': ['claude_code', 'openai'],
+  'agency-orchestrator': ['claude_code', 'codex', 'openai'],
+  'system-reliability': ['claude_code', 'codex', 'openai'],
+  'security-sentinel': ['claude_code', 'codex', 'openai'],
   'client-research': ['gemini_cli', 'openai'],
-  strategy: ['claude_code', 'openai'],
-  'social-copy': ['claude_code', 'openai'],
-  'blog-writer': ['claude_code', 'openai'],
-  'editorial-review': ['claude_code', 'openai'],
+  strategy: ['claude_code', 'codex', 'openai'],
+  'social-copy': ['claude_code', 'codex', 'openai'],
+  'blog-writer': ['claude_code', 'codex', 'openai'],
+  'editorial-review': ['claude_code', 'codex', 'openai'],
 };
 
 interface DiscordInteractionOption {
