@@ -93,6 +93,10 @@ function buildWrappedPrompt(prompt, schema) {
 
 function runClaude(prompt, schema, mode) {
   const { schemaStr, wrappedPrompt } = buildWrappedPrompt(prompt, schema);
+  const env = { ...process.env };
+  if (process.env.AGENCY_CLAUDE_USE_API_KEY !== '1') {
+    delete env.ANTHROPIC_API_KEY;
+  }
   const args = [
     '-p',
     '--output-format', 'json',
@@ -112,7 +116,7 @@ function runClaude(prompt, schema, mode) {
     if (wrapper?.is_error) throw new Error(`Claude error: api_status=${wrapper.api_error_status} stop=${wrapper.stop_reason}`);
     if (wrapper?.structured_output && typeof wrapper.structured_output === 'object') return wrapper.structured_output;
     return parseJsonFromText(wrapper?.result || stdout);
-  });
+  }, { env });
 }
 
 function runGemini(prompt, schema, mode) {
@@ -191,7 +195,7 @@ function runSpawnJson(command, args, parser, extra = {}) {
     const child = spawn(command, args, {
       cwd: process.cwd(),
       shell: false,
-      env: process.env,
+      env: extra.env || process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
