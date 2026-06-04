@@ -110,6 +110,72 @@
     return tasks.filter((task) => taskColumn(task.status) === status).slice(0, 8);
   }
 
+  function pipelineSteps() {
+    const p = overview?.approval_pipeline;
+    if (!p) return [];
+    const clientTotal = p.active_clients;
+    return [
+      {
+        label: 'Research complete',
+        count: p.research_complete_clients,
+        total: clientTotal,
+        detail: `${p.research_complete_clients}/${clientTotal} active clients`,
+        status: p.research_complete_clients === clientTotal && clientTotal > 0 ? 'completed' : 'waiting',
+        href: '#coverage',
+      },
+      {
+        label: 'Strategy complete',
+        count: p.strategy_complete_clients,
+        total: clientTotal,
+        detail: `${p.strategy_complete_clients}/${clientTotal} active clients`,
+        status: p.strategy_complete_clients === clientTotal && clientTotal > 0 ? 'completed' : 'waiting',
+        href: '#coverage',
+      },
+      {
+        label: 'Copy generated',
+        count: p.generated_drafts,
+        detail: `${p.generated_drafts} generated draft${p.generated_drafts === 1 ? '' : 's'}`,
+        status: p.generated_drafts > 0 ? 'running' : 'idle',
+        href: '/posts?status=draft',
+      },
+      {
+        label: 'Editorial reviewed',
+        count: p.editorial_reviews_this_week,
+        detail: `${p.editorial_reviews_this_week} review note${p.editorial_reviews_this_week === 1 ? '' : 's'} this week`,
+        status: p.editorial_reviews_this_week > 0 ? 'completed' : 'idle',
+        href: '#tasks',
+      },
+      {
+        label: 'Waiting for Marvin approval',
+        count: p.waiting_marvin_approval,
+        detail: `${p.waiting_marvin_approval} post${p.waiting_marvin_approval === 1 ? '' : 's'} pending approval`,
+        status: p.waiting_marvin_approval > 0 ? 'waiting' : 'idle',
+        href: '/approvals',
+      },
+      {
+        label: 'Waiting for designer asset',
+        count: p.waiting_designer_assets,
+        detail: `${p.waiting_designer_assets} approved post${p.waiting_designer_assets === 1 ? '' : 's'} missing assets`,
+        status: p.waiting_designer_assets > 0 ? 'waiting' : 'idle',
+        href: '/posts?status=approved',
+      },
+      {
+        label: 'Ready for automation',
+        count: p.ready_for_automation,
+        detail: `${p.ready_for_automation} post${p.ready_for_automation === 1 ? '' : 's'} ready`,
+        status: p.ready_for_automation > 0 ? 'completed' : 'idle',
+        href: '/posts?status=ready',
+      },
+      {
+        label: 'Scheduled / Posted',
+        count: p.scheduled_or_posted_this_week,
+        detail: `${p.scheduled_or_posted_this_week} scheduled or posted this week`,
+        status: p.scheduled_or_posted_this_week > 0 ? 'completed' : 'idle',
+        href: '/posts?status=scheduled',
+      },
+    ];
+  }
+
   function statusClass(status: string) {
     if (status === 'running') return 'badge-running';
     if (status === 'completed') return 'badge-completed';
@@ -388,11 +454,19 @@
       <section class="card">
         <div class="px-5 py-4 border-b border-border"><h2 class="section-title">Approval Pipeline</h2></div>
         <div class="p-4 space-y-3">
-          {#each ['Research complete', 'Strategy complete', 'Copy generated', 'Editorial reviewed', 'Waiting for Marvin approval', 'Waiting for designer asset', 'Ready for automation', 'Scheduled / Posted'] as step, index}
+          {#each pipelineSteps() as step, index}
             <div class="flex items-center gap-3">
-              <div class="w-6 h-6 rounded-full bg-accent/10 text-accent flex items-center justify-center text-xs font-semibold">{index + 1}</div>
-              <div class="text-sm text-white">{step}</div>
+              <div class="w-6 h-6 rounded-full bg-accent/10 text-accent flex items-center justify-center text-xs font-semibold shrink-0">{index + 1}</div>
+              <a href={step.href} class="min-w-0 flex-1 hover:text-white">
+                <div class="flex items-center justify-between gap-2">
+                  <div class="text-sm text-white truncate">{step.label}</div>
+                  <span class={statusClass(step.status)}>{step.count}</span>
+                </div>
+                <div class="text-xs text-muted mt-0.5 truncate">{step.detail}</div>
+              </a>
             </div>
+          {:else}
+            <p class="text-sm text-muted">Pipeline counts are unavailable.</p>
           {/each}
         </div>
       </section>

@@ -324,23 +324,28 @@ postRoutes.put('/:id', async (c) => {
   return c.json({ post: updated });
 });
 
-/** POST /api/posts/:id/approve
- * Approval immediately marks the post ready for automation — no separate "Mark Ready" step.
- */
+/** POST /api/posts/:id/approve */
 postRoutes.post('/:id/approve', async (c) => {
   const post = await getPostById(c.env.DB, c.req.param('id'));
   if (!post) return c.json({ error: 'Not found' }, 404);
-  await updatePost(c.env.DB, post.id, { status: 'ready', ready_for_automation: 1, asset_delivered: 1 });
+  const mediaRequired = post.content_type !== 'blog' && post.content_type !== 'text';
+  const canMoveToReady = !mediaRequired || post.asset_delivered === 1;
+  const nextStatus = canMoveToReady ? 'ready' : 'approved';
+  await updatePost(c.env.DB, post.id, {
+    status: nextStatus,
+    ready_for_automation: canMoveToReady ? 1 : 0,
+    asset_delivered: mediaRequired ? (post.asset_delivered === 1 ? 1 : 0) : 1,
+  });
   await writeAuditLog(c.env.DB, {
     user_id: c.get('user').userId,
     action: 'post.approve',
     entity_type: 'post',
     entity_id: post.id,
     old_value: { status: post.status },
-    new_value: { status: 'ready', title: post.title },
+    new_value: { status: nextStatus, title: post.title, designer_gate_preserved: mediaRequired && post.asset_delivered !== 1 },
     ip: c.req.header('CF-Connecting-IP') ?? c.req.header('X-Forwarded-For') ?? undefined,
   });
-  return c.json({ ok: true, status: 'ready' });
+  return c.json({ ok: true, status: nextStatus });
 });
 
 /** POST /api/posts/:id/reject */

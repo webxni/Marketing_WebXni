@@ -1104,6 +1104,17 @@ export interface AgencyOverviewSnapshot {
   research_completed_this_week: number;
   posts_generated_this_week: number;
   blogs_generated_this_week: number;
+  approval_pipeline: {
+    research_complete_clients: number;
+    active_clients: number;
+    strategy_complete_clients: number;
+    generated_drafts: number;
+    editorial_reviews_this_week: number;
+    waiting_marvin_approval: number;
+    waiting_designer_assets: number;
+    ready_for_automation: number;
+    scheduled_or_posted_this_week: number;
+  };
 }
 
 export interface AgencyClientCoverageRow {
@@ -1148,6 +1159,13 @@ export async function listAgencyOverview(db: D1Database): Promise<AgencyOverview
     researchWeek,
     postsWeek,
     blogsWeek,
+    activeClients,
+    researchCompleteClients,
+    strategyCompleteClients,
+    generatedDrafts,
+    editorialReviewsWeek,
+    readyForAutomation,
+    scheduledOrPostedWeek,
   ] = await Promise.all([
     db.prepare('SELECT COUNT(*) AS n FROM agent_definitions WHERE enabled = 1').first<{ n: number }>(),
     db.prepare("SELECT COUNT(*) AS n FROM agent_tasks WHERE status = 'running'").first<{ n: number }>(),
@@ -1159,6 +1177,31 @@ export async function listAgencyOverview(db: D1Database): Promise<AgencyOverview
     db.prepare('SELECT COUNT(*) AS n FROM client_research_notes WHERE freshness_date >= ?').bind(today.slice(0, 8) + '01').first<{ n: number }>(),
     db.prepare("SELECT COUNT(*) AS n FROM posts WHERE scheduled_by_automation = 1 AND content_type != 'blog' AND created_at >= ?").bind(weekStart).first<{ n: number }>(),
     db.prepare("SELECT COUNT(*) AS n FROM posts WHERE content_type = 'blog' AND created_at >= ?").bind(weekStart).first<{ n: number }>(),
+    db.prepare("SELECT COUNT(*) AS n FROM clients WHERE status = 'active'").first<{ n: number }>(),
+    db.prepare(
+      `SELECT COUNT(*) AS n
+       FROM clients c
+       WHERE c.status = 'active'
+         AND EXISTS (SELECT 1 FROM client_research_notes r WHERE r.client_id = c.id)`,
+    ).first<{ n: number }>(),
+    db.prepare(
+      `SELECT COUNT(*) AS n
+       FROM clients c
+       WHERE c.status = 'active'
+         AND EXISTS (
+           SELECT 1 FROM client_strategy_plans s
+           WHERE s.client_id = c.id AND s.status IN ('draft', 'approved')
+         )`,
+    ).first<{ n: number }>(),
+    db.prepare("SELECT COUNT(*) AS n FROM posts WHERE scheduled_by_automation = 1 AND status = 'draft'").first<{ n: number }>(),
+    db.prepare('SELECT COUNT(*) AS n FROM content_review_notes WHERE created_at >= ?').bind(weekStart).first<{ n: number }>(),
+    db.prepare("SELECT COUNT(*) AS n FROM posts WHERE status IN ('ready', 'approved') AND ready_for_automation = 1 AND asset_delivered = 1").first<{ n: number }>(),
+    db.prepare(
+      `SELECT COUNT(*) AS n
+       FROM posts
+       WHERE status = 'scheduled'
+          OR (status = 'posted' AND COALESCE(posted_at, created_at) >= ?)`,
+    ).bind(weekStart).first<{ n: number }>(),
   ]);
 
   return {
@@ -1171,6 +1214,17 @@ export async function listAgencyOverview(db: D1Database): Promise<AgencyOverview
     research_completed_this_week: researchWeek?.n ?? 0,
     posts_generated_this_week: postsWeek?.n ?? 0,
     blogs_generated_this_week: blogsWeek?.n ?? 0,
+    approval_pipeline: {
+      research_complete_clients: researchCompleteClients?.n ?? 0,
+      active_clients: activeClients?.n ?? 0,
+      strategy_complete_clients: strategyCompleteClients?.n ?? 0,
+      generated_drafts: generatedDrafts?.n ?? 0,
+      editorial_reviews_this_week: editorialReviewsWeek?.n ?? 0,
+      waiting_marvin_approval: waitingApproval?.n ?? 0,
+      waiting_designer_assets: waitingDesigner?.n ?? 0,
+      ready_for_automation: readyForAutomation?.n ?? 0,
+      scheduled_or_posted_this_week: scheduledOrPostedWeek?.n ?? 0,
+    },
   };
 }
 

@@ -514,6 +514,17 @@ export interface AgencyOverview {
   research_completed_this_week: number;
   posts_generated_this_week: number;
   blogs_generated_this_week: number;
+  approval_pipeline: {
+    research_complete_clients: number;
+    active_clients: number;
+    strategy_complete_clients: number;
+    generated_drafts: number;
+    editorial_reviews_this_week: number;
+    waiting_marvin_approval: number;
+    waiting_designer_assets: number;
+    ready_for_automation: number;
+    scheduled_or_posted_this_week: number;
+  };
 }
 
 export interface AgencyTimelineItem {
