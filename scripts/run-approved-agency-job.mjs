@@ -890,7 +890,7 @@ try {
     progress: 100,
     summary: result.summary,
     output_json: result,
-    backend,
+    backend: result.backend || backend,
   });
   await post(`/internal/discord/approved-jobs/${jobId}/complete`, { result_json: result });
   console.log(`[agency-job] completed ${job.command_name} for ${agentSlug}`);
