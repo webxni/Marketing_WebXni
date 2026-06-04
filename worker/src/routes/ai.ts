@@ -93,6 +93,51 @@ function collectAllowedFields(fields: Record<string, unknown>, allowed: Set<stri
   return safe;
 }
 
+function hasTextValue(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function sanitizeAgentClientFields(
+  fields: Record<string, unknown>,
+  mode: 'create' | 'update',
+): Record<string, unknown> {
+  const safe = collectAllowedFields(fields, AGENT_CLIENT_FIELDS);
+  for (const key of ['canonical_name', 'package', 'status']) {
+    if (safe[key] === null || safe[key] === undefined || safe[key] === '') {
+      delete safe[key];
+    }
+  }
+  if (mode === 'create') {
+    if (!hasTextValue(safe.package)) safe.package = 'medium';
+    if (!hasTextValue(safe.status)) safe.status = 'active';
+  }
+  return safe;
+}
+
+async function resolveAgentClient(env: Env, value: string) {
+  const raw = value.trim();
+  if (!raw) return null;
+  const direct = await getClientBySlug(env.DB, raw);
+  if (direct) return direct;
+  const slugified = slugifyClientName(raw);
+  if (slugified && slugified !== raw) {
+    const bySlug = await getClientBySlug(env.DB, slugified);
+    if (bySlug) return bySlug;
+  }
+  const clients = await listClients(env.DB, 'all');
+  const normalized = raw.toLowerCase();
+  const normalizedSlug = slugifyClientName(raw);
+  const exact = clients.find((client) => client.canonical_name.toLowerCase() === normalized);
+  if (exact) return exact;
+  const byCanonicalSlug = clients.find((client) => slugifyClientName(client.canonical_name) === normalizedSlug);
+  if (byCanonicalSlug) return byCanonicalSlug;
+  const partial = clients.filter((client) => {
+    const name = client.canonical_name.toLowerCase();
+    return name.includes(normalized) || normalized.includes(name);
+  });
+  return partial.length === 1 ? partial[0] : null;
+}
+
 function collectPlatformFields(fields: Record<string, unknown>): Record<string, unknown> {
   const normalized = { ...fields };
   if ('upload_post_account_id' in normalized && !('account_id' in normalized)) {
@@ -1948,9 +1993,8 @@ export async function executeTool(
           };
         }
 
-        const fields = collectAllowedFields((args.fields ?? {}) as Record<string, unknown>, AGENT_CLIENT_FIELDS);
+        const fields = sanitizeAgentClientFields((args.fields ?? {}) as Record<string, unknown>, 'create');
         fields.canonical_name = canonicalName;
-        if (!fields.status) fields.status = 'active';
         const id = crypto.randomUUID().replace(/-/g, '').toLowerCase();
         const now = Math.floor(Date.now() / 1000);
         const extraEntries = Object.entries(fields).filter(([k]) => k !== 'canonical_name');
@@ -2014,11 +2058,11 @@ export async function executeTool(
       // ── UPDATE CLIENT PROFILE ──────────────────────────────────────────────
       case 'update_client_profile': {
         const slug = typeof args.client === 'string' ? args.client : '';
-        const client = await getClientBySlug(env.DB, slug);
+        const client = await resolveAgentClient(env, slug);
         if (!client) return { success: false, error: `Client not found: ${slug}` };
 
         const fields = (args.fields ?? {}) as Record<string, unknown>;
-        const safe = collectAllowedFields(fields, AGENT_CLIENT_FIELDS);
+        const safe = sanitizeAgentClientFields(fields, 'update');
         if (Object.keys(safe).length === 0) return { success: false, error: 'No valid fields to update' };
 
         const now = Math.floor(Date.now() / 1000);
@@ -2028,7 +2072,7 @@ export async function executeTool(
         await writeAuditLog(env.DB, { user_id: user.userId, action: 'agent_update_client', entity_type: 'client', entity_id: client.id, new_value: safe });
 
         // Fresh data
-        const after = await getClientBySlug(env.DB, slug);
+        const after = await getClientBySlug(env.DB, client.slug);
         return {
           success: true,
           data: after,
