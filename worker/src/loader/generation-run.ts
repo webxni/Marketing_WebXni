@@ -796,7 +796,7 @@ export async function planGeneration(env: Env, params: GenerationParams, baseUrl
   }
 }
 
-export async function buildSlotGenerationRequest(env: Env, runId: string, slotIdx: number): Promise<SlotGenerationRequest> {
+export async function buildSlotGenerationRequest(env: Env, runId: string, slotIdx: number): Promise<SlotGenerationRequest | null> {
   const db = env.DB;
   const run = await getGenerationRunById(db, runId);
   if (!run) throw new Error('Generation run not found');
@@ -823,7 +823,10 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
     clientPlatforms,
   });
   const platforms = platformSelection.selected;
-  if (platforms.length === 0) throw new Error('No compatible platforms for slot');
+  if (platforms.length === 0) {
+    console.warn(`[gen:${runId.slice(0, 8)}] skipping slot ${slotIdx + 1}/${slots.length} for ${slot.client_slug} ${slot.date} ${slot.content_type} — no compatible platforms`);
+    return null;
+  }
 
   const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows, gbpLocations, topicHistory] = await Promise.all([
     db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then((row) => row ?? null),
@@ -995,6 +998,7 @@ export async function prebuildApprovedTerminalSlotRequests(
 
   for (let slotIdx = startIdx; slotIdx < slots.length; slotIdx++) {
     const built = await buildSlotGenerationRequest(env, runId, slotIdx);
+    if (!built) continue;
     prepared.push({
       slot_idx: slotIdx,
       client_slug: built.slot.client_slug,

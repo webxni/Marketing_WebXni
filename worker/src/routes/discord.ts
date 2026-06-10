@@ -782,6 +782,14 @@ discordInternalRoute.get('/approved-jobs/:id/slot-request/:slotIdx', async (c) =
       });
     }
     const built = await buildSlotGenerationRequest(c.env, args.run_id, slotIdx);
+    if (!built) {
+      return c.json({
+        ok: true,
+        skipped: true,
+        slot_idx: slotIdx,
+        reason: 'no compatible platforms',
+      });
+    }
     return c.json({
       ok: true,
       slot_idx: slotIdx,
