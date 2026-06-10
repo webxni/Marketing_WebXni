@@ -8,7 +8,8 @@
  * remodeling/construction content.
  */
 
-import type { ClientRow, GeneratedPost } from '../types';
+import type { ClientRow } from '../types';
+import type { GeneratedPost } from '../services/openai';
 
 export interface ClientProfileValidationRules {
   client_id: string;
@@ -26,7 +27,7 @@ export interface ClientProfileValidationRules {
 export interface ValidationResult {
   valid: boolean;
   blockedReason?: string;
-  warnings: string[];
+  warnings?: string[];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -125,7 +126,7 @@ export function validateContentAgainstClientProfile(
       .map((s) => s.name.toLowerCase());
     const captionWords = caption.split(/\s+/);
     const hasServiceMention = allowedServices.some((service) =>
-      captionWords.some((word) => word.includes(service.slice(0, 4)))
+      captionWords.some((word: string) => word.includes(service.slice(0, 4)))
     );
 
     if (!hasServiceMention) {

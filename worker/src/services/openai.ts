@@ -14,6 +14,7 @@ import { resolveBlogTemplateConfig } from '../modules/blog-templates';
 
 export interface GeneratedPost {
   title:               string;
+  content_type?:       string;
   master_caption:      string;
   cap_facebook?:       string;
   cap_instagram?:      string;

@@ -1,6 +1,6 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import type { Env, SessionData } from '../types';
+import type { ClientRow, Env, SessionData } from '../types';
 import {
   appendAgencyLog,
   createAgentFinding,
@@ -32,6 +32,7 @@ import {
   writeAuditLog,
 } from '../db/queries';
 import { redactSecrets } from '../modules/redaction';
+import { resolveBlogTemplateConfig } from '../modules/blog-templates';
 import { syncUploadPostClientPlatforms } from '../modules/uploadpost-platform-sync';
 import { discordSend } from '../services/discord';
 
@@ -701,6 +702,19 @@ agencyInternalRoutes.get('/ai-config', async (c) => {
       (provider === 'openai' ? s['ai_model'] || 'gpt-4o-mini' : 'gpt-4o-mini');
   } catch { /* ignore */ }
   return c.json({ ok: true, openai_api_key: openaiKey, openai_model: openaiModel, ai_provider: provider });
+});
+
+agencyInternalRoutes.get('/blog-template/:client_id', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const clientId = c.req.param('client_id');
+  try {
+    const client = await c.env.DB.prepare('SELECT slug, canonical_name, industry, state, wp_template_key, brand_json, cta_text FROM clients WHERE id = ?').bind(clientId).first<Pick<ClientRow, 'slug' | 'canonical_name' | 'industry' | 'state' | 'wp_template_key' | 'brand_json' | 'cta_text'> & { brand_primary_color?: string | null }>();
+    if (!client) return c.json({ error: 'Client not found' }, 404);
+    const template = resolveBlogTemplateConfig(client);
+    return c.json({ ok: true, template });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : 'Template resolution failed' }, 500);
+  }
 });
 
 const VALID_HEARTBEAT_STATUSES = new Set([
