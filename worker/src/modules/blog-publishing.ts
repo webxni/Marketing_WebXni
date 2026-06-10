@@ -267,6 +267,7 @@ async function loadBlogValidationContext(db: D1Database, client: ClientRow): Pro
     clientName: client.canonical_name,
     industry: client.industry,
     state: client.state,
+    phone: client.phone,
     serviceNames: serviceRows.results.map((row) => row.name).filter(Boolean),
     serviceAreas: areaRows.results.map((row) => row.city).filter(Boolean),
     categoryNames: categoryRows.results.map((row) => row.name).filter(Boolean),

@@ -16,6 +16,7 @@ export interface BlogPublishingValidationContext {
   clientName: string;
   industry?: string | null;
   state?: string | null;
+  phone?: string | null;
   serviceNames?: string[];
   serviceAreas?: string[];
   categoryNames?: string[];
@@ -260,7 +261,21 @@ export function validateBlogPublishingContent(
 
   const areaNames = [...(context.serviceAreas ?? []), context.state ?? ''].filter(Boolean) as string[];
   if (areaNames.length > 0 && !areaNames.some((area) => phraseMatches(titleAndBody, area))) {
-    warnings.push('Blog does not mention a configured service area or client state');
+    errors.push('Blog does not mention a configured service area or client state');
+  }
+
+  const rawBlogText = [post.title, post.blog_content, post.seo_title, post.meta_description, post.blog_excerpt].filter(Boolean).join(' ');
+  const normalizeDigits = (value: string): string => value.replace(/\D/g, '');
+  const clientPhoneDigits = normalizeDigits(context.phone ?? '');
+  if (clientPhoneDigits) {
+    const phoneMatches = [...rawBlogText.matchAll(/(?:\+?\d[\d().\-\s]{7,}\d)/g)].map((match) => normalizeDigits(match[0])).filter(Boolean);
+    if (phoneMatches.some((digits) => digits !== clientPhoneDigits)) {
+      errors.push(`Blog contains a phone number that does not match the client phone: ${context.phone}`);
+    }
+    const ctaMentions = /\b(call|text|phone|contact|reach|book|schedule|dial)\b/i.test(normalizeComparableText(rawBlogText));
+    if (ctaMentions && !normalizeComparableText(rawBlogText).includes(clientPhoneDigits.slice(-7))) {
+      errors.push(`Blog CTA references contact details but does not include the client phone: ${context.phone}`);
+    }
   }
 
   const categoryNames = context.categoryNames ?? [];

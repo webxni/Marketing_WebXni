@@ -983,10 +983,43 @@ export function validateGeneratedContent(
   ctx: GenerationContext,
 ): ContentQualityResult {
   const warnings: string[] = [];
-  const title   = post.title ?? '';
+  const title = post.title ?? '';
   const caption = post.master_caption ?? '';
+  const allText = [
+    post.title,
+    post.master_caption,
+    post.cap_facebook,
+    post.cap_instagram,
+    post.cap_linkedin,
+    post.cap_x,
+    post.cap_threads,
+    post.cap_tiktok,
+    post.cap_pinterest,
+    post.cap_bluesky,
+    post.cap_google_business,
+    post.cap_gbp_la,
+    post.cap_gbp_wa,
+    post.cap_gbp_or,
+    post.youtube_title,
+    post.youtube_description,
+    post.blog_content,
+    post.blog_excerpt,
+    post.seo_title,
+    post.meta_description,
+    post.target_keyword,
+    post.secondary_keywords,
+    post.slug,
+    post.video_script,
+    post.ai_image_prompt,
+    post.ai_video_prompt,
+  ].filter(Boolean).join(' ');
+  const normalizedAll = allText.toLowerCase();
+  const normalizeDigits = (value: string): string => value.replace(/\D/g, '');
+  const clientPhoneDigits = normalizeDigits(ctx.client.phone ?? '');
+  const serviceAreas = (ctx.serviceAreas ?? [])
+    .map((area) => area.trim())
+    .filter(Boolean);
 
-  // Banned antislop words
   const BANNED = ['delve', 'tapestry', 'vibrant', 'unleash', 'elevate', 'embark', 'transformative', 'paramount', 'journey'];
   for (const w of BANNED) {
     if (title.toLowerCase().includes(w) || caption.toLowerCase().includes(w)) {
@@ -994,7 +1027,6 @@ export function validateGeneratedContent(
     }
   }
 
-  // Generic filler patterns
   const GENERIC: RegExp[] = [
     /top\s+\d+\s+(benefits|reasons|ways|ideas)/i,
     /\d+\s+(benefits|reasons|ways|ideas)\s+(of|for|to)/i,
@@ -1012,7 +1044,6 @@ export function validateGeneratedContent(
     }
   }
 
-  // Near-duplicate title check (4+ significant words overlap)
   const titleWords = new Set(
     title.toLowerCase().split(/\s+/).filter(w => w.length > 4 && !/^(about|their|which|should|would|could|these|those|where|there|every|after|before)$/.test(w))
   );
@@ -1027,13 +1058,34 @@ export function validateGeneratedContent(
     }
   }
 
-  // Topic directive adherence check
   if (ctx.topicResearch && title) {
     const topicWords = ctx.topicResearch.topic.toLowerCase().split(/\s+/).filter(w => w.length > 3);
     const titleLower = title.toLowerCase();
     const matched = topicWords.filter(w => titleLower.includes(w));
     if (topicWords.length >= 3 && matched.length < 2) {
       warnings.push(`title may not reflect researched topic: "${ctx.topicResearch.topic}"`);
+    }
+  }
+
+  if (clientPhoneDigits) {
+    const phoneMatches = [...normalizedAll.matchAll(/(?:\+?\d[\d().\-\s]{7,}\d)/g)].map((m) => normalizeDigits(m[0])).filter(Boolean);
+    if (phoneMatches.some((digits) => digits !== clientPhoneDigits)) {
+      warnings.push(`phone mismatch: only the exact client phone ${ctx.client.phone} is allowed`);
+    }
+    const phoneMentioned = normalizedAll.includes(clientPhoneDigits.slice(-7)) || normalizedAll.includes(clientPhoneDigits);
+    const ctaMentions = /\b(call|text|phone|contact|reach|book|schedule|dial)\b/i.test(normalizedAll);
+    if (ctaMentions && !phoneMentioned) {
+      warnings.push(`missing client phone in CTA: use ${ctx.client.phone}`);
+    }
+  }
+
+  if (serviceAreas.length > 0) {
+    const locationMentioned = serviceAreas.some((area) => {
+      const tokens = area.toLowerCase().split(/\s+/).filter(Boolean);
+      return tokens.length > 0 && tokens.every((token) => normalizedAll.includes(token));
+    }) || (ctx.client.state ? normalizedAll.includes(ctx.client.state.toLowerCase()) : false);
+    if (!locationMentioned) {
+      warnings.push(`missing local area mention: must reference one of ${serviceAreas.slice(0, 3).join(', ') || ctx.client.state || 'the client location'}`);
     }
   }
 

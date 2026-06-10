@@ -161,17 +161,17 @@ Each caption MUST score YES on all of the following. If ANY fails, rewrite and c
 |-------|----------|
 | Service named | At least one specific service from client.services (not just "our services") |
 | Area named | At least one city/neighborhood from client.service_areas |
-| CTA present | Phone number OR website OR explicit action ("call us", "free estimate", "book now") |
+| CTA present | Phone number OR website OR explicit action ("call us", "free estimate", "book now"); if a phone appears, it must be the exact client phone |
 | Voice matches | Tone matches client.brand_voice (professional ≠ casual ≠ neighborhood) |
 | Platform format | Instagram has hashtags; GBP has no hashtags + phone; X/Twitter ≤280 chars |
 | No fluff | No sentences that say nothing ("we are dedicated to excellence" without proof) |
 
-### Step 3 — Rotate service + area per post (batch context)
+### Step 3 — Rotate service + area + hook per post (batch context)
 For batch creation, verify each post uses a DIFFERENT service from the previous one.
-Same service three posts in a row = fail. Same area three posts in a row = fail.
+Same service three posts in a row = fail. Same area three posts in a row = fail. Repeated hook or CTA framing = fail.
 
 ### Step 4 — Lead generation power check
-Every post must end with one concrete next step:
+Every post must end with one concrete next step and use the exact client phone whenever a phone CTA is chosen:
 - Home services: "📞 [phone] for free estimate" OR "Free inspection → [phone]"
 - Beauty: "Book your session → [link]" OR "DM to reserve"
 - Agency/SaaS: "Free audit → [website]" OR "Schedule a call → [link]"
