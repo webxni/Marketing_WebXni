@@ -213,15 +213,17 @@ export async function createContentWithImage(
   if (brokenConnections.length > 0) {
     throw new Error(`Requested platforms are connected in config but currently unavailable: ${brokenConnections.join(', ')}`);
   }
-  const platforms = selection.selected.length > 0
-    ? selection.selected
-    : resolvePlatformSelection({
-      contentType,
-      requestedPlatforms: defaultPlatforms,
-      packagePlatforms,
-      clientPlatforms,
-      allowIncompatibleOverride: false,
-    }).selected;
+  const fallbackSelection = resolvePlatformSelection({
+    contentType,
+    requestedPlatforms: defaultPlatforms,
+    packagePlatforms,
+    clientPlatforms,
+    allowIncompatibleOverride: true,
+  });
+  const platforms = selection.selected.length > 0 ? selection.selected : fallbackSelection.selected;
+  if (selection.selected.length === 0 && platforms.length > 0) {
+    console.warn(`[autonomous:${client.canonical_name}] falling back to unconnected platforms for ${contentType}: ${platforms.join(', ')}`);
+  }
   if (platforms.length === 0) {
     throw new Error(`No connected compatible platforms available for ${client.canonical_name} and content type ${contentType}.`);
   }

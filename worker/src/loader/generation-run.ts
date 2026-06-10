@@ -822,7 +822,16 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
     packagePlatforms,
     clientPlatforms,
   });
-  const platforms = platformSelection.selected;
+  const fallbackSelection = resolvePlatformSelection({
+    contentType: slot.content_type,
+    packagePlatforms,
+    clientPlatforms,
+    allowIncompatibleOverride: true,
+  });
+  const platforms = platformSelection.selected.length > 0 ? platformSelection.selected : fallbackSelection.selected;
+  if (platformSelection.selected.length === 0 && platforms.length > 0) {
+    console.warn(`[gen:${runId.slice(0, 8)}] falling back to unconnected platforms for slot ${slotIdx + 1}/${slots.length} (${slot.client_slug} ${slot.date} ${slot.content_type}) -> ${platforms.join(', ')}`);
+  }
   if (platforms.length === 0) {
     console.warn(`[gen:${runId.slice(0, 8)}] skipping slot ${slotIdx + 1}/${slots.length} for ${slot.client_slug} ${slot.date} ${slot.content_type} — no compatible platforms`);
     return null;
