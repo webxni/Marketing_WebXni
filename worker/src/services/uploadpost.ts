@@ -222,6 +222,9 @@ export class UploadPostClient {
         k === 'privacyStatus' ||
         k === 'privacy_level' ||
         k === 'gbp_location_id' ||
+        k === 'facebook_page_id' ||
+        k === 'target_linkedin_page_id' ||
+        k === 'pinterest_board_id' ||
         k === 'content_type' ||
         k === 'instagram_media_type' ||
         k === 'facebook_media_type' ||
