@@ -334,43 +334,72 @@ async function runTerminalAgent(prompt, schema, plan = null) {
   });
 }
 
-async function processSlot(summary, args, total) {
+async function processSlot(summary, args, total, backend) {
   const prefix = `${summary.client_slug} / ${summary.publish_date} / ${summary.content_type}`;
   let slotReq;
   try {
     slotReq = await get(`/internal/discord/approved-jobs/${jobId}/slot-request/${summary.slot_idx}`);
   } catch (err) {
+    const message = `Slot ${summary.slot_idx + 1} prompt build failed: ${err instanceof Error ? err.message : String(err)}`;
+    await post(`/internal/discord/approved-jobs/${jobId}/error`, {
+      run_id: args.run_id,
+      client_slug: summary.client_slug,
+      slot_idx: summary.slot_idx,
+      provider: backend,
+      failing_step: 'slot_request',
+      message,
+      details: err instanceof Error ? err.stack ?? err.message : String(err),
+    });
     await post(`/internal/discord/approved-jobs/${jobId}/log`, {
       run_id: args.run_id,
       level: 'ERROR',
-      message: `Slot ${summary.slot_idx + 1} prompt build failed: ${err instanceof Error ? err.message : String(err)}`,
+      message,
     });
     return { ok: false, slot_idx: summary.slot_idx, prefix };
   }
 
-  const generatedResult = await runTerminalAgent(slotReq.prompt, slotReq.schema, slotReq.plan ?? null);
-  const generated = generatedResult.output;
+  try {
+    const generatedResult = await runTerminalAgent(slotReq.prompt, slotReq.schema, slotReq.plan ?? null);
+    const generated = generatedResult.output;
 
-  await post(`/internal/discord/approved-jobs/${jobId}/save-slot`, {
-    run_id: args.run_id,
-    slot_idx: summary.slot_idx,
-    post: generated,
-    topic_selection: slotReq.topic_selection ?? null,
-  });
+    await post(`/internal/discord/approved-jobs/${jobId}/save-slot`, {
+      run_id: args.run_id,
+      slot_idx: summary.slot_idx,
+      post: generated,
+      topic_selection: slotReq.topic_selection ?? null,
+    });
 
-  await post(`/internal/discord/approved-jobs/${jobId}/log`, {
-    run_id: args.run_id,
-    level: 'INFO',
-    message: `Saved slot ${summary.slot_idx + 1}/${total}: ${prefix}`,
-  });
+    await post(`/internal/discord/approved-jobs/${jobId}/log`, {
+      run_id: args.run_id,
+      level: 'INFO',
+      message: `Saved slot ${summary.slot_idx + 1}/${total}: ${prefix}`,
+    });
 
-  console.log(`[${summary.slot_idx + 1}/${total}] ${prefix} [${generatedResult.backend}]`);
-  return { ok: true, slot_idx: summary.slot_idx, prefix };
+    console.log(`[${summary.slot_idx + 1}/${total}] ${prefix} [${generatedResult.backend}]`);
+    return { ok: true, slot_idx: summary.slot_idx, prefix };
+  } catch (err) {
+    const message = `Slot ${summary.slot_idx + 1} processing failed: ${err instanceof Error ? err.message : String(err)}`;
+    await post(`/internal/discord/approved-jobs/${jobId}/error`, {
+      run_id: args.run_id,
+      client_slug: summary.client_slug,
+      slot_idx: summary.slot_idx,
+      provider: backend,
+      failing_step: 'terminal_generation',
+      message,
+      details: err instanceof Error ? err.stack ?? err.message : String(err),
+    });
+    await post(`/internal/discord/approved-jobs/${jobId}/log`, {
+      run_id: args.run_id,
+      level: 'ERROR',
+      message,
+    });
+    return { ok: false, slot_idx: summary.slot_idx, prefix };
+  }
 }
 
-async function runBatch(batch, args, total) {
+async function runBatch(batch, args, total, backend) {
   const results = await Promise.allSettled(
-    batch.map(summary => processSlot(summary, args, total))
+    batch.map(summary => processSlot(summary, args, total, backend))
   );
   let batchCompleted = 0;
   for (const r of results) {
@@ -415,7 +444,7 @@ async function main() {
 
   for (let i = 0; i < slotSummaries.length; i += CONCURRENCY) {
     const batch = slotSummaries.slice(i, i + CONCURRENCY);
-    const batchCompleted = await runBatch(batch, args, total);
+    const batchCompleted = await runBatch(batch, args, total, backend);
     completed += batchCompleted;
     console.log(`Batch done: ${completed}/${total} total saved`);
     await post('/internal/discord/notify', {

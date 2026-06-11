@@ -3,7 +3,7 @@
  * Only reachable via the SELF service binding (not the public internet).
  */
 import { Hono, type Context } from 'hono';
-import type { Env, SessionData } from '../types';
+import type { Env, SessionData, ApprovedCommandJobRow } from '../types';
 import { executeSlotWork, prepareGenerationPlan, prebuildApprovedTerminalSlotRequests, triggerStep, type PreparedApprovedSlotRequest } from '../loader/generation-run';
 import { isRepairKeyValid, repairExistingBlogs } from '../loader/repair-blogs';
 import { planBlogRegen, executeBlogRegenSlot, triggerBlogRegenStep } from '../loader/blog-regen';
@@ -87,6 +87,115 @@ async function resolveAgentOpenAiKey(env: Env): Promise<string> {
 
 function getRequestBaseUrl(c: Context<{ Bindings: Env; Variables: Record<string, unknown> }>): string {
   try { return new URL(c.req.url).origin; } catch { return 'https://marketing.webxni.com'; }
+}
+
+const ACTIVE_APPROVED_JOB_HEARTBEAT_SECONDS = 600;
+
+interface ActiveApprovedTerminalJobHealth {
+  job: Pick<ApprovedCommandJobRow, 'id' | 'generation_run_id' | 'command_name' | 'provider' | 'status' | 'claimed_by' | 'claimed_at' | 'started_at' | 'updated_at' | 'progress_message' | 'command_line' | 'args_json' | 'error_log'>;
+  run: {
+    id: string;
+    status: string;
+    current_slot_idx: number | null;
+    total_slots: number | null;
+    last_activity_at: number | null;
+    post_slots: string | null;
+  } | null;
+  generation_run_id: string | null;
+  heartbeat_age_seconds: number | null;
+  slot_context: {
+    slot_idx: number | null;
+    client_slug: string | null;
+    publish_date: string | null;
+    content_type: string | null;
+  } | null;
+  healthy: boolean;
+  reasons: string[];
+}
+
+function safeJsonParse<T>(value: string | null): T | null {
+  if (!value) return null;
+  try { return JSON.parse(value) as T; } catch { return null; }
+}
+
+async function inspectActiveApprovedTerminalJob(db: Env['DB']): Promise<ActiveApprovedTerminalJobHealth | null> {
+  const job = await db
+    .prepare(`SELECT id, generation_run_id, command_name, provider, status, claimed_by, claimed_at, started_at, updated_at, progress_message, command_line, args_json, error_log
+               FROM approved_command_jobs
+               WHERE status IN ('claimed', 'running')
+                 AND command_name = 'weekly_content_terminal'
+               ORDER BY COALESCE(started_at, claimed_at, created_at) DESC
+               LIMIT 1`)
+    .first<ApprovedCommandJobRow>();
+
+  if (!job) return null;
+
+  const args = safeJsonParse<{ run_id?: string; prepared_slots?: Array<{ slot_idx: number; client_slug: string; publish_date: string; content_type: string }> }>(job.args_json) ?? {};
+  const generationRunId = args.run_id ?? job.generation_run_id ?? null;
+  const run = generationRunId
+    ? await db.prepare('SELECT id, status, current_slot_idx, total_slots, last_activity_at, post_slots FROM generation_runs WHERE id = ?').bind(generationRunId).first<{
+      id: string;
+      status: string;
+      current_slot_idx: number | null;
+      total_slots: number | null;
+      last_activity_at: number | null;
+      post_slots: string | null;
+    }>()
+    : null;
+
+  const now = Math.floor(Date.now() / 1000);
+  const heartbeatAge = run?.last_activity_at ? now - run.last_activity_at : null;
+  const slots: Array<{ slot_idx?: number; client_slug?: string; publish_date?: string; date?: string; content_type?: string }> = Array.isArray(args.prepared_slots) && args.prepared_slots.length > 0
+    ? args.prepared_slots
+    : safeJsonParse<Array<{ client_slug?: string; date?: string; content_type?: string }>>(run?.post_slots ?? null) ?? [];
+  const currentSlotIdx = run?.current_slot_idx ?? null;
+  const currentSlot = typeof currentSlotIdx === 'number' && currentSlotIdx >= 0
+    ? slots.find((slot) => slot.slot_idx === currentSlotIdx) ?? slots[currentSlotIdx] ?? null
+    : null;
+  const reasons: string[] = [];
+
+  if (!generationRunId) reasons.push('missing_generation_run_id');
+  if (!run) reasons.push('missing_generation_run');
+  else {
+    if (run.status !== 'running') reasons.push(`generation_run_status:${run.status}`);
+    if (currentSlotIdx === null) reasons.push('missing_current_slot_idx');
+    if (!run.total_slots || run.total_slots <= 0) reasons.push('missing_total_slots');
+    if (heartbeatAge === null) reasons.push('missing_heartbeat');
+    else if (heartbeatAge > ACTIVE_APPROVED_JOB_HEARTBEAT_SECONDS) reasons.push(`stale_heartbeat:${heartbeatAge}s`);
+  }
+
+  if (!currentSlot && (currentSlotIdx !== null || (run?.total_slots ?? 0) > 0)) {
+    reasons.push('missing_current_slot_context');
+  }
+
+  return {
+    job: {
+      id: job.id,
+      generation_run_id: job.generation_run_id,
+      command_name: job.command_name,
+      provider: job.provider,
+      status: job.status,
+      claimed_by: job.claimed_by,
+      claimed_at: job.claimed_at,
+      started_at: job.started_at,
+      updated_at: job.updated_at,
+      progress_message: job.progress_message,
+      command_line: job.command_line,
+      args_json: job.args_json,
+      error_log: job.error_log,
+    },
+    run,
+    generation_run_id: generationRunId,
+    heartbeat_age_seconds: heartbeatAge,
+    slot_context: currentSlot ? {
+      slot_idx: currentSlotIdx,
+      client_slug: currentSlot.client_slug ?? null,
+      publish_date: currentSlot.publish_date ?? currentSlot.date ?? null,
+      content_type: currentSlot.content_type ?? null,
+    } : null,
+    healthy: reasons.length === 0,
+    reasons,
+  };
 }
 
 /**
@@ -345,11 +454,17 @@ internalRoutes.post('/agent/run-weekly-marketing-pipeline', async (c) => {
   const clientSlugs = parseClientFilter(body.client_slugs);
   const provider = 'terminal';
   const executionKey = makeAgentExecutionKey(`weekly-pipeline:${provider}`, periodStart, periodEnd, clientSlugs);
-  const previous = await getLatestAuditMarker(c.env.DB, 'agent.weekly_pipeline.queued', 'agent_execution', executionKey);
-  if (previous && body.force !== true) {
-    return c.json({ ok: true, skipped: true, reason: 'already_queued', execution_key: executionKey, previous });
+  const activeJobHealth = await inspectActiveApprovedTerminalJob(c.env.DB);
+  if (activeJobHealth) {
+    return c.json({
+      ok: false,
+      error: 'active_approved_job_blocking_weekly_queue',
+      active_job: activeJobHealth,
+      message: activeJobHealth.healthy
+        ? 'An approved terminal job is still active; resolve it before queueing more weekly generation work.'
+        : 'The active approved terminal job is unhealthy. Resolve the generation_run_id, slot context, or heartbeat before queueing more weekly generation work.',
+    }, 409);
   }
-
   const run = await createGenerationRun(c.env.DB, {
     triggered_by: 'agent-mcp',
     date_range: `${periodStart}:${periodEnd}`,

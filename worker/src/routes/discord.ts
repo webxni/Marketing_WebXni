@@ -20,8 +20,9 @@ import {
 } from '../services/discord';
 import { runAgent } from './ai';
 import {
-  appendGenerationError,
   appendGenerationLog,
+  appendStructuredGenerationError,
+  appendApprovedCommandJobError,
   finalizeGenerationRun,
   createApprovedCommandJob,
   createGenerationRun,
@@ -848,6 +849,32 @@ discordInternalRoute.post('/approved-jobs/:id/save-slot', async (c) => {
   return c.json({ ok: true, result });
 });
 
+discordInternalRoute.post('/approved-jobs/:id/error', async (c) => {
+  if (!(await requireDiscordBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  let body: { run_id?: string; client?: string; client_slug?: string; slot_idx?: number; provider?: string; failing_step?: string; message?: string; details?: string } = {};
+  try { body = await c.req.json(); } catch { /* */ }
+  if (!body.run_id) return c.json({ error: 'run_id required' }, 400);
+
+  const jobId = c.req.param('id');
+  const job = await getApprovedCommandJobById(c.env.DB, jobId);
+  const record = {
+    kind: 'generation_error' as const,
+    run_id: body.run_id,
+    command_job_id: jobId,
+    client: body.client ?? body.client_slug ?? null,
+    client_slug: body.client_slug ?? body.client ?? null,
+    slot_idx: typeof body.slot_idx === 'number' ? body.slot_idx : null,
+    provider: body.provider ?? job?.provider ?? null,
+    failing_step: body.failing_step ?? 'unknown',
+    message: body.message?.slice(0, 2000) ?? 'Unknown generation failure',
+    details: body.details?.slice(0, 4000) ?? null,
+  };
+
+  await appendStructuredGenerationError(c.env.DB, body.run_id, record);
+  await appendApprovedCommandJobError(c.env.DB, jobId, record);
+  return c.json({ ok: true });
+});
+
 discordInternalRoute.post('/approved-jobs/:id/complete', async (c) => {
   if (!(await requireDiscordBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
   let body: { result_json?: Record<string, unknown> | null } = {};
@@ -869,6 +896,22 @@ discordInternalRoute.post('/approved-jobs/:id/complete', async (c) => {
            error_log = CASE WHEN ? = 'completed' THEN NULL ELSE error_log END
        WHERE id = ?`,
     ).bind(finalStatus, finalStatus, now, now, finalStatus, runId).run();
+    if (finalStatus === 'completed_with_errors') {
+      const errorRecord = {
+        kind: 'generation_error' as const,
+        run_id: runId,
+        command_job_id: c.req.param('id'),
+        client: null,
+        client_slug: null,
+        slot_idx: completedSlots,
+        provider: typeof result.provider === 'string' ? result.provider : 'terminal',
+        failing_step: 'terminal_complete',
+        message: `Terminal job completed with partial success: ${completedSlots}/${requestedSlots}`,
+        details: JSON.stringify(result),
+      };
+      await appendStructuredGenerationError(c.env.DB, runId, errorRecord);
+      await appendApprovedCommandJobError(c.env.DB, c.req.param('id'), errorRecord);
+    }
     await appendGenerationLog(c.env.DB, runId, 'DONE', `Terminal job complete: saved ${completedSlots}/${requestedSlots} slot(s), status=${finalStatus}`);
   }
   return c.json({ ok: true });
@@ -881,7 +924,21 @@ discordInternalRoute.post('/approved-jobs/:id/fail', async (c) => {
   const error = body.error?.slice(0, 4000) ?? 'Unknown failure';
   await completeApprovedCommandJob(c.env.DB, c.req.param('id'), 'failed', null, error);
   if (body.run_id) {
-    await appendGenerationError(c.env.DB, body.run_id, error);
+    const job = await getApprovedCommandJobById(c.env.DB, c.req.param('id'));
+    const errorRecord = {
+      kind: 'generation_error' as const,
+      run_id: body.run_id,
+      command_job_id: c.req.param('id'),
+      client: null,
+      client_slug: null,
+      slot_idx: null,
+      provider: job?.provider ?? 'terminal',
+      failing_step: 'terminal_fail',
+      message: error,
+      details: null,
+    };
+    await appendStructuredGenerationError(c.env.DB, body.run_id, errorRecord);
+    await appendApprovedCommandJobError(c.env.DB, c.req.param('id'), errorRecord);
     const run = await getGenerationRunById(c.env.DB, body.run_id);
     if (run && run.status === 'running') {
       await finalizeGenerationRun(

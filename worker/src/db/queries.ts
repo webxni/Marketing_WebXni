@@ -822,6 +822,19 @@ export interface GenerationProgress {
   clients_total:    number;
 }
 
+export interface GenerationErrorRecord {
+  kind: 'generation_error';
+  run_id: string;
+  command_job_id: string | null;
+  client: string | null;
+  client_slug: string | null;
+  slot_idx: number | null;
+  provider: string | null;
+  failing_step: string | null;
+  message: string;
+  details: string | null;
+}
+
 export async function createGenerationRun(
   db: D1Database,
   data: { triggered_by: string; date_range: string; client_filter: string | null; overwrite_existing?: boolean },
@@ -959,6 +972,45 @@ export async function appendGenerationError(
     .prepare(`UPDATE generation_runs
               SET error_log = substr(COALESCE(error_log || char(10), '') || ?, -40000),
                   last_activity_at = ?
+              WHERE id = ?`)
+    .bind(line, now, id)
+    .run();
+}
+
+function stringifyGenerationError(record: GenerationErrorRecord): string {
+  return JSON.stringify({
+    ts: new Date().toISOString(),
+    ...record,
+  });
+}
+
+export async function appendStructuredGenerationError(
+  db: D1Database,
+  id: string,
+  record: GenerationErrorRecord,
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  const line = stringifyGenerationError(record);
+  await db
+    .prepare(`UPDATE generation_runs
+              SET error_log = substr(COALESCE(error_log || char(10), '') || ?, -40000),
+                  last_activity_at = ?
+              WHERE id = ?`)
+    .bind(line, now, id)
+    .run();
+}
+
+export async function appendApprovedCommandJobError(
+  db: D1Database,
+  id: string,
+  record: GenerationErrorRecord,
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  const line = stringifyGenerationError(record);
+  await db
+    .prepare(`UPDATE approved_command_jobs
+              SET error_log = substr(COALESCE(error_log || char(10), '') || ?, -40000),
+                  updated_at = ?
               WHERE id = ?`)
     .bind(line, now, id)
     .run();
