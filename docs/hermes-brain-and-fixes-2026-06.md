@@ -143,7 +143,7 @@ cd worker && npx tsc --noEmit
 cd frontend && npm run check && npm run build
 
 # 3. Run migration 0042 (Hermes-first backend priority) if not already applied
-npx wrangler d1 execute webxni-db \
+npx wrangler d1 execute webxni_db \
   --file=db/migrations/0042_agency_backend_hermes_first.sql --remote
 
 # 4. Commit + push (GitHub Actions deploys the Worker + frontend)

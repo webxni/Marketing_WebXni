@@ -150,7 +150,7 @@ to invoke an available terminal AI backend per slot.
    uses SQLite syntax). Sequence is currently at `0029`; next is `0030`.
 3. Run remotely:
    ```bash
-   npx wrangler d1 execute webxni-db --file=db/migrations/XXXX_xxx.sql --remote
+   npx wrangler d1 execute webxni_db --file=db/migrations/XXXX_xxx.sql --remote
    ```
 4. Sync `worker/src/types.ts` and `frontend/src/lib/types.ts`.
 5. If it's a client-writable field, add to `CLIENT_WRITABLE_FIELDS` in
@@ -444,7 +444,7 @@ git commit -m "Short description"
 git push
 
 # 5. Run pending D1 migrations explicitly (only if schema changed)
-npx wrangler d1 execute webxni-db --file=db/migrations/XXXX_xxx.sql --remote
+npx wrangler d1 execute webxni_db --file=db/migrations/XXXX_xxx.sql --remote
 
 # 6. After bot.js changes
 pm2 restart webxni-bot
