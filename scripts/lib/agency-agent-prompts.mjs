@@ -130,7 +130,13 @@ export const AGENCY_SCHEMAS = {
 };
 
 export function buildAgencyPrompt(kind, { client, snapshot, task }) {
-  const safeClient = JSON.stringify(client ?? {}, null, 2);
+  // content_brief carries the per-client "template": brand voice, services,
+  // service areas, approved CTAs, and forbidden terms. Keep it out of the raw
+  // JSON dump and surface it as a labeled CLIENT CONTENT BRIEF block.
+  const contentBrief = client?.content_brief ? String(client.content_brief) : '';
+  const clientForJson = { ...(client ?? {}) };
+  delete clientForJson.content_brief;
+  const safeClient = JSON.stringify(clientForJson, null, 2);
   const safeSnapshot = JSON.stringify(snapshot?.overview ?? {}, null, 2);
   const taskInput = JSON.stringify(task ?? {}, null, 2);
   const shared = [
@@ -138,6 +144,9 @@ export function buildAgencyPrompt(kind, { client, snapshot, task }) {
     'Preserve Marvin approval, designer asset delivery, and posting automation gates.',
     'Do not claim to publish, schedule, approve, or upload assets.',
     'Designer prompts must be Spanish.',
+    ...(contentBrief
+      ? [`CLIENT CONTENT BRIEF (use this brand voice, services, areas, and CTAs; obey NEVER USE terms):\n${contentBrief}`]
+      : []),
     `Client context:\n${safeClient}`,
     `Platform overview:\n${safeSnapshot}`,
     `Task input:\n${taskInput}`,

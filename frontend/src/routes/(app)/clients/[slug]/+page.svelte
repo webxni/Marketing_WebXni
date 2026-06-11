@@ -390,11 +390,12 @@
     finally { savingPlatform = false; }
   }
 
-  async function syncUploadPostPlatforms() {
+  async function syncUploadPostPlatforms(force = false) {
     if (!client) return;
+    if (force && !confirm('Force re-sync will overwrite stored account IDs (page_id, account_id, board/location IDs) with the current values from Upload-Post. Use this to correct a wrong connection. Continue?')) return;
     syncingUploadPost = true;
     try {
-      const result = await clientsApi.syncUploadPostPlatforms(client.slug);
+      const result = await clientsApi.syncUploadPostPlatforms(client.slug, { force });
       platforms = result.platforms ?? platforms;
       const parts = [`${result.created} created`, `${result.updated} updated`];
       if (result.errors.length) parts.push(`${result.errors.length} error${result.errors.length === 1 ? '' : 's'}`);
@@ -1065,11 +1066,19 @@
         <div class="flex items-center gap-2">
           <button
             class="btn-secondary btn-sm text-xs"
-            on:click={syncUploadPostPlatforms}
+            on:click={() => syncUploadPostPlatforms(false)}
             disabled={syncingUploadPost || !client?.upload_post_profile}
-            title={client?.upload_post_profile ? 'Pull connected accounts from Upload-Post' : 'Set Upload-Post Profile first'}
+            title={client?.upload_post_profile ? 'Pull connected accounts from Upload-Post (fills blanks only)' : 'Set Upload-Post Profile first'}
           >
             {syncingUploadPost ? 'Syncing…' : 'Sync Upload-Post'}
+          </button>
+          <button
+            class="btn-secondary btn-sm text-xs"
+            on:click={() => syncUploadPostPlatforms(true)}
+            disabled={syncingUploadPost || !client?.upload_post_profile}
+            title={client?.upload_post_profile ? 'Overwrite stored account IDs with current Upload-Post values (fixes a wrong connection)' : 'Set Upload-Post Profile first'}
+          >
+            Force re-sync
           </button>
           <button class="btn-primary btn-sm text-xs" on:click={openAddPlatform}>+ Add Platform</button>
         </div>

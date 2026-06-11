@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { ClientRow, Env, SessionData } from '../types';
 import {
   appendAgencyLog,
+  getAgencyClientContentBrief,
   createAgentFinding,
   createAgentRun,
   createAgentTask,
@@ -52,15 +53,15 @@ const AGENT_COMMANDS: Record<string, string> = {
 };
 
 const AGENT_BACKEND_PRIORITY: Record<string, string[]> = {
-  'agency-orchestrator': ['claude_code', 'codex', 'openai'],
-  'system-reliability': ['claude_code', 'codex', 'openai'],
-  'security-sentinel': ['claude_code', 'codex', 'openai'],
-  'client-research': ['gemini_cli', 'openai'],
-  strategy: ['claude_code', 'codex', 'openai'],
-  'social-copy': ['claude_code', 'codex', 'openai'],
-  'blog-writer': ['claude_code', 'codex', 'openai'],
-  'editorial-review': ['claude_code', 'codex', 'openai'],
-  'client-onboarding': ['claude_code', 'codex', 'openai'],
+  'agency-orchestrator': ['hermes', 'claude_code', 'codex', 'openai'],
+  'system-reliability': ['hermes', 'claude_code', 'codex', 'openai'],
+  'security-sentinel': ['hermes', 'claude_code', 'codex', 'openai'],
+  'client-research': ['hermes', 'gemini_cli', 'openai'],
+  strategy: ['hermes', 'claude_code', 'codex', 'openai'],
+  'social-copy': ['hermes', 'claude_code', 'codex', 'openai'],
+  'blog-writer': ['hermes', 'claude_code', 'codex', 'openai'],
+  'editorial-review': ['hermes', 'claude_code', 'codex', 'openai'],
+  'client-onboarding': ['hermes', 'claude_code', 'codex', 'openai'],
 };
 
 const TIMELINE = [
@@ -89,14 +90,14 @@ function timelineStatus(day: string): string {
 
 function agencySkills() {
   return [
-    ['webxni-agency-orchestrator', 'Coordinates safe weekly agency work.', 'agency-orchestrator', 'Claude Code'],
-    ['webxni-system-reliability', 'Reviews platform and job health defensively.', 'system-reliability', 'Claude Code'],
-    ['webxni-security-sentinel', 'Reviews auth/audit signals with redaction.', 'security-sentinel', 'Claude Code'],
-    ['webxni-client-research', 'Quota-limited active client research.', 'client-research', 'Gemini CLI'],
-    ['webxni-strategist', 'Creates reviewable client strategy plans.', 'strategy', 'Claude Code'],
-    ['webxni-social-copywriter', 'Drafts social copy without approval bypass.', 'social-copy', 'Claude Code'],
-    ['webxni-blog-writer', 'Drafts SEO blogs without publishing.', 'blog-writer', 'Claude Code'],
-    ['webxni-editorial-reviewer', 'Reviews drafts for quality and factual risk.', 'editorial-review', 'Claude Code'],
+    ['webxni-agency-orchestrator', 'Coordinates safe weekly agency work.', 'agency-orchestrator', 'Hermes CLI'],
+    ['webxni-system-reliability', 'Reviews platform and job health defensively.', 'system-reliability', 'Hermes CLI'],
+    ['webxni-security-sentinel', 'Reviews auth/audit signals with redaction.', 'security-sentinel', 'Hermes CLI'],
+    ['webxni-client-research', 'Quota-limited active client research.', 'client-research', 'Hermes CLI'],
+    ['webxni-strategist', 'Creates reviewable client strategy plans.', 'strategy', 'Hermes CLI'],
+    ['webxni-social-copywriter', 'Drafts social copy without approval bypass.', 'social-copy', 'Hermes CLI'],
+    ['webxni-blog-writer', 'Drafts SEO blogs without publishing.', 'blog-writer', 'Hermes CLI'],
+    ['webxni-editorial-reviewer', 'Reviews drafts for quality and factual risk.', 'editorial-review', 'Hermes CLI'],
   ].map(([name, purpose, agent_slug, backend]) => ({
     name,
     purpose,
@@ -114,7 +115,7 @@ function harnessFlow() {
     ['approved_command_jobs', 'Only fixed command_name values are queued. No shell command comes from the user.'],
     ['Local Discord bot / PM2 runner', 'The bot claims one approved job and runs a fixed script from the whitelist.'],
     ['Whitelisted script', 'The script builds deterministic prompts and validates structured JSON.'],
-    ['Claude Code / Gemini CLI / Codex', 'Backend choice is agent-specific and budget controlled.'],
+    ['Hermes CLI / Gemini CLI / Codex', 'Backend choice is agent-specific and budget controlled.'],
     ['Database save', 'Outputs are saved as tasks, findings, research, strategy, or draft content.'],
     ['Discord notification', 'Concise status updates are sent without secrets.'],
     ['Frontend dashboard update', 'The AI Agency page reads task, run, finding, and coverage state.'],
@@ -203,7 +204,7 @@ async function enqueueAgent(c: Context<{ Bindings: Env; Variables: { user: Sessi
       agent_slug: agentSlug,
       task_id: task.id,
       source: 'agency_dashboard',
-      backend_priority: AGENT_BACKEND_PRIORITY[agentSlug] ?? ['claude_code', 'openai'],
+      backend_priority: AGENT_BACKEND_PRIORITY[agentSlug] ?? ['hermes', 'openai'],
       safety: {
         no_arbitrary_shell: true,
         preserve_marvin_approval: true,
@@ -397,7 +398,7 @@ async function enqueueInternalAgencyJob(
       agent_slug: agentSlug,
       task_id: task.id,
       source,
-      backend_priority: AGENT_BACKEND_PRIORITY[agentSlug] ?? ['claude_code', 'openai'],
+      backend_priority: AGENT_BACKEND_PRIORITY[agentSlug] ?? ['hermes', 'openai'],
       safety: {
         no_arbitrary_shell: true,
         preserve_marvin_approval: true,
@@ -643,6 +644,27 @@ agencyInternalRoutes.post('/draft-post', async (c) => {
   }
 
   const captions = parsed.data.platform_captions ?? {};
+
+  // Empty-content guard: never persist a contentless draft. A blog needs body
+  // text; any other content type needs a master caption or at least one platform
+  // caption. This is what stops "generated posts with no content" from appearing.
+  const isBlog = parsed.data.content_type === 'blog';
+  const hasCaption = Boolean(
+    (parsed.data.master_caption ?? '').trim() ||
+    Object.values(captions).some((v) => typeof v === 'string' && v.trim()),
+  );
+  const hasContent = isBlog ? Boolean((parsed.data.blog_content ?? '').trim()) : hasCaption;
+  if (!hasContent) {
+    await appendAgencyLog(c.env.DB, {
+      agent_slug: parsed.data.agent_slug,
+      task_id: parsed.data.task_id ?? null,
+      status: 'skipped',
+      step: 'draft-post',
+      summary: `Draft skipped (empty content): ${parsed.data.content_type} for client ${parsed.data.client_id}`,
+    });
+    return c.json({ ok: true, skipped: true, reason: 'empty_content' });
+  }
+
   const post = await createPost(c.env.DB, {
     client_id: parsed.data.client_id,
     title: parsed.data.title,
@@ -681,6 +703,12 @@ agencyInternalRoutes.post('/draft-post', async (c) => {
     summary: `Draft ${post.content_type} post created for review: ${post.title}`,
   });
   return c.json({ ok: true, post_id: post.id });
+});
+
+agencyInternalRoutes.get('/client-brief/:clientId', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const brief = await getAgencyClientContentBrief(c.env.DB, c.req.param('clientId'));
+  return c.json(brief);
 });
 
 agencyInternalRoutes.get('/ai-config', async (c) => {

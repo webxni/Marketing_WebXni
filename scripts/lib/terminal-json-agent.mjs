@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 
 const JSON_ONLY_SYSTEM =
   'You are a WebXni marketing agency AI agent. ' +
@@ -18,8 +18,28 @@ function commandAvailable(cmd) {
   return r.status === 0;
 }
 
+function resolveHermesCommand() {
+  const candidates = [
+    process.env.HERMES_CLI_PATH,
+    process.env.HERMES_COMMAND,
+    process.env.HERMES_BIN,
+    join(homedir(), '.local/bin/hermes'),
+    join(process.env.HERMES_HOME || '', 'bin/hermes'),
+    'hermes',
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    if (candidate.includes('/') || candidate.includes('\\')) {
+      if (existsSync(candidate)) return candidate;
+      continue;
+    }
+    if (commandAvailable(candidate)) return candidate;
+  }
+  return null;
+}
+
 function normalizeBackendName(backend) {
   const b = String(backend || '').trim().toLowerCase();
+  if (b === 'hermes_cli' || b === 'hermes-agent' || b === 'hermes-agent-cli') return 'hermes';
   if (b === 'claude_code' || b === 'claude-code') return 'claude';
   if (b === 'gemini_cli' || b === 'gemini-cli') return 'gemini';
   if (b === 'openai_api' || b === 'openai-api') return 'openai';
@@ -29,6 +49,7 @@ function normalizeBackendName(backend) {
 function isBackendAvailable(backend) {
   const b = normalizeBackendName(backend);
   if (b === 'openai') return !!process.env.OPENAI_API_KEY;
+  if (b === 'hermes') return !!resolveHermesCommand();
   if (b === 'claude' || b === 'gemini' || b === 'codex') return commandAvailable(b);
   return false;
 }
@@ -38,7 +59,7 @@ function isBackendAvailable(backend) {
  * 'auto' expands to all available backends in default order.
  */
 function expandPriority(backends) {
-  const AUTO_ORDER = ['claude', 'openai'];
+  const AUTO_ORDER = ['hermes', 'claude', 'openai'];
   const seen = new Set();
   const result = [];
   for (const b of backends) {
@@ -125,6 +146,25 @@ function runGemini(prompt, schema, mode) {
     ? (process.env.GEMINI_BLOG_MODEL || 'gemini-2.5-pro')
     : (process.env.GEMINI_SOCIAL_MODEL || 'gemini-2.5-flash');
   return runSpawnJson('gemini', ['-p', wrappedPrompt, '-o', 'json', '-m', model], parseJsonFromText);
+}
+
+function runHermes(prompt, schema, mode, skills = []) {
+  const hermesCmd = resolveHermesCommand();
+  if (!hermesCmd) throw new Error('Hermes CLI not found. Run the installer or set HERMES_CLI_PATH.');
+  const { wrappedPrompt } = buildWrappedPrompt(prompt, schema);
+  const args = ['-z', wrappedPrompt];
+  if (skills.length) args.push('--skills', skills.join(','));
+  // Only override provider/model when explicitly configured via HERMES_* env.
+  // Otherwise let Hermes use its own authenticated default (e.g. its configured
+  // provider/model from `hermes model`). Forcing a provider Hermes is not
+  // authenticated for makes every Hermes call fail and silently fall through to
+  // the next backend — defeating the Hermes-first routing.
+  const provider = process.env.HERMES_PROVIDER;
+  const model = process.env.HERMES_MODEL
+    || (mode === 'blog' ? process.env.HERMES_BLOG_MODEL : undefined);
+  if (provider) args.push('--provider', provider);
+  if (model) args.push('--model', model);
+  return runSpawnJson(hermesCmd, args, parseJsonFromText);
 }
 
 function runCodex(prompt, schema, mode) {
@@ -249,7 +289,7 @@ function classifyBackendFailure(command, text) {
  * @param {string|string[]} opts.preferredBackend - single name, array, or 'auto'
  * @param {string} [opts.mode] - 'default' | 'blog'
  */
-export async function runTerminalJsonAgent({ prompt, schema, preferredBackend, mode = 'default' }) {
+export async function runTerminalJsonAgent({ prompt, schema, preferredBackend, mode = 'default', skills = [] }) {
   const rawPriority = Array.isArray(preferredBackend)
     ? preferredBackend
     : [preferredBackend || 'auto'];
@@ -261,7 +301,8 @@ export async function runTerminalJsonAgent({ prompt, schema, preferredBackend, m
   for (const backend of priority) {
     try {
       let output;
-      if (backend === 'claude') output = await runClaude(prompt, schema, mode);
+      if (backend === 'hermes') output = await runHermes(prompt, schema, mode, skills);
+      else if (backend === 'claude') output = await runClaude(prompt, schema, mode);
       else if (backend === 'gemini') output = await runGemini(prompt, schema, mode);
       else if (backend === 'codex') output = await runCodex(prompt, schema, mode);
       else if (backend === 'openai') output = await runOpenAI(prompt, schema, mode);

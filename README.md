@@ -22,7 +22,7 @@ Discord bot details: [`BOT.md`](BOT.md).
 | Posting      | Upload-Post API                            |
 | Blog         | WordPress REST API (per client)            |
 | Import       | Notion API                                 |
-| AI           | OpenAI (worker path) + Claude Code CLI (terminal path via Discord bot) |
+| AI           | OpenAI (worker path) + Hermes CLI (terminal path via Discord bot) |
 | Auth         | HTTP-only session cookie + RBAC (5 roles)  |
 
 ---
@@ -133,7 +133,7 @@ bash deploy.sh
 
 Hit `/api/setup` with credentials to create the first admin user.
 
-### 8. Run the local Discord bot (optional, only for terminal Claude content)
+### 8. Run the local Discord bot (optional, only for terminal Hermes content)
 
 ```bash
 cd discord-bot

@@ -108,7 +108,7 @@ export const clientsApi = {
   getPlatforms: (slug: string) =>
     api.get<{ platforms: ClientPlatform[] }>(`/api/clients/${slug}/platforms`),
 
-  syncUploadPostPlatforms: (slug: string, opts: { dry_run?: boolean } = {}) =>
+  syncUploadPostPlatforms: (slug: string, opts: { dry_run?: boolean; force?: boolean } = {}) =>
     api.post<UploadPostPlatformSyncResult>(`/api/clients/${slug}/platforms/sync-upload-post`, opts),
 
   pausePlatform: (slug: string, platform: string, reason?: string) =>

@@ -3277,7 +3277,7 @@ export async function buildSystemPrompt(env: Env): Promise<string> {
   const today = new Date().toISOString().split('T')[0];
   const clientList = clients.map(c => `  ${c.canonical_name} → "${c.slug}"`).join('\n');
 
-  return `You are the WebXni Marketing Platform AI Agent — an intelligent operations assistant.
+  return `You are WebXni Assistant powered by Hermes — the WebXni Marketing Platform AI agent.
 TODAY'S DATE: ${today}
 
 ## ACTIVE CLIENTS
@@ -3296,6 +3296,7 @@ Discord-specific interpretation rules:
 - For slash-like weekly content messages without an explicit date range, default to this week.
 - If Marvin asks for today's content for all customers/clients, call generate_content with date_from and date_to set to today's date, client_slugs empty, provider terminal, and overwrite_existing false.
 - Weekly content generation always uses the approved terminal workflow, not OpenAI.
+- If the user asks what backend or model is being used, answer truthfully: the Discord bot is Hermes-first and uses OpenAI only as fallback when Hermes is unavailable.
 - For one-off post/reel creation with pasted source copy, call create_content_with_image once with source_caption. Do not pass platforms unless Marvin named exact platforms; let the backend choose package-compatible connected platforms.
 - When Marvin explicitly asks to create a new client profile, call create_client_profile first, then add/update services, service areas, intelligence, platforms, offers, or events as needed.
 - If a requested client profile update fails because the client does not exist, ask whether to create the client profile or call create_client_profile when the same message clearly requested a new client.
@@ -3641,7 +3642,7 @@ aiRoutes.post('/agent', async (c) => {
 
     let systemPrompt = '';
     try { systemPrompt = await buildSystemPrompt(c.env); } catch (err) {
-      systemPrompt = `You are the WebXni Marketing Platform AI Agent. Today is ${new Date().toISOString().split('T')[0]}. ${RESPONSE_RULES}`;
+      systemPrompt = `You are WebXni Assistant powered by Hermes. Today is ${new Date().toISOString().split('T')[0]}. ${RESPONSE_RULES}`;
     }
 
     const result = await runAgent({

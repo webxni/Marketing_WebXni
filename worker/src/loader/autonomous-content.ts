@@ -664,7 +664,7 @@ async function enqueueEditorialReview(
   const job = await createApprovedCommandJob(env.DB, {
     generation_run_id: null,
     command_name: 'agency_editorial_review',
-    provider: 'claude_code',
+    provider: 'hermes',
     requested_by: 'autonomous_content_created',
     args_json: JSON.stringify({
       agent_slug: 'editorial-review',
@@ -672,7 +672,7 @@ async function enqueueEditorialReview(
       source: 'autonomous_content_created',
       post_id: data.postId,
       review_target: data.post,
-      backend_priority: ['claude_code', 'codex', 'openai'],
+      backend_priority: ['hermes', 'claude_code', 'codex', 'openai'],
       safety: {
         no_arbitrary_shell: true,
         preserve_marvin_approval: true,
@@ -692,7 +692,7 @@ async function enqueueEditorialReview(
     status: 'queued',
     step: 'autonomous-content',
     summary: `Editorial Review Agent queued for new post ${data.postId}.`,
-    backend: 'claude_code',
+    backend: 'hermes',
   });
 }
 

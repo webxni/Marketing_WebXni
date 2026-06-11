@@ -13,7 +13,7 @@ A production marketing automation SaaS for the WebXni agency. Manages ~9
 active client accounts and automates posts to Facebook, Instagram, LinkedIn,
 TikTok, Pinterest, Google Business, YouTube, X, Threads, Bluesky, and
 WordPress blogs. Plus AI content generation (OpenAI worker path **and**
-terminal Claude Code path) with topic research and per-platform captions.
+terminal Hermes CLI path) with topic research and per-platform captions.
 
 - **Live URL:** https://marketing.webxni.com
 - **Stack:** Cloudflare Workers (Hono + TypeScript) + D1 (SQLite) + R2 + KV +
@@ -138,7 +138,7 @@ to invoke an available terminal AI backend per slot.
 | `assets` | R2 media registry |
 | `posting_jobs` / `posting_attempts` | Posting run records and per-attempt logs |
 | `generation_runs` | AI content generation run records (incl. `post_slots` plan) |
-| `approved_command_jobs` | Whitelisted terminal-job queue (Claude Code etc.) |
+| `approved_command_jobs` | Whitelisted terminal-job queue (Hermes CLI etc.) |
 | `audit_logs` | All significant actions |
 | `packages` | Content packages (posts/mo, freq, platforms, weekly schedule) |
 | `wp_templates` | Per-client WordPress template configs |

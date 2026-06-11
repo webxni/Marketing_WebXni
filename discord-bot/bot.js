@@ -1,5 +1,5 @@
 /**
- * WebXni AI Agent — Discord Gateway Bot
+ * WebXni Assistant — Discord Gateway Bot powered by Hermes
  *
  * Enables natural chat with the AI agent in Discord:
  *  • Type anything in the configured channel → agent responds
@@ -18,6 +18,7 @@ const { Client, GatewayIntentBits, Events, ActivityType } = require('discord.js'
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const os = require('node:os');
+const { pathToFileURL } = require('node:url');
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 const BOT_TOKEN    = process.env.DISCORD_BOT_TOKEN;
@@ -129,7 +130,60 @@ async function uploadAttachmentToWorker(attachment) {
 }
 
 // ── Call the WebXni AI agent ───────────────────────────────────────────────────
-async function askAgent(userMessage, userId, username) {
+let terminalAgentModulePromise = null;
+
+async function loadTerminalAgentModule() {
+  if (!terminalAgentModulePromise) {
+    const moduleUrl = pathToFileURL(path.join(PROJECT_ROOT, 'scripts/lib/terminal-json-agent.mjs')).href;
+    terminalAgentModulePromise = import(moduleUrl);
+  }
+  return terminalAgentModulePromise;
+}
+
+async function askHermesAgent(userMessage, userId, username) {
+  const history = getHistory(userId);
+  const { runTerminalJsonAgent } = await loadTerminalAgentModule();
+  const schema = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['message', 'summary', 'items', 'actions_taken', 'suggestions', 'errors'],
+    properties: {
+      message: { type: 'string' },
+      summary: { anyOf: [{ type: 'object' }, { type: 'null' }] },
+      items: { type: 'array', items: { type: 'object' } },
+      actions_taken: { type: 'array', items: { type: 'string' } },
+      suggestions: { type: 'array', items: { type: 'string' } },
+      errors: { type: 'array', items: { type: 'string' } },
+    },
+  };
+
+  const prompt = [
+    'You are WebXni Assistant powered by Hermes.',
+    'Reply in JSON only and keep the response short, clear, and practical.',
+    'You are speaking with a Discord user inside the WebXni marketing platform.',
+    'Truthfulness rule: the Discord bot runs Hermes first and falls back to OpenAI only when Hermes is unavailable. If the user asks about the backend, say that directly.',
+    `Discord user: ${username}`,
+    'Use the recent conversation history for context.',
+    'If you do not know a platform-specific or app-specific fact, say so instead of inventing it.',
+    'Do not include markdown, prose outside JSON, or code fences.',
+    '',
+    'Recent conversation history:',
+    JSON.stringify(history.slice(-6), null, 2),
+    '',
+    'User message:',
+    userMessage,
+  ].join('\n');
+
+  const result = await runTerminalJsonAgent({
+    prompt,
+    schema,
+    preferredBackend: ['hermes', 'openai'],
+  });
+
+  return result.output;
+}
+
+async function askWorkerAgent(userMessage, userId, username) {
   const history = getHistory(userId);
 
   const res = await fetch(`${API_BASE_URL}/api/ai/dispatch`, {
@@ -167,6 +221,39 @@ async function askAgent(userMessage, userId, username) {
   pushHistory(userId, 'assistant', assistantEntry);
 
   return data;
+}
+
+async function askAgent(userMessage, userId, username) {
+  try {
+    const data = await askHermesAgent(userMessage, userId, username);
+    pushHistory(userId, 'user', userMessage);
+    let assistantEntry = data.message || '';
+    if (Array.isArray(data.items) && data.items.length > 0) {
+      const itemLines = data.items.map((item, i) => {
+        const id    = item.id    ?? '?';
+        const title = item.title ?? item.name ?? '—';
+        return `${i + 1}. [id:${id}] ${title}`;
+      });
+      assistantEntry += `\n\n[Items shown in this response:\n${itemLines.join('\n')}]`;
+    }
+    pushHistory(userId, 'assistant', assistantEntry);
+    return data;
+  } catch (hermesErr) {
+    console.warn('[agent] Hermes path failed; falling back to OpenAI worker dispatch:', hermesErr.message);
+    const data = await askWorkerAgent(userMessage, userId, username);
+    pushHistory(userId, 'user', userMessage);
+    let assistantEntry = data.message || '';
+    if (Array.isArray(data.items) && data.items.length > 0) {
+      const itemLines = data.items.map((item, i) => {
+        const id    = item.id    ?? '?';
+        const title = item.title ?? item.name ?? '—';
+        return `${i + 1}. [id:${id}] ${title}`;
+      });
+      assistantEntry += `\n\n[Items shown in this response:\n${itemLines.join('\n')}]`;
+    }
+    pushHistory(userId, 'assistant', assistantEntry);
+    return data;
+  }
 }
 
 // ── Format agent response for Discord ─────────────────────────────────────────
@@ -283,7 +370,7 @@ const client = new Client({
 
 client.once(Events.ClientReady, (c) => {
   console.log(`[bot] Ready as ${c.user.tag}`);
-  c.user.setActivity('WebXni Platform', { type: ActivityType.Watching });
+  c.user.setActivity('WebXni Assistant powered by Hermes', { type: ActivityType.Watching });
   startApprovedJobPoller().catch((err) => console.error('[jobs] poller init error:', err));
 });
 

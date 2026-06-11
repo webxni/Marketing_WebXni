@@ -244,7 +244,7 @@ function buildResult(agentSlug, commandName, snapshot) {
         waiting_marvin_approval: overview.waiting_marvin_approval,
         waiting_designer_assets: overview.waiting_designer_assets,
       },
-      next_actions: ['Wire Claude Code social draft generation so new posts stay pending approval and asset_delivered remains false.'],
+      next_actions: ['Wire Hermes social draft generation so new posts stay pending approval and asset_delivered remains false.'],
       safety,
     };
   }
@@ -255,7 +255,7 @@ function buildResult(agentSlug, commandName, snapshot) {
       agent_slug: agentSlug,
       command_name: commandName,
       blogs_generated_this_week: overview.blogs_generated_this_week,
-      next_actions: ['Wire Claude Code blog drafting to save drafts only and never publish WordPress automatically.'],
+      next_actions: ['Wire Hermes blog drafting to save drafts only and never publish WordPress automatically.'],
       safety,
     };
   }
@@ -374,16 +374,28 @@ function upcomingWeekSchedule(totalClients) {
 // Each array is tried in order; the first available backend wins.
 // Claude-backed agency agents use Codex as the terminal fallback Marvin requested,
 // then OpenAI if terminal backends are unavailable or fail.
+const AGENT_HERMES_SKILLS = {
+  'agency-orchestrator': 'webxni-agency-orchestrator',
+  'system-reliability': 'webxni-system-reliability',
+  'security-sentinel': 'webxni-security-sentinel',
+  'client-research': 'webxni-client-research',
+  'strategy': 'webxni-strategist',
+  'social-copy': 'webxni-social-copywriter',
+  'blog-writer': 'webxni-blog-writer',
+  'editorial-review': 'webxni-editorial-reviewer',
+  'client-onboarding': 'webxni-agency-orchestrator',
+};
+
 const AGENT_BACKEND_PRIORITY = {
-  'agency-orchestrator': ['claude', 'codex', 'openai'],
-  'system-reliability':  ['claude', 'codex', 'openai'],
-  'security-sentinel':   ['claude', 'codex', 'openai'],
-  'editorial-review':    ['claude', 'codex', 'openai'],
-  'strategy':            ['claude', 'codex', 'openai'],
-  'social-copy':         ['claude', 'codex', 'openai'],
-  'blog-writer':         ['claude', 'codex', 'openai'],
-  'client-research':     ['gemini', 'openai'],
-  'client-onboarding':   ['claude', 'codex', 'openai'],
+  'agency-orchestrator': ['hermes', 'claude', 'codex', 'openai'],
+  'system-reliability':  ['hermes', 'claude', 'codex', 'openai'],
+  'security-sentinel':   ['hermes', 'claude', 'codex', 'openai'],
+  'editorial-review':    ['hermes', 'claude', 'codex', 'openai'],
+  'strategy':            ['hermes', 'claude', 'codex', 'openai'],
+  'social-copy':         ['hermes', 'claude', 'codex', 'openai'],
+  'blog-writer':         ['hermes', 'claude', 'codex', 'openai'],
+  'client-research':     ['hermes', 'gemini', 'openai'],
+  'client-onboarding':   ['hermes', 'claude', 'codex', 'openai'],
 };
 
 function parseBackendPriority(value) {
@@ -399,10 +411,15 @@ function parseBackendPriority(value) {
 function preferredBackend(agentSlug, fallback, taskInput = {}) {
   const envOverride = process.env.AGENCY_TERMINAL_AGENT;
   if (envOverride && envOverride !== 'auto') return [envOverride];
-  const fromJob = parseBackendPriority(taskInput.backend_priority);
-  if (fromJob?.length) return fromJob;
-  if (fallback && fallback !== 'internal') return [fallback, ...(AGENT_BACKEND_PRIORITY[agentSlug] ?? ['claude', 'openai'])];
-  return AGENT_BACKEND_PRIORITY[agentSlug] ?? ['claude', 'openai'];
+
+  const chain = [
+    'hermes',
+    ...(parseBackendPriority(taskInput.backend_priority) ?? []),
+    ...(fallback && fallback !== 'internal' ? [fallback] : []),
+    ...(AGENT_BACKEND_PRIORITY[agentSlug] ?? ['claude', 'openai']),
+  ];
+
+  return [...new Set(chain.filter(Boolean))];
 }
 
 async function runStructuredAgent(kind, agentSlug, backend, client, snapshot, task, modeOverride) {
@@ -413,6 +430,7 @@ async function runStructuredAgent(kind, agentSlug, backend, client, snapshot, ta
     prompt,
     schema,
     preferredBackend: preferredBackend(agentSlug, backend, task),
+    skills: AGENT_HERMES_SKILLS[agentSlug] ? [AGENT_HERMES_SKILLS[agentSlug]] : [],
     mode,
   });
   if (result.fallback_used) {
@@ -638,7 +656,17 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
         }
 
         const scheduleText = socialSlots.map((s) => `${s.day}: ${s.type}`).join('\n');
-        const clientWithSchedule = { ...client, weekly_schedule_text: scheduleText };
+
+        // Pull the client's content brief (brand voice, services, areas, restrictions)
+        // so drafts use the per-client "template" instead of generic copy.
+        let brief = { brief: '', hasBrief: false };
+        try { brief = await request(`/internal/agency/client-brief/${client.client_id}`); } catch { /* fall back to no brief */ }
+        if (!brief.hasBrief) {
+          console.warn(`[social-copy] ${client.client_name} skipped — no brand brief (run client research/strategy first)`);
+          errors.push({ client: client.client_name, error: 'No brand brief — needs client research/intelligence before drafting.' });
+          continue;
+        }
+        const clientWithSchedule = { ...client, weekly_schedule_text: scheduleText, content_brief: brief.brief };
 
         // Re-check OpenAI availability (key may need refresh between clients)
         if (!process.env.OPENAI_API_KEY) await loadAiConfig();
@@ -648,6 +676,13 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
         const posts = Array.isArray(result.output?.posts) ? result.output.posts : [];
 
         for (const draft of posts) {
+          // Skip empty AI output so we never persist a contentless draft.
+          const draftHasContent = Boolean(
+            (draft.master_caption || '').trim() ||
+            Object.values(draft.platform_captions || {}).some((v) => typeof v === 'string' && v.trim()),
+          );
+          if (!draftHasContent) continue;
+
           const matchedSlot = socialSlots.find(
             (s) => s.day.toLowerCase() === (draft.day_of_week || '').toLowerCase() && s.type === draft.content_type,
           ) || socialSlots.find((s) => s.day.toLowerCase() === (draft.day_of_week || '').toLowerCase())
@@ -668,6 +703,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
             skarleth_notes: draft.review_notes?.join('\n') || null,
             publish_date: publishDate,
           });
+          if (!saved.post_id) continue; // server skipped (empty/dedupe) — nothing persisted
           savedDrafts.push({
             client_name: client.client_name,
             post_id: saved.post_id,
@@ -732,13 +768,23 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
         if (!blogSlots.length) blogSlots.push('thursday'); // fallback
 
         const blogScheduleText = blogSlots.map((d) => `${d}: blog`).join('\n');
-        const clientWithSchedule = { ...client, blog_schedule_text: blogScheduleText };
+
+        // Same per-client brief (brand voice / services / areas) the social path uses.
+        let brief = { brief: '', hasBrief: false };
+        try { brief = await request(`/internal/agency/client-brief/${client.client_id}`); } catch { /* fall back to no brief */ }
+        if (!brief.hasBrief) {
+          console.warn(`[blog-writer] ${client.client_name} skipped — no brand brief (run client research/strategy first)`);
+          blogErrors.push({ client: client.client_name, error: 'No brand brief — needs client research/intelligence before drafting.' });
+          continue;
+        }
+        const clientWithSchedule = { ...client, blog_schedule_text: blogScheduleText, content_brief: brief.brief };
 
         if (!process.env.OPENAI_API_KEY) await loadAiConfig();
         const result = await runStructuredAgent('blogWeeklyBatch', agentSlug, backend, clientWithSchedule, snapshot, taskInput, 'batch');
         const blogs = Array.isArray(result.output?.blogs) ? result.output.blogs : [];
 
         for (const draft of blogs) {
+          if (!(draft.html || '').trim()) continue; // skip empty blog output
           const blogDay = String(draft.day_of_week || blogSlots[0] || 'thursday');
           const publishDate = `${nextScheduledDate(blogDay)}T09:00`;
           const saved = await post('/internal/agency/draft-post', {

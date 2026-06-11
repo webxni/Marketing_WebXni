@@ -1663,6 +1663,66 @@ export async function getAgencyClientCoverage(db: D1Database): Promise<AgencyCli
   });
 }
 
+/**
+ * Compact per-client content brief for agency agents (social-copy, blog-writer).
+ * Reuses the same client_intelligence / services / areas / restrictions the
+ * weekly generation path uses so agency drafts carry the client's brand voice
+ * instead of generic copy. Returns a plain-text block plus a `hasBrief` flag so
+ * callers can decide whether enough context exists to generate quality content.
+ */
+export async function getAgencyClientContentBrief(
+  db: D1Database,
+  clientId: string,
+): Promise<{ brief: string; hasBrief: boolean }> {
+  const [client, intel, areas, services, restrictions] = await Promise.all([
+    db.prepare('SELECT canonical_name, industry, state, cta_text, notes FROM clients WHERE id = ?')
+      .bind(clientId).first<{ canonical_name: string | null; industry: string | null; state: string | null; cta_text: string | null; notes: string | null }>(),
+    db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?')
+      .bind(clientId).first<Record<string, string | null>>(),
+    db.prepare('SELECT city FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 8')
+      .bind(clientId).all<{ city: string }>(),
+    db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC LIMIT 12')
+      .bind(clientId).all<{ name: string }>(),
+    getClientRestrictions(db, clientId),
+  ]);
+
+  const serviceAreas = areas.results.map((r) => r.city).filter(Boolean);
+  const serviceNames = services.results.map((r) => r.name).filter(Boolean);
+  const i = intel ?? {};
+  const lines: string[] = [];
+  const add = (label: string, value: string | null | undefined) => {
+    if (value && String(value).trim()) lines.push(`- ${label}: ${String(value).trim()}`);
+  };
+  add('Business', client?.canonical_name);
+  add('Industry', client?.industry);
+  add('Location', client?.state);
+  if (serviceAreas.length) lines.push(`- Service areas: ${serviceAreas.join(', ')}`);
+  if (serviceNames.length) lines.push(`- Specific services: ${serviceNames.join(', ')}`);
+  add('Key services', i.service_priorities);
+  add('Brand voice', i.brand_voice);
+  add('Tone', i.tone_keywords);
+  add('Audience', i.audience_notes);
+  add('Content goals', i.content_goals);
+  add('Preferred angles', i.content_angles);
+  add('Preferred CTA', client?.cta_text);
+  add('Approved CTAs', i.approved_ctas);
+  add('Seasonal notes', i.seasonal_notes);
+  add('Humanization style', i.humanization_style);
+  add('Additional context', client?.notes);
+  const forbidden = [i.prohibited_terms, restrictions.join(', ')].filter((v) => v && String(v).trim()).join(', ');
+  if (forbidden) lines.push(`- NEVER USE: ${forbidden}`);
+
+  // A brief is "real" when it carries brand voice, services, or service areas —
+  // not just the business name. Without that, drafts would be generic/empty.
+  const hasBrief = Boolean(
+    (i.brand_voice && i.brand_voice.trim()) ||
+    (i.service_priorities && i.service_priorities.trim()) ||
+    serviceNames.length ||
+    serviceAreas.length,
+  );
+  return { brief: lines.join('\n'), hasBrief };
+}
+
 export async function appendAgencyLog(
   db: D1Database,
   data: { agent_slug?: string | null; task_id?: string | null; run_id?: string | null; job_id?: string | null; status?: string; step?: string | null; summary: string; error?: string | null; backend?: string | null; duration_ms?: number | null },

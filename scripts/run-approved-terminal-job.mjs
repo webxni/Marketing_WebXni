@@ -110,8 +110,8 @@ function resolveTerminalBackend() {
 
 function preferredTerminalBackends() {
   const requested = TERMINAL_AGENT === 'auto' ? '' : TERMINAL_AGENT;
-  if (requested) return [requested, 'openai'];
-  return ['claude', 'gemini', 'openai'];
+  if (requested) return [requested, 'hermes', 'openai'];
+  return ['hermes', 'claude', 'gemini', 'openai'];
 }
 
 function buildWrappedPrompt(prompt, schema) {

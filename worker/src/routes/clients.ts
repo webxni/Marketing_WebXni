@@ -413,12 +413,13 @@ clientRoutes.post('/:slug/platforms/sync-upload-post', async (c) => {
     return c.json({ error: 'Upload-Post profile is not configured for this client.' }, 400);
   }
 
-  let body: { dry_run?: boolean } = {};
+  let body: { dry_run?: boolean; force?: boolean } = {};
   try { body = await c.req.json(); } catch { /* optional */ }
 
   const result = await syncUploadPostClientPlatforms(c.env, {
     client_slug: client.slug,
     dry_run: body.dry_run === true,
+    force: body.force === true,
   });
   const platforms = await getClientPlatforms(c.env.DB, client.id);
 
@@ -429,6 +430,7 @@ clientRoutes.post('/:slug/platforms/sync-upload-post', async (c) => {
     entity_id: client.id,
     new_value: {
       dry_run: result.dry_run,
+      force: body.force === true,
       created: result.created,
       updated: result.updated,
       skipped: result.skipped,

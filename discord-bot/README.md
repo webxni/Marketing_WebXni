@@ -1,4 +1,6 @@
-# WebXni Discord Bot
+# WebXni Assistant (Discord Bot)
+
+Primary chat path: Hermes first, with OpenAI API fallback when Hermes is unavailable.
 
 ## Arquitectura
 

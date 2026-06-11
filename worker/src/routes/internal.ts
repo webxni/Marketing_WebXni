@@ -771,7 +771,7 @@ internalRoutes.post('/agent/run', async (c) => {
 
     let systemPrompt = '';
     try { systemPrompt = await buildSystemPrompt(c.env); } catch {
-      systemPrompt = `You are the WebXni Marketing Platform AI Agent. Today is ${new Date().toISOString().split('T')[0]}.`;
+      systemPrompt = `You are WebXni Assistant powered by Hermes. Today is ${new Date().toISOString().split('T')[0]}.`;
     }
 
     const result = await runAgent({

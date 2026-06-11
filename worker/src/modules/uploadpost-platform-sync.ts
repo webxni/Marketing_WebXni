@@ -102,9 +102,10 @@ async function fetchSinglePlatformIds(up: UploadPostClient, profile: string): Pr
 
 export async function syncUploadPostClientPlatforms(
   env: Env,
-  options: { client_slug?: string; dry_run?: boolean } = {},
+  options: { client_slug?: string; dry_run?: boolean; force?: boolean } = {},
 ): Promise<UploadPostPlatformSyncResult> {
   const dryRun = options.dry_run === true;
+  const force = options.force === true;
   const up = new UploadPostClient(env.UPLOAD_POST_API_KEY);
   const clients = options.client_slug
     ? await listClients(env.DB, 'all').then((all) => all.filter((client) => client.slug === options.client_slug))
@@ -179,8 +180,13 @@ export async function syncUploadPostClientPlatforms(
 
       if (existingRow) {
         const existingValues = existingRow as unknown as Record<string, unknown>;
+        // Non-force: only fill blank fields (never touch existing data).
         const hasBetterData = Object.entries(values).some(([key, value]) => value && !String(existingValues[key] ?? '').trim());
-        if (!dryRun && hasBetterData) {
+        // Force: overwrite when the live Upload-Post value is present and differs from
+        // what we have stored — this is what corrects a stale/incorrect page_id or account_id.
+        const hasChange = Object.entries(values).some(([key, value]) => value && String(value) !== String(existingValues[key] ?? '').trim());
+        const shouldUpdate = force ? hasChange : hasBetterData;
+        if (!dryRun && shouldUpdate) {
           await env.DB.prepare(`
             UPDATE client_platforms
             SET account_id = COALESCE(?, account_id),
@@ -207,7 +213,7 @@ export async function syncUploadPostClientPlatforms(
         synced.push({
           client: client.slug,
           platform,
-          action: hasBetterData ? 'updated' : 'skipped',
+          action: shouldUpdate ? 'updated' : 'skipped',
           account_id: data.account_id,
           username: data.username,
           profile_url: data.profile_url,
@@ -251,7 +257,7 @@ export async function syncUploadPostClientPlatforms(
   const updated = synced.filter((item) => item.action === 'updated').length;
   const skipped = synced.filter((item) => item.action === 'skipped').length;
   const content = [
-    `**Platform sync ${dryRun ? '(dry run)' : 'complete'}**`,
+    `**Platform sync ${dryRun ? '(dry run)' : force ? '(force overwrite)' : 'complete'}**`,
     `Created: ${created} | Updated: ${updated} | Existing unchanged: ${skipped} | Errors: ${errors.length}`,
     ...synced
       .filter((item) => item.action !== 'skipped')

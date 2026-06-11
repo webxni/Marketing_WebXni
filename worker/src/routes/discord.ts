@@ -45,14 +45,14 @@ import type { GeneratedPost } from '../services/openai';
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 const DISCORD_AGENCY_BACKEND_PRIORITY: Record<string, string[]> = {
-  'agency-orchestrator': ['claude_code', 'codex', 'openai'],
-  'system-reliability': ['claude_code', 'codex', 'openai'],
-  'security-sentinel': ['claude_code', 'codex', 'openai'],
-  'client-research': ['gemini_cli', 'openai'],
-  strategy: ['claude_code', 'codex', 'openai'],
-  'social-copy': ['claude_code', 'codex', 'openai'],
-  'blog-writer': ['claude_code', 'codex', 'openai'],
-  'editorial-review': ['claude_code', 'codex', 'openai'],
+  'agency-orchestrator': ['hermes', 'claude_code', 'codex', 'openai'],
+  'system-reliability': ['hermes', 'claude_code', 'codex', 'openai'],
+  'security-sentinel': ['hermes', 'claude_code', 'codex', 'openai'],
+  'client-research': ['hermes', 'gemini_cli', 'openai'],
+  strategy: ['hermes', 'claude_code', 'codex', 'openai'],
+  'social-copy': ['hermes', 'claude_code', 'codex', 'openai'],
+  'blog-writer': ['hermes', 'claude_code', 'codex', 'openai'],
+  'editorial-review': ['hermes', 'claude_code', 'codex', 'openai'],
 };
 
 interface DiscordInteractionOption {
@@ -552,7 +552,7 @@ async function handleCommand(
         agent_slug: agentSlug,
         task_id: task.id,
         source: 'discord_slash',
-        backend_priority: DISCORD_AGENCY_BACKEND_PRIORITY[agentSlug] ?? ['claude_code', 'openai'],
+        backend_priority: DISCORD_AGENCY_BACKEND_PRIORITY[agentSlug] ?? ['hermes', 'openai'],
         safety: {
           no_arbitrary_shell: true,
           preserve_marvin_approval: true,
