@@ -80,6 +80,16 @@ async function fetchSinglePlatformIds(up: UploadPostClient, profile: string): Pr
   const result: Record<string, Record<string, string | null>> = {};
 
   try {
+    // Only auto-bind the Facebook page_id when the profile resolves to exactly one
+    // page. If the shared Upload-Post account exposes multiple pages, firstId
+    // returns null and the page must be selected manually — we must never guess a
+    // page here, or posts can land on the wrong client's page.
+    const payload = await up.getFacebookPages(profile) as { pages?: Array<Record<string, unknown>> };
+    const pageId = firstId(payload.pages ?? [], ['page_id', 'id']);
+    if (pageId) result.facebook = { page_id: pageId };
+  } catch { /* optional provider data */ }
+
+  try {
     const payload = await up.getGbpLocations(profile) as { locations?: Array<Record<string, unknown>> };
     const locationId = firstId(payload.locations ?? [], ['location_id', 'id', 'name']);
     if (locationId) result.google_business = { upload_post_location_id: locationId };

@@ -355,6 +355,16 @@ export class UploadPostClient {
     return r.json();
   }
 
+  /** GET /api/uploadposts/facebook/pages — list connected Facebook page IDs */
+  async getFacebookPages(profile: string): Promise<unknown> {
+    const r = await fetch(
+      `${BASE}/api/uploadposts/facebook/pages?profile=${encodeURIComponent(profile)}`,
+      { headers: this.auth },
+    );
+    if (!r.ok) throw new UploadPostError(r.status, await r.text());
+    return r.json();
+  }
+
   /** GET /api/uploadposts/linkedin/pages — list LinkedIn page IDs */
   async getLinkedinPages(profile: string): Promise<unknown> {
     const r = await fetch(

@@ -135,6 +135,17 @@ export async function preflight(
     };
   }
 
+  // Facebook requires an explicit page_id. Without it, Upload-Post falls back to
+  // whatever Facebook Page the shared account defaults to — which can post to the
+  // wrong client's page. Block rather than risk cross-posting.
+  if (normalizedPlatform === 'facebook' && !hasMappedValue(platCfg.page_id)) {
+    return {
+      ok: false,
+      tag: 'SKIP',
+      reason: `Facebook page_id not configured for '${client.slug}' — set it to avoid posting to the wrong page`,
+    };
+  }
+
   // 8. GBP: CTA URL required when a CTA type is set
   if (normalizedPlatform === 'google_business' && post) {
     if (post.gbp_cta_type && post.gbp_cta_type !== 'CALL' && !post.gbp_cta_url?.trim()) {

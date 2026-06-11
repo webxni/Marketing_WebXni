@@ -436,6 +436,13 @@
       }
     }
 
+    if (platform.platform === 'facebook' && !hasMappedValue(platform.page_id ?? null)) {
+      warnings.push({
+        code: 'FACEBOOK_NO_PAGE_ID',
+        message: 'Facebook is enabled but no Page ID is set. Posts will be blocked until you set the page ID, to avoid posting to the wrong page.',
+      });
+    }
+
     return warnings;
   }
 

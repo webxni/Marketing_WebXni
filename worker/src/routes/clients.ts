@@ -225,11 +225,32 @@ clientRoutes.get('/:id/connection-check', async (c) => {
       }
     };
 
+    const facebookProbe = async (): Promise<{ ok: boolean; message: string; details?: Record<string, unknown> }> => {
+      const cfg = byPlatform.get('facebook');
+      const configured = cfg?.page_id ? String(cfg.page_id) : '';
+      if (!configured) {
+        return { ok: false, message: 'Facebook page_id not set — posts are blocked until a page is selected (prevents posting to the wrong page).' };
+      }
+      try {
+        const payload = await up.getFacebookPages(client.upload_post_profile!) as { pages?: Array<Record<string, unknown>> };
+        const returned = (payload.pages ?? []).map((page) => String(page.page_id ?? page.id ?? ''));
+        if (returned.length === 0) {
+          return { ok: true, message: 'Facebook connected (page list unavailable; configured page_id will be used).', details: { configured } };
+        }
+        return returned.includes(configured)
+          ? { ok: true, message: 'Configured Facebook page is connected.', details: { configured, returned } }
+          : { ok: false, message: `Configured Facebook page_id ${configured} is not among the connected pages.`, details: { configured, returned } };
+      } catch (err) {
+        return { ok: false, message: err instanceof UploadPostError ? err.body : String(err) };
+      }
+    };
+
     const probeFor = async (platform: string) => {
       if (!profileOk) return { ok: false, message: profileMessage };
       if (platform === 'google_business') return locationProbe();
       if (platform === 'pinterest') return boardProbe();
       if (platform === 'linkedin') return linkedinProbe();
+      if (platform === 'facebook') return facebookProbe();
       return { ok: true, message: 'Connected account found in Upload-Post profile.' };
     };
 
