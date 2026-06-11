@@ -216,12 +216,12 @@
     catch { toast.error('Failed to retry'); }
   }
 
-  async function duplicateAndRepublish() {
+  async function duplicatePost() {
     if (!post) return;
     duplicatingPost = true;
     try {
-      const r = await postsApi.duplicate(post.id, { publish_now: true });
-      toast.success('Post duplicated and queued for full republish');
+      const r = await postsApi.duplicate(post.id);
+      toast.success('Post duplicated as draft');
       goto(`/posts/${r.post.id}`);
     } catch {
       toast.error('Failed to duplicate post');
@@ -681,9 +681,9 @@
     </div>
     <div class="flex gap-2 shrink-0 flex-wrap justify-end">
       <a href="/posts/{post.id}/edit" class="btn-ghost btn-sm">Edit</a>
-      {#if can('automation.trigger')}
-        <button class="btn-ghost btn-sm" on:click={duplicateAndRepublish} disabled={duplicatingPost}>
-          {duplicatingPost ? 'Duplicating…' : 'Duplicate & Republish'}
+      {#if can('posts.create')}
+        <button class="btn-ghost btn-sm" on:click={duplicatePost} disabled={duplicatingPost}>
+          {duplicatingPost ? 'Duplicating…' : 'Duplicate'}
         </button>
       {/if}
       {#if can('posts.delete')}

@@ -403,7 +403,7 @@ postRoutes.post('/:id/duplicate', async (c) => {
   const duplicate = await createPost(c.env.DB, {
     client_id: source.client_id,
     title: source.title ?? `Copy of ${source.id}`,
-    status: publishNow ? 'ready' : ((source.status === 'draft' || source.status === 'pending_approval') ? source.status : 'draft'),
+    status: publishNow ? 'ready' : 'draft',
     content_type: source.content_type,
     platforms: source.platforms,
     publish_date: source.publish_date,
@@ -447,7 +447,7 @@ postRoutes.post('/:id/duplicate', async (c) => {
     asset_r2_bucket: source.asset_r2_bucket,
     asset_type: source.asset_type,
     canva_link: source.canva_link,
-    ready_for_automation: publishNow ? 1 : source.ready_for_automation,
+    ready_for_automation: publishNow ? 1 : 0,
     asset_delivered: source.asset_delivered,
     skarleth_notes: source.skarleth_notes,
     platform_manual_override: source.platform_manual_override,
