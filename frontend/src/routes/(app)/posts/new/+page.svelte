@@ -88,7 +88,7 @@
   }
 
   async function submit(action: 'draft' | 'publish') {
-    if (!clientSlug) { toast.error('Select a client'); return; }
+    if (!clientSlug || !currentClientId) { toast.error('Select a client'); return; }
     if (selectedPlatforms.length === 0) { toast.error('Select at least one platform'); return; }
     if (incompatiblePlatforms.length > 0 && !allowPlatformOverride) {
       toast.error(`Incompatible platforms selected for ${normalizeContentType(contentType)}: ${incompatiblePlatforms.join(', ')}`);
@@ -133,6 +133,7 @@
       };
       const primaryAsset = assets[0];
       const r = await postsApi.create({
+        client_id:        currentClientId,
         client_slug:      clientSlug,
         title:            title || null,
         content_type:     contentType,
@@ -156,11 +157,21 @@
 
   onMount(async () => {
     try {
+      const url = new URL(window.location.href);
+      const clientParam = url.searchParams.get('client') ?? url.searchParams.get('client_slug');
+      const dateParam = url.searchParams.get('date');
+
       const r = await clientsApi.list('active');
       clients = r.clients;
+
+      if (clientParam && !clientSlug) {
+        const matched = clients.find((c) => c.slug === clientParam);
+        if (matched) {
+          clientSlug = matched.slug;
+        }
+      }
+
       // Pre-fill publish date if ?date=YYYY-MM-DD was passed from the calendar
-      const url = new URL(window.location.href);
-      const dateParam = url.searchParams.get('date');
       if (dateParam && !publishDate) publishDate = `${dateParam}T09:00`;
     } finally { loading = false; }
   });

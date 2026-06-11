@@ -1840,15 +1840,20 @@
 
   <!-- Type selector + Standard Post link -->
   <div class="flex items-center justify-between flex-wrap gap-3">
-    <div class="flex items-center bg-surface border border-border rounded-lg overflow-hidden text-sm">
-      <button
-        class="px-4 py-2 transition-colors {gbpPostType === 'offer' ? 'bg-accent text-white' : 'text-muted hover:text-white'}"
-        on:click={() => { gbpPostType = 'offer'; resetGbpForm(); gbpVariations = []; }}
-      >Offer</button>
-      <button
-        class="px-4 py-2 transition-colors {gbpPostType === 'event' ? 'bg-accent text-white' : 'text-muted hover:text-white'}"
-        on:click={() => { gbpPostType = 'event'; resetGbpForm(); gbpVariations = []; }}
-      >Event</button>
+    <div class="flex items-center gap-2">
+      <div class="flex items-center bg-surface border border-border rounded-lg overflow-hidden text-sm">
+        <button
+          class="px-4 py-2 transition-colors {gbpPostType === 'offer' ? 'bg-accent text-white' : 'text-muted hover:text-white'}"
+          on:click={() => { gbpPostType = 'offer'; resetGbpForm(); gbpVariations = []; }}
+        >Offer</button>
+        <button
+          class="px-4 py-2 transition-colors {gbpPostType === 'event' ? 'bg-accent text-white' : 'text-muted hover:text-white'}"
+          on:click={() => { gbpPostType = 'event'; resetGbpForm(); gbpVariations = []; }}
+        >Event</button>
+      </div>
+      <a href="/posts/new?client={client.slug}" class="btn-secondary btn-sm text-xs">
+        + New Post
+      </a>
     </div>
     <a href="/posts/new?client={client.slug}&platform=google_business" class="btn-secondary btn-sm text-xs">
       + Standard GBP Post
