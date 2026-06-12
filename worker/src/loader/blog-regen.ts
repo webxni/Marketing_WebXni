@@ -147,7 +147,7 @@ export async function triggerBlogRegenStep(
 export async function planBlogRegen(
   env: Env,
   runId: string,
-  params: { clientSlugs?: string[] },
+  params: { clientSlugs?: string[]; onlyEmpty?: boolean },
   baseUrl: string,
 ): Promise<void> {
   const db = env.DB;
@@ -169,6 +169,12 @@ export async function planBlogRegen(
     const filterClause = clientFilter
       ? `AND c.slug IN (${params.clientSlugs!.map(() => '?').join(',')})`
       : '';
+    // onlyEmpty: regenerate just blogs that are missing a real body — used to
+    // backfill posts that were saved with no blog_content, without touching
+    // good (already-written) blogs.
+    const emptyClause = params.onlyEmpty
+      ? "AND (p.blog_content IS NULL OR LENGTH(TRIM(p.blog_content)) < 200)"
+      : '';
 
     const rows = await db
       .prepare(`
@@ -180,6 +186,7 @@ export async function planBlogRegen(
         WHERE  p.content_type = 'blog'
           AND  p.status NOT IN ('cancelled')
           ${filterClause}
+          ${emptyClause}
         ORDER  BY p.created_at DESC
       `)
       .bind(...(clientFilter ? params.clientSlugs! : []))

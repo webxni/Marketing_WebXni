@@ -309,21 +309,22 @@ internalRoutes.post('/regen-blogs', async (c) => {
     return c.json({ error: 'Unauthorized' }, 401);
   }
 
-  let body: { client_slugs?: string[] } = {};
+  let body: { client_slugs?: string[]; only_empty?: boolean } = {};
   try { body = await c.req.json(); } catch { /* optional */ }
 
   const clientSlugs: string[] = Array.isArray(body.client_slugs) ? body.client_slugs : [];
+  const onlyEmpty = body.only_empty === true;
 
   const run = await createGenerationRun(c.env.DB, {
     triggered_by:  'blog-regen',
-    date_range:    'all-blogs',
+    date_range:    onlyEmpty ? 'empty-blogs' : 'all-blogs',
     client_filter: clientSlugs.length > 0 ? JSON.stringify(clientSlugs) : null,
     overwrite_existing: true,
   });
 
   const baseUrl = new URL(c.req.url).origin;
   c.executionCtx.waitUntil(
-    planBlogRegen(c.env, run.id, { clientSlugs }, baseUrl),
+    planBlogRegen(c.env, run.id, { clientSlugs, onlyEmpty }, baseUrl),
   );
 
   return c.json({ ok: true, run_id: run.id, message: 'Blog regen started — check /api/run/generate/runs/:run_id for progress' }, 202);
