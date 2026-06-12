@@ -57,6 +57,7 @@ import {
   buildGenerationRequest,
   validateGeneratedContent,
   detectFormatFromTitle,
+  buildBlogContentHtml,
   type GenerationContext,
   type ContentFormat,
   type GeneratedPost,
@@ -1067,6 +1068,32 @@ export async function saveGeneratedSlotResult(
     normalizeContentType(slot.content_type),
   );
   const overwriteExisting = run.overwrite_existing === 1;
+
+  // Terminal-generated blogs return structured fields (intro/sections/faq), not a
+  // ready-to-store blog_content. The OpenAI path assembles the body inside
+  // normalizeGeneratedPost; the terminal save path must do the same or the blog
+  // is saved with no body. Assemble it here when missing.
+  if (normalizeContentType(slot.content_type) === 'blog') {
+    const src = generatedPost as unknown as Record<string, unknown>;
+    if (!String(src.blog_content ?? '').trim()) {
+      const assembled = buildBlogContentHtml(src, {
+        slug: client.slug,
+        canonical_name: client.canonical_name,
+        notes: client.notes,
+        brand_json: client.brand_json,
+        brand_primary_color: (client as unknown as { brand_primary_color?: string | null }).brand_primary_color ?? null,
+        language: client.language,
+        phone: client.phone,
+        cta_text: client.cta_text,
+        industry: client.industry,
+        state: client.state,
+        owner_name: client.owner_name,
+        wp_template_key: client.wp_template_key ?? client.wp_template ?? null,
+      }, slot.date);
+      if (assembled) src.blog_content = assembled;
+    }
+  }
+
   const merged = mergeGeneratedContent(existingPost as unknown as Record<string, string | null | undefined>, generatedPost as unknown as Record<string, string | undefined>, overwriteExisting);
   const selectedTopic = topicSelection ?? {
     monthlyTopicId: null,

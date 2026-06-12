@@ -697,6 +697,86 @@ export function describeGenerationPlan(ctx: GenerationContext): GenerationPlan {
   return buildGenerationRequest(ctx).plan;
 }
 
+/**
+ * Assemble blog body HTML from the structured fields a generator returns
+ * (intro / sections / faq / conclusion / cta_*). The OpenAI path does this inside
+ * normalizeGeneratedPost; the terminal save path (saveGeneratedSlotResult) needs
+ * the same assembly or blog_content stays empty. Returns null when the structured
+ * fields are too thin to render a real body (caller decides how to handle that).
+ */
+export function buildBlogContentHtml(
+  source: Record<string, unknown>,
+  client: GenerationContext['client'],
+  publishDate: string,
+): string | null {
+  const str = (k: string) => (typeof source[k] === 'string' ? String(source[k]).trim() : '');
+  const intro = str('intro');
+  const sectionsRaw = Array.isArray(source['sections']) ? source['sections'] : [];
+  const faqRaw = Array.isArray(source['faq']) ? source['faq'] : [];
+  const sections: BlogSection[] = sectionsRaw
+    .map((item) => ({
+      heading: typeof (item as Record<string, unknown>)['heading'] === 'string' ? String((item as Record<string, unknown>)['heading']).trim() : '',
+      html: typeof (item as Record<string, unknown>)['html'] === 'string' ? String((item as Record<string, unknown>)['html']).trim() : '',
+    }))
+    .filter((item) => item.heading && item.html);
+  const faq: BlogFaqItem[] = faqRaw
+    .map((item) => ({
+      question: typeof (item as Record<string, unknown>)['question'] === 'string' ? String((item as Record<string, unknown>)['question']).trim() : '',
+      answer: typeof (item as Record<string, unknown>)['answer'] === 'string' ? String((item as Record<string, unknown>)['answer']).trim() : '',
+    }))
+    .filter((item) => item.question && item.answer);
+  if (!intro || sections.length === 0) return null;
+
+  const title = str('title') || `${client.canonical_name} — ${publishDate}`;
+  const primaryColor = client.brand_primary_color
+    ?? (() => { try { const b = JSON.parse(client.brand_json ?? '{}'); return b.primary_color ?? b.primaryColor ?? null; } catch { return null; } })()
+    ?? '#1a73e8';
+  const structuredDraft: StructuredBlogContent = {
+    title,
+    excerpt: str('blog_excerpt'),
+    focusKeyword: str('target_keyword') || client.industry?.trim() || title,
+    secondaryKeywords: str('secondary_keywords'),
+    seoTitle: str('seo_title') || title,
+    metaDescription: str('meta_description') || str('blog_excerpt').slice(0, 155),
+    slug: str('slug'),
+    intro,
+    sections,
+    faq,
+    conclusion: str('conclusion') || undefined,
+    ctaHeading: str('cta_heading') || (client.cta_text ?? 'Talk To Our Team'),
+    ctaBody: str('cta_body') || 'Get expert guidance tailored to your situation and goals.',
+    ctaButtonLabel: str('cta_button_label') || (client.cta_text ?? 'Contact Us Today'),
+    imagePrompt: str('ai_image_prompt') || undefined,
+  };
+  const structured = sanitizeStructuredBlogContent(structuredDraft).blog;
+  const templateConfig = resolveBlogTemplateConfig({
+    slug: client.slug ?? '',
+    canonical_name: client.canonical_name,
+    industry: client.industry ?? null,
+    state: client.state ?? null,
+    brand_json: client.brand_json ?? null,
+    wp_template_key: client.wp_template_key ?? null,
+    cta_text: client.cta_text ?? null,
+    brand_primary_color: client.brand_primary_color ?? null,
+  });
+  return renderStructuredBlogHtml({
+    templateKey: inferBusinessTemplateKey({
+      wp_template_key: client.wp_template_key,
+      industry: client.industry,
+    }),
+    primaryColor,
+    accentColor: templateConfig.accentColor,
+    clientName: client.canonical_name,
+    clientSlug: client.slug ?? undefined,
+    industry: client.industry,
+    publishDate,
+    phone: client.phone,
+    ctaDefault: client.cta_text,
+    template: templateConfig,
+    blog: structured,
+  });
+}
+
 export function normalizeGeneratedPost(value: unknown, ctx: GenerationContext): GeneratedPost {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('OpenAI returned a non-object payload');
