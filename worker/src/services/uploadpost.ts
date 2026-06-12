@@ -200,6 +200,11 @@ export class UploadPostClient {
     if (params.privacyStatus) fd.append('privacyStatus', params.privacyStatus);
     if (params.privacy_level) fd.append('privacy_level', params.privacy_level);
     if (params.gbp_location_id) fd.append('gbp_location_id', params.gbp_location_id);
+    // Page targeting for video/reel posts. Without facebook_page_id the reel posts
+    // to whatever page the shared Upload-Post account defaults to (wrong client).
+    // Both keys are excluded from the generic loop below, so append them here.
+    if (params.facebook_page_id) fd.append('facebook_page_id', params.facebook_page_id);
+    if (params.target_linkedin_page_id) fd.append('target_linkedin_page_id', params.target_linkedin_page_id);
     if (params.content_type === 'reel') {
       if (params.platform === 'instagram') fd.append('media_type', params.instagram_media_type ?? 'REELS');
       if (params.platform === 'facebook') fd.append('facebook_media_type', params.facebook_media_type ?? 'REELS');
