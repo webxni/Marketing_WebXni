@@ -593,6 +593,28 @@ agencyInternalRoutes.post('/strategy-plan', async (c) => {
   return c.json({ ok: true });
 });
 
+agencyInternalRoutes.get('/review-queue', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const limit = Math.min(Math.max(Number(c.req.query('limit') ?? '8'), 1), 25);
+  // Recent automation drafts (blog + social) that have no content review note yet.
+  const rows = await c.env.DB.prepare(
+    `SELECT p.id, c.canonical_name AS client_name, p.content_type, p.title,
+            p.target_keyword, p.blog_excerpt, p.master_caption,
+            p.cap_facebook, p.cap_instagram, p.cap_google_business,
+            substr(p.blog_content, 1, 4000) AS blog_content
+     FROM posts p
+     JOIN clients c ON c.id = p.client_id
+     LEFT JOIN content_review_notes r ON r.post_id = p.id
+     WHERE p.status IN ('draft', 'pending_approval')
+       AND p.scheduled_by_automation = 1
+       AND p.created_at >= unixepoch() - 1209600
+       AND r.id IS NULL
+     ORDER BY p.created_at DESC
+     LIMIT ?`,
+  ).bind(limit).all<Record<string, unknown>>();
+  return c.json({ items: rows.results ?? [] });
+});
+
 agencyInternalRoutes.post('/content-review', async (c) => {
   if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
   const parsed = internalReviewSchema.safeParse(await c.req.json().catch(() => ({})));

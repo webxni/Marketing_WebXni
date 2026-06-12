@@ -829,30 +829,79 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
   }
 
   if (agentSlug === 'editorial-review') {
-    const target = taskInput.review_target
-      ? {
+    // Single explicit target (e.g. triggered right after a post is generated).
+    if (taskInput.review_target || taskInput.post_id) {
+      const target = {
         id: taskInput.post_id ?? taskId,
-        title: `Post review: ${taskInput.review_target.title ?? taskInput.post_id ?? 'new draft'}`,
+        title: `Post review: ${taskInput.review_target?.title ?? taskInput.post_id ?? 'new draft'}`,
         status: 'pending_approval',
         agent_slug: 'autonomous-content',
         post_id: taskInput.post_id ?? null,
-        content: taskInput.review_target,
+        content: taskInput.review_target ?? null,
+      };
+      const result = await runStructuredAgent('editorialReview', agentSlug, backend, target, snapshot, taskInput);
+      await post('/internal/agency/content-review', {
+        agent_slug: agentSlug,
+        task_id: taskId,
+        post_id: taskInput.post_id ?? null,
+        severity: result.output.severity,
+        notes_json: result.output,
+      });
+      return {
+        summary: `Editorial review note saved with ${result.output.severity} severity.`,
+        agent_slug: agentSlug,
+        command_name: commandName,
+        reviewed_task_id: target.id,
+        backend: result.backend,
+        safety: { approval_status_changed: false, no_auto_publish: true },
+      };
+    }
+
+    // Autonomous sweep: pull the recent un-reviewed blog + social drafts and
+    // review the ACTUAL content of each, saving a per-post note. This is what
+    // makes Hermes "review blog posts and posts" instead of a placeholder task.
+    let queue = { items: [] };
+    try { queue = await request(`/internal/agency/review-queue?limit=${process.env.AGENCY_EDITORIAL_LIMIT || 8}`); } catch { /* fall back below */ }
+    const items = Array.isArray(queue.items) ? queue.items : [];
+    if (!items.length) {
+      const target = selectEditorialTarget(snapshot.tasks);
+      const result = await runStructuredAgent('editorialReview', agentSlug, backend, target, snapshot, taskInput);
+      await post('/internal/agency/content-review', { agent_slug: agentSlug, task_id: taskId, post_id: null, severity: result.output.severity, notes_json: result.output });
+      return { summary: `No new drafts to review. Saved general note (${result.output.severity}).`, agent_slug: agentSlug, command_name: commandName, backend: result.backend, safety: { approval_status_changed: false, no_auto_publish: true } };
+    }
+
+    const reviewed = [];
+    const severityRank = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
+    let worst = 'info';
+    for (const item of items) {
+      try {
+        const target = {
+          id: item.id,
+          title: `${item.content_type} review: ${item.title || item.client_name}`,
+          status: 'pending_approval',
+          post_id: item.id,
+          content: item,
+        };
+        const result = await runStructuredAgent('editorialReview', agentSlug, backend, target, snapshot, taskInput);
+        await post('/internal/agency/content-review', {
+          agent_slug: agentSlug,
+          task_id: taskId,
+          post_id: item.id,
+          severity: result.output.severity,
+          notes_json: result.output,
+        });
+        if ((severityRank[result.output.severity] ?? 0) > (severityRank[worst] ?? 0)) worst = result.output.severity;
+        reviewed.push({ post_id: item.id, client: item.client_name, content_type: item.content_type, severity: result.output.severity, backend: result.backend });
+      } catch (err) {
+        console.warn(`[editorial-review] ${item.id} failed: ${redactSecrets(err instanceof Error ? err.message : String(err)).slice(0, 160)}`);
       }
-      : selectEditorialTarget(snapshot.tasks);
-    const result = await runStructuredAgent('editorialReview', agentSlug, backend, target, snapshot, taskInput);
-    await post('/internal/agency/content-review', {
-      agent_slug: agentSlug,
-      task_id: taskId,
-      post_id: taskInput.post_id ?? null,
-      severity: result.output.severity,
-      notes_json: result.output,
-    });
+    }
     return {
-      summary: `Editorial review note saved with ${result.output.severity} severity.`,
+      summary: `Reviewed ${reviewed.length} draft(s) — highest severity ${worst}.`,
       agent_slug: agentSlug,
       command_name: commandName,
-      reviewed_task_id: target?.id ?? null,
-      backend: result.backend,
+      reviewed,
+      backend: reviewed[0]?.backend ?? backend,
       safety: { approval_status_changed: false, no_auto_publish: true },
     };
   }
