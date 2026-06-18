@@ -408,12 +408,18 @@ function parseBackendPriority(value) {
   }
 }
 
+// Complex agents lead with Claude (Hermes = gpt-5.4-mini is too small for these);
+// everything else leads with Hermes. Hermes always stays in the chain as a
+// fallback so a Claude outage never blocks the back-office.
+const COMPLEX_AGENTS = new Set(['blog-writer', 'strategy', 'editorial-review', 'system-reliability']);
+
 function preferredBackend(agentSlug, fallback, taskInput = {}) {
   const envOverride = process.env.AGENCY_TERMINAL_AGENT;
   if (envOverride && envOverride !== 'auto') return [envOverride];
 
+  const lead = COMPLEX_AGENTS.has(agentSlug) ? ['claude', 'hermes'] : ['hermes'];
   const chain = [
-    'hermes',
+    ...lead,
     ...(parseBackendPriority(taskInput.backend_priority) ?? []),
     ...(fallback && fallback !== 'internal' ? [fallback] : []),
     ...(AGENT_BACKEND_PRIORITY[agentSlug] ?? ['claude', 'openai']),
@@ -422,17 +428,54 @@ function preferredBackend(agentSlug, fallback, taskInput = {}) {
   return [...new Set(chain.filter(Boolean))];
 }
 
+// Returns true if the agent has spent its daily Claude budget, so we should
+// downgrade complex routing to the cheaper Hermes-first chain.
+async function isAgentOverBudget(agentSlug) {
+  try {
+    const r = await request(`/internal/agency/agent-spend/${encodeURIComponent(agentSlug)}`);
+    return !!r.over_budget;
+  } catch {
+    return false; // never block content on a budget-check failure
+  }
+}
+
 async function runStructuredAgent(kind, agentSlug, backend, client, snapshot, task, modeOverride) {
   const prompt = buildAgencyPrompt(kind, { client, snapshot, task });
   const schema = AGENCY_SCHEMAS[kind];
   const mode = modeOverride ?? (kind === 'blogDraft' ? 'blog' : 'default');
+
+  let chain = preferredBackend(agentSlug, backend, task);
+  // Budget cap: if a complex agent has exhausted its daily budget, drop Claude
+  // from the lead and let Hermes (cheap) handle it. Marvin still gates output,
+  // so a quality dip is acceptable vs. unbounded spend.
+  if (COMPLEX_AGENTS.has(agentSlug) && chain[0] === 'claude' && await isAgentOverBudget(agentSlug)) {
+    chain = chain.filter((b) => b !== 'claude');
+    await post('/internal/agency/notify-discord', {
+      title: 'Agency budget cap reached',
+      body: `${agentSlug} hit its daily budget — downgraded from Claude to ${chain[0] || 'fallback'} for this run.`,
+      color: 0xf59e0b,
+      agent_slug: agentSlug,
+    }).catch(() => {});
+  }
+
   const result = await runTerminalJsonAgent({
     prompt,
     schema,
-    preferredBackend: preferredBackend(agentSlug, backend, task),
+    preferredBackend: chain,
     skills: AGENT_HERMES_SKILLS[agentSlug] ? [AGENT_HERMES_SKILLS[agentSlug]] : [],
     mode,
   });
+
+  // Record spend (cost_usd may be null when the backend doesn't report it).
+  await post('/internal/agency/cost', {
+    agent_slug: agentSlug,
+    backend: result.backend,
+    mode,
+    cost_usd: typeof result.cost_usd === 'number' ? result.cost_usd : null,
+    run_id: _runId || null,
+    task_id: _taskId || null,
+  }).catch(() => {});
+
   if (result.fallback_used) {
     await post('/internal/agency/notify-discord', {
       title: 'Agency backend fallback used',
@@ -494,6 +537,29 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
 
   if (agentSlug === 'system-reliability' || agentSlug === 'security-sentinel') {
     const result = await runStructuredAgent('operationalReview', agentSlug, backend, snapshot.system_health || snapshot.overview, snapshot, taskInput);
+
+    // Code-fix PROPOSALS (system-reliability only) — post each to Discord for a
+    // human to act on. Never applied automatically; this preserves the
+    // "no arbitrary shell / no auto-deploy" invariant.
+    const proposals = Array.isArray(result.output.code_proposals) ? result.output.code_proposals : [];
+    for (const p of proposals.slice(0, 5)) {
+      if (!p || typeof p !== 'object' || !p.title) continue;
+      const riskColor = { low: 0x22c55e, medium: 0xf59e0b, high: 0xef4444 }[p.risk] ?? 0x6366f1;
+      const bodyLines = [
+        p.problem ? `**Problem:** ${p.problem}` : '',
+        p.root_cause ? `**Root cause:** ${p.root_cause}` : '',
+        p.suggested_fix ? `**Suggested fix:** ${p.suggested_fix}` : '',
+        Array.isArray(p.affected_files) && p.affected_files.length ? `**Files:** ${p.affected_files.join(', ')}` : '',
+        p.diff ? `\n\`\`\`diff\n${String(p.diff).slice(0, 1200)}\n\`\`\`` : '',
+      ].filter(Boolean);
+      await post('/internal/agency/notify-discord', {
+        title: `🛠️ Code-fix PROPOSAL (not applied) — ${String(p.title).slice(0, 200)}`,
+        body: redactSecrets(bodyLines.join('\n')).slice(0, 3800),
+        color: riskColor,
+        agent_slug: agentSlug,
+      }).catch((err) => console.warn('[system-reliability] proposal notify failed:', err.message));
+    }
+
     return {
       summary: result.output.summary,
       agent_slug: agentSlug,
@@ -501,8 +567,9 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
       risk_level: result.output.severity,
       findings: result.output.findings,
       recommended_actions: result.output.recommended_actions,
+      code_proposals: proposals,
       backend: result.backend,
-      safety: { no_arbitrary_shell: true, preserve_marvin_approval: true, preserve_designer_gate: true, no_auto_publish: true },
+      safety: { no_arbitrary_shell: true, preserve_marvin_approval: true, preserve_designer_gate: true, no_auto_publish: true, code_proposals_applied: false },
     };
   }
 
@@ -739,10 +806,19 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
 
   if (agentSlug === 'blog-writer') {
     if (!ALLOW_DRAFT_POSTS) {
+      // Loud no-op: drafts are turned OFF. Surface WHY instead of a misleading
+      // "blog review completed" summary so operators know the knob to flip.
       return {
         ...buildResult(agentSlug, commandName, snapshot),
-        ai_execution_enabled: true,
+        summary: 'Blog-writer produced 0 drafts: draft creation is DISABLED (set AGENCY_ALLOW_DRAFT_POSTS=1 to enable).',
         draft_creation_enabled: false,
+        ai_execution_enabled: true,
+        findings: [{
+          severity: 'medium',
+          title: 'Blog drafts disabled by config',
+          description: 'AGENCY_ALLOW_DRAFT_POSTS is not set to 1, so the blog-writer agent skipped all drafting and saved nothing.',
+          recommended_action: 'Set AGENCY_ALLOW_DRAFT_POSTS=1 in the runner environment to enable autonomous blog drafting.',
+        }],
       };
     }
     const blogLimit = Number(process.env.AGENCY_DAILY_BLOG_LIMIT || 3);
@@ -752,7 +828,19 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
         return score(b) - score(a);
       })
       .slice(0, blogLimit);
-    if (!clients.length) return buildResult(agentSlug, commandName, snapshot);
+    if (!clients.length) {
+      // Loud no-op: nothing to write because there are no eligible clients.
+      return {
+        ...buildResult(agentSlug, commandName, snapshot),
+        summary: 'Blog-writer produced 0 drafts: 0 eligible clients in coverage snapshot (none active or all filtered out).',
+        findings: [{
+          severity: 'medium',
+          title: 'Blog-writer found 0 eligible clients',
+          description: 'snapshot.coverage returned no clients for blog drafting. Likely no active clients, or all lack research/strategy.',
+          recommended_action: 'Run client-research/strategy first, or confirm active clients exist in the dashboard.',
+        }],
+      };
+    }
 
     const savedBlogs = [];
     const blogErrors = [];
@@ -815,15 +903,28 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
     }
     const clientNames = [...new Set(savedBlogs.map((s) => s.client_name))];
     const summary = `${savedBlogs.length} blog draft(s) for ${clientNames.length} client(s)${blogErrors.length ? ` (${blogErrors.length} skipped)` : ''}.`;
-    if (!savedBlogs.length && blogErrors.length) {
-      throw new Error(`${summary}; first error: ${blogErrors[0].error}`);
+    // Distinguish non-transient skips (missing brand brief — retrying won't help)
+    // from real errors (backend failure — worth a retry). Only hard-fail on the
+    // latter so the queue's retry/dead-letter isn't burned on known config gaps.
+    const isSkip = (e) => /no brand brief|needs client research/i.test(e.error || '');
+    const realErrors = blogErrors.filter((e) => !isSkip(e));
+    if (!savedBlogs.length && realErrors.length) {
+      throw new Error(`${summary}; first error: ${realErrors[0].error}`);
     }
     return {
-      summary,
+      summary: savedBlogs.length
+        ? summary
+        : `Blog-writer produced 0 drafts: all ${blogErrors.length} client(s) skipped (missing brand brief — run client research/strategy first).`,
       agent_slug: agentSlug,
       command_name: commandName,
       saved_blogs: savedBlogs,
       client_errors: blogErrors,
+      findings: (!savedBlogs.length && blogErrors.length) ? [{
+        severity: 'medium',
+        title: 'Blog-writer skipped all clients (no brand brief)',
+        description: blogErrors.map((e) => `${e.client}: ${e.error}`).join('; ').slice(0, 800),
+        recommended_action: 'Run client-research and strategy for these clients so a brand brief exists before drafting.',
+      }] : undefined,
       safety: { status: 'draft', wordpress_published: false, no_auto_publish: true },
     };
   }

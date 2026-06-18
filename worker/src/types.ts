@@ -18,6 +18,7 @@ export interface Env {
   AGENT_INTERNAL_TOKEN?: string;
   AGENCY_SCHEDULER_ENABLED?:   string;
   AGENCY_NOTIFY_CHANNEL_ID?:   string;
+  AGENCY_AGENT_DAILY_BUDGET_USD?: string;
   R2_MEDIA_PUBLIC_URL: string;
   NOTION_API_TOKEN?: string;       // optional — only needed for Notion import
   // Discord
@@ -373,6 +374,11 @@ export interface ApprovedCommandJobRow {
   started_at:        number | null;
   completed_at:      number | null;
   updated_at:        number;
+  attempts?:         number;
+  max_attempts?:     number;
+  lease_expires_at?: number | null;
+  next_retry_at?:    number | null;
+  last_error_at?:    number | null;
 }
 
 export interface AgentDefinitionRow {

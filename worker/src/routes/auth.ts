@@ -32,6 +32,50 @@ function clientIp(c: { req: { header(h: string): string | undefined } }): string
   return c.req.header('CF-Connecting-IP') ?? c.req.header('X-Forwarded-For') ?? 'unknown';
 }
 
+// ── Brute-force lockout (KV-backed) ──────────────────────────────────────────
+// Throttles repeated failed password/TOTP attempts. Keyed by identity so a
+// single account is protected regardless of source IP. After LOCKOUT_THRESHOLD
+// failures within LOCKOUT_WINDOW, further attempts are refused until the window
+// expires. Defensive only — never weakens a valid credential check.
+const LOCKOUT_THRESHOLD = 8;          // failed attempts before lockout
+const LOCKOUT_WINDOW    = 15 * 60;    // seconds; both counter TTL and lockout duration
+
+function lockoutKey(scope: string, id: string): string {
+  return `login_fail:${scope}:${id.toLowerCase()}`;
+}
+
+/** Returns remaining lockout seconds (>0 means currently locked out). */
+async function lockoutRemaining(kv: KVNamespace, scope: string, id: string): Promise<number> {
+  try {
+    const raw = await kv.get(lockoutKey(scope, id));
+    if (!raw) return 0;
+    const { count, until } = JSON.parse(raw) as { count: number; until: number };
+    if (count >= LOCKOUT_THRESHOLD) {
+      const now = Math.floor(Date.now() / 1000);
+      return Math.max(0, until - now);
+    }
+    return 0;
+  } catch { return 0; }
+}
+
+async function recordFailure(kv: KVNamespace, scope: string, id: string): Promise<void> {
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const raw = await kv.get(lockoutKey(scope, id));
+    const prev = raw ? JSON.parse(raw) as { count: number } : { count: 0 };
+    const count = (prev.count ?? 0) + 1;
+    await kv.put(
+      lockoutKey(scope, id),
+      JSON.stringify({ count, until: now + LOCKOUT_WINDOW }),
+      { expirationTtl: LOCKOUT_WINDOW },
+    );
+  } catch { /* non-fatal */ }
+}
+
+async function clearFailures(kv: KVNamespace, scope: string, id: string): Promise<void> {
+  try { await kv.delete(lockoutKey(scope, id)); } catch { /* non-fatal */ }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/auth/login
 // ─────────────────────────────────────────────────────────────────────────────
@@ -57,6 +101,13 @@ authRoutes.post('/login', async (c) => {
   const ip = clientIp(c);
   const ua = c.req.header('User-Agent') ?? '';
 
+  // Refuse early if this account is currently locked out from repeated failures.
+  const locked = await lockoutRemaining(c.env.KV_BINDING, 'login', email);
+  if (locked > 0) {
+    await writeAudit(c.env.DB, { email, ip, ua, success: false, fail_reason: 'locked_out' });
+    return c.json({ error: `Too many failed attempts. Try again in ${Math.ceil(locked / 60)} minute(s).` }, 429);
+  }
+
   const user = await c.env.DB
     .prepare('SELECT id, email, name, role, password_hash, is_active, totp_enabled, totp_secret, client_id FROM users WHERE email = ?')
     .bind(email.toLowerCase())
@@ -64,15 +115,20 @@ authRoutes.post('/login', async (c) => {
     .catch(() => null);
 
   if (!user || user.is_active === 0) {
+    await recordFailure(c.env.KV_BINDING, 'login', email);
     await writeAudit(c.env.DB, { email, ip, ua, success: false, fail_reason: 'invalid_credentials' });
     return c.json({ error: 'Invalid credentials' }, 401);
   }
 
   const valid = await verifyPassword(password, user.password_hash).catch(() => false);
   if (!valid) {
+    await recordFailure(c.env.KV_BINDING, 'login', email);
     await writeAudit(c.env.DB, { user_id: user.id, email, ip, ua, success: false, fail_reason: 'wrong_password' });
     return c.json({ error: 'Invalid credentials' }, 401);
   }
+
+  // Password OK — clear the password-failure counter (2FA has its own counter).
+  await clearFailures(c.env.KV_BINDING, 'login', email);
 
   // 2FA: issue a short-lived pending token — client must call /2fa/verify
   if (user.totp_enabled === 1) {
@@ -114,6 +170,13 @@ authRoutes.post('/2fa/verify', async (c) => {
 
   const pending = JSON.parse(raw) as { userId: string; email: string; name: string; role: string; client_id: string | null };
 
+  // Lockout on repeated invalid TOTP codes (keyed by user id).
+  const totpLocked = await lockoutRemaining(c.env.KV_BINDING, 'totp', pending.userId);
+  if (totpLocked > 0) {
+    await writeAudit(c.env.DB, { user_id: pending.userId, email: pending.email, ip: clientIp(c), success: false, fail_reason: 'totp_locked_out' });
+    return c.json({ error: `Too many invalid codes. Try again in ${Math.ceil(totpLocked / 60)} minute(s).` }, 429);
+  }
+
   const userRow = await c.env.DB
     .prepare('SELECT totp_secret, is_active FROM users WHERE id = ?')
     .bind(pending.userId)
@@ -124,10 +187,12 @@ authRoutes.post('/2fa/verify', async (c) => {
   }
 
   if (!await verifyTotp(userRow.totp_secret, code.trim())) {
+    await recordFailure(c.env.KV_BINDING, 'totp', pending.userId);
     await writeAudit(c.env.DB, { user_id: pending.userId, email: pending.email, ip: clientIp(c), success: false, fail_reason: 'invalid_totp' });
     return c.json({ error: 'Invalid authentication code' }, 401);
   }
 
+  await clearFailures(c.env.KV_BINDING, 'totp', pending.userId);
   await c.env.KV_BINDING.delete(`2fa_pending:${totp_token}`);
 
   const sessionId = crypto.randomUUID();
