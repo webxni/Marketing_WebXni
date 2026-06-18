@@ -90,11 +90,11 @@ app.all('/*', async (c) => {
 import { runPosting } from './loader/posting-run';
 import { runRecurringGbp } from './loader/recurring-gbp-run';
 import { runContentRequests } from './loader/content-request-run';
-import { runAgencyScheduler } from './loader/agency-scheduler';
+import { runAgencyScheduler, runAgentStaleSweep } from './loader/agency-scheduler';
 import { runFetchUrls } from './routes/run';
 import { notifyPostingComplete, discordDM, discordSend, DISCORD_COLORS } from './services/discord';
 import { runPlatformHealthCheck, buildHealthDiscordMessage } from './modules/platform-health';
-import { getLatestAuditMarker, writeAuditLog } from './db/queries';
+import { getLatestAuditMarker, writeAuditLog, reclaimStuckApprovedJobs, healStuckGenerationRuns } from './db/queries';
 
 async function resolveOpenAiKeyCron(env: Env): Promise<string> {
   let key = env.OPENAI_API_KEY || '';
@@ -176,6 +176,48 @@ export default {
         }
       })());
     } else if (event.cron === '*/1 * * * *') {
+      // Every minute — reclaim dead approved-command jobs so a crashed runner
+      // never freezes the queue. Lightweight; runs regardless of cron_enabled.
+      ctx.waitUntil((async () => {
+        try {
+          // Proactive self-heal: time out generation runs that died mid-flight
+          // so the dashboard/queue don't show a permanently "running" ghost.
+          await healStuckGenerationRuns(env.DB).catch((e) => console.error('healStuckGenerationRuns:', e));
+          const reaped = await reclaimStuckApprovedJobs(env.DB);
+          const total = reaped.requeued.length + reaped.dead_lettered.length;
+          if (total > 0) {
+            console.log(`Approved-job reaper: requeued=${reaped.requeued.length} dead_lettered=${reaped.dead_lettered.length}`);
+            if (env.DISCORD_BOT_TOKEN && env.DISCORD_CHANNEL_ID) {
+              const parts: string[] = [];
+              if (reaped.requeued.length) parts.push(`♻️ Requeued ${reaped.requeued.length} stuck job(s)`);
+              if (reaped.dead_lettered.length) parts.push(`💀 Dead-lettered ${reaped.dead_lettered.length} job(s) (max attempts reached — needs review)`);
+              await discordSend({
+                channelId: env.DISCORD_CHANNEL_ID, token: env.DISCORD_BOT_TOKEN,
+                embeds: [{ title: '🔧 Approved-Job Reaper', description: parts.join('\n'), color: reaped.dead_lettered.length ? 0xef4444 : 0xf59e0b }],
+              }).catch(() => { /* non-critical */ });
+            }
+          }
+        } catch (err) {
+          console.error('Approved-job reaper error:', err);
+        }
+      })());
+
+      // Every minute — near-real-time agent heartbeat staleness sweep + alert.
+      ctx.waitUntil((async () => {
+        try {
+          const staleMarked = await runAgentStaleSweep(env);
+          if (staleMarked.length > 0 && env.DISCORD_BOT_TOKEN && env.DISCORD_CHANNEL_ID) {
+            const staleList = staleMarked.map((s) => `• \`${s}\``).join('\n');
+            await discordSend({
+              channelId: env.DISCORD_CHANNEL_ID, token: env.DISCORD_BOT_TOKEN,
+              embeds: [{ title: '⚠️ Agent Heartbeat Alert', description: `${staleMarked.length} agent(s) marked stale:\n${staleList}`, color: 0xf59e0b }],
+            }).catch(() => { /* non-critical */ });
+          }
+        } catch (err) {
+          console.error('Agent stale sweep error:', err);
+        }
+      })());
+
       // Every minute — exact-time posting (only runs if cron_enabled=true in settings)
       ctx.waitUntil((async () => {
         try {

@@ -833,8 +833,16 @@ discordInternalRoute.post('/approved-jobs/:id/log', async (c) => {
   const level = body.level ?? 'INFO';
   const message = body.message?.slice(0, 2000) ?? '';
   if (!message) return c.json({ error: 'message required' }, 400);
-  if (body.run_id) await appendGenerationLog(c.env.DB, body.run_id, level, message);
-  await updateApprovedCommandJobProgress(c.env.DB, c.req.param('id'), message);
+  // Logging is best-effort: a transient D1 write conflict (many concurrent
+  // slots appending to the same generation_runs row) must NOT 500 back to the
+  // runner, or it would flip an already-saved slot to "failed" (the 80/81 bug).
+  try {
+    if (body.run_id) await appendGenerationLog(c.env.DB, body.run_id, level, message);
+    await updateApprovedCommandJobProgress(c.env.DB, c.req.param('id'), message);
+  } catch (err) {
+    console.warn(`[approved-jobs/log] swallowed write error: ${err instanceof Error ? err.message : String(err)}`);
+    return c.json({ ok: true, logged: false });
+  }
   return c.json({ ok: true });
 });
 

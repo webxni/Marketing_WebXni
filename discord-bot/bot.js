@@ -374,7 +374,12 @@ client.once(Events.ClientReady, (c) => {
   startApprovedJobPoller().catch((err) => console.error('[jobs] poller init error:', err));
 });
 
-let approvedJobBusy = false;
+// Concurrency cap for approved jobs. Default 1 preserves today's one-at-a-time
+// behavior (terminal jobs already run 10 slots concurrently, so raising this
+// multiplies machine load — opt in via MAX_CONCURRENT_JOBS only if the host
+// can take it). Lets a quick agency job avoid being stuck behind a long run.
+const MAX_CONCURRENT_JOBS = Math.max(1, parseInt(process.env.MAX_CONCURRENT_JOBS || '1', 10));
+let approvedJobsInFlight = 0;
 
 async function postInternal(pathname, body) {
   const res = await fetch(`${API_BASE_URL}${pathname}`, {
@@ -582,18 +587,22 @@ async function runApprovedJob(job) {
 
 async function startApprovedJobPoller() {
   setInterval(async () => {
-    if (approvedJobBusy) return;
-    approvedJobBusy = true;
+    if (approvedJobsInFlight >= MAX_CONCURRENT_JOBS) return;
+    let claimed;
     try {
-      const claimed = await postInternal('/internal/discord/approved-jobs/claim', { runner_id: RUNNER_ID });
-      if (!claimed.job) return;
-      console.log(`[jobs] claimed ${claimed.job.id} (${claimed.job.command_name})`);
-      await runApprovedJob(claimed.job);
+      claimed = await postInternal('/internal/discord/approved-jobs/claim', { runner_id: RUNNER_ID });
     } catch (err) {
-      console.error('[jobs] runner error:', err.message);
-    } finally {
-      approvedJobBusy = false;
+      console.error('[jobs] claim error:', err.message);
+      return;
     }
+    if (!claimed.job) return;
+    approvedJobsInFlight++;
+    console.log(`[jobs] claimed ${claimed.job.id} (${claimed.job.command_name}) — ${approvedJobsInFlight}/${MAX_CONCURRENT_JOBS} in flight`);
+    // Run without blocking the poll loop so additional jobs can be claimed up
+    // to the concurrency cap. Each job tracks its own completion.
+    runApprovedJob(claimed.job)
+      .catch((err) => console.error('[jobs] runner error:', err.message))
+      .finally(() => { approvedJobsInFlight--; });
   }, 10000);
 }
 

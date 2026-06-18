@@ -135,8 +135,12 @@ function runClaude(prompt, schema, mode) {
   return runSpawnJson('claude', args, (stdout) => {
     const wrapper = JSON.parse(stdout.trim());
     if (wrapper?.is_error) throw new Error(`Claude error: api_status=${wrapper.api_error_status} stop=${wrapper.stop_reason}`);
-    if (wrapper?.structured_output && typeof wrapper.structured_output === 'object') return wrapper.structured_output;
-    return parseJsonFromText(wrapper?.result || stdout);
+    // Claude Code's JSON wrapper reports actual spend — capture it.
+    const cost_usd = typeof wrapper?.total_cost_usd === 'number' ? wrapper.total_cost_usd : null;
+    const output = (wrapper?.structured_output && typeof wrapper.structured_output === 'object')
+      ? wrapper.structured_output
+      : parseJsonFromText(wrapper?.result || stdout);
+    return { output, cost_usd };
   }, { env });
 }
 
@@ -145,7 +149,8 @@ function runGemini(prompt, schema, mode) {
   const model = mode === 'blog'
     ? (process.env.GEMINI_BLOG_MODEL || 'gemini-2.5-pro')
     : (process.env.GEMINI_SOCIAL_MODEL || 'gemini-2.5-flash');
-  return runSpawnJson('gemini', ['-p', wrappedPrompt, '-o', 'json', '-m', model], parseJsonFromText);
+  return runSpawnJson('gemini', ['-p', wrappedPrompt, '-o', 'json', '-m', model],
+    (stdout) => ({ output: parseJsonFromText(stdout), cost_usd: null }));
 }
 
 function runHermes(prompt, schema, mode, skills = []) {
@@ -164,7 +169,7 @@ function runHermes(prompt, schema, mode, skills = []) {
     || (mode === 'blog' ? process.env.HERMES_BLOG_MODEL : undefined);
   if (provider) args.push('--provider', provider);
   if (model) args.push('--model', model);
-  return runSpawnJson(hermesCmd, args, parseJsonFromText);
+  return runSpawnJson(hermesCmd, args, (stdout) => ({ output: parseJsonFromText(stdout), cost_usd: null }));
 }
 
 function runCodex(prompt, schema, mode) {
@@ -188,10 +193,16 @@ function runCodex(prompt, schema, mode) {
   if (process.env.CODEX_BLOG_MODEL || process.env.CODEX_SOCIAL_MODEL || process.env.CODEX_MODEL) {
     args.splice(args.length - 1, 0, '-m', process.env.CODEX_MODEL || configuredModel);
   }
-  return runSpawnJson('codex', args, () => parseJsonFromText(readFileSync(outputPath, 'utf8')), {
+  return runSpawnJson('codex', args, () => ({ output: parseJsonFromText(readFileSync(outputPath, 'utf8')), cost_usd: null }), {
     cleanup: () => rmSync(workDir, { recursive: true, force: true }),
   });
 }
+
+// Rough per-1M-token USD prices for cost estimation (input, output).
+const OPENAI_PRICES = {
+  'gpt-4o':      { in: 2.5,  out: 10 },
+  'gpt-4o-mini': { in: 0.15, out: 0.6 },
+};
 
 async function runOpenAI(prompt, schema, mode) {
   const apiKey = process.env.OPENAI_API_KEY;
@@ -227,7 +238,14 @@ async function runOpenAI(prompt, schema, mode) {
   const data = await res.json();
   const text = data.choices?.[0]?.message?.content;
   if (!text) throw new Error('OpenAI returned empty response');
-  return parseJsonFromText(text);
+  // Estimate spend from token usage.
+  let cost_usd = null;
+  const usage = data.usage;
+  const price = OPENAI_PRICES[model];
+  if (usage && price) {
+    cost_usd = (usage.prompt_tokens / 1e6) * price.in + (usage.completion_tokens / 1e6) * price.out;
+  }
+  return { output: parseJsonFromText(text), cost_usd };
 }
 
 function runSpawnJson(command, args, parser, extra = {}) {
@@ -300,17 +318,20 @@ export async function runTerminalJsonAgent({ prompt, schema, preferredBackend, m
 
   for (const backend of priority) {
     try {
-      let output;
-      if (backend === 'hermes') output = await runHermes(prompt, schema, mode, skills);
-      else if (backend === 'claude') output = await runClaude(prompt, schema, mode);
-      else if (backend === 'gemini') output = await runGemini(prompt, schema, mode);
-      else if (backend === 'codex') output = await runCodex(prompt, schema, mode);
-      else if (backend === 'openai') output = await runOpenAI(prompt, schema, mode);
+      let res;
+      if (backend === 'hermes') res = await runHermes(prompt, schema, mode, skills);
+      else if (backend === 'claude') res = await runClaude(prompt, schema, mode);
+      else if (backend === 'gemini') res = await runGemini(prompt, schema, mode);
+      else if (backend === 'codex') res = await runCodex(prompt, schema, mode);
+      else if (backend === 'openai') res = await runOpenAI(prompt, schema, mode);
       else throw new Error(`Unknown backend: ${backend}`);
-      attempts.push({ backend, status: 'completed' });
+      const cost_usd = res && typeof res === 'object' && 'cost_usd' in res ? res.cost_usd : null;
+      const output = res && typeof res === 'object' && 'output' in res ? res.output : res;
+      attempts.push({ backend, status: 'completed', cost_usd });
       return {
         backend,
         output,
+        cost_usd,
         attempts,
         fallback_used: attempts.length > 1,
         primary_backend: priority[0] ?? backend,

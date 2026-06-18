@@ -1078,24 +1078,35 @@ export async function listApprovedCommandJobs(
   return rows.results;
 }
 
+// Lease window: how long a claimed/running job may go without a progress
+// update before the reaper considers it dead and reclaims it.
+const APPROVED_JOB_LEASE_SECONDS = 900; // 15 minutes
+
 export async function claimNextApprovedCommandJob(
   db: D1Database,
   runnerId: string,
 ): Promise<ApprovedCommandJobRow | null> {
+  const now = Math.floor(Date.now() / 1000);
+  // Eligible: queued AND past any retry-backoff window.
   const next = await db
     .prepare(`SELECT id FROM approved_command_jobs
               WHERE status = 'queued'
+                AND (next_retry_at IS NULL OR next_retry_at <= ?)
               ORDER BY created_at ASC
               LIMIT 1`)
+    .bind(now)
     .first<{ id: string }>();
   if (!next?.id) return null;
 
-  const now = Math.floor(Date.now() / 1000);
+  const lease = now + APPROVED_JOB_LEASE_SECONDS;
+  // Atomic claim: increment attempts and set a lease. WHERE status='queued'
+  // guarantees only one runner wins the row.
   const claimed = await db.prepare(
     `UPDATE approved_command_jobs
-     SET status = 'claimed', claimed_by = ?, claimed_at = ?, updated_at = ?
+     SET status = 'claimed', claimed_by = ?, claimed_at = ?,
+         attempts = attempts + 1, lease_expires_at = ?, updated_at = ?
      WHERE id = ? AND status = 'queued'`,
-  ).bind(runnerId, now, now, next.id).run();
+  ).bind(runnerId, now, lease, now, next.id).run();
 
   if (claimed.meta.changes !== 1) return null;
   return await getApprovedCommandJobById(db, next.id);
@@ -1107,11 +1118,13 @@ export async function markApprovedCommandJobRunning(
   commandLine: string,
 ): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
+  const lease = now + APPROVED_JOB_LEASE_SECONDS;
   await db.prepare(
     `UPDATE approved_command_jobs
-     SET status = 'running', command_line = ?, started_at = COALESCE(started_at, ?), updated_at = ?
+     SET status = 'running', command_line = ?, started_at = COALESCE(started_at, ?),
+         lease_expires_at = ?, updated_at = ?
      WHERE id = ?`,
-  ).bind(commandLine, now, now, id).run();
+  ).bind(commandLine, now, lease, now, id).run();
 }
 
 export async function updateApprovedCommandJobProgress(
@@ -1120,11 +1133,14 @@ export async function updateApprovedCommandJobProgress(
   message: string,
 ): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
+  const lease = now + APPROVED_JOB_LEASE_SECONDS;
+  // Every progress ping (incl. heartbeat) extends the lease so a healthy,
+  // long-running job is never reaped out from under itself.
   await db.prepare(
     `UPDATE approved_command_jobs
-     SET progress_message = ?, updated_at = ?
+     SET progress_message = ?, lease_expires_at = ?, updated_at = ?
      WHERE id = ?`,
-  ).bind(message, now, id).run();
+  ).bind(message, lease, now, id).run();
 }
 
 export async function completeApprovedCommandJob(
@@ -1135,11 +1151,123 @@ export async function completeApprovedCommandJob(
   error_log: string | null,
 ): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
+
+  // On failure, retry with exponential backoff until max_attempts, then
+  // dead-letter. Completed/cancelled are terminal.
+  if (status === 'failed') {
+    const row = await db
+      .prepare('SELECT attempts, max_attempts FROM approved_command_jobs WHERE id = ?')
+      .bind(id)
+      .first<{ attempts: number; max_attempts: number }>();
+    const attempts = row?.attempts ?? 1;
+    const maxAttempts = row?.max_attempts ?? 3;
+    if (attempts < maxAttempts) {
+      // Backoff: 1m, 4m, 9m ... capped at 30m.
+      const backoff = Math.min(attempts * attempts * 60, 1800);
+      await db.prepare(
+        `UPDATE approved_command_jobs
+         SET status = 'queued', error_log = ?, next_retry_at = ?,
+             lease_expires_at = NULL, claimed_by = NULL,
+             last_error_at = ?, updated_at = ?
+         WHERE id = ?`,
+      ).bind(error_log, now + backoff, now, now, id).run();
+      return;
+    }
+    // Exhausted — dead-letter for human review.
+    await db.prepare(
+      `UPDATE approved_command_jobs
+       SET status = 'dead_letter', error_log = ?, completed_at = ?,
+           last_error_at = ?, updated_at = ?
+       WHERE id = ?`,
+    ).bind(error_log, now, now, now, id).run();
+    return;
+  }
+
   await db.prepare(
     `UPDATE approved_command_jobs
      SET status = ?, result_json = ?, error_log = ?, completed_at = ?, updated_at = ?
      WHERE id = ?`,
   ).bind(status, result_json, error_log, now, now, id).run();
+}
+
+/**
+ * Reaper — reclaim approved-command jobs whose runner died.
+ * A 'claimed'/'running' job whose lease_expires_at has passed is returned to
+ * 'queued' (if attempts remain) or moved to 'dead_letter'. Safe to call every
+ * minute from cron. Returns the rows it acted on for alerting.
+ */
+export async function reclaimStuckApprovedJobs(
+  db: D1Database,
+): Promise<{ requeued: string[]; dead_lettered: string[] }> {
+  const now = Math.floor(Date.now() / 1000);
+  const stuck = await db
+    .prepare(`SELECT id, attempts, max_attempts, command_name FROM approved_command_jobs
+              WHERE status IN ('claimed', 'running')
+                AND lease_expires_at IS NOT NULL
+                AND lease_expires_at < ?`)
+    .bind(now)
+    .all<{ id: string; attempts: number; max_attempts: number; command_name: string }>();
+
+  const requeued: string[] = [];
+  const dead_lettered: string[] = [];
+  for (const job of stuck.results) {
+    const msg = `Lease expired (runner presumed dead) at ${new Date(now * 1000).toISOString()}`;
+    if ((job.attempts ?? 1) < (job.max_attempts ?? 3)) {
+      const backoff = Math.min((job.attempts ?? 1) * (job.attempts ?? 1) * 60, 1800);
+      await db.prepare(
+        `UPDATE approved_command_jobs
+         SET status = 'queued', claimed_by = NULL, lease_expires_at = NULL,
+             next_retry_at = ?, last_error_at = ?,
+             error_log = substr(COALESCE(error_log || char(10), '') || ?, -40000),
+             updated_at = ?
+         WHERE id = ? AND status IN ('claimed','running')`,
+      ).bind(now + backoff, now, msg, now, job.id).run();
+      requeued.push(job.id);
+    } else {
+      await db.prepare(
+        `UPDATE approved_command_jobs
+         SET status = 'dead_letter', completed_at = ?, last_error_at = ?,
+             error_log = substr(COALESCE(error_log || char(10), '') || ?, -40000),
+             updated_at = ?
+         WHERE id = ? AND status IN ('claimed','running')`,
+      ).bind(now, now, `${msg} — max attempts reached`, now, job.id).run();
+      dead_lettered.push(job.id);
+    }
+  }
+  return { requeued, dead_lettered };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AGENCY BACKEND COST TRACKING
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function recordAgencyCost(
+  db: D1Database,
+  data: { agent_slug: string; backend: string; mode?: string | null; cost_usd?: number | null; run_id?: string | null; task_id?: string | null },
+): Promise<void> {
+  await db.prepare(
+    `INSERT INTO agency_cost_log (id, agent_slug, backend, mode, cost_usd, run_id, task_id, created_at)
+     VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(
+    data.agent_slug,
+    data.backend,
+    data.mode ?? null,
+    data.cost_usd ?? null,
+    data.run_id ?? null,
+    data.task_id ?? null,
+    Math.floor(Date.now() / 1000),
+  ).run();
+}
+
+/** Total known USD spend for an agent since UTC midnight (NULL costs ignored). */
+export async function getAgentSpendToday(db: D1Database, agentSlug: string): Promise<number> {
+  const midnight = Math.floor(new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00Z').getTime() / 1000);
+  const row = await db
+    .prepare(`SELECT COALESCE(SUM(cost_usd), 0) AS total FROM agency_cost_log
+              WHERE agent_slug = ? AND created_at >= ?`)
+    .bind(agentSlug, midnight)
+    .first<{ total: number }>();
+  return row?.total ?? 0;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

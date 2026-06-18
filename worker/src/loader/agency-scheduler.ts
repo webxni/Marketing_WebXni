@@ -25,15 +25,18 @@ const AGENT_COMMANDS: Record<string, string> = {
   'client-onboarding': 'agency_client_onboarding',
 };
 
+// Complex agents lead with Claude (Hermes is gpt-5.4-mini — too small for
+// long-form/strategy/editorial/self-review work). Simpler agents lead with
+// Hermes. Hermes always remains in the chain as a fallback.
 const AGENT_BACKEND_PRIORITY: Record<string, string[]> = {
   'agency-orchestrator': ['hermes', 'claude_code', 'codex', 'openai'],
-  'system-reliability': ['hermes', 'claude_code', 'codex', 'openai'],
+  'system-reliability': ['claude_code', 'hermes', 'codex', 'openai'],
   'security-sentinel': ['hermes', 'claude_code', 'codex', 'openai'],
   'client-research': ['hermes', 'gemini_cli', 'openai'],
-  strategy: ['hermes', 'claude_code', 'codex', 'openai'],
+  strategy: ['claude_code', 'hermes', 'codex', 'openai'],
   'social-copy': ['hermes', 'claude_code', 'codex', 'openai'],
-  'blog-writer': ['hermes', 'claude_code', 'codex', 'openai'],
-  'editorial-review': ['hermes', 'claude_code', 'codex', 'openai'],
+  'blog-writer': ['claude_code', 'hermes', 'codex', 'openai'],
+  'editorial-review': ['claude_code', 'hermes', 'codex', 'openai'],
   'client-onboarding': ['hermes', 'claude_code', 'codex', 'openai'],
 };
 
@@ -89,32 +92,46 @@ function requestedAgents(now: Date): string[] {
   return DAILY_REVIEW_AGENTS;
 }
 
+/**
+ * Detect agents whose heartbeat window has elapsed, mark them stale, record a
+ * finding + log line, and return the slugs marked. Centralized so both the
+ * weekend scheduler and the per-minute cron use identical logic.
+ */
+export async function runAgentStaleSweep(env: Env): Promise<string[]> {
+  const staleAgents = await checkStaleAgents(env.DB);
+  const stale_marked: string[] = [];
+  for (const agent of staleAgents) {
+    const msg = `Missed heartbeat window (${agent.stale_after_minutes}m)`;
+    await markAgentStale(env.DB, agent.slug, msg);
+    await createAgentFinding(env.DB, {
+      agent_slug: agent.slug,
+      task_id: null,
+      client_id: null,
+      severity: 'medium',
+      title: `${agent.name} is stale`,
+      finding_json: JSON.stringify({
+        last_heartbeat_at: agent.last_heartbeat_at,
+        stale_after_minutes: agent.stale_after_minutes,
+        previous_status: agent.heartbeat_status,
+      }),
+    });
+    await appendAgencyLog(env.DB, {
+      agent_slug: agent.slug,
+      task_id: null,
+      status: 'stale',
+      step: 'stale_check',
+      summary: `${agent.name} marked stale — ${msg}`,
+    });
+    stale_marked.push(agent.slug);
+  }
+  return stale_marked;
+}
+
 export async function runAgencyScheduler(env: Env, now = new Date()): Promise<AgencySchedulerStats> {
   const requested = requestedAgents(now);
   const enabled = await agencySchedulerEnabled(env);
   if (!enabled) {
-    const staleAgents = await checkStaleAgents(env.DB);
-    const stale_marked: string[] = [];
-    for (const agent of staleAgents) {
-      const msg = `Missed heartbeat window (${agent.stale_after_minutes}m)`;
-      await markAgentStale(env.DB, agent.slug, msg);
-      await createAgentFinding(env.DB, {
-        agent_slug: agent.slug,
-        task_id: null,
-        client_id: null,
-        severity: 'medium',
-        title: `${agent.name} is stale`,
-        finding_json: JSON.stringify({ last_heartbeat_at: agent.last_heartbeat_at, stale_after_minutes: agent.stale_after_minutes }),
-      });
-      await appendAgencyLog(env.DB, {
-        agent_slug: agent.slug,
-        task_id: null,
-        status: 'stale',
-        step: 'stale_check',
-        summary: `${agent.name} marked stale — ${msg}`,
-      });
-      stale_marked.push(agent.slug);
-    }
+    const stale_marked = await runAgentStaleSweep(env);
     const health_summary = await getAgentHealthSummary(env.DB);
     return { enabled, requested, queued: 0, skipped: requested.length, stale_marked, health_summary };
   }
@@ -182,32 +199,7 @@ export async function runAgencyScheduler(env: Env, now = new Date()): Promise<Ag
   }
 
   // Stale detection — runs every cron tick regardless of scheduler enabled flag
-  const staleAgents = await checkStaleAgents(env.DB);
-  const stale_marked: string[] = [];
-  for (const agent of staleAgents) {
-    const msg = `Missed heartbeat window (${agent.stale_after_minutes}m)`;
-    await markAgentStale(env.DB, agent.slug, msg);
-    await createAgentFinding(env.DB, {
-      agent_slug: agent.slug,
-      task_id: null,
-      client_id: null,
-      severity: 'medium',
-      title: `${agent.name} is stale`,
-      finding_json: JSON.stringify({
-        last_heartbeat_at: agent.last_heartbeat_at,
-        stale_after_minutes: agent.stale_after_minutes,
-        previous_status: agent.heartbeat_status,
-      }),
-    });
-    await appendAgencyLog(env.DB, {
-      agent_slug: agent.slug,
-      task_id: null,
-      status: 'stale',
-      step: 'stale_check',
-      summary: `${agent.name} marked stale — ${msg}`,
-    });
-    stale_marked.push(agent.slug);
-  }
+  const stale_marked = await runAgentStaleSweep(env);
 
   const health_summary = await getAgentHealthSummary(env.DB);
 

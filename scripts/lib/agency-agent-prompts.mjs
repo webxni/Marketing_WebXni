@@ -125,6 +125,25 @@ export const AGENCY_SCHEMAS = {
       summary: { type: 'string' },
       findings: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['severity', 'title', 'description'], properties: { severity: { type: 'string', enum: ['info', 'low', 'medium', 'high', 'critical'] }, title: { type: 'string' }, description: { type: 'string' } } } },
       recommended_actions: { type: 'array', items: { type: 'string' } },
+      // Optional code-fix PROPOSALS (system-reliability only). These are never
+      // applied automatically — they are posted to Discord for a human to act on.
+      code_proposals: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['title', 'problem', 'suggested_fix'],
+          properties: {
+            title: { type: 'string' },
+            problem: { type: 'string' },
+            root_cause: { type: 'string' },
+            suggested_fix: { type: 'string' },
+            affected_files: { type: 'array', items: { type: 'string' } },
+            diff: { type: 'string' },
+            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
+          },
+        },
+      },
     },
   },
 };
@@ -169,7 +188,11 @@ export function buildAgencyPrompt(kind, { client, snapshot, task }) {
     return `${shared}\n\nDraft one local SEO blog as HTML body content only. Use inline-safe article markup and do not include style tags. It must remain a draft and not publish to WordPress.`;
   }
   if (kind === 'operationalReview') {
-    return `${shared}\n\nReview the current platform snapshot defensively. Identify only actionable production risks. Do not suggest shell commands that mutate production state.`;
+    const base = `${shared}\n\nReview the current platform snapshot defensively. Identify only actionable production risks. Do not suggest shell commands that mutate production state.`;
+    if (task?.agent_slug === 'system-reliability') {
+      return `${base}\n\nADDITIONALLY: for recurring or code-level reliability issues, output a "code_proposals" array. Each proposal must name the problem, the likely root cause, a concrete suggested fix, the affected_files, and a risk rating. Optionally include a small unified-diff snippet in "diff". These proposals are POSTED TO DISCORD FOR A HUMAN — they are NEVER applied automatically. Do NOT attempt to edit files, run commands, deploy, or change any production state yourself. Propose only.`;
+    }
+    return base;
   }
   return `${shared}\n\nReview the provided task/content context for factual risk, repetition, quality, and platform fit.`;
 }

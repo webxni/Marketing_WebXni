@@ -31,6 +31,8 @@ import {
   markAgentStale,
   getAgentHealthSummary,
   writeAuditLog,
+  recordAgencyCost,
+  getAgentSpendToday,
 } from '../db/queries';
 import { redactSecrets } from '../modules/redaction';
 import { resolveBlogTemplateConfig } from '../modules/blog-templates';
@@ -547,6 +549,31 @@ agencyInternalRoutes.post('/finding', async (c) => {
     step: 'finding',
     summary: `${parsed.data.severity.toUpperCase()} finding created: ${parsed.data.title}`,
   });
+
+  // Report findings to Discord per the "milestones + every finding" policy.
+  // medium/high/critical get an immediate alert; info/low stay dashboard-only
+  // to avoid noise.
+  const SEV_COLOR: Record<string, number> = { low: 0x22c55e, medium: 0xf59e0b, high: 0xef4444, critical: 0xdc2626 };
+  const color = SEV_COLOR[parsed.data.severity];
+  if (color) {
+    const channelId = c.env.AGENCY_NOTIFY_CHANNEL_ID || c.env.DISCORD_CHANNEL_ID;
+    const token = c.env.DISCORD_BOT_TOKEN;
+    if (channelId && token) {
+      const fj = parsed.data.finding_json as Record<string, unknown> | undefined;
+      const desc = fj && typeof fj.description === 'string' ? fj.description : '';
+      const action = fj && typeof fj.recommended_action === 'string' ? fj.recommended_action : '';
+      await discordSend({
+        channelId, token,
+        embeds: [{
+          title: `${parsed.data.severity.toUpperCase()} · ${parsed.data.title}`.slice(0, 240),
+          description: [desc, action ? `**Action:** ${action}` : ''].filter(Boolean).join('\n\n').slice(0, 1800),
+          color,
+          footer: { text: `Agent: ${parsed.data.agent_slug}` },
+          timestamp: new Date().toISOString(),
+        }],
+      }).catch(() => { /* non-critical */ });
+    }
+  }
   return c.json({ ok: true, finding });
 });
 
@@ -897,6 +924,34 @@ const internalNotifySchema = z.object({
   color:       z.number().int().optional(),
   fields:      z.array(z.object({ name: z.string(), value: z.string(), inline: z.boolean().optional() })).optional(),
   agent_slug:  z.string().optional(),
+});
+
+// Record backend spend for an agent call (cost_usd may be null when unknown).
+agencyInternalRoutes.post('/cost', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const body = await c.req.json().catch(() => ({})) as {
+    agent_slug?: string; backend?: string; mode?: string; cost_usd?: number; run_id?: string; task_id?: string;
+  };
+  if (!body.agent_slug || !body.backend) return c.json({ error: 'agent_slug and backend required' }, 400);
+  await recordAgencyCost(c.env.DB, {
+    agent_slug: body.agent_slug,
+    backend: body.backend,
+    mode: body.mode ?? null,
+    cost_usd: typeof body.cost_usd === 'number' ? body.cost_usd : null,
+    run_id: body.run_id ?? null,
+    task_id: body.task_id ?? null,
+  });
+  const spend_today = await getAgentSpendToday(c.env.DB, body.agent_slug);
+  return c.json({ ok: true, spend_today });
+});
+
+// Today's known spend for an agent, plus whether it has hit its daily cap.
+agencyInternalRoutes.get('/agent-spend/:slug', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const slug = c.req.param('slug');
+  const spend_today = await getAgentSpendToday(c.env.DB, slug);
+  const budget = Number(c.env.AGENCY_AGENT_DAILY_BUDGET_USD || 0);
+  return c.json({ ok: true, spend_today, budget, over_budget: budget > 0 && spend_today >= budget });
 });
 
 agencyInternalRoutes.post('/notify-discord', async (c) => {
