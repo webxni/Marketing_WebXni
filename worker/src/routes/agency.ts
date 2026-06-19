@@ -624,6 +624,13 @@ agencyInternalRoutes.get('/review-queue', async (c) => {
   if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
   const limit = Math.min(Math.max(Number(c.req.query('limit') ?? '8'), 1), 25);
   // Recent automation drafts (blog + social) that have no content review note yet.
+  // The status list must cover the whole pre-publish lifecycle: blogs are born
+  // 'pending_approval'/'generated' and move quickly to 'ready'/'approved' once
+  // Marvin signs off — but they should still be reviewed (a high-severity note
+  // lets Marvin pull a post before it goes out). We deliberately EXCLUDE
+  // 'posted'/'scheduled'/'rejected'/'cancelled' (too late or out of scope).
+  // The LEFT JOIN ... r.id IS NULL guard means each post is reviewed at most
+  // once, so widening the status set cannot cause repeat review spam.
   const rows = await c.env.DB.prepare(
     `SELECT p.id, c.canonical_name AS client_name, p.content_type, p.title,
             p.target_keyword, p.blog_excerpt, p.master_caption,
@@ -632,7 +639,7 @@ agencyInternalRoutes.get('/review-queue', async (c) => {
      FROM posts p
      JOIN clients c ON c.id = p.client_id
      LEFT JOIN content_review_notes r ON r.post_id = p.id
-     WHERE p.status IN ('draft', 'pending_approval')
+     WHERE p.status IN ('draft', 'pending_approval', 'generated', 'ready', 'approved')
        AND p.scheduled_by_automation = 1
        AND p.created_at >= unixepoch() - 1209600
        AND r.id IS NULL
