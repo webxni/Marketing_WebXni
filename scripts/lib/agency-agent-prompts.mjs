@@ -2,7 +2,7 @@ export const AGENCY_SCHEMAS = {
   research: {
     type: 'object',
     additionalProperties: false,
-    required: ['summary', 'sources', 'audience', 'services', 'local_angles', 'risks', 'content_opportunities', 'keyword_research'],
+    required: ['summary', 'sources', 'audience', 'services', 'local_angles', 'risks', 'content_opportunities', 'keyword_research', 'missing_info', 'assumptions'],
     properties: {
       summary: { type: 'string' },
       sources: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['title', 'url'], properties: { title: { type: 'string' }, url: { type: 'string' } } } },
@@ -11,6 +11,23 @@ export const AGENCY_SCHEMAS = {
       local_angles: { type: 'array', items: { type: 'string' } },
       risks: { type: 'array', items: { type: 'string' } },
       content_opportunities: { type: 'array', items: { type: 'string' } },
+      // §5 missing-information protocol: gaps the agent could NOT confirm from
+      // public sources (→ ask Marvin in Discord), plus any assumptions it made
+      // so a human can correct them. Empty arrays when nothing is missing.
+      missing_info: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['field', 'question'],
+          properties: {
+            field: { type: 'string' },          // e.g. service_areas, hours, certifications
+            question: { type: 'string' },        // concise question to ask in Discord
+            confidence: { type: 'string' },      // low|medium when partially known
+          },
+        },
+      },
+      assumptions: { type: 'array', items: { type: 'string' } },
       // First-class keyword research (§3) — the shared keyword set every agent uses.
       keyword_research: {
         type: 'object',
@@ -242,20 +259,20 @@ export function buildAgencyPrompt(kind, { client, snapshot, task }) {
   ].join('\n\n');
 
   if (kind === 'research') {
-    return `${shared}\n\nResearch the client defensively using only reliable, citeable public information available to the terminal agent. Focus on market, services, local angles, audience, and content opportunities.\n\nKEYWORD RESEARCH (first-class — the package goal is ranking #1 locally):\n- keyword_research.primary: the 3-6 highest-intent head terms for this business.\n- long_tail: specific multi-word variants real customers search.\n- local_terms: city / neighborhood / service-area keywords from the client's actual areas.\n- near_me: "near me" style local-intent variants.\n- intent: the dominant search intent (local | commercial | transactional | informational).\n- difficulty_notes: brief difficulty/opportunity notes per cluster.\nGround keywords in the client's REAL services and service areas — do not invent locations or services.`;
+    return `${shared}\n\nResearch the client defensively using only reliable, citeable public information available to the terminal agent. Focus on market, services, local angles, audience, and content opportunities.\n\nKEYWORD RESEARCH (first-class — the package goal is ranking #1 locally):\n- keyword_research.primary: the 3-6 highest-intent head terms for this business.\n- long_tail: specific multi-word variants real customers search.\n- local_terms: city / neighborhood / service-area keywords from the client's actual areas.\n- near_me: "near me" style local-intent variants.\n- intent: the dominant search intent (local | commercial | transactional | informational).\n- difficulty_notes: brief difficulty/opportunity notes per cluster.\nGround keywords in the client's REAL services and service areas — do not invent locations or services.\n\nMISSING-INFORMATION PROTOCOL (§5): SEARCH the client's website and the open web FIRST. Only when a fact is still unknown or low-confidence after searching, add it to "missing_info" with a concise, specific question for Marvin (e.g. "Do you serve Riverside County, or only San Bernardino? Needed for local keyword targeting."). Record any working "assumptions" you had to make. NEVER invent services, certifications, claims, hours, or locations — unknown means search, then ask. Do not block: still produce everything you can confirm.`;
   }
   if (kind === 'strategy') {
     return `${shared}\n\nCreate a reviewable draft local-SEO strategy. Use existing research + the TARGET KEYWORDS in the brief.\n- seo_plan: an explicit map of keyword -> content_type -> channel (social|blog|gmb) -> cadence. This is the local-SEO plan, not a vague theme list.\n- success_metrics: which target keywords to track, GMB/post cadence, and ranking-movement check-ins.\nBe honest: optimize what the agency controls (relevance, locality, freshness, consistency, quality). Do not promise a guaranteed #1. Keep it a draft for Marvin's review.`;
   }
   if (kind === 'socialWeeklyBatch') {
     const schedule = client?.weekly_schedule_text || 'No package schedule provided.';
-    return `${shared}\n\nGenerate ALL social posts for this client's upcoming week based on their package schedule.\n\nPACKAGE SCHEDULE:\n${schedule}\n\nRULES:\n- Create exactly one post per slot in the schedule (exclude blog slots — those are handled separately).\n- Each post must use the correct content_type (image, reel, or video) and day_of_week.\n- Use the client's REAL services and local service areas. Be specific — avoid generic captions.\n- Vary the hook across posts — do not repeat the same opening.\n- Each post needs a clear CTA (call, text, book, visit).\n- platform_captions must include facebook AND instagram with distinct tones:\n  facebook: conversational, slightly longer, emojis ok.\n  instagram: short, punchy, hashtags at the end.\n  google_business: concise, local SEO focused, no emojis.\n- designer_prompt_es: write the visual concept in Spanish for the designer.\n- Status must remain draft — do not approve, publish, or schedule.`;
+    return `${shared}\n\nGenerate ALL social posts for this client's upcoming week based on their package schedule.\n\nPACKAGE SCHEDULE:\n${schedule}\n\nRULES:\n- Create exactly one post per slot in the schedule (exclude blog slots — those are handled separately).\n- Each post must use the correct content_type (image, reel, or video) and day_of_week.\n- Use the client's REAL services and local service areas. Be specific — avoid generic captions.\n- Vary the hook across posts — do not repeat the same opening.\n- Each post needs a clear CTA (call, text, book, visit).\n- LOCAL SEO: weave the TARGET KEYWORDS + the city/service-area term naturally into captions (especially google_business). The package goal is ranking #1 locally — make each post locally specific. No keyword stuffing.\n- platform_captions must include facebook AND instagram with distinct tones, optimized PER PLATFORM:\n  facebook: conversational, slightly longer, emojis ok; lead with a local hook.\n  instagram: short, punchy, hashtags at the end including local + service hashtags.\n  google_business: concise, local-SEO focused, primary keyword + city near the front, no emojis.\n- designer_prompt_es: write the visual concept in Spanish for the designer.\n- Status must remain draft — do not approve, publish, or schedule.`;
   }
   if (kind === 'socialDraft') {
     return `${shared}\n\nDraft one reviewable social content item for this client.\n\nRULES:\n- Use the client's real services and local service areas.\n- Avoid generic captions. Be specific, local, and conversion-focused.\n- Vary the hook — do not start with the business name.\n- Include a clear CTA (call, text, visit, book).\n- platform_captions must include BOTH facebook AND instagram keys with distinct, platform-appropriate text.\n  facebook: slightly longer, conversational, allows emojis.\n  instagram: shorter, punchy, hashtag-friendly.\n  tiktok: casual and energetic if relevant to client.\n  google_business: concise, local SEO focused, no emojis.\n- designer_prompt_es: write the image/video prompt in Spanish for the designer.\n- Do not claim to publish, approve, or schedule. Status remains draft.`;
   }
   if (kind === 'blogDraft') {
-    return `${shared}\n\nDraft one local SEO blog as HTML body content only. Use inline-safe article markup and do not include style tags. It must remain a draft and not publish to WordPress.`;
+    return `${shared}\n\nDraft one local SEO blog as HTML body content only. Use inline-safe article markup and do not include style tags.\n- LOCAL SEO: build the blog around the client's primary TARGET KEYWORD + city/service-area terms; use the keyword in the title, first paragraph, and a subheading naturally (no stuffing). Add long-tail variants where they fit.\n- Keep it genuinely useful and locally specific. It must remain a draft and not publish to WordPress.`;
   }
   if (kind === 'gmbPost') {
     return `${shared}\n\nDraft ONE Google Business Profile post engineered to push this client toward 1st-position LOCAL ranking — not a generic post.\n\nRULES:\n- Choose the best post_type for the goal: OFFER (promotion + offer_terms, optional coupon_code), UPDATE (What's New), or EVENT (with event_start/event_end ISO dates).\n- Inject the client's TARGET KEYWORDS + the specific service-area/city term naturally into title + body (no stuffing). Set "locality" to the city/area you targeted.\n- Align to the client's real GMB categories and actual services. Never invent services, locations, hours, or offers.\n- Include a clear cta_type appropriate to the business (CALL for locksmiths/emergency, BOOK/LEARN_MORE for remodeling). Set cta_url when relevant.\n- Keep it fresh, locally specific, and conversion-focused. body should be concise and GMB-appropriate (no hashtags, minimal emoji).\n- designer_prompt_es: the image concept in Spanish for the designer.\n- This is a DRAFT for review. Do not claim to publish/schedule to GMB.`;

@@ -34,6 +34,7 @@ import {
   recordAgencyCost,
   getAgentSpendToday,
   upsertClientKeywords,
+  upsertClientProfileGap,
 } from '../db/queries';
 import { redactSecrets } from '../modules/redaction';
 import { resolveBlogTemplateConfig } from '../modules/blog-templates';
@@ -973,6 +974,49 @@ agencyInternalRoutes.post('/keywords', async (c) => {
     .map((k) => ({ ...k, keyword: String(k.keyword).trim() }));
   const saved = await upsertClientKeywords(c.env.DB, body.client_id, rows);
   return c.json({ ok: true, saved });
+});
+
+// §5: persist profile gaps (needs_info) and recorded assumptions for a client.
+// Additive upsert keyed by (client_id, field). The runner separately posts the
+// questions to Discord; this marks them asked.
+agencyInternalRoutes.post('/profile-gaps', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const body = await c.req.json().catch(() => ({})) as {
+    client_id?: string;
+    gaps?: Array<{ field?: string; question?: string | null; confidence?: string | null }>;
+    assumptions?: string[];
+    asked_in_discord?: boolean;
+  };
+  if (!body.client_id) return c.json({ error: 'client_id required' }, 400);
+  const askedAt = body.asked_in_discord ? Math.floor(Date.now() / 1000) : null;
+  let savedGaps = 0;
+  for (const g of (Array.isArray(body.gaps) ? body.gaps : [])) {
+    if (!g || !g.field || !String(g.field).trim()) continue;
+    await upsertClientProfileGap(c.env.DB, {
+      client_id: body.client_id,
+      field: String(g.field).trim(),
+      question: g.question ?? null,
+      status: 'needs_info',
+      asked_in_discord_at: askedAt,
+    });
+    savedGaps++;
+  }
+  // Assumptions are recorded as their own gap rows (status 'assumed') so a human
+  // can see and correct them. Keyed by a stable field name per assumption index.
+  let savedAssumptions = 0;
+  const assumptions = Array.isArray(body.assumptions) ? body.assumptions : [];
+  for (let i = 0; i < assumptions.length; i++) {
+    const a = String(assumptions[i] ?? '').trim();
+    if (!a) continue;
+    await upsertClientProfileGap(c.env.DB, {
+      client_id: body.client_id,
+      field: `assumption_${i + 1}`,
+      status: 'assumed',
+      assumption: a,
+    });
+    savedAssumptions++;
+  }
+  return c.json({ ok: true, saved_gaps: savedGaps, saved_assumptions: savedAssumptions });
 });
 
 // Today's known spend for an agent, plus whether it has hit its daily cap.
