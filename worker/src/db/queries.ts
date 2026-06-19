@@ -1729,6 +1729,24 @@ export async function saveClientStrategy(
   ).bind(clientId, periodStart, periodEnd, redactSecrets(strategyJson), status, now, now).run();
 }
 
+// Most recent autonomous research note (raw research_json) for a client, or null.
+// Read by weekly generation so the client-research agent's output actually feeds
+// content creation instead of sitting unused in the table.
+export async function getLatestClientResearch(db: D1Database, clientId: string): Promise<string | null> {
+  const row = await db.prepare(
+    `SELECT research_json FROM client_research_notes WHERE client_id = ? ORDER BY created_at DESC LIMIT 1`,
+  ).bind(clientId).first<{ research_json: string }>();
+  return row?.research_json ?? null;
+}
+
+// Most recent autonomous strategy plan (raw strategy_json) for a client, or null.
+export async function getLatestClientStrategy(db: D1Database, clientId: string): Promise<string | null> {
+  const row = await db.prepare(
+    `SELECT strategy_json FROM client_strategy_plans WHERE client_id = ? ORDER BY created_at DESC LIMIT 1`,
+  ).bind(clientId).first<{ strategy_json: string }>();
+  return row?.strategy_json ?? null;
+}
+
 export async function saveContentReview(
   db: D1Database,
   data: { post_id?: string | null; blog_id?: string | null; agent_task_id?: string | null; severity: string; notes_json: string },

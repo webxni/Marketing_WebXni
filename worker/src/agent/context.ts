@@ -451,6 +451,53 @@ export interface ClientGenerationTopicHistoryItem {
   platforms: string[];
 }
 
+// Distill the autonomous research + strategy JSON into a compact, bounded text
+// block for the generation prompt. Supplementary signal only — it is rendered
+// ALONGSIDE the curated brand memory (client_intelligence) and never replaces
+// it. Returns null when there is nothing useful to add.
+export function buildAutonomousResearchSignals(
+  researchJson: string | null,
+  strategyJson: string | null,
+): string | null {
+  const lines: string[] = [];
+  const clip = (v: unknown, max = 300): string | null => {
+    if (typeof v === 'string') return v.trim().slice(0, max) || null;
+    if (Array.isArray(v)) {
+      const joined = v.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).filter(Boolean).join('; ');
+      return joined ? joined.slice(0, max) : null;
+    }
+    return null;
+  };
+
+  if (researchJson) {
+    try {
+      const r = JSON.parse(researchJson) as Record<string, unknown>;
+      const summary = clip(r.summary);
+      const audience = clip(r.audience, 200);
+      const localAngles = clip(r.local_angles, 220);
+      const opportunities = clip(r.content_opportunities, 260);
+      if (summary) lines.push(`- Research summary: ${summary}`);
+      if (audience) lines.push(`- Audience signals: ${audience}`);
+      if (localAngles) lines.push(`- Local angles: ${localAngles}`);
+      if (opportunities) lines.push(`- Content opportunities: ${opportunities}`);
+    } catch { /* ignore malformed research json */ }
+  }
+
+  if (strategyJson) {
+    try {
+      const s = JSON.parse(strategyJson) as Record<string, unknown>;
+      const focus = clip(s.monthly_focus, 220);
+      const pillars = clip(s.content_pillars, 220);
+      const priority = clip(s.priority_services, 200);
+      if (focus) lines.push(`- Strategy monthly focus: ${focus}`);
+      if (pillars) lines.push(`- Content pillars: ${pillars}`);
+      if (priority) lines.push(`- Priority services: ${priority}`);
+    } catch { /* ignore malformed strategy json */ }
+  }
+
+  return lines.length > 0 ? lines.join('\n') : null;
+}
+
 export function buildWeeklyMarketingStrategicContext(input: {
   client: {
     slug: string;
@@ -459,6 +506,7 @@ export function buildWeeklyMarketingStrategicContext(input: {
     language?: string | null;
   };
   topicHistory: ClientGenerationTopicHistoryItem[];
+  autonomousSignals?: string | null;
 }): string {
   const historyBlock = input.topicHistory.length > 0
     ? input.topicHistory.slice(0, 16).map((item) => {
@@ -471,6 +519,13 @@ export function buildWeeklyMarketingStrategicContext(input: {
       return `- ${item.title}${parts ? ` (${parts})` : ''}`;
     }).join('\n')
     : '- No recent post history found for this client.';
+
+  const signalsBlock = input.autonomousSignals
+    ? `
+
+AUTONOMOUS RESEARCH & STRATEGY SIGNALS (supplementary — refine angles with these, but the curated brand memory and approved CTAs/keywords always take precedence)
+${input.autonomousSignals}`
+    : '';
 
   return `WEEKLY MARKETING STRATEGIC CONTEXT
 
@@ -487,7 +542,7 @@ GLOBAL CLIENT EXPERTISE PLAYBOOKS
 ${WEEKLY_MARKETING_CLIENT_EXPERTISE}
 
 RECENT CLIENT TOPIC HISTORY
-${historyBlock}
+${historyBlock}${signalsBlock}
 
 STRATEGIC CONTINUITY RULES
 - Use the buyer persona and expertise sections to choose a fresher angle, not to repeat the same hook.
