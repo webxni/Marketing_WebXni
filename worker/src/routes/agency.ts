@@ -9,6 +9,7 @@ import {
   createAgentTask,
   createApprovedCommandJob,
   createPost,
+  updatePost,
   getAgencyClientCoverage,
   getAgencyLogs,
   getApprovedCommandJobById,
@@ -350,7 +351,25 @@ const internalDraftPostSchema = z.object({
   ai_video_prompt: z.string().nullable().optional(),
   skarleth_notes: z.string().nullable().optional(),
   publish_date: z.string().nullable().optional(),
+  // GMB structured fields (§2) — populated by the GMB Rank agent so posting via
+  // upload-post can publish Offers/Updates/Events after the gates pass.
+  gbp_topic_type: z.enum(['STANDARD', 'EVENT', 'OFFER']).nullable().optional(),
+  gbp_cta_type: z.string().nullable().optional(),
+  gbp_cta_url: z.string().nullable().optional(),
+  gbp_coupon_code: z.string().nullable().optional(),
+  gbp_redeem_url: z.string().nullable().optional(),
+  gbp_terms: z.string().nullable().optional(),
+  gbp_event_title: z.string().nullable().optional(),
+  gbp_event_start_date: z.string().nullable().optional(),
+  gbp_event_end_date: z.string().nullable().optional(),
+  // Per-location captions for multi-location GBP clients (e.g. Elite Team
+  // Builders LA/WA/OR). Keys are caption_field columns; whitelisted on save.
+  location_captions: z.record(z.string()).nullable().optional(),
 });
+
+// Only these post columns may be set from location_captions — prevents arbitrary
+// column names (which updatePost interpolates into SQL) from a payload.
+const ALLOWED_LOCATION_CAPTION_FIELDS = new Set(['cap_gbp_la', 'cap_gbp_wa', 'cap_gbp_or', 'cap_google_business']);
 
 function formatAgencyStatusText(overview: Awaited<ReturnType<typeof listAgencyOverview>>, agents: Awaited<ReturnType<typeof listAgentDefinitions>>): string {
   const today = agents
@@ -758,6 +777,31 @@ agencyInternalRoutes.post('/draft-post', async (c) => {
     asset_delivered: 0,
     scheduled_by_automation: 1,
   });
+
+  // GMB structured fields + per-location captions are set via updatePost (keeps
+  // createPost's column list untouched). Never changes gates: status stays draft,
+  // ready_for_automation/asset_delivered remain 0.
+  const gbpUpdates: Record<string, string | null> = {};
+  if (parsed.data.gbp_topic_type) gbpUpdates.gbp_topic_type = parsed.data.gbp_topic_type;
+  if (parsed.data.gbp_cta_type) gbpUpdates.gbp_cta_type = parsed.data.gbp_cta_type;
+  if (parsed.data.gbp_cta_url) gbpUpdates.gbp_cta_url = parsed.data.gbp_cta_url;
+  if (parsed.data.gbp_coupon_code) gbpUpdates.gbp_coupon_code = parsed.data.gbp_coupon_code;
+  if (parsed.data.gbp_redeem_url) gbpUpdates.gbp_redeem_url = parsed.data.gbp_redeem_url;
+  if (parsed.data.gbp_terms) gbpUpdates.gbp_terms = parsed.data.gbp_terms;
+  if (parsed.data.gbp_event_title) gbpUpdates.gbp_event_title = parsed.data.gbp_event_title;
+  if (parsed.data.gbp_event_start_date) gbpUpdates.gbp_event_start_date = parsed.data.gbp_event_start_date;
+  if (parsed.data.gbp_event_end_date) gbpUpdates.gbp_event_end_date = parsed.data.gbp_event_end_date;
+  if (parsed.data.location_captions) {
+    for (const [field, text] of Object.entries(parsed.data.location_captions)) {
+      if (ALLOWED_LOCATION_CAPTION_FIELDS.has(field) && typeof text === 'string' && text.trim()) {
+        gbpUpdates[field] = text;
+      }
+    }
+  }
+  if (Object.keys(gbpUpdates).length > 0) {
+    await updatePost(c.env.DB, post.id, gbpUpdates as Partial<typeof post>);
+  }
+
   await appendAgencyLog(c.env.DB, {
     agent_slug: parsed.data.agent_slug,
     task_id: parsed.data.task_id ?? null,

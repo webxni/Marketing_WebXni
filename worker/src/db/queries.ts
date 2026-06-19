@@ -1908,8 +1908,8 @@ export async function getAgencyClientCoverage(db: D1Database): Promise<AgencyCli
 export async function getAgencyClientContentBrief(
   db: D1Database,
   clientId: string,
-): Promise<{ brief: string; hasBrief: boolean }> {
-  const [client, intel, areas, services, restrictions, keywords] = await Promise.all([
+): Promise<{ brief: string; hasBrief: boolean; gbp_locations: Array<{ label: string; caption_field: string | null; upload_post_profile: string | null; location_id: string; paused: number }> }> {
+  const [client, intel, areas, services, restrictions, keywords, gbpRows] = await Promise.all([
     db.prepare('SELECT canonical_name, industry, state, cta_text, notes FROM clients WHERE id = ?')
       .bind(clientId).first<{ canonical_name: string | null; industry: string | null; state: string | null; cta_text: string | null; notes: string | null }>(),
     db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?')
@@ -1920,7 +1920,15 @@ export async function getAgencyClientContentBrief(
       .bind(clientId).all<{ name: string }>(),
     getClientRestrictions(db, clientId),
     getClientKeywords(db, clientId),
+    getClientGbpLocations(db, clientId),
   ]);
+  const gbp_locations = gbpRows.map((g) => ({
+    label: g.label,
+    caption_field: g.caption_field,
+    upload_post_profile: g.upload_post_profile,
+    location_id: g.location_id,
+    paused: g.paused,
+  }));
 
   const serviceAreas = areas.results.map((r) => r.city).filter(Boolean);
   const serviceNames = services.results.map((r) => r.name).filter(Boolean);
@@ -1973,7 +1981,7 @@ export async function getAgencyClientContentBrief(
     serviceNames.length ||
     serviceAreas.length,
   );
-  return { brief: lines.join('\n'), hasBrief };
+  return { brief: lines.join('\n'), hasBrief, gbp_locations };
 }
 
 export async function appendAgencyLog(
