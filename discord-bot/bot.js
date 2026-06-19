@@ -547,6 +547,7 @@ async function runApprovedJob(job) {
     agency_editorial_review: ['scripts/run-approved-agency-job.mjs'],
     agency_orchestrator: ['scripts/run-approved-agency-job.mjs'],
     agency_client_onboarding: ['scripts/run-approved-agency-job.mjs'],
+    agency_gmb_rank: ['scripts/run-approved-agency-job.mjs'],
   };
   const scriptPathParts = allowed[job.command_name];
   if (!scriptPathParts) throw new Error(`Unapproved command: ${job.command_name}`);
