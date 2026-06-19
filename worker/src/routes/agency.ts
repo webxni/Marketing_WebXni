@@ -53,6 +53,7 @@ const AGENT_COMMANDS: Record<string, string> = {
   'blog-writer': 'agency_blog_generation',
   'editorial-review': 'agency_editorial_review',
   'client-onboarding': 'agency_client_onboarding',
+  'gmb-rank': 'agency_gmb_rank',
 };
 
 const AGENT_BACKEND_PRIORITY: Record<string, string[]> = {
@@ -65,6 +66,7 @@ const AGENT_BACKEND_PRIORITY: Record<string, string[]> = {
   'blog-writer': ['hermes', 'claude_code', 'codex', 'openai'],
   'editorial-review': ['hermes', 'claude_code', 'codex', 'openai'],
   'client-onboarding': ['hermes', 'claude_code', 'codex', 'openai'],
+  'gmb-rank': ['hermes', 'codex', 'openai'],
 };
 
 const TIMELINE = [
@@ -101,6 +103,7 @@ function agencySkills() {
     ['webxni-social-copywriter', 'Drafts social copy without approval bypass.', 'social-copy', 'Hermes CLI'],
     ['webxni-blog-writer', 'Drafts SEO blogs without publishing.', 'blog-writer', 'Hermes CLI'],
     ['webxni-editorial-reviewer', 'Reviews drafts for quality and factual risk.', 'editorial-review', 'Hermes CLI'],
+    ['webxni-gmb-rank', 'Drafts GMB posts engineered for local #1 ranking.', 'gmb-rank', 'Hermes CLI'],
   ].map(([name, purpose, agent_slug, backend]) => ({
     name,
     purpose,

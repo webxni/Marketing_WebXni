@@ -53,6 +53,7 @@ const DISCORD_AGENCY_BACKEND_PRIORITY: Record<string, string[]> = {
   'social-copy': ['hermes', 'claude_code', 'codex', 'openai'],
   'blog-writer': ['hermes', 'claude_code', 'codex', 'openai'],
   'editorial-review': ['hermes', 'claude_code', 'codex', 'openai'],
+  'gmb-rank': ['hermes', 'codex', 'openai'],
 };
 
 interface DiscordInteractionOption {
@@ -101,6 +102,7 @@ const DISCORD_AGENCY_AGENTS: Record<string, string> = {
   social: 'social-copy',
   blog: 'blog-writer',
   editorial: 'editorial-review',
+  gmb: 'gmb-rank',
 };
 
 const DISCORD_AGENCY_COMMANDS: Record<string, string> = {
@@ -112,6 +114,7 @@ const DISCORD_AGENCY_COMMANDS: Record<string, string> = {
   'social-copy': 'agency_social_generation',
   'blog-writer': 'agency_blog_generation',
   'editorial-review': 'agency_editorial_review',
+  'gmb-rank': 'agency_gmb_rank',
 };
 
 // ── Routes ─────────────────────────────────────────────────────────────────────
