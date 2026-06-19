@@ -937,7 +937,7 @@ const internalNotifySchema = z.object({
 agencyInternalRoutes.post('/cost', async (c) => {
   if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
   const body = await c.req.json().catch(() => ({})) as {
-    agent_slug?: string; backend?: string; mode?: string; cost_usd?: number; run_id?: string; task_id?: string;
+    agent_slug?: string; backend?: string; mode?: string; cost_usd?: number; run_id?: string; task_id?: string; executor_reason?: string;
   };
   if (!body.agent_slug || !body.backend) return c.json({ error: 'agent_slug and backend required' }, 400);
   await recordAgencyCost(c.env.DB, {
@@ -947,6 +947,7 @@ agencyInternalRoutes.post('/cost', async (c) => {
     cost_usd: typeof body.cost_usd === 'number' ? body.cost_usd : null,
     run_id: body.run_id ?? null,
     task_id: body.task_id ?? null,
+    executor_reason: body.executor_reason ?? null,
   });
   const spend_today = await getAgentSpendToday(c.env.DB, body.agent_slug);
   return c.json({ ok: true, spend_today });

@@ -116,6 +116,23 @@ export const AGENCY_SCHEMAS = {
       recommended_changes: { type: 'array', items: { type: 'string' } },
     },
   },
+  qualityCheck: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['pass', 'score', 'relevance', 'accuracy', 'brand_fit', 'keyword_usage', 'no_fluff', 'cta_present', 'issues', 'required_fixes'],
+    properties: {
+      pass: { type: 'boolean' },
+      score: { type: 'integer', minimum: 0, maximum: 100 },
+      relevance: { type: 'boolean' },
+      accuracy: { type: 'boolean' },
+      brand_fit: { type: 'boolean' },
+      keyword_usage: { type: 'boolean' },
+      no_fluff: { type: 'boolean' },
+      cta_present: { type: 'boolean' },
+      issues: { type: 'array', items: { type: 'string' } },
+      required_fixes: { type: 'array', items: { type: 'string' } },
+    },
+  },
   operationalReview: {
     type: 'object',
     additionalProperties: false,
@@ -166,6 +183,9 @@ export function buildAgencyPrompt(kind, { client, snapshot, task }) {
     ...(contentBrief
       ? [`CLIENT CONTENT BRIEF (use this brand voice, services, areas, and CTAs; obey NEVER USE terms):\n${contentBrief}`]
       : []),
+    ...(task?.revision_required
+      ? [`REVISION PASS — the prior draft FAILED the quality gate. Rewrite it to fix every required fix below while keeping the same format/schema and the same day_of_week/content_type. Do not lower quality elsewhere.\nREQUIRED FIXES:\n${(task.required_fixes || []).map((f) => `- ${f}`).join('\n') || '- (see issues)'}\nISSUES:\n${(task.quality_issues || []).map((i) => `- ${i}`).join('\n') || '- (none listed)'}\nPRIOR DRAFT:\n${JSON.stringify(task.draft ?? {}, null, 2)}`]
+      : []),
     `Client context:\n${safeClient}`,
     `Platform overview:\n${safeSnapshot}`,
     `Task input:\n${taskInput}`,
@@ -186,6 +206,10 @@ export function buildAgencyPrompt(kind, { client, snapshot, task }) {
   }
   if (kind === 'blogDraft') {
     return `${shared}\n\nDraft one local SEO blog as HTML body content only. Use inline-safe article markup and do not include style tags. It must remain a draft and not publish to WordPress.`;
+  }
+  if (kind === 'qualityCheck') {
+    const draft = task?.draft ? JSON.stringify(task.draft, null, 2) : (task?.review_target ? JSON.stringify(task.review_target, null, 2) : '{}');
+    return `${shared}\n\nYou are the QUALITY GATE. Score the DRAFT below against the rubric before it can enter Editorial Review. Be strict and honest.\n\nDRAFT TO EVALUATE:\n${draft}\n\nRUBRIC (each is a boolean; "pass" is true only if ALL are true and score >= 80):\n- relevance: on-topic for the client's services and the selected topic.\n- accuracy: factually grounded in the CLIENT CONTENT BRIEF — no invented claims, certifications, or locations.\n- brand_fit: matches the client's brand voice; obeys NEVER USE / prohibited terms.\n- keyword_usage: uses the client's target keywords + correct local/service-area terms naturally (not stuffed).\n- no_fluff: concrete and specific; no filler or generic platitudes.\n- cta_present: a clear, approved call-to-action is present and correct for the channel format.\nList concrete "issues" and concrete "required_fixes" whenever a check fails. Do not approve, publish, or schedule — scoring only.`;
   }
   if (kind === 'operationalReview') {
     const base = `${shared}\n\nReview the current platform snapshot defensively. Identify only actionable production risks. Do not suggest shell commands that mutate production state.`;
