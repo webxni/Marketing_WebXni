@@ -2,6 +2,7 @@
 import { redactSecrets } from './lib/agency-redaction.mjs';
 import { AGENCY_SCHEMAS, buildAgencyPrompt } from './lib/agency-agent-prompts.mjs';
 import { runTerminalJsonAgent } from './lib/terminal-json-agent.mjs';
+import { pick_executor, executorLead, taskTypeForAgent } from './lib/executor-router.mjs';
 
 function arg(name) {
   const idx = process.argv.indexOf(name);
@@ -417,9 +418,14 @@ function preferredBackend(agentSlug, fallback, taskInput = {}) {
   const envOverride = process.env.AGENCY_TERMINAL_AGENT;
   if (envOverride && envOverride !== 'auto') return [envOverride];
 
-  const lead = COMPLEX_AGENTS.has(agentSlug) ? ['claude', 'hermes'] : ['hermes'];
+  // Delegate the lead decision to the testable router. taskTypeForAgent maps
+  // complex agents -> Claude lead and the rest -> Hermes lead, reproducing the
+  // previous behavior. The tail (task overrides, provider fallback, per-agent
+  // priority) is preserved exactly so resilience is unchanged.
+  const lead = executorLead({ task_type: taskTypeForAgent(agentSlug, taskInput.mode) });
   const chain = [
     ...lead,
+    'hermes',
     ...(parseBackendPriority(taskInput.backend_priority) ?? []),
     ...(fallback && fallback !== 'internal' ? [fallback] : []),
     ...(AGENT_BACKEND_PRIORITY[agentSlug] ?? ['claude', 'openai']),
@@ -439,10 +445,33 @@ async function isAgentOverBudget(agentSlug) {
   }
 }
 
-async function runStructuredAgent(kind, agentSlug, backend, client, snapshot, task, modeOverride) {
+async function runStructuredAgent(kind, agentSlug, backend, client, snapshot, task, modeOverride, executorChainOverride) {
   const prompt = buildAgencyPrompt(kind, { client, snapshot, task });
   const schema = AGENCY_SCHEMAS[kind];
   const mode = modeOverride ?? (kind === 'blogDraft' ? 'blog' : 'default');
+
+  // An explicit executor chain (from pick_executor) bypasses the per-agent
+  // routing + budget downgrade — the caller already encoded budget/quality into
+  // the chain (used by the quality gate's validate/revision passes).
+  if (Array.isArray(executorChainOverride) && executorChainOverride.length) {
+    const result = await runTerminalJsonAgent({
+      prompt,
+      schema,
+      preferredBackend: executorChainOverride,
+      skills: AGENT_HERMES_SKILLS[agentSlug] ? [AGENT_HERMES_SKILLS[agentSlug]] : [],
+      mode,
+    });
+    await post('/internal/agency/cost', {
+      agent_slug: agentSlug,
+      backend: result.backend,
+      mode,
+      cost_usd: typeof result.cost_usd === 'number' ? result.cost_usd : null,
+      executor_reason: `${kind}:${executorChainOverride[0]}`,
+      run_id: _runId || null,
+      task_id: _taskId || null,
+    }).catch(() => {});
+    return result;
+  }
 
   let chain = preferredBackend(agentSlug, backend, task);
   // Budget cap: if a complex agent has exhausted its daily budget, drop Claude
@@ -472,6 +501,7 @@ async function runStructuredAgent(kind, agentSlug, backend, client, snapshot, ta
     backend: result.backend,
     mode,
     cost_usd: typeof result.cost_usd === 'number' ? result.cost_usd : null,
+    executor_reason: `${kind}:${chain[0]}${result.fallback_used ? `->${result.backend}` : ''}`,
     run_id: _runId || null,
     task_id: _taskId || null,
   }).catch(() => {});
@@ -490,6 +520,49 @@ async function runStructuredAgent(kind, agentSlug, backend, client, snapshot, ta
     }).catch(() => {});
   }
   return result;
+}
+
+// Quality gate (§1/§7). Scores a single generated draft against the rubric and,
+// if it fails, runs ONE Claude-routed revision then re-scores. Returns the
+// (possibly revised) draft with the verdict appended to review_notes so
+// Editorial Review and Marvin see it. Enabled by AGENCY_QUALITY_GATE=1.
+// Never approves/publishes — content-quality only; gates stay intact.
+async function qualityGateDraft(agentSlug, backend, client, snapshot, baseTask, draft, revisionKind) {
+  if (process.env.AGENCY_QUALITY_GATE !== '1' || !draft || typeof draft !== 'object') {
+    return { output: draft, verdict: null };
+  }
+  const budget_state = (await isAgentOverBudget(agentSlug)) ? 'over' : 'ok';
+  const validateChain = pick_executor({ task_type: 'validate', budget_state });
+  const reviseChain = pick_executor({ task_type: 'revision', quality_target: 'high', budget_state });
+
+  let current = draft;
+  let verdict = {};
+  try {
+    let check = await runStructuredAgent('qualityCheck', agentSlug, backend, client, snapshot,
+      { ...baseTask, draft: current }, 'default', validateChain);
+    verdict = check.output || {};
+
+    if (verdict.pass === false) {
+      const revised = await runStructuredAgent(revisionKind, agentSlug, backend, client, snapshot,
+        { ...baseTask, draft: current, revision_required: true, quality_issues: verdict.issues ?? [], required_fixes: verdict.required_fixes ?? [] },
+        undefined, reviseChain);
+      // Merge revised fields over the original so batch-only fields (day_of_week,
+      // content_type) survive the single-draft revision schema.
+      if (revised.output && typeof revised.output === 'object') current = { ...current, ...revised.output };
+      check = await runStructuredAgent('qualityCheck', agentSlug, backend, client, snapshot,
+        { ...baseTask, draft: current }, 'default', validateChain);
+      verdict = check.output || {};
+    }
+  } catch (err) {
+    // A gate failure must never drop the draft — Marvin still reviews it.
+    console.warn(`[quality-gate] ${agentSlug} check failed (keeping draft): ${redactSecrets(err instanceof Error ? err.message : String(err)).slice(0, 160)}`);
+    return { output: current, verdict: null };
+  }
+
+  const note = `Quality gate: ${verdict.pass ? 'PASS' : 'NEEDS REVIEW'} (score ${verdict.score ?? '?'})`
+    + (Array.isArray(verdict.issues) && verdict.issues.length ? ` — ${verdict.issues.slice(0, 4).join('; ')}` : '');
+  current.review_notes = [...(Array.isArray(current.review_notes) ? current.review_notes : []), note];
+  return { output: current, verdict };
 }
 
 async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, taskInput) {
@@ -750,24 +823,28 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
           );
           if (!draftHasContent) continue;
 
+          // Quality gate before save (no post leaves the agent below the bar).
+          const gated = await qualityGateDraft(agentSlug, backend, clientWithSchedule, snapshot, taskInput, draft, 'socialDraft');
+          const finalDraft = gated.output;
+
           const matchedSlot = socialSlots.find(
-            (s) => s.day.toLowerCase() === (draft.day_of_week || '').toLowerCase() && s.type === draft.content_type,
-          ) || socialSlots.find((s) => s.day.toLowerCase() === (draft.day_of_week || '').toLowerCase())
-            || { day: draft.day_of_week || 'monday', type: draft.content_type || 'image' };
+            (s) => s.day.toLowerCase() === (finalDraft.day_of_week || '').toLowerCase() && s.type === finalDraft.content_type,
+          ) || socialSlots.find((s) => s.day.toLowerCase() === (finalDraft.day_of_week || '').toLowerCase())
+            || { day: finalDraft.day_of_week || 'monday', type: finalDraft.content_type || 'image' };
 
           const publishDate = `${nextScheduledDate(matchedSlot.day)}T09:00`;
           const saved = await post('/internal/agency/draft-post', {
             agent_slug: agentSlug,
             task_id: taskId,
             client_id: client.client_id,
-            title: draft.title,
-            content_type: draft.content_type || 'image',
+            title: finalDraft.title,
+            content_type: finalDraft.content_type || 'image',
             platforms: ['facebook', 'instagram'],
-            master_caption: draft.master_caption,
-            platform_captions: draft.platform_captions,
-            ai_image_prompt: draft.content_type === 'image' ? draft.designer_prompt_es : null,
-            ai_video_prompt: draft.content_type !== 'image' ? draft.designer_prompt_es : null,
-            skarleth_notes: draft.review_notes?.join('\n') || null,
+            master_caption: finalDraft.master_caption,
+            platform_captions: finalDraft.platform_captions,
+            ai_image_prompt: finalDraft.content_type === 'image' ? finalDraft.designer_prompt_es : null,
+            ai_video_prompt: finalDraft.content_type !== 'image' ? finalDraft.designer_prompt_es : null,
+            skarleth_notes: finalDraft.review_notes?.join('\n') || null,
             publish_date: publishDate,
           });
           if (!saved.post_id) continue; // server skipped (empty/dedupe) — nothing persisted
@@ -873,22 +950,27 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
 
         for (const draft of blogs) {
           if (!(draft.html || '').trim()) continue; // skip empty blog output
-          const blogDay = String(draft.day_of_week || blogSlots[0] || 'thursday');
+
+          // Quality gate before save (no blog leaves the agent below the bar).
+          const gated = await qualityGateDraft(agentSlug, backend, clientWithSchedule, snapshot, taskInput, draft, 'blogDraft');
+          const finalDraft = gated.output;
+
+          const blogDay = String(finalDraft.day_of_week || blogSlots[0] || 'thursday');
           const publishDate = `${nextScheduledDate(blogDay)}T09:00`;
           const saved = await post('/internal/agency/draft-post', {
             agent_slug: agentSlug,
             task_id: taskId,
             client_id: client.client_id,
-            title: draft.title,
+            title: finalDraft.title,
             content_type: 'blog',
             platforms: ['website_blog'],
-            blog_content: draft.html,
-            blog_excerpt: draft.excerpt,
-            seo_title: draft.seo_title,
-            meta_description: draft.meta_description,
-            slug: draft.slug,
-            target_keyword: draft.target_keyword,
-            skarleth_notes: draft.review_notes?.join('\n') || null,
+            blog_content: finalDraft.html,
+            blog_excerpt: finalDraft.excerpt,
+            seo_title: finalDraft.seo_title,
+            meta_description: finalDraft.meta_description,
+            slug: finalDraft.slug,
+            target_keyword: finalDraft.target_keyword,
+            skarleth_notes: finalDraft.review_notes?.join('\n') || null,
             publish_date: publishDate,
           });
           if (!saved.skipped) {

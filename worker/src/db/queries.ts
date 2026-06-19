@@ -1243,11 +1243,11 @@ export async function reclaimStuckApprovedJobs(
 
 export async function recordAgencyCost(
   db: D1Database,
-  data: { agent_slug: string; backend: string; mode?: string | null; cost_usd?: number | null; run_id?: string | null; task_id?: string | null },
+  data: { agent_slug: string; backend: string; mode?: string | null; cost_usd?: number | null; run_id?: string | null; task_id?: string | null; executor_reason?: string | null },
 ): Promise<void> {
   await db.prepare(
-    `INSERT INTO agency_cost_log (id, agent_slug, backend, mode, cost_usd, run_id, task_id, created_at)
-     VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO agency_cost_log (id, agent_slug, backend, mode, cost_usd, run_id, task_id, executor_reason, created_at)
+     VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(
     data.agent_slug,
     data.backend,
@@ -1255,7 +1255,96 @@ export async function recordAgencyCost(
     data.cost_usd ?? null,
     data.run_id ?? null,
     data.task_id ?? null,
+    data.executor_reason ?? null,
     Math.floor(Date.now() / 1000),
+  ).run();
+}
+
+// ── Client keyword set (§3/§4) — shared, queryable, consumed by every agent ──
+
+export interface ClientKeywordRow {
+  id: string;
+  client_id: string;
+  keyword: string;
+  kw_type: string;
+  search_intent: string | null;
+  difficulty: string | null;
+  opportunity_notes: string | null;
+  locality: string | null;
+  source: string | null;
+  confidence: string | null;
+  status: string;
+}
+
+export async function getClientKeywords(db: D1Database, clientId: string): Promise<ClientKeywordRow[]> {
+  const rows = await db.prepare(
+    `SELECT id, client_id, keyword, kw_type, search_intent, difficulty, opportunity_notes, locality, source, confidence, status
+     FROM client_keywords WHERE client_id = ? AND status = 'active'
+     ORDER BY CASE kw_type WHEN 'primary' THEN 0 WHEN 'local' THEN 1 WHEN 'near_me' THEN 2 WHEN 'long_tail' THEN 3 ELSE 4 END, keyword`,
+  ).bind(clientId).all<ClientKeywordRow>();
+  return rows.results ?? [];
+}
+
+// Upsert keeps the unique (client_id, keyword) row fresh without ever deleting —
+// curated/manual keywords survive. Dedup via the uq_client_keyword index.
+export async function upsertClientKeywords(
+  db: D1Database,
+  clientId: string,
+  keywords: Array<{ keyword: string; kw_type?: string; search_intent?: string | null; difficulty?: string | null; opportunity_notes?: string | null; locality?: string | null; source?: string | null; confidence?: string | null }>,
+): Promise<number> {
+  let n = 0;
+  for (const k of keywords) {
+    const keyword = (k.keyword || '').trim();
+    if (!keyword) continue;
+    await db.prepare(
+      `INSERT INTO client_keywords (client_id, keyword, kw_type, search_intent, difficulty, opportunity_notes, locality, source, confidence, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+       ON CONFLICT(client_id, keyword) DO UPDATE SET
+         kw_type=excluded.kw_type, search_intent=excluded.search_intent, difficulty=excluded.difficulty,
+         opportunity_notes=excluded.opportunity_notes, locality=excluded.locality,
+         source=excluded.source, confidence=excluded.confidence, status='active', updated_at=unixepoch()`,
+    ).bind(
+      clientId, keyword, k.kw_type ?? 'secondary', k.search_intent ?? null, k.difficulty ?? null,
+      k.opportunity_notes ?? null, k.locality ?? null, k.source ?? 'research', k.confidence ?? 'medium',
+    ).run();
+    n++;
+  }
+  return n;
+}
+
+// ── Client profile gaps (§5 missing-information protocol) ──
+
+export interface ClientProfileGapRow {
+  id: string;
+  client_id: string;
+  field: string;
+  question: string | null;
+  status: string;
+  assumption: string | null;
+  resolution: string | null;
+}
+
+export async function getClientProfileGaps(db: D1Database, clientId: string): Promise<ClientProfileGapRow[]> {
+  const rows = await db.prepare(
+    `SELECT id, client_id, field, question, status, assumption, resolution
+     FROM client_profile_gaps WHERE client_id = ? ORDER BY created_at DESC`,
+  ).bind(clientId).all<ClientProfileGapRow>();
+  return rows.results ?? [];
+}
+
+export async function upsertClientProfileGap(
+  db: D1Database,
+  data: { client_id: string; field: string; question?: string | null; status?: string; assumption?: string | null; resolution?: string | null; asked_in_discord_at?: number | null },
+): Promise<void> {
+  await db.prepare(
+    `INSERT INTO client_profile_gaps (client_id, field, question, status, assumption, resolution, asked_in_discord_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch())
+     ON CONFLICT(client_id, field) DO UPDATE SET
+       question=excluded.question, status=excluded.status, assumption=excluded.assumption,
+       resolution=excluded.resolution, asked_in_discord_at=excluded.asked_in_discord_at, updated_at=unixepoch()`,
+  ).bind(
+    data.client_id, data.field, data.question ?? null, data.status ?? 'needs_info',
+    data.assumption ?? null, data.resolution ?? null, data.asked_in_discord_at ?? null,
   ).run();
 }
 
@@ -1820,7 +1909,7 @@ export async function getAgencyClientContentBrief(
   db: D1Database,
   clientId: string,
 ): Promise<{ brief: string; hasBrief: boolean }> {
-  const [client, intel, areas, services, restrictions] = await Promise.all([
+  const [client, intel, areas, services, restrictions, keywords] = await Promise.all([
     db.prepare('SELECT canonical_name, industry, state, cta_text, notes FROM clients WHERE id = ?')
       .bind(clientId).first<{ canonical_name: string | null; industry: string | null; state: string | null; cta_text: string | null; notes: string | null }>(),
     db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?')
@@ -1830,6 +1919,7 @@ export async function getAgencyClientContentBrief(
     db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC LIMIT 12')
       .bind(clientId).all<{ name: string }>(),
     getClientRestrictions(db, clientId),
+    getClientKeywords(db, clientId),
   ]);
 
   const serviceAreas = areas.results.map((r) => r.city).filter(Boolean);
@@ -1855,8 +1945,25 @@ export async function getAgencyClientContentBrief(
   add('Seasonal notes', i.seasonal_notes);
   add('Humanization style', i.humanization_style);
   add('Additional context', client?.notes);
+  add('Primary keyword', i.primary_keyword);
+  add('Secondary keywords', i.secondary_keywords);
+  add('Local SEO themes', i.local_seo_themes);
   const forbidden = [i.prohibited_terms, restrictions.join(', ')].filter((v) => v && String(v).trim()).join(', ');
   if (forbidden) lines.push(`- NEVER USE: ${forbidden}`);
+
+  // Shared target keyword set (§3) — feeds research/strategy/social/blog/GMB from
+  // one source so messaging stays consistent and on-target for local ranking.
+  if (keywords.length) {
+    const byType = (t: string) => keywords.filter((k) => k.kw_type === t).map((k) => k.keyword);
+    const kwLines: string[] = [];
+    const primary = byType('primary');
+    const local = [...byType('local'), ...byType('near_me')];
+    const longTail = byType('long_tail');
+    if (primary.length) kwLines.push(`  primary: ${primary.join(', ')}`);
+    if (local.length) kwLines.push(`  local/near-me: ${local.join(', ')}`);
+    if (longTail.length) kwLines.push(`  long-tail: ${longTail.slice(0, 12).join(', ')}`);
+    if (kwLines.length) lines.push(`- TARGET KEYWORDS (use naturally, no stuffing; include correct local/service-area terms):\n${kwLines.join('\n')}`);
+  }
 
   // A brief is "real" when it carries brand voice, services, or service areas —
   // not just the business name. Without that, drafts would be generic/empty.
