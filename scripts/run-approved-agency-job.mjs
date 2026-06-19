@@ -1099,40 +1099,76 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
         const clientWithBrief = { ...client, content_brief: brief.brief };
         if (!process.env.OPENAI_API_KEY) await loadAiConfig();
 
-        const result = await runStructuredAgent('gmbPost', agentSlug, backend, clientWithBrief, snapshot, taskInput);
-        let draft = result.output;
-        if (!draft || !(draft.body || '').trim()) continue; // skip empty
-        const gated = await qualityGateDraft(agentSlug, backend, clientWithBrief, snapshot, taskInput, draft, 'gmbPost');
-        draft = gated.output;
-
-        // Build a human posting plan — there is NO GMB API auto-post; the gates
-        // and the designer/Marvin review still apply exactly like every channel.
-        const planLines = [
-          `GMB POSTING PLAN (manual until GMB API wired):`,
-          `- post_type: ${draft.post_type}`,
-          `- cta_type: ${draft.cta_type}${draft.cta_url ? ` (${draft.cta_url})` : ''}`,
-          draft.offer_terms ? `- offer_terms: ${draft.offer_terms}` : null,
-          draft.coupon_code ? `- coupon_code: ${draft.coupon_code}` : null,
-          (draft.event_start || draft.event_end) ? `- event: ${draft.event_start || '?'} → ${draft.event_end || '?'}` : null,
-          `- target_keyword: ${draft.target_keyword} | locality: ${draft.locality}`,
-          ...(Array.isArray(draft.review_notes) ? draft.review_notes.map((n) => `- note: ${n}`) : []),
-        ].filter(Boolean);
-
-        const saved = await post('/internal/agency/draft-post', {
-          agent_slug: agentSlug,
-          task_id: taskId,
-          client_id: client.client_id,
-          title: draft.title,
-          content_type: 'image',
-          platforms: ['google_business'],
-          master_caption: draft.body,
-          platform_captions: { google_business: draft.body },
-          target_keyword: draft.target_keyword || null,
-          target_locality: draft.locality || null,
-          ai_image_prompt: draft.designer_prompt_es || null,
-          skarleth_notes: planLines.join('\n'),
+        // Map the gmbPost output to the structured GBP columns posting/upload-post
+        // reads (UPDATE -> STANDARD topic). After Marvin approval + designer asset,
+        // posting publishes the Offer/Update/Event automatically — no manual step.
+        const TOPIC = { OFFER: 'OFFER', EVENT: 'EVENT', UPDATE: 'STANDARD' };
+        const gbpFields = (d) => ({
+          gbp_topic_type: TOPIC[d.post_type] || 'STANDARD',
+          gbp_cta_type: d.cta_type && d.cta_type !== 'NONE' ? d.cta_type : null,
+          gbp_cta_url: d.cta_url || null,
+          gbp_coupon_code: d.coupon_code || null,
+          gbp_terms: d.offer_terms || null,
+          gbp_event_title: d.post_type === 'EVENT' ? (d.title || null) : null,
+          gbp_event_start_date: d.event_start || null,
+          gbp_event_end_date: d.event_end || null,
         });
-        if (saved.post_id) savedGmb.push({ client_name: client.client_name, post_id: saved.post_id, post_type: draft.post_type, locality: draft.locality, backend: result.backend });
+        const genOne = async (locTask) => {
+          const r = await runStructuredAgent('gmbPost', agentSlug, backend, clientWithBrief, snapshot, locTask);
+          let d = r.output;
+          if (!d || !(d.body || '').trim()) return null;
+          const g = await qualityGateDraft(agentSlug, backend, clientWithBrief, snapshot, locTask, d, 'gmbPost');
+          return { draft: g.output, backend: r.backend };
+        };
+
+        // Multi-location clients (e.g. Elite Team Builders LA/WA/OR): a distinct,
+        // location-adapted post per active profile, stored in each location's
+        // caption_field; posting fans each out to its upload_post_profile.
+        const activeLocations = (Array.isArray(brief.gbp_locations) ? brief.gbp_locations : [])
+          .filter((l) => l && l.paused !== 1 && l.caption_field);
+
+        let saved;
+        let detail;
+        if (activeLocations.length > 1) {
+          const location_captions = {};
+          const labels = [];
+          let primary = null;
+          for (const loc of activeLocations) {
+            const one = await genOne({ ...taskInput, target_location: { label: loc.label, locality: loc.label } });
+            if (!one) continue;
+            location_captions[loc.caption_field] = one.draft.body;
+            labels.push(loc.label);
+            if (!primary) primary = one.draft;
+          }
+          if (!primary || !labels.length) continue;
+          saved = await post('/internal/agency/draft-post', {
+            agent_slug: agentSlug, task_id: taskId, client_id: client.client_id,
+            title: primary.title, content_type: 'image', platforms: ['google_business'],
+            master_caption: primary.body,
+            location_captions,
+            target_keyword: primary.target_keyword || null, target_locality: primary.locality || null,
+            ai_image_prompt: primary.designer_prompt_es || null,
+            skarleth_notes: `${Array.isArray(primary.review_notes) ? primary.review_notes.join('\n') : ''}\nMulti-location GBP (${labels.join(', ')}) — posts per profile via upload-post after approval.`.trim(),
+            ...gbpFields(primary),
+          });
+          detail = { post_type: primary.post_type, locations: labels };
+        } else {
+          const one = await genOne(taskInput);
+          if (!one) continue;
+          const draft = one.draft;
+          saved = await post('/internal/agency/draft-post', {
+            agent_slug: agentSlug, task_id: taskId, client_id: client.client_id,
+            title: draft.title, content_type: 'image', platforms: ['google_business'],
+            master_caption: draft.body,
+            platform_captions: { google_business: draft.body },
+            target_keyword: draft.target_keyword || null, target_locality: draft.locality || null,
+            ai_image_prompt: draft.designer_prompt_es || null,
+            skarleth_notes: `${Array.isArray(draft.review_notes) ? draft.review_notes.join('\n') : ''}\nGBP ${draft.post_type} — posts to google_business via upload-post after approval.`.trim(),
+            ...gbpFields(draft),
+          });
+          detail = { post_type: draft.post_type, locality: draft.locality };
+        }
+        if (saved?.post_id) savedGmb.push({ client_name: client.client_name, post_id: saved.post_id, ...detail });
       } catch (err) {
         gmbErrors.push({ client: client.client_name, error: redactSecrets(err instanceof Error ? err.message : String(err)).slice(0, 200) });
       }
@@ -1146,14 +1182,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
       command_name: commandName,
       saved_gmb: savedGmb,
       client_errors: gmbErrors,
-      // Surface the integration gap without bypassing any gate.
-      findings: [{
-        severity: 'low',
-        title: 'GMB API posting not wired — drafts + plan only',
-        description: 'GMB Rank produced approved-pending drafts with a manual posting plan. Auto-posting to the Google Business Profile API is a TODO; drafts still require Marvin approval + designer asset.',
-        recommended_action: 'Wire the GMB API posting integration (deferred) or post manually from the plan in each draft.',
-      }],
-      safety: { status: 'draft', ready_for_automation: 0, asset_delivered: 0, no_auto_publish: true },
+      safety: { status: 'draft', ready_for_automation: 0, asset_delivered: 0, no_auto_publish: true, posts_via: 'upload-post' },
     };
   }
 

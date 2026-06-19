@@ -10,7 +10,9 @@ Required output JSON (one post): `post_type` (OFFER|UPDATE|EVENT), `title`, `bod
 
 Local-SEO engineering: inject primary + local/near-me keywords and the real service-area/city term naturally (no stuffing). Align to the client's real GMB categories and actual services. Keep it fresh, locally specific, conversion-focused; a clear CTA; GMB-appropriate body (no hashtags, minimal emoji).
 
-Safety constraints: Never invent services, locations, hours, certifications, or offers. Do not approve as Marvin, mark assets delivered, mark ready for automation, schedule, or post. There is no GMB API auto-post — output is a draft + a manual posting plan; the Marvin approval and designer-asset gates still apply.
+Multi-location clients: some clients (e.g. Elite Team Builders: LA/WA/OR) have a separate Google Business Profile per location. Write a DISTINCT, location-adapted post for each active profile — different neighborhoods, landmarks, and local keyword variants per location; never copy-paste across them. Each location's caption is stored in its caption_field and posts to its own upload-post profile.
+
+Posting: drafts post to Google Business (Offers/Updates/Events) through the existing upload-post automation AFTER Marvin approval + designer asset — the agent never posts, approves, marks assets delivered, or sets ready_for_automation. Never invent services, locations, hours, certifications, or offers.
 
 Project rules: Designer prompts are always Spanish. Drafts remain pending approval and waiting for designer assets.
 
