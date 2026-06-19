@@ -721,7 +721,29 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
         freshness_date: isoDate(),
         research_json: result.output,
       });
-      saved.push({ client_id: client.client_id, client_name: client.client_name, backend: result.backend });
+
+      // §3: persist the keyword set into the shared client_keywords table so
+      // strategy/social/blog/GMB all consume the same on-target keywords.
+      const kr = result.output?.keyword_research;
+      let savedKeywords = 0;
+      if (kr && typeof kr === 'object') {
+        const rows = [];
+        const pushAll = (arr, kw_type, asLocality = false) => {
+          for (const kw of (Array.isArray(arr) ? arr : [])) {
+            const keyword = String(kw || '').trim();
+            if (keyword) rows.push({ keyword, kw_type, search_intent: kr.intent || null, locality: asLocality ? keyword : null, source: 'research', confidence: 'medium' });
+          }
+        };
+        pushAll(kr.primary, 'primary');
+        pushAll(kr.long_tail, 'long_tail');
+        pushAll(kr.local_terms, 'local', true);
+        pushAll(kr.near_me, 'near_me', true);
+        if (rows.length) {
+          const r = await post('/internal/agency/keywords', { client_id: client.client_id, keywords: rows }).catch(() => ({ saved: 0 }));
+          savedKeywords = r?.saved ?? rows.length;
+        }
+      }
+      saved.push({ client_id: client.client_id, client_name: client.client_name, backend: result.backend, keywords: savedKeywords });
     }
     return {
       summary: `Client research completed for ${saved.length} client(s).`,

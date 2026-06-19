@@ -2,7 +2,7 @@ export const AGENCY_SCHEMAS = {
   research: {
     type: 'object',
     additionalProperties: false,
-    required: ['summary', 'sources', 'audience', 'services', 'local_angles', 'risks', 'content_opportunities'],
+    required: ['summary', 'sources', 'audience', 'services', 'local_angles', 'risks', 'content_opportunities', 'keyword_research'],
     properties: {
       summary: { type: 'string' },
       sources: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['title', 'url'], properties: { title: { type: 'string' }, url: { type: 'string' } } } },
@@ -11,18 +11,48 @@ export const AGENCY_SCHEMAS = {
       local_angles: { type: 'array', items: { type: 'string' } },
       risks: { type: 'array', items: { type: 'string' } },
       content_opportunities: { type: 'array', items: { type: 'string' } },
+      // First-class keyword research (§3) — the shared keyword set every agent uses.
+      keyword_research: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['primary', 'long_tail', 'local_terms', 'near_me', 'intent', 'difficulty_notes'],
+        properties: {
+          primary: { type: 'array', items: { type: 'string' } },
+          long_tail: { type: 'array', items: { type: 'string' } },
+          local_terms: { type: 'array', items: { type: 'string' } },     // city / service-area keywords
+          near_me: { type: 'array', items: { type: 'string' } },          // "near me" intent variants
+          intent: { type: 'string' },                                     // dominant search intent
+          difficulty_notes: { type: 'array', items: { type: 'string' } }, // difficulty / opportunity notes
+        },
+      },
     },
   },
   strategy: {
     type: 'object',
     additionalProperties: false,
-    required: ['summary', 'monthly_focus', 'priority_services', 'content_pillars', 'weekly_plan', 'approval_notes'],
+    required: ['summary', 'monthly_focus', 'priority_services', 'content_pillars', 'weekly_plan', 'seo_plan', 'success_metrics', 'approval_notes'],
     properties: {
       summary: { type: 'string' },
       monthly_focus: { type: 'string' },
       priority_services: { type: 'array', items: { type: 'string' } },
       content_pillars: { type: 'array', items: { type: 'string' } },
       weekly_plan: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['week', 'theme', 'recommended_content'], properties: { week: { type: 'string' }, theme: { type: 'string' }, recommended_content: { type: 'array', items: { type: 'string' } } } } },
+      // Local-SEO plan (§3/§6): keyword -> content type -> channel -> cadence.
+      seo_plan: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['keyword', 'content_type', 'channel', 'cadence'],
+          properties: {
+            keyword: { type: 'string' },
+            content_type: { type: 'string' },                               // image|reel|video|blog|gmb
+            channel: { type: 'string', enum: ['social', 'blog', 'gmb'] },
+            cadence: { type: 'string' },                                     // e.g. "weekly", "2x/week"
+          },
+        },
+      },
+      success_metrics: { type: 'array', items: { type: 'string' } },         // keywords to track, cadence, ranking check-ins
       approval_notes: { type: 'array', items: { type: 'string' } },
     },
   },
@@ -192,10 +222,10 @@ export function buildAgencyPrompt(kind, { client, snapshot, task }) {
   ].join('\n\n');
 
   if (kind === 'research') {
-    return `${shared}\n\nResearch the client defensively using only reliable, citeable public information available to the terminal agent. Focus on market, services, local angles, audience, and content opportunities.`;
+    return `${shared}\n\nResearch the client defensively using only reliable, citeable public information available to the terminal agent. Focus on market, services, local angles, audience, and content opportunities.\n\nKEYWORD RESEARCH (first-class — the package goal is ranking #1 locally):\n- keyword_research.primary: the 3-6 highest-intent head terms for this business.\n- long_tail: specific multi-word variants real customers search.\n- local_terms: city / neighborhood / service-area keywords from the client's actual areas.\n- near_me: "near me" style local-intent variants.\n- intent: the dominant search intent (local | commercial | transactional | informational).\n- difficulty_notes: brief difficulty/opportunity notes per cluster.\nGround keywords in the client's REAL services and service areas — do not invent locations or services.`;
   }
   if (kind === 'strategy') {
-    return `${shared}\n\nCreate a reviewable draft strategy plan. Use existing research signals when present. Keep it practical for local SEO and social content.`;
+    return `${shared}\n\nCreate a reviewable draft local-SEO strategy. Use existing research + the TARGET KEYWORDS in the brief.\n- seo_plan: an explicit map of keyword -> content_type -> channel (social|blog|gmb) -> cadence. This is the local-SEO plan, not a vague theme list.\n- success_metrics: which target keywords to track, GMB/post cadence, and ranking-movement check-ins.\nBe honest: optimize what the agency controls (relevance, locality, freshness, consistency, quality). Do not promise a guaranteed #1. Keep it a draft for Marvin's review.`;
   }
   if (kind === 'socialWeeklyBatch') {
     const schedule = client?.weekly_schedule_text || 'No package schedule provided.';
