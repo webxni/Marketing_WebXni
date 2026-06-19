@@ -146,6 +146,26 @@ export const AGENCY_SCHEMAS = {
       recommended_changes: { type: 'array', items: { type: 'string' } },
     },
   },
+  gmbPost: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['post_type', 'title', 'body', 'cta_type', 'target_keyword', 'locality', 'designer_prompt_es', 'review_notes'],
+    properties: {
+      post_type: { type: 'string', enum: ['OFFER', 'UPDATE', 'EVENT'] },
+      title: { type: 'string' },
+      body: { type: 'string' },
+      cta_type: { type: 'string', enum: ['CALL', 'LEARN_MORE', 'BOOK', 'ORDER', 'SIGN_UP', 'NONE'] },
+      cta_url: { type: 'string' },
+      offer_terms: { type: 'string' },     // OFFER only
+      coupon_code: { type: 'string' },      // OFFER only
+      event_start: { type: 'string' },      // EVENT only (ISO date)
+      event_end: { type: 'string' },        // EVENT only (ISO date)
+      target_keyword: { type: 'string' },
+      locality: { type: 'string' },         // city / service-area term targeted
+      designer_prompt_es: { type: 'string' },
+      review_notes: { type: 'array', items: { type: 'string' } },
+    },
+  },
   qualityCheck: {
     type: 'object',
     additionalProperties: false,
@@ -236,6 +256,9 @@ export function buildAgencyPrompt(kind, { client, snapshot, task }) {
   }
   if (kind === 'blogDraft') {
     return `${shared}\n\nDraft one local SEO blog as HTML body content only. Use inline-safe article markup and do not include style tags. It must remain a draft and not publish to WordPress.`;
+  }
+  if (kind === 'gmbPost') {
+    return `${shared}\n\nDraft ONE Google Business Profile post engineered to push this client toward 1st-position LOCAL ranking — not a generic post.\n\nRULES:\n- Choose the best post_type for the goal: OFFER (promotion + offer_terms, optional coupon_code), UPDATE (What's New), or EVENT (with event_start/event_end ISO dates).\n- Inject the client's TARGET KEYWORDS + the specific service-area/city term naturally into title + body (no stuffing). Set "locality" to the city/area you targeted.\n- Align to the client's real GMB categories and actual services. Never invent services, locations, hours, or offers.\n- Include a clear cta_type appropriate to the business (CALL for locksmiths/emergency, BOOK/LEARN_MORE for remodeling). Set cta_url when relevant.\n- Keep it fresh, locally specific, and conversion-focused. body should be concise and GMB-appropriate (no hashtags, minimal emoji).\n- designer_prompt_es: the image concept in Spanish for the designer.\n- This is a DRAFT for review. Do not claim to publish/schedule to GMB.`;
   }
   if (kind === 'qualityCheck') {
     const draft = task?.draft ? JSON.stringify(task.draft, null, 2) : (task?.review_target ? JSON.stringify(task.review_target, null, 2) : '{}');

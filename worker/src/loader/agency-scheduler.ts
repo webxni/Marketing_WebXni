@@ -23,6 +23,7 @@ const AGENT_COMMANDS: Record<string, string> = {
   'blog-writer': 'agency_blog_generation',
   'editorial-review': 'agency_editorial_review',
   'client-onboarding': 'agency_client_onboarding',
+  'gmb-rank': 'agency_gmb_rank',
 };
 
 // Complex agents lead with Claude (Hermes is gpt-5.4-mini — too small for
@@ -38,6 +39,7 @@ const AGENT_BACKEND_PRIORITY: Record<string, string[]> = {
   'blog-writer': ['claude_code', 'hermes', 'codex', 'openai'],
   'editorial-review': ['claude_code', 'hermes', 'codex', 'openai'],
   'client-onboarding': ['hermes', 'claude_code', 'codex', 'openai'],
+  'gmb-rank': ['hermes', 'codex', 'openai'],
 };
 
 // Weekend schedule — tasks run Friday night through Sunday.
@@ -52,8 +54,8 @@ const SCHEDULE: Record<string, string[]> = {
   'sat-morning': ['client-research', 'strategy'],
   // Saturday afternoon (UTC 14+) — blog drafts + editorial
   'sat-afternoon': ['blog-writer', 'editorial-review'],
-  // Sunday morning (UTC midnight–1PM) — social copy + editorial
-  'sun-morning': ['social-copy', 'editorial-review'],
+  // Sunday morning (UTC midnight–1PM) — social copy + GMB local-rank + editorial
+  'sun-morning': ['social-copy', 'gmb-rank', 'editorial-review'],
   // Sunday afternoon (UTC 14+) — orchestrator wrap-up
   'sun-afternoon': ['agency-orchestrator'],
 };

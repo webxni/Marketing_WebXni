@@ -385,6 +385,7 @@ const AGENT_HERMES_SKILLS = {
   'blog-writer': 'webxni-blog-writer',
   'editorial-review': 'webxni-editorial-reviewer',
   'client-onboarding': 'webxni-agency-orchestrator',
+  'gmb-rank': 'webxni-gmb-rank',
 };
 
 const AGENT_BACKEND_PRIORITY = {
@@ -397,6 +398,7 @@ const AGENT_BACKEND_PRIORITY = {
   'blog-writer':         ['hermes', 'claude', 'codex', 'openai'],
   'client-research':     ['hermes', 'gemini', 'openai'],
   'client-onboarding':   ['hermes', 'claude', 'codex', 'openai'],
+  'gmb-rank':            ['hermes', 'codex', 'openai'],
 };
 
 function parseBackendPriority(value) {
@@ -1030,6 +1032,93 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
         recommended_action: 'Run client-research and strategy for these clients so a brand brief exists before drafting.',
       }] : undefined,
       safety: { status: 'draft', wordpress_published: false, no_auto_publish: true },
+    };
+  }
+
+  if (agentSlug === 'gmb-rank') {
+    // GMB drafting is flag-gated and still requires draft creation to be enabled.
+    if (process.env.AGENCY_GMB_ENABLED !== '1') {
+      return {
+        ...buildResult(agentSlug, commandName, snapshot),
+        summary: 'GMB Rank produced 0 drafts: disabled (set AGENCY_GMB_ENABLED=1 to enable).',
+        gmb_enabled: false,
+      };
+    }
+    if (!ALLOW_DRAFT_POSTS) {
+      return { ...buildResult(agentSlug, commandName, snapshot), summary: 'GMB Rank produced 0 drafts: draft creation disabled (AGENCY_ALLOW_DRAFT_POSTS).', draft_creation_enabled: false };
+    }
+    const gmbLimit = Number(process.env.AGENCY_DAILY_GMB_CLIENT_LIMIT || 3);
+    const clients = [...snapshot.coverage]
+      .sort((a, b) => (a.last_research_date ? 0 : 1) - (b.last_research_date ? 0 : 1))
+      .slice(0, gmbLimit);
+    const savedGmb = [];
+    const gmbErrors = [];
+    for (const client of clients) {
+      try {
+        let brief = { brief: '', hasBrief: false };
+        try { brief = await request(`/internal/agency/client-brief/${client.client_id}`); } catch { /* no brief */ }
+        if (!brief.hasBrief) {
+          gmbErrors.push({ client: client.client_name, error: 'No brand brief — needs client research/intelligence before drafting.' });
+          continue;
+        }
+        const clientWithBrief = { ...client, content_brief: brief.brief };
+        if (!process.env.OPENAI_API_KEY) await loadAiConfig();
+
+        const result = await runStructuredAgent('gmbPost', agentSlug, backend, clientWithBrief, snapshot, taskInput);
+        let draft = result.output;
+        if (!draft || !(draft.body || '').trim()) continue; // skip empty
+        const gated = await qualityGateDraft(agentSlug, backend, clientWithBrief, snapshot, taskInput, draft, 'gmbPost');
+        draft = gated.output;
+
+        // Build a human posting plan — there is NO GMB API auto-post; the gates
+        // and the designer/Marvin review still apply exactly like every channel.
+        const planLines = [
+          `GMB POSTING PLAN (manual until GMB API wired):`,
+          `- post_type: ${draft.post_type}`,
+          `- cta_type: ${draft.cta_type}${draft.cta_url ? ` (${draft.cta_url})` : ''}`,
+          draft.offer_terms ? `- offer_terms: ${draft.offer_terms}` : null,
+          draft.coupon_code ? `- coupon_code: ${draft.coupon_code}` : null,
+          (draft.event_start || draft.event_end) ? `- event: ${draft.event_start || '?'} → ${draft.event_end || '?'}` : null,
+          `- target_keyword: ${draft.target_keyword} | locality: ${draft.locality}`,
+          ...(Array.isArray(draft.review_notes) ? draft.review_notes.map((n) => `- note: ${n}`) : []),
+        ].filter(Boolean);
+
+        const saved = await post('/internal/agency/draft-post', {
+          agent_slug: agentSlug,
+          task_id: taskId,
+          client_id: client.client_id,
+          title: draft.title,
+          content_type: 'image',
+          platforms: ['google_business'],
+          master_caption: draft.body,
+          platform_captions: { google_business: draft.body },
+          target_keyword: draft.target_keyword || null,
+          target_locality: draft.locality || null,
+          ai_image_prompt: draft.designer_prompt_es || null,
+          skarleth_notes: planLines.join('\n'),
+        });
+        if (saved.post_id) savedGmb.push({ client_name: client.client_name, post_id: saved.post_id, post_type: draft.post_type, locality: draft.locality, backend: result.backend });
+      } catch (err) {
+        gmbErrors.push({ client: client.client_name, error: redactSecrets(err instanceof Error ? err.message : String(err)).slice(0, 200) });
+      }
+    }
+    const isSkip = (e) => /no brand brief|needs client research/i.test(e.error || '');
+    const realErrors = gmbErrors.filter((e) => !isSkip(e));
+    if (!savedGmb.length && realErrors.length) throw new Error(`GMB drafts failed; first error: ${realErrors[0].error}`);
+    return {
+      summary: `${savedGmb.length} GMB draft(s) for ${new Set(savedGmb.map((s) => s.client_name)).size} client(s)${gmbErrors.length ? ` (${gmbErrors.length} skipped)` : ''}.`,
+      agent_slug: agentSlug,
+      command_name: commandName,
+      saved_gmb: savedGmb,
+      client_errors: gmbErrors,
+      // Surface the integration gap without bypassing any gate.
+      findings: [{
+        severity: 'low',
+        title: 'GMB API posting not wired — drafts + plan only',
+        description: 'GMB Rank produced approved-pending drafts with a manual posting plan. Auto-posting to the Google Business Profile API is a TODO; drafts still require Marvin approval + designer asset.',
+        recommended_action: 'Wire the GMB API posting integration (deferred) or post manually from the plan in each draft.',
+      }],
+      safety: { status: 'draft', ready_for_automation: 0, asset_delivered: 0, no_auto_publish: true },
     };
   }
 
