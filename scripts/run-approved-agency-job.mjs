@@ -60,6 +60,15 @@ async function post(pathname, body) {
   return request(pathname, { method: 'POST', body: JSON.stringify(body ?? {}) });
 }
 
+// Best-effort progress ping. Posting to the job log extends the job's lease, so
+// long per-client loops (research/social/blog/gmb over many clients) don't get
+// requeued mid-run by the stuck-job reaper. Never throws.
+async function pingLease(message) {
+  try {
+    await post(`/internal/discord/approved-jobs/${jobId}/log`, { level: 'INFO', message: String(message).slice(0, 200) });
+  } catch { /* best effort — never block work on a progress ping */ }
+}
+
 function topCoverageGaps(coverage) {
   return [...coverage]
     .sort((a, b) => {
@@ -714,6 +723,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
     );
     const saved = [];
     for (const client of candidates) {
+      await pingLease(`research: ${client.client_name}`);
       const result = await runStructuredAgent('research', agentSlug, backend, client, snapshot, taskInput);
       await post('/internal/agency/research-note', {
         agent_slug: agentSlug,
@@ -745,7 +755,28 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
           savedKeywords = r?.saved ?? rows.length;
         }
       }
-      saved.push({ client_id: client.client_id, client_name: client.client_name, backend: result.backend, keywords: savedKeywords });
+
+      // §5 missing-information protocol: persist gaps + assumptions, and ask the
+      // open questions in Discord. Non-blocking — research already saved; only the
+      // unknown fields wait. Never guess client facts.
+      const gaps = Array.isArray(result.output?.missing_info) ? result.output.missing_info.filter((g) => g && g.field) : [];
+      const assumptions = Array.isArray(result.output?.assumptions) ? result.output.assumptions.filter(Boolean) : [];
+      let askedGaps = 0;
+      if (gaps.length || assumptions.length) {
+        await post('/internal/agency/profile-gaps', {
+          client_id: client.client_id, gaps, assumptions, asked_in_discord: gaps.length > 0,
+        }).catch(() => {});
+        if (gaps.length) {
+          askedGaps = gaps.length;
+          await post('/internal/agency/notify-discord', {
+            title: `❓ Client info needed — ${client.client_name}`,
+            body: gaps.map((g) => `• ${g.question || g.field}`).join('\n').slice(0, 1500),
+            color: 0x3b82f6,
+            agent_slug: agentSlug,
+          }).catch(() => {});
+        }
+      }
+      saved.push({ client_id: client.client_id, client_name: client.client_name, backend: result.backend, keywords: savedKeywords, gaps_asked: askedGaps, assumptions: assumptions.length });
     }
     return {
       summary: `Client research completed for ${saved.length} client(s).`,
@@ -760,6 +791,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
     const candidates = selectStrategyClients(snapshot.coverage, Number(process.env.AGENCY_DAILY_STRATEGY_CLIENT_LIMIT || 3));
     const saved = [];
     for (const client of candidates) {
+      await pingLease(`strategy: ${client.client_name}`);
       const result = await runStructuredAgent('strategy', agentSlug, backend, client, snapshot, taskInput);
       await post('/internal/agency/strategy-plan', {
         agent_slug: agentSlug,
@@ -802,6 +834,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
     const errors = [];
     for (const client of clients) {
       try {
+        await pingLease(`social-copy: ${client.client_name}`);
         // Parse package weekly_schedule from coverage
         let weeklySchedule = {};
         try { weeklySchedule = JSON.parse(client.weekly_schedule || '{}'); } catch { /* ignore */ }
@@ -947,6 +980,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
     const blogErrors = [];
     for (const client of clients) {
       try {
+        await pingLease(`blog-writer: ${client.client_name}`);
         // Parse blog slots from package weekly_schedule
         let weeklySchedule = {};
         try { weeklySchedule = JSON.parse(client.weekly_schedule || '{}'); } catch { /* ignore */ }
@@ -1055,6 +1089,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
     const gmbErrors = [];
     for (const client of clients) {
       try {
+        await pingLease(`gmb-rank: ${client.client_name}`);
         let brief = { brief: '', hasBrief: false };
         try { brief = await request(`/internal/agency/client-brief/${client.client_id}`); } catch { /* no brief */ }
         if (!brief.hasBrief) {
