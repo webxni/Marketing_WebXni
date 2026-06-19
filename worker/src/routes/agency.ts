@@ -33,6 +33,7 @@ import {
   writeAuditLog,
   recordAgencyCost,
   getAgentSpendToday,
+  upsertClientKeywords,
 } from '../db/queries';
 import { redactSecrets } from '../modules/redaction';
 import { resolveBlogTemplateConfig } from '../modules/blog-templates';
@@ -951,6 +952,22 @@ agencyInternalRoutes.post('/cost', async (c) => {
   });
   const spend_today = await getAgentSpendToday(c.env.DB, body.agent_slug);
   return c.json({ ok: true, spend_today });
+});
+
+// §3: persist the research agent's keyword set into the shared client_keywords
+// table. Additive upsert — never deletes curated/manual keywords.
+agencyInternalRoutes.post('/keywords', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const body = await c.req.json().catch(() => ({})) as {
+    client_id?: string;
+    keywords?: Array<{ keyword?: string; kw_type?: string; search_intent?: string | null; difficulty?: string | null; opportunity_notes?: string | null; locality?: string | null; source?: string | null; confidence?: string | null }>;
+  };
+  if (!body.client_id) return c.json({ error: 'client_id required' }, 400);
+  const rows = (Array.isArray(body.keywords) ? body.keywords : [])
+    .filter((k) => k && typeof k.keyword === 'string' && k.keyword.trim())
+    .map((k) => ({ ...k, keyword: String(k.keyword).trim() }));
+  const saved = await upsertClientKeywords(c.env.DB, body.client_id, rows);
+  return c.json({ ok: true, saved });
 });
 
 // Today's known spend for an agent, plus whether it has hit its daily cap.
