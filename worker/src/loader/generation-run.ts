@@ -28,6 +28,7 @@ import type { Env } from '../types';
 import type { ClientRow, PostRow } from '../types';
 import {
   buildWeeklyMarketingStrategicContext,
+  buildAutonomousResearchSignals,
   type ClientGenerationTopicHistoryItem,
 } from '../agent/context';
 import {
@@ -50,6 +51,8 @@ import {
   getGenerationRunById,
   createApprovedCommandJob,
   getClientGenerationTopicHistory,
+  getLatestClientResearch,
+  getLatestClientStrategy,
   type GenerationProgress,
   buildTopicFingerprint,
 } from '../db/queries';
@@ -926,6 +929,10 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
     };
   }
 
+  const [latestResearch, latestStrategy] = await Promise.all([
+    getLatestClientResearch(db, client.id),
+    getLatestClientStrategy(db, client.id),
+  ]);
   const strategicContext = buildWeeklyMarketingStrategicContext({
     client: {
       slug: client.slug,
@@ -934,6 +941,7 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
       language: client.language,
     },
     topicHistory: mapTopicHistoryForContext(topicHistory),
+    autonomousSignals: buildAutonomousResearchSignals(latestResearch, latestStrategy),
   });
 
   const ctx: GenerationContext = {
@@ -1409,6 +1417,10 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         };
       }
 
+      const [latestResearch, latestStrategy] = await Promise.all([
+        getLatestClientResearch(db, client.id),
+        getLatestClientStrategy(db, client.id),
+      ]);
       const strategicContext = buildWeeklyMarketingStrategicContext({
         client: {
           slug: client.slug,
@@ -1417,6 +1429,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
           language: client.language,
         },
         topicHistory: mapTopicHistoryForContext(topicHistory),
+        autonomousSignals: buildAutonomousResearchSignals(latestResearch, latestStrategy),
       });
 
       const ctx: GenerationContext = {
