@@ -36,6 +36,8 @@ import {
   getAgentSpendToday,
   upsertClientKeywords,
   upsertClientProfileGap,
+  createClientOfferDraft,
+  createClientEventDraft,
 } from '../db/queries';
 import { redactSecrets } from '../modules/redaction';
 import { resolveBlogTemplateConfig } from '../modules/blog-templates';
@@ -956,6 +958,47 @@ agencyInternalRoutes.post('/ping', async (c) => {
       stale_after_minutes: agent.stale_after_minutes,
     },
   });
+});
+
+// §2: agent-proposed GBP Offer — saved INACTIVE for Marvin to review + activate.
+agencyInternalRoutes.post('/gbp-offer', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const b = await c.req.json().catch(() => ({})) as Record<string, string | null>;
+  if (!b.client_id || !b.title) return c.json({ error: 'client_id and title required' }, 400);
+  // Don't pile up: skip if the client already has a pending (inactive) offer
+  // awaiting Marvin's review/activation.
+  const pending = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM client_offers WHERE client_id = ? AND active = 0').bind(b.client_id).first<{ n: number }>();
+  if ((pending?.n ?? 0) > 0) return c.json({ ok: true, skipped: true, reason: 'pending_offer_exists' });
+  const id = await createClientOfferDraft(c.env.DB, {
+    client_id: String(b.client_id), title: String(b.title),
+    description: b.description ?? null, cta_text: b.cta_text ?? null,
+    gbp_cta_type: (b.gbp_cta_type && b.gbp_cta_type !== 'NONE') ? b.gbp_cta_type : null,
+    gbp_cta_url: b.gbp_cta_url ?? null, gbp_coupon_code: b.gbp_coupon_code ?? null,
+    gbp_redeem_url: b.gbp_redeem_url ?? null, gbp_terms: b.gbp_terms ?? null,
+    valid_until: b.valid_until ?? null, gbp_location_id: b.gbp_location_id ?? null,
+    ai_image_prompt: b.ai_image_prompt ?? null,
+  });
+  await appendAgencyLog(c.env.DB, { agent_slug: b.agent_slug ?? 'gmb-rank', status: 'saved', step: 'gbp-offer', summary: `GBP offer proposal saved (inactive): ${b.title}` });
+  return c.json({ ok: true, offer_id: id });
+});
+
+// §2: agent-proposed GBP Event — saved INACTIVE for Marvin to review + activate.
+agencyInternalRoutes.post('/gbp-event', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const b = await c.req.json().catch(() => ({})) as Record<string, string | null>;
+  if (!b.client_id || !b.title) return c.json({ error: 'client_id and title required' }, 400);
+  const pending = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM client_events WHERE client_id = ? AND active = 0').bind(b.client_id).first<{ n: number }>();
+  if ((pending?.n ?? 0) > 0) return c.json({ ok: true, skipped: true, reason: 'pending_event_exists' });
+  const id = await createClientEventDraft(c.env.DB, {
+    client_id: String(b.client_id), title: String(b.title),
+    description: b.description ?? null, gbp_event_title: b.gbp_event_title ?? null,
+    gbp_event_start_date: b.gbp_event_start_date ?? null, gbp_event_end_date: b.gbp_event_end_date ?? null,
+    gbp_cta_type: (b.gbp_cta_type && b.gbp_cta_type !== 'NONE') ? b.gbp_cta_type : null,
+    gbp_cta_url: b.gbp_cta_url ?? null, gbp_location_id: b.gbp_location_id ?? null,
+    ai_image_prompt: b.ai_image_prompt ?? null,
+  });
+  await appendAgencyLog(c.env.DB, { agent_slug: b.agent_slug ?? 'gmb-rank', status: 'saved', step: 'gbp-event', summary: `GBP event proposal saved (inactive): ${b.title}` });
+  return c.json({ ok: true, event_id: id });
 });
 
 // Read-only: list the Google Business locations connected to an upload-post

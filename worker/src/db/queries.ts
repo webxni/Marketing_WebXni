@@ -1326,6 +1326,47 @@ export interface ClientProfileGapRow {
   resolution: string | null;
 }
 
+// Agent-proposed GBP Offer — saved INACTIVE (active=0, paused=1, no schedule).
+// It shows in the Offers UI for Marvin to review, add a designer image, and
+// activate. Activation (human) is what lets recurring-gbp-run post it, so this
+// never bypasses the Marvin/designer gate.
+export async function createClientOfferDraft(
+  db: D1Database,
+  d: { client_id: string; title: string; description?: string | null; cta_text?: string | null; gbp_cta_type?: string | null; gbp_cta_url?: string | null; gbp_coupon_code?: string | null; gbp_redeem_url?: string | null; gbp_terms?: string | null; valid_until?: string | null; gbp_location_id?: string | null; ai_image_prompt?: string | null },
+): Promise<string> {
+  const id = crypto.randomUUID().replace(/-/g, '').toLowerCase();
+  await db.prepare(
+    `INSERT INTO client_offers
+       (id, client_id, title, description, cta_text, valid_until, active, paused, recurrence, next_run_date,
+        gbp_cta_type, gbp_cta_url, gbp_coupon_code, gbp_redeem_url, gbp_terms, gbp_location_id, ai_image_prompt, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, 0, 1, 'none', NULL, ?, ?, ?, ?, ?, ?, ?, unixepoch())`,
+  ).bind(
+    id, d.client_id, d.title, d.description ?? null, d.cta_text ?? null, d.valid_until ?? null,
+    d.gbp_cta_type ?? null, d.gbp_cta_url ?? null, d.gbp_coupon_code ?? null, d.gbp_redeem_url ?? null,
+    d.gbp_terms ?? null, d.gbp_location_id ?? null, d.ai_image_prompt ?? null,
+  ).run();
+  return id;
+}
+
+// Agent-proposed GBP Event — saved INACTIVE for the same human-gated reason.
+export async function createClientEventDraft(
+  db: D1Database,
+  d: { client_id: string; title: string; description?: string | null; gbp_event_title?: string | null; gbp_event_start_date?: string | null; gbp_event_end_date?: string | null; gbp_cta_type?: string | null; gbp_cta_url?: string | null; gbp_location_id?: string | null; ai_image_prompt?: string | null },
+): Promise<string> {
+  const id = crypto.randomUUID().replace(/-/g, '').toLowerCase();
+  await db.prepare(
+    `INSERT INTO client_events
+       (id, client_id, title, description, gbp_event_title, gbp_event_start_date, gbp_event_end_date,
+        gbp_cta_type, gbp_cta_url, gbp_location_id, recurrence, next_run_date, active, paused, ai_image_prompt, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', NULL, 0, 1, ?, unixepoch(), unixepoch())`,
+  ).bind(
+    id, d.client_id, d.title, d.description ?? null, d.gbp_event_title ?? null,
+    d.gbp_event_start_date ?? null, d.gbp_event_end_date ?? null,
+    d.gbp_cta_type ?? null, d.gbp_cta_url ?? null, d.gbp_location_id ?? null, d.ai_image_prompt ?? null,
+  ).run();
+  return id;
+}
+
 export async function getClientProfileGaps(db: D1Database, clientId: string): Promise<ClientProfileGapRow[]> {
   const rows = await db.prepare(
     `SELECT id, client_id, field, question, status, assumption, resolution

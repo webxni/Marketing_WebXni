@@ -1169,6 +1169,38 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
           detail = { post_type: draft.post_type, locality: draft.locality };
         }
         if (saved?.post_id) savedGmb.push({ client_name: client.client_name, post_id: saved.post_id, ...detail });
+
+        // Strategy-driven GBP Offer + Event PROPOSALS (saved inactive — Marvin
+        // reviews, adds the image, and activates; only then does recurring-gbp-run
+        // post them). Best-effort: never breaks the GMB post run. The endpoints
+        // skip if a pending proposal already exists, so weekly runs don't pile up.
+        const offerLocId = activeLocations[0]?.location_id ?? null;
+        try {
+          const oRes = await runStructuredAgent('gmbOffer', agentSlug, backend, clientWithBrief, snapshot, taskInput);
+          const o = (await qualityGateDraft(agentSlug, backend, clientWithBrief, snapshot, taskInput, oRes.output, 'gmbOffer')).output;
+          if (o && (o.description || '').trim()) {
+            await post('/internal/agency/gbp-offer', {
+              agent_slug: agentSlug, client_id: client.client_id, title: o.title,
+              description: o.description, cta_text: o.cta_text,
+              gbp_cta_type: o.cta_type, gbp_cta_url: o.cta_url, gbp_coupon_code: o.coupon_code,
+              gbp_redeem_url: o.redeem_url, gbp_terms: o.terms, valid_until: o.valid_until,
+              gbp_location_id: offerLocId, ai_image_prompt: o.designer_prompt_es,
+            });
+          }
+        } catch { /* offer proposal is best-effort */ }
+        try {
+          const eRes = await runStructuredAgent('gmbEvent', agentSlug, backend, clientWithBrief, snapshot, taskInput);
+          const ev = (await qualityGateDraft(agentSlug, backend, clientWithBrief, snapshot, taskInput, eRes.output, 'gmbEvent')).output;
+          if (ev && (ev.description || '').trim()) {
+            await post('/internal/agency/gbp-event', {
+              agent_slug: agentSlug, client_id: client.client_id, title: ev.title,
+              description: ev.description, gbp_event_title: ev.event_title,
+              gbp_event_start_date: ev.event_start_date, gbp_event_end_date: ev.event_end_date,
+              gbp_cta_type: ev.cta_type, gbp_cta_url: ev.cta_url,
+              gbp_location_id: offerLocId, ai_image_prompt: ev.designer_prompt_es,
+            });
+          }
+        } catch { /* event proposal is best-effort */ }
       } catch (err) {
         gmbErrors.push({ client: client.client_name, error: redactSecrets(err instanceof Error ? err.message : String(err)).slice(0, 200) });
       }

@@ -183,6 +183,42 @@ export const AGENCY_SCHEMAS = {
       review_notes: { type: 'array', items: { type: 'string' } },
     },
   },
+  gmbOffer: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['title', 'description', 'cta_text', 'cta_type', 'target_keyword', 'designer_prompt_es', 'review_notes'],
+    properties: {
+      title: { type: 'string' },                 // internal title, e.g. "Spring Lock Rekey Special"
+      description: { type: 'string' },           // offer body shown on GBP
+      cta_text: { type: 'string' },              // button text, e.g. "Claim Offer"
+      cta_type: { type: 'string', enum: ['CALL', 'LEARN_MORE', 'BOOK', 'ORDER', 'SIGN_UP', 'NONE'] },
+      cta_url: { type: 'string' },
+      coupon_code: { type: 'string' },
+      redeem_url: { type: 'string' },
+      terms: { type: 'string' },
+      valid_until: { type: 'string' },           // ISO date, optional
+      target_keyword: { type: 'string' },
+      designer_prompt_es: { type: 'string' },    // 1080x1080 GBP square image brief, Spanish
+      review_notes: { type: 'array', items: { type: 'string' } },
+    },
+  },
+  gmbEvent: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['title', 'description', 'event_title', 'event_start_date', 'event_end_date', 'cta_type', 'target_keyword', 'designer_prompt_es', 'review_notes'],
+    properties: {
+      title: { type: 'string' },                 // internal title
+      description: { type: 'string' },
+      event_title: { type: 'string' },           // public event name
+      event_start_date: { type: 'string' },      // ISO date
+      event_end_date: { type: 'string' },        // ISO date
+      cta_type: { type: 'string', enum: ['CALL', 'LEARN_MORE', 'BOOK', 'ORDER', 'SIGN_UP', 'NONE'] },
+      cta_url: { type: 'string' },
+      target_keyword: { type: 'string' },
+      designer_prompt_es: { type: 'string' },
+      review_notes: { type: 'array', items: { type: 'string' } },
+    },
+  },
   qualityCheck: {
     type: 'object',
     additionalProperties: false,
@@ -276,10 +312,17 @@ export function buildAgencyPrompt(kind, { client, snapshot, task }) {
   }
   if (kind === 'gmbPost') {
     const loc = task?.target_location;
+    const locName = loc ? (loc.locality || loc.label) : '';
     const locBlock = loc
-      ? `\n\nTARGET LOCATION: This post is for the client's "${loc.label}" Google Business Profile${loc.locality ? ` (area: ${loc.locality})` : ''}. Write it SPECIFICALLY for that location — use that city/area's neighborhoods, local landmarks, and the local keyword variants. It must read differently from the other locations' posts (no copy-paste across locations).`
+      ? `\n\nTARGET LOCATION: This post is for the client's "${loc.label}" Google Business Profile${loc.locality ? ` (area: ${loc.locality})` : ''}. You MUST name the location "${locName}" explicitly in the title or first line of the body, and set "locality" to "${locName}". Write SPECIFICALLY for ${locName} — its neighborhoods, local landmarks, and local keyword variants. It MUST read differently from the other locations' posts (no copy-paste across locations).`
       : '';
     return `${shared}${locBlock}\n\nDraft ONE Google Business Profile post engineered to push this client toward 1st-position LOCAL ranking — not a generic post.\n\nRULES:\n- Choose the best post_type for the goal: OFFER (promotion + offer_terms, optional coupon_code), UPDATE (What's New), or EVENT (with event_start/event_end ISO dates).\n- Inject the client's TARGET KEYWORDS + the specific service-area/city term naturally into title + body (no stuffing). Set "locality" to the city/area you targeted.\n- Align to the client's real GMB categories and actual services. Never invent services, locations, hours, or offers.\n- Include a clear cta_type appropriate to the business (CALL for locksmiths/emergency, BOOK/LEARN_MORE for remodeling). Set cta_url when relevant.\n- Keep it fresh, locally specific, and conversion-focused. body should be concise and GMB-appropriate (no hashtags, minimal emoji).\n- designer_prompt_es: the image concept in Spanish for the designer.\n- This is a DRAFT for review. Do not claim to publish/schedule to GMB.`;
+  }
+  if (kind === 'gmbOffer') {
+    return `${shared}\n\nDraft ONE Google Business Profile OFFER proposal that supports the client's local-SEO ranking strategy. Use the client's TARGET KEYWORDS + real services + service-area term naturally.\n- title: short internal name. description: the customer-facing offer. cta_text: button label.\n- cta_type: pick the most fitting (CALL for emergency trades, BOOK/LEARN_MORE otherwise). Include coupon_code/redeem_url/terms only if genuinely applicable — never invent discounts the client didn't authorize; if unsure, leave them empty and note it in review_notes.\n- valid_until: a reasonable ISO end date if the offer is time-bound, else empty.\n- designer_prompt_es: a 1080x1080 GBP square image brief in Spanish.\nThis is a PROPOSAL for Marvin to review and activate — do not claim to publish or activate it.`;
+  }
+  if (kind === 'gmbEvent') {
+    return `${shared}\n\nDraft ONE Google Business Profile EVENT proposal that supports local-SEO ranking (e.g. a seasonal service push, open house, community involvement). Use TARGET KEYWORDS + real services + locality.\n- event_title: public name. event_start_date/event_end_date: realistic near-future ISO dates.\n- cta_type fitting the business; description is the customer-facing copy.\n- designer_prompt_es: Spanish image brief.\nNever invent events the client isn't actually doing — if you cannot ground it, keep it a generic seasonal awareness theme and flag in review_notes. PROPOSAL only for Marvin to review/activate.`;
   }
   if (kind === 'qualityCheck') {
     const draft = task?.draft ? JSON.stringify(task.draft, null, 2) : (task?.review_target ? JSON.stringify(task.review_target, null, 2) : '{}');
