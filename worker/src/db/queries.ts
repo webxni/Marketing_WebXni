@@ -1080,7 +1080,9 @@ export async function listApprovedCommandJobs(
 
 // Lease window: how long a claimed/running job may go without a progress
 // update before the reaper considers it dead and reclaims it.
-const APPROVED_JOB_LEASE_SECONDS = 900; // 15 minutes
+const APPROVED_JOB_LEASE_SECONDS = 1800; // 30 minutes — covers slow single-client
+// agency work between per-client lease pings; crashed runners still recover, just
+// after 30m instead of 15m. Long multi-client sweeps ping the lease per client.
 
 export async function claimNextApprovedCommandJob(
   db: D1Database,
@@ -1797,6 +1799,11 @@ export async function saveClientResearch(
   freshnessDate: string,
 ): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
+  // Idempotent per client + day: a job that gets re-run (e.g. lease requeue mid
+  // a long sweep) replaces that day's note instead of stacking duplicates.
+  await db.prepare(
+    'DELETE FROM client_research_notes WHERE client_id = ? AND freshness_date = ?',
+  ).bind(clientId, freshnessDate).run();
   await db.prepare(
     `INSERT INTO client_research_notes (client_id, source, research_json, freshness_date, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?)`,
