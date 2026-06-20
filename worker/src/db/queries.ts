@@ -1483,8 +1483,10 @@ export async function listAgencyOverview(db: D1Database): Promise<AgencyOverview
     db.prepare("SELECT COUNT(*) AS n FROM agent_tasks WHERE status = 'running'").first<{ n: number }>(),
     db.prepare("SELECT COUNT(*) AS n FROM posts WHERE status = 'pending_approval'").first<{ n: number }>(),
     db.prepare("SELECT COUNT(*) AS n FROM posts WHERE status IN ('approved', 'ready') AND COALESCE(asset_delivered, 0) = 0 AND content_type != 'blog'").first<{ n: number }>(),
-    db.prepare("SELECT COUNT(*) AS n FROM agent_tasks WHERE status = 'failed'").first<{ n: number }>(),
-    db.prepare("SELECT COUNT(*) AS n FROM approved_command_jobs WHERE command_name LIKE 'agency_%' AND status = 'failed'").first<{ n: number }>(),
+    // Recent failures only (last 7 days) — a 3-week-old failure is not "attention
+    // needed" and shouldn't sit on the dashboard banner forever.
+    db.prepare("SELECT COUNT(*) AS n FROM agent_tasks WHERE status = 'failed' AND created_at >= unixepoch() - 604800").first<{ n: number }>(),
+    db.prepare("SELECT COUNT(*) AS n FROM approved_command_jobs WHERE command_name LIKE 'agency_%' AND status = 'failed' AND created_at >= unixepoch() - 604800").first<{ n: number }>(),
     db.prepare("SELECT COUNT(*) AS n FROM agent_tasks WHERE status = 'completed' AND updated_at >= ?").bind(weekStart).first<{ n: number }>(),
     db.prepare('SELECT COUNT(*) AS n FROM client_research_notes WHERE freshness_date >= ?').bind(today.slice(0, 8) + '01').first<{ n: number }>(),
     db.prepare("SELECT COUNT(*) AS n FROM posts WHERE scheduled_by_automation = 1 AND content_type != 'blog' AND created_at >= ?").bind(weekStart).first<{ n: number }>(),
@@ -1817,6 +1819,14 @@ export async function createAgentFinding(
   db: D1Database,
   data: { agent_slug: string; client_id?: string | null; task_id?: string | null; severity: string; title: string; finding_json?: string | null },
 ): Promise<AgentFindingRow> {
+  // De-dupe: the review agents run daily and would otherwise stack an identical
+  // open finding every run. If the same agent already has this title open, return
+  // it unchanged (no timestamp bump, so the age-out sweep can still close it, and
+  // the /finding endpoint can tell it isn't new and skip re-alerting Discord).
+  const dup = await db.prepare(
+    "SELECT * FROM agent_findings WHERE agent_slug = ? AND title = ? AND status = 'open' LIMIT 1",
+  ).bind(data.agent_slug, data.title).first<AgentFindingRow>();
+  if (dup) return dup;
   const id = crypto.randomUUID().replace(/-/g, '').toLowerCase();
   const now = Math.floor(Date.now() / 1000);
   await db.prepare(
@@ -1830,6 +1840,18 @@ export async function createAgentFinding(
 export async function updateAgentFinding(db: D1Database, id: string, status: string): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
   await db.prepare('UPDATE agent_findings SET status = ?, updated_at = ? WHERE id = ?').bind(status, now, id).run();
+}
+
+// Auto-close open findings that haven't been re-detected in `days` days. A truly
+// persistent issue gets re-raised by the next agent run (the dedup only matches
+// while a finding is still open), so this only clears stale/already-fixed ones —
+// stopping the dashboard from crying wolf over historical evidence.
+export async function resolveStaleFindings(db: D1Database, days = 7): Promise<number> {
+  const cutoff = Math.floor(Date.now() / 1000) - days * 86400;
+  const r = await db.prepare(
+    "UPDATE agent_findings SET status = 'resolved', updated_at = unixepoch() WHERE status = 'open' AND updated_at < ?",
+  ).bind(cutoff).run();
+  return r.meta?.changes ?? 0;
 }
 
 export async function saveClientResearch(

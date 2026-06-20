@@ -9,6 +9,7 @@ import {
   getLatestAuditMarker,
   listAgentDefinitions,
   markAgentStale,
+  resolveStaleFindings,
   updateAgentTask,
   writeAuditLog,
 } from '../db/queries';
@@ -100,6 +101,10 @@ function requestedAgents(now: Date): string[] {
  * weekend scheduler and the per-minute cron use identical logic.
  */
 export async function runAgentStaleSweep(env: Env): Promise<string[]> {
+  // Auto-close findings not re-detected in 7 days so the dashboard reflects
+  // current state, not historical/already-fixed evidence. Persistent issues are
+  // re-raised by the next agent run.
+  await resolveStaleFindings(env.DB, 7).catch(() => 0);
   const staleAgents = await checkStaleAgents(env.DB);
   const stale_marked: string[] = [];
   for (const agent of staleAgents) {

@@ -579,10 +579,12 @@ agencyInternalRoutes.post('/finding', async (c) => {
   });
 
   // Report findings to Discord per the "milestones + every finding" policy.
-  // medium/high/critical get an immediate alert; info/low stay dashboard-only
-  // to avoid noise.
+  // medium/high/critical get an immediate alert; info/low stay dashboard-only.
+  // Only alert for a NEWLY created finding — if createAgentFinding deduped to an
+  // already-open one (created earlier), don't re-spam Discord every daily run.
+  const isNew = (finding.created_at ?? 0) >= Math.floor(Date.now() / 1000) - 10;
   const SEV_COLOR: Record<string, number> = { low: 0x22c55e, medium: 0xf59e0b, high: 0xef4444, critical: 0xdc2626 };
-  const color = SEV_COLOR[parsed.data.severity];
+  const color = isNew ? SEV_COLOR[parsed.data.severity] : undefined;
   if (color) {
     const channelId = c.env.AGENCY_NOTIFY_CHANNEL_ID || c.env.DISCORD_CHANNEL_ID;
     const token = c.env.DISCORD_BOT_TOKEN;
