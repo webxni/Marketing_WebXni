@@ -152,6 +152,32 @@ export const AGENCY_SCHEMAS = {
       review_notes: { type: 'array', items: { type: 'string' } },
     },
   },
+  blogWeeklyBatch: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['blogs'],
+    properties: {
+      blogs: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['title', 'slug', 'seo_title', 'meta_description', 'target_keyword', 'excerpt', 'html', 'day_of_week'],
+          properties: {
+            title: { type: 'string' },
+            slug: { type: 'string' },
+            seo_title: { type: 'string' },
+            meta_description: { type: 'string' },
+            target_keyword: { type: 'string' },
+            excerpt: { type: 'string' },
+            html: { type: 'string' },
+            day_of_week: { type: 'string' },
+            review_notes: { type: 'array', items: { type: 'string' } },
+          },
+        },
+      },
+    },
+  },
   editorialReview: {
     type: 'object',
     additionalProperties: false,
@@ -306,6 +332,10 @@ export function buildAgencyPrompt(kind, { client, snapshot, task }) {
   }
   if (kind === 'socialDraft') {
     return `${shared}\n\nDraft one reviewable social content item for this client.\n\nRULES:\n- Use the client's real services and local service areas.\n- Avoid generic captions. Be specific, local, and conversion-focused.\n- Vary the hook — do not start with the business name.\n- Include a clear CTA (call, text, visit, book).\n- platform_captions must include BOTH facebook AND instagram keys with distinct, platform-appropriate text.\n  facebook: slightly longer, conversational, allows emojis.\n  instagram: shorter, punchy, hashtag-friendly.\n  tiktok: casual and energetic if relevant to client.\n  google_business: concise, local SEO focused, no emojis.\n- designer_prompt_es: write the image/video prompt in Spanish for the designer.\n- Do not claim to publish, approve, or schedule. Status remains draft.`;
+  }
+  if (kind === 'blogWeeklyBatch') {
+    const schedule = client?.blog_schedule_text || 'thursday: blog';
+    return `${shared}\n\nGenerate ALL blog posts for this client's upcoming week based on their blog schedule.\n\nBLOG SCHEDULE:\n${schedule}\n\nRULES:\n- Create exactly one blog per blog slot in the schedule. Set day_of_week to the slot's day.\n- Each blog: title, slug (kebab-case), seo_title, meta_description, target_keyword, excerpt, and html (article body only — inline-safe markup, no <style>, no <html>/<head>).\n- LOCAL SEO: build each blog around a primary TARGET KEYWORD + city/service-area terms; use the keyword in the title, first paragraph, and a subheading naturally (no stuffing). Use the research content opportunities + strategy seo_plan in the brief.\n- Use the client's REAL services and service areas. Be genuinely useful and locally specific — no fluff.\n- Status remains draft. Do not publish to WordPress, approve, or schedule.`;
   }
   if (kind === 'blogDraft') {
     return `${shared}\n\nDraft one local SEO blog as HTML body content only. Use inline-safe article markup and do not include style tags.\n- LOCAL SEO: build the blog around the client's primary TARGET KEYWORD + city/service-area terms; use the keyword in the title, first paragraph, and a subheading naturally (no stuffing). Add long-tail variants where they fit.\n- Keep it genuinely useful and locally specific. It must remain a draft and not publish to WordPress.`;
