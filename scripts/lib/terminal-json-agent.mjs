@@ -101,8 +101,34 @@ function extractJsonObject(text) {
   return candidate.slice(first, last + 1);
 }
 
+// Some models (notably grounded Gemini) emit raw control characters (literal
+// newlines/tabs) INSIDE JSON string values, which is invalid JSON. Escape control
+// chars only while inside a string literal so structural whitespace is preserved.
+function sanitizeJsonControlChars(s) {
+  let out = '';
+  let inStr = false;
+  let esc = false;
+  for (const ch of s) {
+    if (esc) { out += ch; esc = false; continue; }
+    if (ch === '\\') { out += ch; esc = true; continue; }
+    if (ch === '"') { inStr = !inStr; out += ch; continue; }
+    if (inStr && ch.charCodeAt(0) < 0x20) {
+      out += ch === '\n' ? '\\n' : ch === '\r' ? '\\r' : ch === '\t' ? '\\t' : '';
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
 function parseJsonFromText(text) {
-  return JSON.parse(extractJsonObject(text) ?? text.trim());
+  const candidate = extractJsonObject(text) ?? text.trim();
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    // Retry after escaping in-string control characters.
+    return JSON.parse(sanitizeJsonControlChars(candidate));
+  }
 }
 
 function buildWrappedPrompt(prompt, schema) {
