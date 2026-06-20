@@ -179,13 +179,23 @@ const GEMINI_PRICES = {
   'gemini-2.5-pro':   { in: 1.25, out: 10.0 },
 };
 
-async function runGemini(prompt, schema, mode) {
-  // Primary + backup keys — failover on quota/rate-limit/transient errors.
-  const keys = [
+// Round-robin cursor so consecutive Gemini calls start from a different key —
+// spreads load across keys and dodges per-key rate limits.
+let _geminiKeyCursor = 0;
+function geminiKeys() {
+  const raw = [
+    ...(process.env.GEMINI_API_KEYS ? process.env.GEMINI_API_KEYS.split(',') : []),
     process.env.GEMINI_API_KEY,
     process.env.GEMINI_API_KEY_BACKUP,
+    process.env.GEMINI_API_KEY_3,
     process.env.GOOGLE_API_KEY,
-  ].filter(Boolean);
+  ].map((k) => (k || '').trim()).filter(Boolean);
+  return [...new Set(raw)];
+}
+
+async function runGemini(prompt, schema, mode) {
+  // All configured keys, rotated per call and failed-over within a call.
+  const keys = geminiKeys();
   const model = mode === 'blog'
     ? (process.env.GEMINI_BLOG_MODEL || 'gemini-2.5-pro')
     : (process.env.GEMINI_SOCIAL_MODEL || 'gemini-2.5-flash');
@@ -204,9 +214,13 @@ async function runGemini(prompt, schema, mode) {
     if (grounded) body.tools = [{ google_search: {} }];
     else body.generationConfig.responseMimeType = 'application/json';
 
+    const n = keys.length;
+    const start = _geminiKeyCursor % n;
+    _geminiKeyCursor = (_geminiKeyCursor + 1) % n; // rotate for the next call
     let lastErr = '';
-    for (let k = 0; k < keys.length; k++) {
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${keys[k]}`, {
+    for (let i = 0; i < n; i++) {
+      const key = keys[(start + i) % n];
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -217,8 +231,8 @@ async function runGemini(prompt, schema, mode) {
         // that's specifically an API-key problem (revoked/invalid key).
         const keyError = res.status === 400 && /api.?key/i.test(lastErr);
         const retriable = [401, 403, 429, 500, 503].includes(res.status) || keyError;
-        if (retriable && k < keys.length - 1) {
-          console.warn(`[gemini] key ${k + 1} failed (${res.status}), trying backup key`);
+        if (retriable && i < n - 1) {
+          console.warn(`[gemini] key #${(start + i) % n + 1} failed (${res.status}), rotating to next key`);
           continue;
         }
         throw new Error(lastErr);
