@@ -154,14 +154,19 @@ const GEMINI_PRICES = {
 };
 
 async function runGemini(prompt, schema, mode) {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  // Primary + backup keys — failover on quota/rate-limit/transient errors.
+  const keys = [
+    process.env.GEMINI_API_KEY,
+    process.env.GEMINI_API_KEY_BACKUP,
+    process.env.GOOGLE_API_KEY,
+  ].filter(Boolean);
   const model = mode === 'blog'
     ? (process.env.GEMINI_BLOG_MODEL || 'gemini-2.5-pro')
     : (process.env.GEMINI_SOCIAL_MODEL || 'gemini-2.5-flash');
   const { wrappedPrompt } = buildWrappedPrompt(prompt, schema);
 
   // Preferred path: REST API (the CLI's free OAuth tier was deprecated by Google).
-  if (apiKey) {
+  if (keys.length) {
     // Research must stay web-grounded so it never invents client facts — enable
     // Google Search grounding for research (which also means no JSON mime mode;
     // the prompt already demands raw JSON and parseJsonFromText extracts it).
@@ -173,20 +178,35 @@ async function runGemini(prompt, schema, mode) {
     if (grounded) body.tools = [{ google_search: {} }];
     else body.generationConfig.responseMimeType = 'application/json';
 
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) throw new Error(`Gemini API ${res.status}: ${(await res.text()).slice(0, 300)}`);
-    const data = await res.json();
-    const text = (data.candidates?.[0]?.content?.parts ?? []).map((p) => p.text || '').join('').trim();
-    if (!text) throw new Error('Gemini returned empty response');
-    let cost_usd = null;
-    const um = data.usageMetadata;
-    const price = GEMINI_PRICES[model];
-    if (um && price) cost_usd = (um.promptTokenCount / 1e6) * price.in + (um.candidatesTokenCount / 1e6) * price.out;
-    return { output: parseJsonFromText(text), cost_usd };
+    let lastErr = '';
+    for (let k = 0; k < keys.length; k++) {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${keys[k]}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        lastErr = `Gemini API ${res.status}: ${(await res.text()).slice(0, 200)}`;
+        // Failover to the next key on auth/quota/rate/server errors, or a 400
+        // that's specifically an API-key problem (revoked/invalid key).
+        const keyError = res.status === 400 && /api.?key/i.test(lastErr);
+        const retriable = [401, 403, 429, 500, 503].includes(res.status) || keyError;
+        if (retriable && k < keys.length - 1) {
+          console.warn(`[gemini] key ${k + 1} failed (${res.status}), trying backup key`);
+          continue;
+        }
+        throw new Error(lastErr);
+      }
+      const data = await res.json();
+      const text = (data.candidates?.[0]?.content?.parts ?? []).map((p) => p.text || '').join('').trim();
+      if (!text) throw new Error('Gemini returned empty response');
+      let cost_usd = null;
+      const um = data.usageMetadata;
+      const price = GEMINI_PRICES[model];
+      if (um && price) cost_usd = (um.promptTokenCount / 1e6) * price.in + (um.candidatesTokenCount / 1e6) * price.out;
+      return { output: parseJsonFromText(text), cost_usd };
+    }
+    throw new Error(lastErr || 'All Gemini keys failed');
   }
 
   // Legacy fallback: the gemini CLI (only works if its OAuth is still valid).
