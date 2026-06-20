@@ -47,9 +47,13 @@ ok('complex agents map to claude lead', () => {
   }
 });
 ok('simple agents map to hermes lead', () => {
-  for (const slug of ['social-copy', 'client-research', 'agency-orchestrator', 'security-sentinel']) {
+  for (const slug of ['social-copy', 'agency-orchestrator', 'security-sentinel']) {
     assert.equal(executorLead({ task_type: taskTypeForAgent(slug) })[0], 'hermes', slug);
   }
+});
+ok('client-research routes to gemini (research)', () => {
+  assert.equal(taskTypeForAgent('client-research'), 'research');
+  assert.equal(executorLead({ task_type: 'research' })[0], 'gemini');
 });
 ok('blog mode forces blog task type', () => {
   assert.equal(taskTypeForAgent('social-copy', 'blog'), 'blog');

@@ -84,8 +84,10 @@ export function taskTypeForAgent(agentSlug, mode) {
   // GMB posts are schema-bound, structured JSON — route to Codex (Hermes
   // fallback). This is where Codex earns its place in the executor mix.
   if (agentSlug === 'gmb-rank') return 'structured';
+  // Client research is fast/cheap, web-grounded lookups — Gemini's sweet spot
+  // (via REST API + Google Search grounding). Hermes stays as fallback.
+  if (agentSlug === 'client-research') return 'research';
   // Complex agents -> long_form (Claude lead); everything else -> default
-  // (Hermes lead). NOTE: Gemini is intentionally not a lead until its CLI auth
-  // is restored (the free individual tier was deprecated by Google).
+  // (Hermes lead).
   return COMPLEX_AGENTS.has(agentSlug) ? 'long_form' : 'default';
 }

@@ -50,7 +50,10 @@ function isBackendAvailable(backend) {
   const b = normalizeBackendName(backend);
   if (b === 'openai') return !!process.env.OPENAI_API_KEY;
   if (b === 'hermes') return !!resolveHermesCommand();
-  if (b === 'claude' || b === 'gemini' || b === 'codex') return commandAvailable(b);
+  // Gemini runs via the REST API (the CLI's free OAuth tier was deprecated), so
+  // it's available whenever a key is set; fall back to the CLI only if present.
+  if (b === 'gemini') return !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) || commandAvailable('gemini');
+  if (b === 'claude' || b === 'codex') return commandAvailable(b);
   return false;
 }
 
@@ -144,11 +147,49 @@ function runClaude(prompt, schema, mode) {
   }, { env });
 }
 
-function runGemini(prompt, schema, mode) {
-  const { wrappedPrompt } = buildWrappedPrompt(prompt, schema);
+// Rough per-1M-token USD prices (input, output) for cost estimation.
+const GEMINI_PRICES = {
+  'gemini-2.5-flash': { in: 0.30, out: 2.50 },
+  'gemini-2.5-pro':   { in: 1.25, out: 10.0 },
+};
+
+async function runGemini(prompt, schema, mode) {
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   const model = mode === 'blog'
     ? (process.env.GEMINI_BLOG_MODEL || 'gemini-2.5-pro')
     : (process.env.GEMINI_SOCIAL_MODEL || 'gemini-2.5-flash');
+  const { wrappedPrompt } = buildWrappedPrompt(prompt, schema);
+
+  // Preferred path: REST API (the CLI's free OAuth tier was deprecated by Google).
+  if (apiKey) {
+    // Research must stay web-grounded so it never invents client facts — enable
+    // Google Search grounding for research (which also means no JSON mime mode;
+    // the prompt already demands raw JSON and parseJsonFromText extracts it).
+    const grounded = mode === 'research';
+    const body = {
+      contents: [{ role: 'user', parts: [{ text: `${JSON_ONLY_SYSTEM}\n\n${wrappedPrompt}` }] }],
+      generationConfig: { temperature: 0.7, maxOutputTokens: mode === 'blog' ? 8192 : 4096 },
+    };
+    if (grounded) body.tools = [{ google_search: {} }];
+    else body.generationConfig.responseMimeType = 'application/json';
+
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`Gemini API ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    const data = await res.json();
+    const text = (data.candidates?.[0]?.content?.parts ?? []).map((p) => p.text || '').join('').trim();
+    if (!text) throw new Error('Gemini returned empty response');
+    let cost_usd = null;
+    const um = data.usageMetadata;
+    const price = GEMINI_PRICES[model];
+    if (um && price) cost_usd = (um.promptTokenCount / 1e6) * price.in + (um.candidatesTokenCount / 1e6) * price.out;
+    return { output: parseJsonFromText(text), cost_usd };
+  }
+
+  // Legacy fallback: the gemini CLI (only works if its OAuth is still valid).
   return runSpawnJson('gemini', ['-p', wrappedPrompt, '-o', 'json', '-m', model],
     (stdout) => ({ output: parseJsonFromText(stdout), cost_usd: null }));
 }

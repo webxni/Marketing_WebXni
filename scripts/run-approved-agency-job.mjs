@@ -459,7 +459,7 @@ async function isAgentOverBudget(agentSlug) {
 async function runStructuredAgent(kind, agentSlug, backend, client, snapshot, task, modeOverride, executorChainOverride) {
   const prompt = buildAgencyPrompt(kind, { client, snapshot, task });
   const schema = AGENCY_SCHEMAS[kind];
-  const mode = modeOverride ?? (kind === 'blogDraft' ? 'blog' : 'default');
+  const mode = modeOverride ?? (kind === 'blogDraft' ? 'blog' : kind === 'research' ? 'research' : 'default');
 
   // An explicit executor chain (from pick_executor) bypasses the per-agent
   // routing + budget downgrade — the caller already encoded budget/quality into
