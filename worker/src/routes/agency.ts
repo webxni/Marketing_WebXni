@@ -40,6 +40,7 @@ import {
 import { redactSecrets } from '../modules/redaction';
 import { resolveBlogTemplateConfig } from '../modules/blog-templates';
 import { syncUploadPostClientPlatforms } from '../modules/uploadpost-platform-sync';
+import { UploadPostClient } from '../services/uploadpost';
 import { discordSend } from '../services/discord';
 
 export const agencyRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
@@ -955,6 +956,27 @@ agencyInternalRoutes.post('/ping', async (c) => {
       stale_after_minutes: agent.stale_after_minutes,
     },
   });
+});
+
+// Read-only: list the Google Business locations connected to an upload-post
+// profile (id + name), straight from upload-post. Used to wire multi-location
+// clients with real data instead of guessing.
+agencyInternalRoutes.get('/gbp-profile-locations', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const profile = c.req.query('profile');
+  if (!profile) return c.json({ error: 'profile required' }, 400);
+  try {
+    const up = new UploadPostClient(c.env.UPLOAD_POST_API_KEY);
+    const payload = await up.getGbpLocations(profile) as { locations?: Array<Record<string, unknown>> };
+    const locations = (payload.locations ?? []).map((l) => ({
+      location_id: String(l.location_id ?? l.id ?? ''),
+      name: String(l.name ?? l.title ?? l.label ?? ''),
+      address: (l.address ?? l.storefront_address ?? null) as unknown,
+    }));
+    return c.json({ ok: true, profile, locations });
+  } catch (err) {
+    return c.json({ ok: false, profile, error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 agencyInternalRoutes.post('/sync-client-platforms', async (c) => {
