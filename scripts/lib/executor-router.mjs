@@ -81,7 +81,11 @@ const COMPLEX_AGENTS = new Set(['blog-writer', 'strategy', 'editorial-review', '
  */
 export function taskTypeForAgent(agentSlug, mode) {
   if (mode === 'blog') return 'blog';
+  // GMB posts are schema-bound, structured JSON — route to Codex (Hermes
+  // fallback). This is where Codex earns its place in the executor mix.
+  if (agentSlug === 'gmb-rank') return 'structured';
   // Complex agents -> long_form (Claude lead); everything else -> default
-  // (Hermes lead). This reproduces the existing preferredBackend leads exactly.
+  // (Hermes lead). NOTE: Gemini is intentionally not a lead until its CLI auth
+  // is restored (the free individual tier was deprecated by Google).
   return COMPLEX_AGENTS.has(agentSlug) ? 'long_form' : 'default';
 }

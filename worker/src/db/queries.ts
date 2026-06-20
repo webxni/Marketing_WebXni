@@ -1979,7 +1979,7 @@ export async function getAgencyClientContentBrief(
   db: D1Database,
   clientId: string,
 ): Promise<{ brief: string; hasBrief: boolean; gbp_locations: Array<{ label: string; caption_field: string | null; upload_post_profile: string | null; location_id: string; paused: number }> }> {
-  const [client, intel, areas, services, restrictions, keywords, gbpRows] = await Promise.all([
+  const [client, intel, areas, services, restrictions, keywords, gbpRows, latestResearch, latestStrategy] = await Promise.all([
     db.prepare('SELECT canonical_name, industry, state, cta_text, notes FROM clients WHERE id = ?')
       .bind(clientId).first<{ canonical_name: string | null; industry: string | null; state: string | null; cta_text: string | null; notes: string | null }>(),
     db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?')
@@ -1991,6 +1991,8 @@ export async function getAgencyClientContentBrief(
     getClientRestrictions(db, clientId),
     getClientKeywords(db, clientId),
     getClientGbpLocations(db, clientId),
+    getLatestClientResearch(db, clientId),
+    getLatestClientStrategy(db, clientId),
   ]);
   const gbp_locations = gbpRows.map((g) => ({
     label: g.label,
@@ -2051,6 +2053,36 @@ export async function getAgencyClientContentBrief(
     serviceNames.length ||
     serviceAreas.length,
   );
+  // Autonomous research + strategy signals (supplementary — refine angles with
+  // these; curated brand memory + approved CTAs always win). This is what makes
+  // the weekend social/blog/GMB agents actually USE research and strategy.
+  const clip = (v: unknown, m = 240): string | null => {
+    if (typeof v === 'string') return v.trim().slice(0, m) || null;
+    if (Array.isArray(v)) { const j = v.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).filter(Boolean).join('; '); return j ? j.slice(0, m) : null; }
+    return null;
+  };
+  if (latestResearch) {
+    try {
+      const r = JSON.parse(latestResearch) as Record<string, unknown>;
+      const s = clip(r.summary); const opp = clip(r.content_opportunities, 280); const la = clip(r.local_angles, 200);
+      if (s) lines.push(`- Research summary: ${s}`);
+      if (la) lines.push(`- Local angles: ${la}`);
+      if (opp) lines.push(`- Content opportunities: ${opp}`);
+    } catch { /* ignore malformed research */ }
+  }
+  if (latestStrategy) {
+    try {
+      const st = JSON.parse(latestStrategy) as Record<string, unknown>;
+      const focus = clip(st.monthly_focus, 200); const pillars = clip(st.content_pillars, 200);
+      const seo = Array.isArray(st.seo_plan)
+        ? (st.seo_plan as Array<Record<string, unknown>>).slice(0, 6).map((p) => `${p.keyword}→${p.channel}/${p.cadence}`).join('; ').slice(0, 280)
+        : null;
+      if (focus) lines.push(`- Strategy focus: ${focus}`);
+      if (pillars) lines.push(`- Content pillars: ${pillars}`);
+      if (seo) lines.push(`- Local-SEO plan (keyword→channel→cadence): ${seo}`);
+    } catch { /* ignore malformed strategy */ }
+  }
+
   return { brief: lines.join('\n'), hasBrief, gbp_locations };
 }
 

@@ -54,5 +54,9 @@ ok('simple agents map to hermes lead', () => {
 ok('blog mode forces blog task type', () => {
   assert.equal(taskTypeForAgent('social-copy', 'blog'), 'blog');
 });
+ok('gmb-rank routes to codex (structured)', () => {
+  assert.equal(taskTypeForAgent('gmb-rank'), 'structured');
+  assert.equal(executorLead({ task_type: taskTypeForAgent('gmb-rank') })[0], 'codex');
+});
 
 console.log(`\n${passed} router tests passed`);
