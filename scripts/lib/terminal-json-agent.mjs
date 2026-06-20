@@ -91,14 +91,28 @@ function expandPriority(backends) {
 // ── JSON helpers ─────────────────────────────────────────────────────────────
 
 function extractJsonObject(text) {
-  const trimmed = text.trim();
-  if (!trimmed) return null;
-  const fenceMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```\s*$/i);
-  const candidate = fenceMatch ? fenceMatch[1].trim() : trimmed;
-  const first = candidate.indexOf('{');
-  const last = candidate.lastIndexOf('}');
-  if (first === -1 || last === -1 || last <= first) return null;
-  return candidate.slice(first, last + 1);
+  let s = text.trim();
+  if (!s) return null;
+  // Strip surrounding/leading markdown fences (grounded models love ```json).
+  s = s.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '');
+  const start = s.indexOf('{');
+  if (start === -1) return null;
+  // Return the FIRST complete, balanced {...} object — robust against trailing
+  // prose, repeated blocks, or stray ``` after the JSON (which broke a naive
+  // first-{ to last-} slice on grounded Gemini output).
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
+    if (esc) { esc = false; continue; }
+    if (ch === '\\') { esc = true; continue; }
+    if (ch === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (ch === '{') depth++;
+    else if (ch === '}') { depth--; if (depth === 0) return s.slice(start, i + 1); }
+  }
+  return s.slice(start); // unbalanced (likely truncated) — let the parser try/repair
 }
 
 // Some models (notably grounded Gemini) emit raw control characters (literal
@@ -209,7 +223,9 @@ async function runGemini(prompt, schema, mode) {
     const grounded = mode === 'research';
     const body = {
       contents: [{ role: 'user', parts: [{ text: `${JSON_ONLY_SYSTEM}\n\n${wrappedPrompt}` }] }],
-      generationConfig: { temperature: 0.7, maxOutputTokens: mode === 'blog' ? 8192 : 4096 },
+      // Research/blog JSON is large — give it room so it doesn't truncate
+      // ("Expected ',' or '}'" on parse).
+      generationConfig: { temperature: 0.7, maxOutputTokens: (mode === 'blog' || mode === 'research') ? 8192 : 4096 },
     };
     if (grounded) body.tools = [{ google_search: {} }];
     else body.generationConfig.responseMimeType = 'application/json';
