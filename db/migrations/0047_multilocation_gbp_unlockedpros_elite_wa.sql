@@ -21,11 +21,8 @@ UPDATE client_platforms
 SET upload_post_location_id = 'locations/12106510679330317066'
 WHERE client_id = 'f59263fc783c47e5b8d0ddf9dfe8cdd0' AND platform = 'google_business';
 
--- 3) Unlock'D Pros — register both Google listings (both under the single
---    UnlockD_Pros profile). caption_field reuses the existing cap_gbp_la /
---    cap_gbp_or post columns so each listing gets a distinct caption.
-INSERT OR IGNORE INTO client_gbp_locations
-  (id, client_id, label, location_id, upload_post_profile, caption_field, posted_field, paused, paused_reason, sort_order)
-VALUES
-  ('a1f0c2d3e4b54a6f8c9d0e1f2a3b4c5d', 'f59263fc783c47e5b8d0ddf9dfe8cdd0', 'Pasadena-Main', 'locations/12106510679330317066', 'UnlockD_Pros', 'cap_gbp_la', 'gbp_la', 0, NULL, 0),
-  ('b2e1d3c4f5a64710bd0e1f2a3b4c5d6e', 'f59263fc783c47e5b8d0ddf9dfe8cdd0', 'Pasadena-2',    'locations/3082714888579803430',  'UnlockD_Pros', 'cap_gbp_or', 'gbp_or', 0, NULL, 1);
+-- 3) Unlock'D Pros already has its two client_gbp_locations rows configured:
+--      locations/12106510679330317066  profile UnlockD_Pros    caption cap_gbp_la
+--      locations/3082714888579803430   profile UnlockD_Pros_2  caption cap_gbp_wa
+--    (both active). No insert needed — adding rows here would duplicate them.
+--    The repoint in step 2 aligns the GBP platform row with the primary listing.
