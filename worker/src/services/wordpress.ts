@@ -346,11 +346,16 @@ export function buildWordPressClient(client: {
   wp_auth?:                  string | null;
 }): WordPressClient | null {
   // Derive base URL — prefer new wp_base_url, fall back to stripping wp_url
-  const baseUrl =
+  let baseUrl =
     client.wp_base_url?.trim() ||
     (client.wp_url ? stripRestPath(client.wp_url) : null);
 
   if (!baseUrl) return null;
+
+  // Ensure a scheme — stored base URLs sometimes omit https:// (e.g.
+  // "caliviewbuilders.com"), which makes WordPress REST URL construction throw
+  // "Invalid URL". Default to https when no scheme is present.
+  if (!/^https?:\/\//i.test(baseUrl)) baseUrl = `https://${baseUrl.replace(/^\/+/, '')}`;
 
   let username: string;
   let password: string;
