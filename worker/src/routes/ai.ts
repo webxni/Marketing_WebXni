@@ -2194,17 +2194,17 @@ export async function executeTool(
         const safe = collectPlatformFields(fields);
         if (Object.keys(safe).length === 0) return { success: false, error: 'No valid platform fields' };
 
-        const now = Math.floor(Date.now() / 1000);
+        // NOTE: client_platforms has no created_at/updated_at columns (see schema).
         const existing = await env.DB.prepare('SELECT id FROM client_platforms WHERE client_id = ? AND platform = ?').bind(client.id, platform).first<{ id: string }>();
 
         if (!existing) {
           const id   = crypto.randomUUID().replace(/-/g, '');
-          const cols = ['id', 'client_id', 'platform', ...Object.keys(safe), 'created_at', 'updated_at'];
-          const vals = [id, client.id, platform, ...Object.values(safe), now, now];
+          const cols = ['id', 'client_id', 'platform', ...Object.keys(safe)];
+          const vals = [id, client.id, platform, ...Object.values(safe)];
           await env.DB.prepare(`INSERT INTO client_platforms (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`).bind(...vals).run();
         } else {
-          const sets   = [...Object.keys(safe).map(k => `${k} = ?`), 'updated_at = ?'];
-          const values = [...Object.values(safe), now, existing.id];
+          const sets   = Object.keys(safe).map(k => `${k} = ?`);
+          const values = [...Object.values(safe), existing.id];
           await env.DB.prepare(`UPDATE client_platforms SET ${sets.join(', ')} WHERE id = ?`).bind(...values).run();
         }
 

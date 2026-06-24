@@ -18,8 +18,7 @@ WHERE client_id = '0d36aaa77c7f8b78543eed61d' AND lower(label) = 'or';
 --    which is NOT present in the UnlockD_Pros Upload-Post profile (caused
 --    connection_status=failed). Repoint to the primary listing in the profile.
 UPDATE client_platforms
-SET upload_post_location_id = 'locations/12106510679330317066',
-    updated_at = strftime('%s','now')
+SET upload_post_location_id = 'locations/12106510679330317066'
 WHERE client_id = 'f59263fc783c47e5b8d0ddf9dfe8cdd0' AND platform = 'google_business';
 
 -- 3) Unlock'D Pros — register both Google listings (both under the single
