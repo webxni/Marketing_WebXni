@@ -272,8 +272,12 @@ export function validateBlogPublishingContent(
     if (phoneMatches.some((digits) => digits !== clientPhoneDigits)) {
       errors.push(`Blog contains a phone number that does not match the client phone: ${context.phone}`);
     }
+    // Compare against a digit-only version of the body: normalizeComparableText
+    // turns "(323) 484-8458" into "323 484 8458", so a contiguous 7-digit needle
+    // can never match a normally-formatted phone. Strip to digits on both sides.
+    const rawBlogDigits = normalizeDigits(rawBlogText);
     const ctaMentions = /\b(call|text|phone|contact|reach|book|schedule|dial)\b/i.test(normalizeComparableText(rawBlogText));
-    if (ctaMentions && !normalizeComparableText(rawBlogText).includes(clientPhoneDigits.slice(-7))) {
+    if (ctaMentions && !rawBlogDigits.includes(clientPhoneDigits.slice(-7))) {
       errors.push(`Blog CTA references contact details but does not include the client phone: ${context.phone}`);
     }
   }
