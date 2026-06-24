@@ -413,6 +413,43 @@ export async function getPostById(db: D1Database, id: string): Promise<PostRow |
   return result ?? null;
 }
 
+export interface StuckBlogRow {
+  id: string;
+  title: string | null;
+  client_id: string;
+  canonical_name: string;
+  slug: string;
+  publish_date: string | null;
+  wp_configured: number; // 1 if wp base url + username + app password present
+}
+
+/**
+ * Ready blog posts that were never published to WordPress (no wp_post_id).
+ * These are content-complete (status='ready') but the WordPress publish step
+ * never ran — the publish route is session-gated, so nothing auto-clears them.
+ * Used by the daily health cron to alert Marvin (and tell him which clients
+ * still need WordPress REST / application-password setup).
+ */
+export async function getStuckReadyBlogs(db: D1Database): Promise<StuckBlogRow[]> {
+  const r = await db
+    .prepare(
+      `SELECT p.id, p.title, p.client_id, p.publish_date,
+              c.canonical_name, c.slug,
+              CASE WHEN COALESCE(c.wp_base_url, c.wp_url) IS NOT NULL
+                    AND c.wp_username IS NOT NULL
+                    AND c.wp_application_password IS NOT NULL
+                   THEN 1 ELSE 0 END AS wp_configured
+         FROM posts p
+         JOIN clients c ON c.id = p.client_id
+        WHERE p.status = 'ready'
+          AND p.content_type = 'blog'
+          AND (p.wp_post_id IS NULL OR p.wp_post_id = '')
+        ORDER BY p.publish_date ASC`,
+    )
+    .all<StuckBlogRow>();
+  return r.results ?? [];
+}
+
 export async function createPost(
   db: D1Database,
   data: Partial<PostRow> & { client_id: string; title: string },

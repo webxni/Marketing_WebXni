@@ -212,3 +212,69 @@ export async function runAgencyScheduler(env: Env, now = new Date()): Promise<Ag
 
   return { enabled, requested, queued, skipped, stale_marked, health_summary };
 }
+
+/**
+ * Enqueue a single editorial-review pass. Used by the business-hours editorial
+ * cron so freshly generated content (manual or scheduled) gets reviewed within
+ * hours instead of waiting for the weekend sweep, landing it in Marvin's
+ * approval queue faster. Dedupe is hour-scoped (not the per-day key used by the
+ * main scheduler) so it can run multiple times a day. Review only — never
+ * approves (Marvin gate) or delivers assets (designer gate) stay intact.
+ */
+export async function enqueueEditorialSweep(env: Env, now = new Date()): Promise<{ queued: boolean; reason: string }> {
+  if (!(await agencySchedulerEnabled(env))) return { queued: false, reason: 'scheduler_disabled' };
+
+  const agentSlug = 'editorial-review';
+  const commandName = AGENT_COMMANDS[agentSlug];
+  const agents = await listAgentDefinitions(env.DB);
+  const agent = agents.find((item) => item.slug === agentSlug);
+  if (!agent || agent.enabled !== 1 || !commandName) return { queued: false, reason: 'agent_unavailable' };
+
+  const dayKey = now.toISOString().slice(0, 10);
+  // Hour-scoped dedupe so retries/duplicate cron fires in the same hour are no-ops
+  // but each 3-hour business-hours tick still enqueues its own pass.
+  const hourKey = `${dayKey}:H${String(now.getUTCHours()).padStart(2, '0')}:${agentSlug}`;
+  const previous = await getLatestAuditMarker(env.DB, 'agency.scheduler.enqueue', 'agent_schedule', hourKey);
+  if (previous) return { queued: false, reason: 'already_queued_this_hour' };
+
+  const task = await createAgentTask(env.DB, {
+    agent_slug: agentSlug,
+    title: 'Business-hours editorial review',
+    input_json: JSON.stringify({ requested_from: 'agency_editorial_sweep', day_key: dayKey }),
+  });
+  const job = await createApprovedCommandJob(env.DB, {
+    generation_run_id: null,
+    command_name: commandName,
+    provider: agent.default_backend,
+    requested_by: 'agency_editorial_sweep',
+    args_json: JSON.stringify({
+      agent_slug: agentSlug,
+      task_id: task.id,
+      source: 'agency_editorial_sweep',
+      day_key: dayKey,
+      backend_priority: AGENT_BACKEND_PRIORITY[agentSlug] ?? ['hermes', 'openai'],
+      safety: {
+        no_arbitrary_shell: true,
+        preserve_marvin_approval: true,
+        preserve_designer_gate: true,
+      },
+    }),
+  });
+  await updateAgentTask(env.DB, task.id, { approved_job_id: job.id, status: 'queued', progress: 0 });
+  await appendAgencyLog(env.DB, {
+    agent_slug: agentSlug,
+    task_id: task.id,
+    job_id: job.id,
+    status: 'queued',
+    step: 'editorial_sweep',
+    summary: `${agent.name} queued by business-hours editorial sweep.`,
+    backend: agent.default_backend,
+  });
+  await writeAuditLog(env.DB, {
+    action: 'agency.scheduler.enqueue',
+    entity_type: 'agent_schedule',
+    entity_id: hourKey,
+    new_value: { agent_slug: agentSlug, command_name: commandName, job_id: job.id },
+  });
+  return { queued: true, reason: 'queued' };
+}

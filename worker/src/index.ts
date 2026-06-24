@@ -90,11 +90,11 @@ app.all('/*', async (c) => {
 import { runPosting } from './loader/posting-run';
 import { runRecurringGbp } from './loader/recurring-gbp-run';
 import { runContentRequests } from './loader/content-request-run';
-import { runAgencyScheduler, runAgentStaleSweep } from './loader/agency-scheduler';
+import { runAgencyScheduler, runAgentStaleSweep, enqueueEditorialSweep } from './loader/agency-scheduler';
 import { runFetchUrls } from './routes/run';
 import { notifyPostingComplete, discordDM, discordSend, DISCORD_COLORS } from './services/discord';
 import { runPlatformHealthCheck, buildHealthDiscordMessage } from './modules/platform-health';
-import { getLatestAuditMarker, writeAuditLog, reclaimStuckApprovedJobs, healStuckGenerationRuns } from './db/queries';
+import { getLatestAuditMarker, writeAuditLog, reclaimStuckApprovedJobs, healStuckGenerationRuns, getStuckReadyBlogs } from './db/queries';
 
 async function resolveOpenAiKeyCron(env: Env): Promise<string> {
   let key = env.OPENAI_API_KEY || '';
@@ -140,6 +140,19 @@ export default {
 
     if (AGENCY_CRONS.has(event.cron)) {
       ctx.waitUntil(runSchedulerWithAlert());
+    }
+
+    // Business-hours editorial sweep (every 3h, 9am/12pm/3pm PT, Mon–Fri) — review
+    // only, so manual/scheduled content reaches Marvin's approval queue fast.
+    if (event.cron === '0 16,19,22 * * MON-FRI') {
+      ctx.waitUntil((async () => {
+        try {
+          const res = await enqueueEditorialSweep(env);
+          if (res.queued) console.log('Editorial sweep: editorial-review queued');
+        } catch (err) {
+          console.error('Editorial sweep cron error:', err);
+        }
+      })());
     }
 
     if (event.cron === '0 2 * * *') {
@@ -271,10 +284,34 @@ export default {
           const summary = await runPlatformHealthCheck(env as any);
           const msg = buildHealthDiscordMessage(summary);
 
-          // Always notify on issues; on clean days, only send on Sundays
+          // Stuck blogs — ready but never published to WordPress. Surface them on
+          // the daily heartbeat and call out clients whose WordPress REST /
+          // application-password setup is still missing.
+          const stuckBlogs = await getStuckReadyBlogs(env.DB).catch(() => []);
+          if (stuckBlogs.length > 0) {
+            const byClient = new Map<string, { name: string; count: number; wp_configured: boolean }>();
+            for (const b of stuckBlogs) {
+              const cur = byClient.get(b.client_id) ?? { name: b.canonical_name, count: 0, wp_configured: b.wp_configured === 1 };
+              cur.count += 1;
+              byClient.set(b.client_id, cur);
+            }
+            const needsSetup = [...byClient.values()].filter((v) => !v.wp_configured);
+            const lines = [...byClient.values()]
+              .slice(0, 10)
+              .map((v) => `**${v.name}**: ${v.count}${v.wp_configured ? '' : ' ⚠️ WordPress no configurado'}`);
+            msg.fields.push({
+              name: `📝 Blogs listos sin publicar (${stuckBlogs.length})`,
+              value: lines.join('\n')
+                + (needsSetup.length > 0
+                  ? `\n\n⚠️ ${needsSetup.length} cliente(s) necesitan configurar WordPress (wp_base_url + usuario + application password) antes de publicar.`
+                  : '\n\nUsa publish_blog para enviarlos a WordPress.'),
+            });
+          }
+
+          // Always notify on issues or stuck blogs; on clean days, only send on Sundays
           const today = new Date();
           const isSunday = today.getUTCDay() === 0;
-          if (summary.total_failed > 0 || isSunday) {
+          if (summary.total_failed > 0 || stuckBlogs.length > 0 || isSunday) {
             const channelId = env.DISCORD_CHANNEL_ID;
             const token = env.DISCORD_BOT_TOKEN;
             if (channelId && token) {

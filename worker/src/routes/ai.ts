@@ -27,6 +27,7 @@ import { runFetchUrls } from './run';
 import { createContentWithImage } from '../loader/autonomous-content';
 import { discordSend, DISCORD_COLORS } from '../services/discord';
 import { syncUploadPostClientPlatforms } from '../modules/uploadpost-platform-sync';
+import { publishBlogPost } from '../modules/blog-publishing';
 import {
   AGENT_SKILLS, AGENT_MEMORY, RESPONSE_RULES,
   CLIENT_EXPERTISE, BUYER_PERSONAS, NL_INTENT_MAP, QUALITY_REVIEW_RULES,
@@ -1943,33 +1944,30 @@ export async function executeTool(
         const postId = typeof args.post_id === 'string' ? args.post_id : null;
         if (!postId) return { success: false, error: 'post_id is required' };
 
-        const wpStatus    = typeof args.wp_status    === 'string' ? args.wp_status    : undefined;
-        const forceUpdate = args.force_update === true;
+        const wpStatusArg = typeof args.wp_status === 'string' ? args.wp_status : undefined;
+        const wpStatus = wpStatusArg === 'publish' || wpStatusArg === 'draft' || wpStatusArg === 'pending'
+          ? wpStatusArg
+          : undefined;
 
-        // Call the blog publish endpoint via internal fetch
+        // Publish in-worker (no browser session needed) — the publish-blog HTTP
+        // route is session-gated, so automation/agent paths must call the module
+        // directly. This is what unblocks ready-but-unpublished blogs.
         try {
-          const resp = await env.SELF.fetch(
-            new Request(`http://internal/api/posts/${postId}/publish-blog`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Cookie': '' },
-              body: JSON.stringify({ status: wpStatus, force_update: forceUpdate }),
-            })
-          );
-          const body = await resp.json() as Record<string, unknown>;
-          if (!resp.ok) {
-            return { success: false, error: `Blog publish failed: ${body['error'] ?? resp.status}` };
-          }
+          const result = await publishBlogPost(env, postId, { status: wpStatus });
           return {
             success: true,
-            summary: { wp_post_url: body['wp_post_url'], wp_post_id: body['wp_post_id'] },
-            action_summary: `Blog published to WordPress${body['wp_post_url'] ? ` — ${body['wp_post_url']}` : ''}`,
+            summary: { wp_post_url: result.wpPost.link, wp_post_id: result.wpPost.id, status: result.wpPost.status },
+            action_summary: `Blog published to WordPress${result.wpPost.link ? ` — ${result.wpPost.link}` : ''}`,
+            ...(result.warnings.length > 0 ? { suggestions: result.warnings } : {}),
           };
         } catch (err) {
-          // If SELF doesn't support it, fall through with guidance
+          const message = err instanceof Error ? err.message : String(err);
           return {
             success: false,
-            error: 'Blog publish requires browser session — use the Publish button in the post detail view, or call POST /api/posts/:id/publish-blog directly.',
-            suggestions: ['Open the post in the dashboard and click "Publish Blog"'],
+            error: `Blog publish failed: ${message}`,
+            ...(message.includes('not configured')
+              ? { suggestions: ['Set wp_base_url, wp_username, and wp_application_password for this client (WordPress REST + application password).'] }
+              : {}),
           };
         }
       }

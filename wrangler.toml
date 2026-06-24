@@ -14,6 +14,7 @@ crons = [
   "0 16 * * SAT", # Agency Saturday afternoon — blog drafts + editorial
   "0 7 * * SUN",  # Agency Sunday morning — social copy + editorial
   "0 16 * * SUN", # Agency Sunday afternoon — orchestrator wrap-up
+  "0 16,19,22 * * MON-FRI", # Editorial review sweep — every 3h during business hours (9am/12pm/3pm PT)
 ]
 
 [[d1_databases]]
