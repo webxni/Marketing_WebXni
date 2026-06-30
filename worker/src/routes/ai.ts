@@ -43,11 +43,22 @@ const MCP_AGENT_USER: SessionData = {
   clientId: null,
 };
 
+// Constant-time string comparison for secrets (avoids timing side-channels on
+// the auth-bypass endpoints below, which grant admin-level agent access).
+function timingSafeEqual(a: string, b: string): boolean {
+  const len = Math.max(a.length, b.length);
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < len; i++) {
+    diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
+  }
+  return diff === 0;
+}
+
 function requireMcpBearer(c: Context<{ Bindings: Env; Variables: { user: SessionData } }>): boolean {
   const expected = c.env.AGENT_INTERNAL_TOKEN?.trim();
   const authHeader = c.req.header('Authorization') ?? '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
-  return !!expected && token === expected;
+  return !!expected && timingSafeEqual(token, expected);
 }
 
 const AGENT_CLIENT_FIELDS = new Set([
@@ -3689,7 +3700,7 @@ aiRoutes.post('/dispatch', async (c) => {
       botSecret = s['discord_bot_secret'] || '';
     } catch { /* ignore */ }
 
-    if (!botSecret || body.bot_token !== botSecret) {
+    if (!botSecret || typeof body.bot_token !== 'string' || !timingSafeEqual(body.bot_token, botSecret)) {
       return c.json({ error: 'Unauthorized — invalid bot_token' }, 401);
     }
 

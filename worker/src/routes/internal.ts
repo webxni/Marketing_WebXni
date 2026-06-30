@@ -35,11 +35,22 @@ function detail(err: unknown): string {
   return String(err);
 }
 
+// Constant-time comparison to avoid timing side-channels on the bearer token
+// that gates these admin-level internal endpoints.
+function timingSafeEqual(a: string, b: string): boolean {
+  const len = Math.max(a.length, b.length);
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < len; i++) {
+    diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
+  }
+  return diff === 0;
+}
+
 function requireAgentBearer(c: Context<{ Bindings: Env; Variables: Record<string, unknown> }>): boolean {
   const expected = c.env.AGENT_INTERNAL_TOKEN?.trim();
   const authHeader = c.req.header('Authorization') ?? '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
-  return !!expected && token === expected;
+  return !!expected && timingSafeEqual(token, expected);
 }
 
 function parseClientFilter(value: unknown): string[] {
