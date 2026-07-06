@@ -45,6 +45,11 @@ export class UploadPostError extends Error {
   get isGatewayTimeout(): boolean {
     return this.status === 524;
   }
+
+  /** 429 Too Many Requests — Upload-Post rate limit; retryable with backoff. */
+  get isRateLimited(): boolean {
+    return this.status === 429;
+  }
 }
 
 export interface PostTextParams {
@@ -415,17 +420,33 @@ export class UploadPostClient {
     headers: Record<string, string>,
     body: FormData,
   ): Promise<UploadPostResponse> {
-    const first = await fetch(url, { method: 'POST', headers, body });
-    if (first.ok) return first.json() as Promise<UploadPostResponse>;
+    // Retry on transient failures: 524 gateway timeout (immediate) and 429
+    // rate limit (backoff, honoring Retry-After). The idempotency key makes
+    // these retries safe. Non-transient errors throw immediately.
+    const maxAttempts = 3;
+    let lastErr: UploadPostError | null = null;
 
-    const firstText = await first.text();
-    const firstErr = new UploadPostError(first.status, firstText);
-    if (!firstErr.isGatewayTimeout) throw firstErr;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const res = await fetch(url, { method: 'POST', headers, body });
+      if (res.ok) return res.json() as Promise<UploadPostResponse>;
 
-    const second = await fetch(url, { method: 'POST', headers, body });
-    if (second.ok) return second.json() as Promise<UploadPostResponse>;
+      const text = await res.text();
+      const err = new UploadPostError(res.status, text);
+      lastErr = err;
 
-    const secondText = await second.text();
-    throw new UploadPostError(second.status, secondText || firstText);
+      const retryable = err.isGatewayTimeout || err.isRateLimited;
+      if (!retryable || attempt === maxAttempts) throw err;
+
+      // 429: wait Retry-After (capped) or exponential backoff. 524: retry fast.
+      let waitMs = err.isRateLimited ? 1500 * attempt : 0;
+      const retryAfter = res.headers.get('retry-after');
+      if (retryAfter) {
+        const secs = Number(retryAfter);
+        if (Number.isFinite(secs) && secs > 0) waitMs = Math.min(secs * 1000, 8000);
+      }
+      if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+
+    throw lastErr ?? new UploadPostError(0, 'Upload-Post request failed with no response');
   }
 }
