@@ -5,6 +5,176 @@
       "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/run-webxni-mcp.sh",
       "args": [],
       "timeout": 600000
+    },
+    "novamira-jazmakeupartist": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@automattic/mcp-wordpress-remote@latest"],
+      "env": {
+        "WP_API_URL": "https://jazmakeupartist.com/wp-json/mcp/novamira",
+        "WP_API_USERNAME": "jazmakeupartistni@gmail.com",
+        "WP_API_PASSWORD": "wjHGMLUXdHs9SNsUDAsVYJUN"
+      }
+    },
+    "novamira-landscape-calivi": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@automattic/mcp-wordpress-remote@latest"],
+      "env": {
+        "WP_API_URL": "https://landscape.caliviewbuilders.com/wp-json/mcp/novamira",
+        "WP_API_USERNAME": "emarketwizdigit@gmail.com",
+        "WP_API_PASSWORD": "yYr8NigpDxgcuABGJ7SBhapE"
+      }
+    },
+    "novamira-cvroofingwaterpr": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@automattic/mcp-wordpress-remote@latest"],
+      "env": {
+        "WP_API_URL": "https://cvroofingwaterproofing.com/wp-json/mcp/novamira",
+        "WP_API_USERNAME": "emarketwizdigit@gmail.com",
+        "WP_API_PASSWORD": "sP4P1iqNWRqs6hSTrHikErjE"
+      }
+    },
+    "novamira-ibacsolutionsllc": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@automattic/mcp-wordpress-remote@latest"],
+      "env": {
+        "WP_API_URL": "https://ibacsolutionsllc.com/wp-json/mcp/novamira",
+        "WP_API_USERNAME": "emarketwizdigit@gmail.com",
+        "WP_API_PASSWORD": "Fweho19ECW1RH16Ns30Br37k"
+      }
+    },
+    "novamira-guardianstherapy": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@automattic/mcp-wordpress-remote@latest"],
+      "env": {
+        "WP_API_URL": "https://guardianstherapyservicesllc.org/wp-json/mcp/novamira",
+        "WP_API_USERNAME": "emarketwizdigit@gmail.com",
+        "WP_API_PASSWORD": "TYG9eO2BXsgA32ORcQuUPefh"
+      }
+    },
+    "novamira-exceptionalhomeb": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@automattic/mcp-wordpress-remote@latest"],
+      "env": {
+        "WP_API_URL": "https://exceptionalhomebuildersnw.com/wp-json/mcp/novamira",
+        "WP_API_USERNAME": "marvinesu",
+        "WP_API_PASSWORD": "6yUquUHckrXWKFocRPnuJpwm"
+      }
+    },
+    "novamira-americasprofessi": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@automattic/mcp-wordpress-remote@latest"],
+      "env": {
+        "WP_API_URL": "https://americasprofessionalbuildersinc.com/wp-json/mcp/novamira",
+        "WP_API_USERNAME": "emarketwizdigit@gmail.com",
+        "WP_API_PASSWORD": "zVlxJmk8YsUgXF8Zd7v5Aq7E"
+      }
+    },
+    "novamira-danielslockkey-c": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@automattic/mcp-wordpress-remote@latest"],
+      "env": {
+        "WP_API_URL": "https://danielslockkey.com/wp-json/mcp/novamira",
+        "WP_API_USERNAME": "emarketwizdigit",
+        "WP_API_PASSWORD": "poPxR8fB0XSkNcqXMqRajy0D"
+      }
+    },
+    "novamira-unlockedpros-com": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@automattic/mcp-wordpress-remote@latest"],
+      "env": {
+        "WP_API_URL": "https://unlockedpros.com/wp-json/mcp/novamira",
+        "WP_API_USERNAME": "emarketwizdigit@gmail.com",
+        "WP_API_PASSWORD": "vCCp6zKPfOvUkVipyeFotrgg"
+      }
+    },
+    "novamira-247lockoutpasade": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@automattic/mcp-wordpress-remote@latest"],
+      "env": {
+        "WP_API_URL": "https://247lockoutpasadena.com/wp-json/mcp/novamira",
+        "WP_API_USERNAME": "emarketwizdigit@gmail.com",
+        "WP_API_PASSWORD": "AR0XmMp4CZstMjUxe743dFud"
+      }
+    },
+    "novamira-novahomebuilders": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@automattic/mcp-wordpress-remote@latest"],
+      "env": {
+        "WP_API_URL": "https://novahomebuildersllc.com/wp-json/mcp/novamira",
+        "WP_API_USERNAME": "novahomebuildersllc.com",
+        "WP_API_PASSWORD": "oXmzbHAZjeTzEjfFR0h5SqyL"
+      }
+    },
+    "novamira-goldentouch-roof": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@automattic/mcp-wordpress-remote@latest"],
+      "env": {
+        "WP_API_URL": "https://goldentouch-roofing.com/wp-json/mcp/novamira",
+        "WP_API_USERNAME": "marvinesu",
+        "WP_API_PASSWORD": "hEozE9O7Vm8Kpt5kkW9ziFUh"
+      }
+    },
+    "novamira-exceptionalhomeb-main": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@automattic/mcp-wordpress-remote@latest"],
+      "env": {
+        "WP_API_URL": "https://www.exceptionalhomebuilders.com/wp-json/mcp/novamira",
+        "WP_API_USERNAME": "marvinesu",
+        "WP_API_PASSWORD": "Eder5Om7SH2s8IIcMTeuoXBZ"
+      }
+    },
+    "novamira-webxni-com": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@automattic/mcp-wordpress-remote@latest"],
+      "env": {
+        "WP_API_URL": "https://webxni.com/wp-json/mcp/novamira",
+        "WP_API_USERNAME": "webxni.com",
+        "WP_API_PASSWORD": "WWe1pODdHROikaePHDGiflyl"
+      }
+    },
+    "novamira-kingdomservicesp": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@automattic/mcp-wordpress-remote@latest"],
+      "env": {
+        "WP_API_URL": "https://kingdomservicesplumbingelectrical.com/wp-json/mcp/novamira",
+        "WP_API_USERNAME": "emarketwizdigit@gmail.com",
+        "WP_API_PASSWORD": "rQWEXisuxW7YhQ77pOwONFu1"
+      }
+    },
+    "novamira-firsttouchlocksm": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@automattic/mcp-wordpress-remote@latest"],
+      "env": {
+        "WP_API_URL": "https://firsttouchlocksmith.com/wp-json/mcp/novamira",
+        "WP_API_USERNAME": "emarketwizdigit@gmail.com",
+        "WP_API_PASSWORD": "rBWtqymNLiuOhwyBcOqVyZNk"
+      }
+    },
+    "novamira-behomeremodeling": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@automattic/mcp-wordpress-remote@latest"],
+      "env": {
+        "WP_API_URL": "https://behomeremodelingor.com/wp-json/mcp/novamira",
+        "WP_API_USERNAME": "Be Home Remodeling",
+        "WP_API_PASSWORD": "MQPHqahkhGtwaMzdWWQ5xEjR"
+      }
     }
   }
 }
