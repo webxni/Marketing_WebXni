@@ -17,6 +17,7 @@ import {
 import { parseBlogBodyImages, serializeBlogBodyImages } from './blog-body-images';
 import { ensureBlogBodyImagesGenerated } from '../loader/autonomous-content';
 import { getBlogDistributionPlatforms } from './platform-compatibility';
+import { applyInternalLinks, loadClientInternalLinks, syncClientInternalLinks } from './internal-links';
 import { resolveStabilityApiKeys } from '../services/stability';
 import { resolveBlogTemplateConfig } from './blog-templates';
 import {
@@ -652,7 +653,37 @@ async function buildPublishHtml(
     slot2: slotHtml.slot2,
     slot3: slotHtml.slot3,
   });
-  return injectBodyImageIntoHtml(withSlots, slotHtml.slot1 ?? bodyImageHtml);
+  const withImages = injectBodyImageIntoHtml(withSlots, slotHtml.slot1 ?? bodyImageHtml);
+
+  // Weave internal links (auto-pulled from the client's own WordPress site) into
+  // the body + a "Related Resources" section. Self-populates on first publish so
+  // clients without a synced library still pick links up. Best-effort: never
+  // blocks publishing.
+  let internalLinks = await loadClientInternalLinks(env, client.id);
+  if (internalLinks.length === 0) {
+    await syncClientInternalLinks(env, client);
+    internalLinks = await loadClientInternalLinks(env, client.id);
+  }
+  if (internalLinks.length === 0) return withImages;
+
+  const linkTemplate = resolveBlogTemplateConfig({
+    slug: client.slug,
+    canonical_name: client.canonical_name,
+    industry: client.industry,
+    state: client.state,
+    brand_json: client.brand_json,
+    wp_template_key: (client as ClientRow & { wp_template_key?: string | null }).wp_template_key ?? null,
+    cta_text: client.cta_text,
+    brand_primary_color: (client as ClientRow & { brand_primary_color?: string | null }).brand_primary_color ?? null,
+  });
+  return applyInternalLinks(withImages, internalLinks, {
+    excludeSlug: post.slug,
+    excludeUrl: post.wp_post_url,
+    accentColor: linkTemplate.accentColor ?? getPrimaryColor(client),
+    maxInline: 3,
+    maxSection: 6,
+    heading: 'Related Resources',
+  });
 }
 
 export async function publishBlogPost(env: Env, postId: string, options: PublishBlogOptions = {}): Promise<PublishBlogResult> {

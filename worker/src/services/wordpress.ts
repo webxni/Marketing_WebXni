@@ -252,6 +252,32 @@ export class WordPressClient {
     return this.request<WpPost[]>(`/posts?slug=${safeSlug}&context=edit&per_page=20&status=any`);
   }
 
+  /**
+   * List published pages + posts as internal-link candidates (URL + title).
+   * Used to auto-build each client's internal-link library. Best-effort per
+   * type: a failure on one collection doesn't drop the other.
+   */
+  async listSiteLinks(opts: { pageLimit?: number; postLimit?: number } = {}): Promise<Array<{ id: number; url: string; title: string; slug: string; type: 'page' | 'post' }>> {
+    const pageLimit = Math.min(opts.pageLimit ?? 100, 100);
+    const postLimit = Math.min(opts.postLimit ?? 50, 100);
+    type WpLinkItem = { id: number; link: string; slug: string; title?: { rendered?: string } };
+    const collect = async (path: string, type: 'page' | 'post') => {
+      try {
+        const rows = await this.request<WpLinkItem[]>(path);
+        return rows
+          .filter((row) => row?.link)
+          .map((row) => ({ id: row.id, url: row.link, title: row.title?.rendered ?? '', slug: row.slug ?? '', type }));
+      } catch {
+        return [] as Array<{ id: number; url: string; title: string; slug: string; type: 'page' | 'post' }>;
+      }
+    };
+    const [pages, posts] = await Promise.all([
+      collect(`/pages?per_page=${pageLimit}&status=publish&orderby=menu_order&order=asc&_fields=id,link,slug,title`, 'page'),
+      collect(`/posts?per_page=${postLimit}&status=publish&orderby=date&order=desc&_fields=id,link,slug,title`, 'post'),
+    ]);
+    return [...pages, ...posts];
+  }
+
   async getMedia(mediaId: number): Promise<WpMediaItem> {
     return this.request<WpMediaItem>(`/media/${mediaId}?context=edit`);
   }

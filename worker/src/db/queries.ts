@@ -1351,6 +1351,48 @@ export async function upsertClientKeywords(
   return n;
 }
 
+// ── Client internal links (auto-pulled from each site's WordPress pages/posts) ──
+
+import type { ClientInternalLinkRow } from '../modules/internal-links';
+
+export async function listClientInternalLinks(db: D1Database, clientId: string): Promise<ClientInternalLinkRow[]> {
+  const rows = await db.prepare(
+    `SELECT id, client_id, url, anchor_keyword, title, wp_type, wp_id, priority, source, active
+     FROM client_internal_links WHERE client_id = ? AND active = 1
+     ORDER BY priority ASC, anchor_keyword ASC`,
+  ).bind(clientId).all<ClientInternalLinkRow>();
+  return rows.results ?? [];
+}
+
+// Upsert refreshes wp_sync rows without deleting; manually pinned links (source
+// 'manual') keep their anchor/priority. Dedup via the uq_client_internal_link index.
+export async function upsertClientInternalLinks(
+  db: D1Database,
+  clientId: string,
+  links: Array<{ url: string; anchor_keyword: string; title?: string | null; wp_type?: string | null; wp_id?: number | null; priority?: number; source?: string }>,
+): Promise<number> {
+  let n = 0;
+  for (const link of links) {
+    const url = (link.url || '').trim();
+    const anchor = (link.anchor_keyword || '').trim();
+    if (!url || !anchor) continue;
+    await db.prepare(
+      `INSERT INTO client_internal_links (client_id, url, anchor_keyword, title, wp_type, wp_id, priority, source, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+       ON CONFLICT(client_id, url) DO UPDATE SET
+         anchor_keyword=CASE WHEN client_internal_links.source='manual' THEN client_internal_links.anchor_keyword ELSE excluded.anchor_keyword END,
+         title=excluded.title, wp_type=excluded.wp_type, wp_id=excluded.wp_id,
+         priority=CASE WHEN client_internal_links.source='manual' THEN client_internal_links.priority ELSE excluded.priority END,
+         active=1, updated_at=unixepoch()`,
+    ).bind(
+      clientId, url, anchor, link.title ?? null, link.wp_type ?? null, link.wp_id ?? null,
+      link.priority ?? 100, link.source ?? 'wp_sync',
+    ).run();
+    n++;
+  }
+  return n;
+}
+
 // ── Client profile gaps (§5 missing-information protocol) ──
 
 export interface ClientProfileGapRow {

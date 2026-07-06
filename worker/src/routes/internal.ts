@@ -8,6 +8,7 @@ import { executeSlotWork, prepareGenerationPlan, prebuildApprovedTerminalSlotReq
 import { isRepairKeyValid, repairExistingBlogs } from '../loader/repair-blogs';
 import { planBlogRegen, executeBlogRegenSlot, triggerBlogRegenStep } from '../loader/blog-regen';
 import { cleanupLegacyInvalidPlatformAttempts, repairOrphanScheduledPosts, syncPublishedUrls } from '../modules/published-urls';
+import { syncClientInternalLinks } from '../modules/internal-links';
 import { runFetchUrls } from './run';
 import { getClientProfileAnalytics } from '../modules/reporting-metrics';
 import { runPlatformHealthCheck, buildHealthDiscordMessage } from '../modules/platform-health';
@@ -299,6 +300,36 @@ internalRoutes.post('/repair-blogs', async (c) => {
     return c.json({ ok: true, stats });
   } catch (err) {
     console.error('[repair-blogs] failed:', err);
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+/**
+ * POST /internal/sync-internal-links
+ *
+ * Rebuilds each client's internal-link library from their live WordPress site
+ * (published pages + posts → client_internal_links). Additive: never deletes,
+ * manual/pinned links survive. Body (optional JSON): { client_slugs?: string[] }
+ * Auth: x-repair-key header.
+ */
+internalRoutes.post('/sync-internal-links', async (c) => {
+  if (!isRepairKeyValid(c.req.header('x-repair-key'))) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const only: string[] | null = Array.isArray(body?.client_slugs) ? body.client_slugs : null;
+    const clients = await listClients(c.env.DB, 'active');
+    const targets = only ? clients.filter((cl) => only.includes(cl.slug)) : clients;
+    const results: Array<{ slug: string; synced: number; error?: string }> = [];
+    for (const client of targets) {
+      const r = await syncClientInternalLinks(c.env, client);
+      results.push({ slug: client.slug, synced: r.synced, ...(r.error ? { error: r.error } : {}) });
+    }
+    const total = results.reduce((sum, r) => sum + r.synced, 0);
+    return c.json({ ok: true, total, clients: results });
+  } catch (err) {
+    console.error('[sync-internal-links] failed:', err);
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
 });
