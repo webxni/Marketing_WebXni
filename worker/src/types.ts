@@ -581,3 +581,25 @@ export interface ClientMonthlyContentPlanRow {
   created_at:        number;
   updated_at:        number;
 }
+
+export interface ClientMcpTokenRow {
+  id: string;
+  client_id: string;
+  token_hash: string;
+  token_prefix: string;
+  label: string | null;
+  active: number;
+  created_at: number;
+  last_used_at: number | null;
+  expires_at: number | null;
+  revoked_at: number | null;
+}
+
+export interface ClientMcpLimitRow {
+  client_id: string;
+  social_per_day: number;
+  per_platform_per_day: number;
+  blog_per_day: number;
+  gbp_per_day: number;
+  updated_at: number;
+}
