@@ -31,6 +31,7 @@ import { internalRoutes }    from './routes/internal';
 import { aiRoutes }          from './routes/ai';
 import { agencyRoutes, agencyInternalRoutes } from './routes/agency';
 import { discordInteractRoute, discordInternalRoute } from './routes/discord';
+import { mcpRoutes }          from './routes/mcp';
 
 const app = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -42,6 +43,9 @@ app.route('/media', publicAssetRoutes);
 
 // Discord interaction endpoint — NO auth middleware (Discord signs with Ed25519)
 app.route('/api/discord', discordInteractRoute);
+
+// Per-client MCP bridge — self-authenticates via bearer token; NOT subject to session auth
+app.route('/mcp', mcpRoutes);
 
 // ─── Global middleware ────────────────────────────────────────────────────────
 app.use('/api/*', rateLimitMiddleware);

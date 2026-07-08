@@ -158,7 +158,7 @@ function collectPlatformFields(fields: Record<string, unknown>): Record<string, 
   return collectAllowedFields(normalized, AGENT_PLATFORM_FIELDS);
 }
 
-async function resolveAgentOpenAiKey(env: Env): Promise<string> {
+export async function resolveAgentOpenAiKey(env: Env): Promise<string> {
   let openAiKey = env.OPENAI_API_KEY || '';
   if (!openAiKey) {
     try {
