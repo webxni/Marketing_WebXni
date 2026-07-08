@@ -13,9 +13,10 @@ import { Hono } from 'hono';
 import type { Env, SessionData } from '../types';
 import { executeTool, resolveAgentOpenAiKey } from './ai';
 import { getClientById, writeAuditLog } from '../db/queries';
-import { getActiveMcpTokenByHash, touchMcpTokenUsage } from '../db/mcp-queries';
+import { getActiveMcpTokenByHash, touchMcpTokenUsage, getClientMcpLimits } from '../db/mcp-queries';
 import { hashMcpToken } from '../mcp/tokens';
 import { handleMcpRpc, type JsonRpc } from '../mcp/protocol';
+import { decidePublish, platformCategory, counterKey } from '../mcp/limits';
 
 export const mcpRoutes = new Hono<{ Bindings: Env }>();
 
@@ -80,6 +81,38 @@ mcpRoutes.post('/:slug', async (c) => {
         new_value: { success, token_prefix: tokenRow.token_prefix, token_id: tokenRow.id, token_label: tokenRow.label },
         ip: c.req.header('cf-connecting-ip') ?? undefined,
       }));
+    },
+    publishGuard: async (_name, args) => {
+      const limits = await getClientMcpLimits(c.env.DB, client.id);
+      const today = new Date().toISOString().slice(0, 10);
+      // Determine target platform + whether media, from the post being published.
+      const postId = String((args.post_id ?? args.id ?? '') || '');
+      let platform = String(args.platform ?? '');
+      let isMedia = false;
+      let hasDeliveredMedia = false;
+      if (postId) {
+        const row = await c.env.DB.prepare(
+          'SELECT platforms, content_type, asset_delivered FROM posts WHERE id = ? AND client_id = ?',
+        ).bind(postId, client.id).first<{ platforms: string | null; content_type: string | null; asset_delivered: number | null }>();
+        if (row) {
+          if (!platform) { try { platform = (JSON.parse(row.platforms ?? '[]')[0] ?? ''); } catch { platform = ''; } }
+          isMedia = row.content_type === 'image' || row.content_type === 'video' || row.content_type === 'reel';
+          hasDeliveredMedia = row.asset_delivered === 1;
+        }
+      }
+      const category = platformCategory(platform || 'facebook');
+      const kv = c.env.KV_BINDING;
+      const catKey = counterKey(client.id, category, today);
+      const platKey = counterKey(client.id, `plat:${platform}`, today);
+      const usedForCategory = Number((await kv.get(catKey)) ?? '0');
+      const usedForPlatform = Number((await kv.get(platKey)) ?? '0');
+      const decision = decidePublish({ category, usedForCategory, usedForPlatform, limits, hasDeliveredMedia, isMedia });
+      if (decision.allowed) {
+        // Optimistically reserve a slot; TTL ~2 days so counters self-expire.
+        await kv.put(catKey, String(usedForCategory + 1), { expirationTtl: 172800 });
+        await kv.put(platKey, String(usedForPlatform + 1), { expirationTtl: 172800 });
+      }
+      return decision;
     },
   });
 

@@ -1,4 +1,4 @@
-import { isToolAllowed, MCP_READ_TOOLS, MCP_DRAFT_TOOLS, MCP_PUBLISH_TOOLS, forceClientScope } from './scope';
+import { isToolAllowed, isPublishTool, MCP_READ_TOOLS, MCP_DRAFT_TOOLS, MCP_PUBLISH_TOOLS, forceClientScope } from './scope';
 
 export type JsonRpc = { jsonrpc: '2.0'; id?: string | number | null; method: string; params?: any };
 export type ToolExec = (
@@ -10,6 +10,7 @@ export interface McpDeps {
   clientName: string;
   exec: ToolExec;
   onCall?: (name: string, ok: boolean) => void;
+  publishGuard?: (name: string, args: Record<string, unknown>) => Promise<{ allowed: boolean; reason?: string }>;
 }
 
 const PROTOCOL_VERSION = '2024-11-05';
@@ -56,6 +57,16 @@ export async function handleMcpRpc(rpc: JsonRpc, deps: McpDeps): Promise<object>
         });
       }
       const args = forceClientScope(rawArgs, deps.clientSlug);
+      if (isPublishTool(name) && deps.publishGuard) {
+        const gate = await deps.publishGuard(name, args);
+        if (!gate.allowed) {
+          deps.onCall?.(name, false);
+          return ok(rpc.id, {
+            isError: true,
+            content: [{ type: 'text', text: gate.reason ?? 'Publishing is not allowed right now.' }],
+          });
+        }
+      }
       const result = await deps.exec(name, args);
       deps.onCall?.(name, result.success);
       const text = result.success
