@@ -17,6 +17,7 @@ import { getActiveMcpTokenByHash, touchMcpTokenUsage, getClientMcpLimits } from 
 import { hashMcpToken } from '../mcp/tokens';
 import { handleMcpRpc, type JsonRpc } from '../mcp/protocol';
 import { decidePublish, platformCategory, counterKey } from '../mcp/limits';
+import { buildResource } from '../mcp/resources';
 
 export const mcpRoutes = new Hono<{ Bindings: Env }>();
 
@@ -114,6 +115,7 @@ mcpRoutes.post('/:slug', async (c) => {
       }
       return decision;
     },
+    readResource: (uri) => buildResource(uri, { db: c.env.DB, clientId: client.id }),
   });
 
   return c.json(response);

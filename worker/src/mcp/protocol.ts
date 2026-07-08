@@ -1,4 +1,5 @@
 import { isToolAllowed, isPublishTool, MCP_READ_TOOLS, MCP_DRAFT_TOOLS, MCP_PUBLISH_TOOLS, forceClientScope } from './scope';
+import { MCP_RESOURCE_DEFS } from './resources';
 
 export type JsonRpc = { jsonrpc: '2.0'; id?: string | number | null; method: string; params?: any };
 export type ToolExec = (
@@ -11,6 +12,7 @@ export interface McpDeps {
   exec: ToolExec;
   onCall?: (name: string, ok: boolean) => void;
   publishGuard?: (name: string, args: Record<string, unknown>) => Promise<{ allowed: boolean; reason?: string }>;
+  readResource?: (uri: string) => Promise<{ uri: string; mimeType: string; text: string } | null>;
 }
 
 const PROTOCOL_VERSION = '2024-11-05';
@@ -77,6 +79,16 @@ export async function handleMcpRpc(rpc: JsonRpc, deps: McpDeps): Promise<object>
         content: [{ type: 'text', text }],
         structuredContent: { summary: result.summary, items: result.items },
       });
+    }
+
+    case 'resources/list':
+      return ok(rpc.id, { resources: MCP_RESOURCE_DEFS });
+
+    case 'resources/read': {
+      const uri = String(rpc.params?.uri ?? '');
+      const res = deps.readResource ? await deps.readResource(uri) : null;
+      if (!res) return err(rpc.id, -32602, `Unknown resource: ${uri}`);
+      return ok(rpc.id, { contents: [res] });
     }
 
     default:
