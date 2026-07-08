@@ -13,7 +13,7 @@ export const MCP_DRAFT_TOOLS = [
 ] as const;
 
 export const MCP_PUBLISH_TOOLS = [
-  'approve_and_publish', 'publish_post', 'publish_bulk', 'publish_blog',
+  'approve_and_publish', 'publish_post', 'publish_blog',
   'set_post_status',
 ] as const;
 

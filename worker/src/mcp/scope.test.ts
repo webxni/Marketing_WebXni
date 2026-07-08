@@ -10,6 +10,7 @@ describe('mcp scope', () => {
     expect(isToolAllowed('update_client_platforms')).toBe(false);
     expect(isToolAllowed('sync_upload_post_platforms')).toBe(false);
     expect(isToolAllowed('delete_post')).toBe(false);
+    expect(isToolAllowed('publish_bulk')).toBe(false);
     expect(isToolAllowed('not_a_tool')).toBe(false);
   });
 
