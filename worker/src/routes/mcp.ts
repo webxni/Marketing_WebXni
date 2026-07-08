@@ -30,7 +30,7 @@ mcpRoutes.post('/:slug', async (c) => {
   if (!tokenRow) return c.json({ error: 'Invalid or revoked token' }, 401);
 
   const client = await getClientById(c.env.DB, tokenRow.client_id);
-  if (!client || client.slug !== slug || (client as any).mcp_enabled !== 1) {
+  if (!client || client.slug !== slug || client.mcp_enabled !== 1) {
     return c.json({ error: 'Workspace not available' }, 403);
   }
 
@@ -77,7 +77,7 @@ mcpRoutes.post('/:slug', async (c) => {
         action: `mcp.${name}`,
         entity_type: 'client',
         entity_id: client.id,
-        new_value: { success, token_prefix: tokenRow.token_prefix },
+        new_value: { success, token_prefix: tokenRow.token_prefix, token_id: tokenRow.id, token_label: tokenRow.label },
         ip: c.req.header('cf-connecting-ip') ?? undefined,
       }));
     },

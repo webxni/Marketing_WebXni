@@ -77,6 +77,7 @@ export interface ClientRow {
   package:                  string | null;
   status:                   string | null;
   manual_only:              number;
+  mcp_enabled:              number;
   requires_approval_from:   string | null;
   language:                 string | null;
   upload_post_profile:      string | null;
