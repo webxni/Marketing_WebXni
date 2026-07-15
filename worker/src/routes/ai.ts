@@ -2622,15 +2622,19 @@ export async function executeTool(
         if (!post) return { success: false, error: `Post not found: ${postId}` };
 
         const now = Math.floor(Date.now() / 1000);
+        // A tenant attaching an arbitrary asset via the per-client MCP is an
+        // untrusted external upload — it stays designer-gated. Marvin's own
+        // agent/Discord delivery counts as a designer asset.
+        const attachSource = user.userId.startsWith('mcp:') ? 'external_upload' : 'designer';
         await env.DB
-          .prepare(`UPDATE posts SET asset_r2_key = ?, asset_r2_bucket = 'MEDIA', asset_type = ?, asset_delivered = 1, updated_at = ? WHERE id = ?`)
-          .bind(r2Key, assetType, now, postId)
+          .prepare(`UPDATE posts SET asset_r2_key = ?, asset_r2_bucket = 'MEDIA', asset_type = ?, asset_delivered = 1, asset_source = ?, updated_at = ? WHERE id = ?`)
+          .bind(r2Key, assetType, attachSource, now, postId)
           .run();
 
         await writeAuditLog(env.DB, {
           user_id: user.userId, action: 'agent_attach_asset',
           entity_type: 'post', entity_id: postId,
-          new_value: { r2_key: r2Key, asset_type: assetType },
+          new_value: { r2_key: r2Key, asset_type: assetType, asset_source: attachSource },
         });
 
         const assetUrl = `${baseUrl}/media/${r2Key}`;

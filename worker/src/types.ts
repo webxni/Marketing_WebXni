@@ -78,6 +78,7 @@ export interface ClientRow {
   status:                   string | null;
   manual_only:              number;
   mcp_enabled:              number;
+  auto_publish_policy:      string;
   requires_approval_from:   string | null;
   language:                 string | null;
   upload_post_profile:      string | null;
@@ -296,6 +297,7 @@ export interface PostRow {
   notion_page_id:         string | null;
   ready_for_automation:   number;
   asset_delivered:        number;
+  asset_source:           string | null;
   skarleth_status:        string | null;
   skarleth_notes:         string | null;
   error_log:              string | null;

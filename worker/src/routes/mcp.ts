@@ -60,6 +60,10 @@ mcpRoutes.post('/:slug', async (c) => {
 
   const openAiKey = await resolveAgentOpenAiKey(c.env);
 
+  // Captured by publishGuard, read by the audit logger, so the live record always
+  // shows whether a published image was designer-delivered or AI-generated.
+  let publishOrigin: { asset_source: string | null; policy: string; is_media: boolean } | undefined;
+
   let baseUrl = 'https://marketing.webxni.com';
   try {
     baseUrl = new URL(c.req.url).origin;
@@ -79,7 +83,13 @@ mcpRoutes.post('/:slug', async (c) => {
         action: `mcp.${name}`,
         entity_type: 'client',
         entity_id: client.id,
-        new_value: { success, token_prefix: tokenRow.token_prefix, token_id: tokenRow.id, token_label: tokenRow.label },
+        new_value: {
+          success,
+          token_prefix: tokenRow.token_prefix,
+          token_id: tokenRow.id,
+          token_label: tokenRow.label,
+          ...(publishOrigin ? { asset_source: publishOrigin.asset_source, auto_publish_policy: publishOrigin.policy, is_media: publishOrigin.is_media } : {}),
+        },
         ip: c.req.header('cf-connecting-ip') ?? undefined,
       }));
     },
@@ -91,23 +101,27 @@ mcpRoutes.post('/:slug', async (c) => {
       let platform = String(args.platform ?? '');
       let isMedia = false;
       let hasDeliveredMedia = false;
+      let assetSource: string | null = null;
       if (postId) {
         const row = await c.env.DB.prepare(
-          'SELECT platforms, content_type, asset_delivered FROM posts WHERE id = ? AND client_id = ?',
-        ).bind(postId, client.id).first<{ platforms: string | null; content_type: string | null; asset_delivered: number | null }>();
+          'SELECT platforms, content_type, asset_delivered, asset_source FROM posts WHERE id = ? AND client_id = ?',
+        ).bind(postId, client.id).first<{ platforms: string | null; content_type: string | null; asset_delivered: number | null; asset_source: string | null }>();
         if (row) {
           if (!platform) { try { platform = (JSON.parse(row.platforms ?? '[]')[0] ?? ''); } catch { platform = ''; } }
           isMedia = row.content_type === 'image' || row.content_type === 'video' || row.content_type === 'reel';
           hasDeliveredMedia = row.asset_delivered === 1;
+          assetSource = row.asset_source;
         }
       }
+      const policy = (client.auto_publish_policy === 'ai_and_text' ? 'ai_and_text' : 'strict');
+      publishOrigin = { asset_source: assetSource, policy, is_media: isMedia };
       const category = platformCategory(platform || 'facebook');
       const kv = c.env.KV_BINDING;
       const catKey = counterKey(client.id, category, today);
       const platKey = counterKey(client.id, `plat:${platform}`, today);
       const usedForCategory = Number((await kv.get(catKey)) ?? '0');
       const usedForPlatform = Number((await kv.get(platKey)) ?? '0');
-      const decision = decidePublish({ category, usedForCategory, usedForPlatform, limits, hasDeliveredMedia, isMedia });
+      const decision = decidePublish({ category, usedForCategory, usedForPlatform, limits, hasDeliveredMedia, isMedia, assetSource, policy });
       if (decision.allowed) {
         // Optimistically reserve a slot; TTL ~2 days so counters self-expire.
         await kv.put(catKey, String(usedForCategory + 1), { expirationTtl: 172800 });
