@@ -711,7 +711,7 @@ discordInternalRoute.post('/upload-asset', async (c) => {
 
   if (postId) {
     await c.env.DB
-      .prepare(`UPDATE posts SET asset_r2_key = ?, asset_r2_bucket = 'MEDIA', asset_type = ?, asset_delivered = 1, updated_at = ? WHERE id = ?`)
+      .prepare(`UPDATE posts SET asset_r2_key = ?, asset_r2_bucket = 'MEDIA', asset_type = ?, asset_delivered = 1, asset_source = 'designer', updated_at = ? WHERE id = ?`)
       .bind(r2Key, assetType, now, postId)
       .run();
   }

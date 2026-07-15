@@ -230,7 +230,7 @@ postRoutes.post('/', async (c) => {
       const isVideo = (first.content_type ?? '').startsWith('video/');
       await c.env.DB
         .prepare(`UPDATE posts
-                  SET asset_r2_key = ?, asset_r2_bucket = ?, asset_type = ?, asset_delivered = 1, updated_at = ?
+                  SET asset_r2_key = ?, asset_r2_bucket = ?, asset_type = ?, asset_delivered = 1, asset_source = 'designer', updated_at = ?
                   WHERE id = ?`)
         .bind(first.r2_key, first.r2_bucket, isVideo ? 'video' : 'image', Math.floor(Date.now() / 1000), post.id)
         .run();
