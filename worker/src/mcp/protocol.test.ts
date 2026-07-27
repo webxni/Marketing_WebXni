@@ -46,6 +46,24 @@ describe('mcp protocol', () => {
     expect(res.result.structuredContent.data).toEqual(data);
   });
 
+  it('tools/call redacts credential fields from structured content', async () => {
+    const data = {
+      profile: {
+        canonical_name: 'Acme',
+        wp_auth: 'secret',
+        wp_application_password: 'secret',
+        api_token: 'secret',
+      },
+      platforms: [{ platform: 'facebook', page_id: '123' }],
+    };
+    const res: any = await handleMcpRpc(
+      { jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'get_client_details', arguments: {} } },
+      deps(async () => ({ success: true, action_summary: 'ok', data })),
+    );
+    expect(res.result.structuredContent.data.profile).toEqual({ canonical_name: 'Acme' });
+    expect(res.result.structuredContent.data.platforms[0].page_id).toBe('123');
+  });
+
   it('publish tool blocked by guard does not call exec', async () => {
     let called = false;
     const res: any = await handleMcpRpc(

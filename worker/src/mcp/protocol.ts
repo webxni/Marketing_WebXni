@@ -28,6 +28,14 @@ const PROTOCOL_VERSION = '2024-11-05';
 
 // Minimal generic schema; executeTool validates args itself.
 const GENERIC_SCHEMA = { type: 'object', additionalProperties: true } as const;
+const SECRET_KEYS = new Set([
+  'auth',
+  'password',
+  'token',
+  'token_hash',
+  'wp_auth',
+  'wp_application_password',
+]);
 
 export const MCP_TOOL_DEFS = [...MCP_READ_TOOLS, ...MCP_DRAFT_TOOLS, ...MCP_PUBLISH_TOOLS].map((name) => ({
   name,
@@ -40,6 +48,23 @@ function ok(id: JsonRpc['id'], result: unknown) {
 }
 function err(id: JsonRpc['id'], code: number, message: string) {
   return { jsonrpc: '2.0', id: id ?? null, error: { code, message } };
+}
+
+function isSecretKey(key: string): boolean {
+  const normalized = key.toLowerCase();
+  return SECRET_KEYS.has(normalized) || normalized.endsWith('_token') || normalized.endsWith('_password');
+}
+
+function sanitizeStructuredPayload(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => sanitizeStructuredPayload(item));
+  if (!value || typeof value !== 'object') return value;
+
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (isSecretKey(key)) continue;
+    out[key] = sanitizeStructuredPayload(item);
+  }
+  return out;
 }
 
 export async function handleMcpRpc(rpc: JsonRpc, deps: McpDeps): Promise<object> {
@@ -87,10 +112,10 @@ export async function handleMcpRpc(rpc: JsonRpc, deps: McpDeps): Promise<object>
         isError: !result.success,
         content: [{ type: 'text', text }],
         structuredContent: {
-          data: result.data,
-          summary: result.summary,
-          items: result.items,
-          suggestions: result.suggestions,
+          data: sanitizeStructuredPayload(result.data),
+          summary: sanitizeStructuredPayload(result.summary),
+          items: sanitizeStructuredPayload(result.items),
+          suggestions: sanitizeStructuredPayload(result.suggestions),
           job_id: result.job_id,
         },
       });
