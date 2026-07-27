@@ -8,6 +8,21 @@ describe('mcp protocol', () => {
     const res: any = await handleMcpRpc({ jsonrpc: '2.0', id: 1, method: 'initialize' }, deps(async () => ({ success: true })));
     expect(res.result.serverInfo.name).toContain('acme');
     expect(res.result.protocolVersion).toBeTruthy();
+    expect(res.result.capabilities.prompts).toBeUndefined();
+  });
+
+  it('notifications/initialized returns no JSON-RPC response', async () => {
+    const res = await handleMcpRpc({ jsonrpc: '2.0', method: 'notifications/initialized' }, deps(async () => ({ success: true })));
+    expect(res).toBeNull();
+  });
+
+  it('handles startup compatibility methods', async () => {
+    const ping: any = await handleMcpRpc({ jsonrpc: '2.0', id: 11, method: 'ping' }, deps(async () => ({ success: true })));
+    const prompts: any = await handleMcpRpc({ jsonrpc: '2.0', id: 12, method: 'prompts/list' }, deps(async () => ({ success: true })));
+    const templates: any = await handleMcpRpc({ jsonrpc: '2.0', id: 13, method: 'resources/templates/list' }, deps(async () => ({ success: true })));
+    expect(ping.result).toEqual({});
+    expect(prompts.result.prompts).toEqual([]);
+    expect(templates.result.resourceTemplates).toEqual([]);
   });
 
   it('tools/list returns only allowlisted tools', async () => {

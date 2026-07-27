@@ -21,6 +21,12 @@ import { buildResource } from '../mcp/resources';
 
 export const mcpRoutes = new Hono<{ Bindings: Env }>();
 
+mcpRoutes.get('/:slug', (c) =>
+  c.json({ error: 'MCP Streamable HTTP endpoint. Use POST with JSON-RPC.' }, 405, {
+    Allow: 'POST',
+  }),
+);
+
 mcpRoutes.post('/:slug', async (c) => {
   const slug = c.req.param('slug');
   const auth = c.req.header('authorization') ?? '';
@@ -132,5 +138,6 @@ mcpRoutes.post('/:slug', async (c) => {
     readResource: (uri) => buildResource(uri, { db: c.env.DB, clientId: client.id }),
   });
 
+  if (response === null) return new Response(null, { status: 202 });
   return c.json(response);
 });

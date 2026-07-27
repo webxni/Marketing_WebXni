@@ -67,16 +67,19 @@ function sanitizeStructuredPayload(value: unknown): unknown {
   return out;
 }
 
-export async function handleMcpRpc(rpc: JsonRpc, deps: McpDeps): Promise<object> {
+export async function handleMcpRpc(rpc: JsonRpc, deps: McpDeps): Promise<object | null> {
   switch (rpc.method) {
     case 'initialize':
       return ok(rpc.id, {
         protocolVersion: PROTOCOL_VERSION,
-        capabilities: { tools: {}, resources: {}, prompts: {} },
+        capabilities: { tools: {}, resources: {} },
         serverInfo: { name: `webxni-mcp-${deps.clientSlug}`, version: '1.0.0' },
       });
 
     case 'notifications/initialized':
+      return null;
+
+    case 'ping':
       return ok(rpc.id, {});
 
     case 'tools/list':
@@ -124,12 +127,18 @@ export async function handleMcpRpc(rpc: JsonRpc, deps: McpDeps): Promise<object>
     case 'resources/list':
       return ok(rpc.id, { resources: MCP_RESOURCE_DEFS });
 
+    case 'resources/templates/list':
+      return ok(rpc.id, { resourceTemplates: [] });
+
     case 'resources/read': {
       const uri = String(rpc.params?.uri ?? '');
       const res = deps.readResource ? await deps.readResource(uri) : null;
       if (!res) return err(rpc.id, -32602, `Unknown resource: ${uri}`);
       return ok(rpc.id, { contents: [res] });
     }
+
+    case 'prompts/list':
+      return ok(rpc.id, { prompts: [] });
 
     default:
       return err(rpc.id, -32601, `Method not found: ${rpc.method}`);
