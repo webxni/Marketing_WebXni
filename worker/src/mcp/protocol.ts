@@ -4,7 +4,16 @@ import { MCP_RESOURCE_DEFS } from './resources';
 export type JsonRpc = { jsonrpc: '2.0'; id?: string | number | null; method: string; params?: any };
 export type ToolExec = (
   name: string, args: Record<string, unknown>,
-) => Promise<{ success: boolean; error?: string; action_summary?: string; summary?: unknown; items?: unknown }>;
+) => Promise<{
+  success: boolean;
+  error?: string;
+  action_summary?: string;
+  data?: unknown;
+  summary?: unknown;
+  items?: unknown;
+  suggestions?: unknown;
+  job_id?: unknown;
+}>;
 
 export interface McpDeps {
   clientSlug: string;
@@ -77,7 +86,13 @@ export async function handleMcpRpc(rpc: JsonRpc, deps: McpDeps): Promise<object>
       return ok(rpc.id, {
         isError: !result.success,
         content: [{ type: 'text', text }],
-        structuredContent: { summary: result.summary, items: result.items },
+        structuredContent: {
+          data: result.data,
+          summary: result.summary,
+          items: result.items,
+          suggestions: result.suggestions,
+          job_id: result.job_id,
+        },
       });
     }
 

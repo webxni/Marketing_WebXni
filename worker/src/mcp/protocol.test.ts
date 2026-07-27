@@ -37,6 +37,15 @@ describe('mcp protocol', () => {
     expect(res.result.isError).toBeFalsy();
   });
 
+  it('tools/call preserves data in structured content', async () => {
+    const data = { platforms: [{ platform: 'facebook', paused: 0, page_id: '123' }] };
+    const res: any = await handleMcpRpc(
+      { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'get_client_details', arguments: {} } },
+      deps(async () => ({ success: true, action_summary: 'ok', data })),
+    );
+    expect(res.result.structuredContent.data).toEqual(data);
+  });
+
   it('publish tool blocked by guard does not call exec', async () => {
     let called = false;
     const res: any = await handleMcpRpc(
