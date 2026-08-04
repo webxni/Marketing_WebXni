@@ -544,6 +544,19 @@ export function resolveKeywordService(services: string[], keyword: string, seed:
   if (exactService) return exactService;
 
   const normalizedKeyword = keyword.toLowerCase();
+  const intentGroups = [
+    ['car', 'auto', 'automotive', 'vehicle'],
+    ['building', 'commercial', 'residential', 'door'],
+  ];
+  for (const intent of intentGroups) {
+    if (!intent.some((token) => normalizedKeyword.includes(token))) continue;
+    const matches = services.filter((service) => {
+      const normalizedService = service.toLowerCase();
+      return intent.some((token) => normalizedService.includes(token));
+    });
+    if (matches.length > 0) return matches[seed % matches.length];
+  }
+
   const scored = services
     .map((service) => ({
       service,
@@ -580,9 +593,13 @@ function keywordPoolFromContext(intel: IntelRow | null, keywords: ClientKeywordL
     const rank = (k: ClientKeywordLite) => ({ primary: 0, local: 1, near_me: 2, long_tail: 3 }[k.kw_type] ?? 4);
     return rank(a) - rank(b);
   });
-  return uniqueClean([
+  const normalizePhrase = (value: string) => ` ${value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()} `;
+  const intelligenceKeywords = uniqueClean([
     intel?.primary_keyword,
     ...splitJsonOrCsv(intel?.secondary_keywords),
+  ]).filter((keyword) => serviceAreas.length === 0 || serviceAreas.some((area) => normalizePhrase(keyword).includes(normalizePhrase(area))));
+  return uniqueClean([
+    ...intelligenceKeywords,
     ...serviceNames.flatMap((service) => serviceAreas.slice(0, 3).map((area) => `${service} ${area}`)),
     ...rankedKeywords.map((k) => k.keyword),
     ...serviceNames,

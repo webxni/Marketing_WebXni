@@ -1213,6 +1213,17 @@ export function validateGeneratedContent(
       warnings.push(`banned word: "${w}"`);
     }
   }
+  const GENERIC_COPY: RegExp[] = [
+    /\btrusted service\b/i,
+    /\bexpert (?:answers?|guidance|help|service|solutions?|advice|team)\b/i,
+    /\byour safety is our priority\b/i,
+    /\bseamless integration\b/i,
+    /\btailored plans?\b/i,
+    /\bimmediate help\b/i,
+  ];
+  for (const pattern of GENERIC_COPY) {
+    if (pattern.test(customerText)) warnings.push(`generic pattern: "${pattern.source}"`);
+  }
 
   const GENERIC: RegExp[] = [
     /top\s+\d+\s+(benefits|reasons|ways|ideas)/i,
@@ -1249,6 +1260,9 @@ export function validateGeneratedContent(
     /^addressing .+ concerns\b/i,
     /^addressing concerns\b/i,
     /\bkey criteria\b/i,
+    /^effective .+ steps\b/i,
+    /\bexpert answers\b/i,
+    /^choosing .+:\s*(?:three|\d+)\b/i,
     /^(?:three|\d+) (?:key )?criteria\b/i,
     /^(?:three|\d+) (?:key |site )?(?:details|checks|questions|things|tips)\b/i,
     /\b(?:three|\d+)\b.*\bcriteria\b/i,
@@ -1273,6 +1287,26 @@ export function validateGeneratedContent(
   ];
   for (const [pattern, label] of unsupportedExactClaims) {
     if (pattern.test(customerText)) warnings.push(`unsupported exact claim: ${label}`);
+  }
+
+  const verifiedClaims = [
+    ctx.client.canonical_name,
+    ctx.client.notes,
+    ctx.client.brand_json,
+    ctx.client.cta_text,
+    ctx.intelligence?.approved_ctas,
+  ].filter(Boolean).join(' ').toLowerCase();
+  const conditionalClaims: Array<[RegExp, RegExp, string]> = [
+    [/\blicen[sc]ed\b/i, /\blicen[sc]/i, 'license'],
+    [/\bcertified\b/i, /\bcertif/i, 'certification'],
+    [/\b(?:guaranteed|guarantee|warranty)\b/i, /\b(?:guarantee|warrant)/i, 'guarantee or warranty'],
+    [/\bfree (?:estimate|consultation|audit|inspection)\b/i, /\bfree (?:estimate|consultation|audit|inspection)\b/i, 'free offer'],
+    [/\b(?:same-day|24\/7|immediate assistance|immediate response)\b/i, /\b(?:same-day|24\/7|immediate)/i, 'availability or response time'],
+  ];
+  for (const [claimPattern, verifiedPattern, label] of conditionalClaims) {
+    if (claimPattern.test(customerText) && !verifiedPattern.test(verifiedClaims)) {
+      warnings.push(`unsupported claim: ${label}`);
+    }
   }
 
   const titleWords = new Set(

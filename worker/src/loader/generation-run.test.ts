@@ -111,4 +111,12 @@ describe('resolveKeywordService', () => {
       0,
     )).toBe('Car lockouts');
   });
+
+  it('keeps automotive locksmith intent inside automotive services', () => {
+    expect(resolveKeywordService(
+      ['Building lockouts', 'Car lockouts', 'Car key copying'],
+      'Car locksmith Pasadena',
+      0,
+    )).toBe('Car lockouts');
+  });
 });

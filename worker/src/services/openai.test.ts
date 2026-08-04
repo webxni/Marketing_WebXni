@@ -112,4 +112,16 @@ describe('generated caption normalization', () => {
     expect(post.master_caption).toContain('(323) 555-0100');
     expect(post.ai_image_prompt).toContain('(323) 555-0100');
   });
+
+  it('rejects unverified licensing and generic expert-answer copy', () => {
+    const quality = validateGeneratedContent({
+      title: 'Pasadena Rekeying: Expert Answers',
+      master_caption: 'Our licensed professionals provide expert guidance for residential rekeying in Hollywood.',
+      target_keyword: 'residential locksmith Hollywood',
+      target_locality: 'Hollywood',
+    }, socialContext);
+    expect(quality.passed).toBe(false);
+    expect(quality.warnings).toContain('unsupported claim: license');
+    expect(quality.warnings.some((warning) => warning.includes('expert answers'))).toBe(true);
+  });
 });
