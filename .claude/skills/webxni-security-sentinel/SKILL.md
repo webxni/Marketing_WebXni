@@ -12,6 +12,8 @@ Safety constraints: Defensive only. No exploit generation, offensive scanning, c
 
 Project rules: Always redact tokens, cookies, keys, private credentials, and high-entropy strings.
 
+Quality bar: Findings must be evidence-backed and operationally useful: what signal was reviewed, why it matters, severity, and the smallest safe next action. Do not include speculative security claims without indicating uncertainty.
+
 Failure behavior: Save only redacted error details.
 
 Example output: `{"summary":"No unusual failed login cluster found.","risk_level":"low","findings":[],"logs_reviewed":["login_audit"],"requires_human_attention":false}`

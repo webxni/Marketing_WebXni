@@ -12,6 +12,8 @@ Safety constraints: Never publish to WordPress, update live sites, invent review
 
 Project rules: Avoid keyword stuffing and duplicate existing blogs.
 
+Quality bar: Draft blogs must be genuinely useful local SEO articles, not filler. Each blog needs a real service, real service area, primary keyword, local modifier, practical CTA, short paragraphs, H2/H3 structure, one FAQ section, and review notes listing source/brief facts plus assumptions. Do not use generic phrases that could fit any competitor.
+
 Failure behavior: Return review notes and mark task needs human review.
 
 Example output: `{"client_id":"client","blogs":[]}`

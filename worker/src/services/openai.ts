@@ -43,6 +43,55 @@ export interface GeneratedPost {
   ai_video_prompt?:    string;
 }
 
+const GENERATED_CAPTION_FIELDS = new Set([
+  'master_caption',
+  'cap_facebook',
+  'cap_instagram',
+  'cap_linkedin',
+  'cap_x',
+  'cap_threads',
+  'cap_tiktok',
+  'cap_pinterest',
+  'cap_bluesky',
+  'cap_google_business',
+  'cap_gbp_la',
+  'cap_gbp_wa',
+  'cap_gbp_or',
+]);
+
+const STRUCTURED_CAPTION_TEXT_KEYS = ['body', 'caption', 'description', 'text', 'content'];
+
+export function isGeneratedCaptionField(key: string): boolean {
+  return GENERATED_CAPTION_FIELDS.has(key);
+}
+
+export function normalizeGeneratedCaptionValue(raw: unknown): string | undefined {
+  if (raw == null) return undefined;
+
+  if (typeof raw === 'object' && !Array.isArray(raw)) {
+    const record = raw as Record<string, unknown>;
+    for (const key of STRUCTURED_CAPTION_TEXT_KEYS) {
+      const value = record[key];
+      if (typeof value === 'string' && value.trim()) return value.trim();
+    }
+    return undefined;
+  }
+
+  if (typeof raw !== 'string') return undefined;
+  const clean = raw.trim();
+  if (!clean) return undefined;
+
+  if (clean.startsWith('{')) {
+    try {
+      return normalizeGeneratedCaptionValue(JSON.parse(clean)) ?? clean;
+    } catch {
+      return clean;
+    }
+  }
+
+  return clean;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Content format rotation + topic research types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -88,6 +137,7 @@ export interface TopicResearchParams {
   recentFormats:  ContentFormat[];
   serviceAreas:   string[];
   serviceNames:   string[];
+  targetKeywords?: string[];
 }
 
 export interface ContentQualityResult {
@@ -152,6 +202,7 @@ export interface GenerationContext {
   // Service areas and names for SEO-aware, locally relevant generation
   serviceAreas?:   string[];
   serviceNames?:   string[];
+  targetKeywords?: string[];
   // Derived format history — drives format rotation
   recentFormats?:  ContentFormat[];
   // High-quality mode — uses better model + larger token budget
@@ -294,8 +345,10 @@ function buildSharedContext(ctx: GenerationContext, mode: 'social' | 'blog'): st
 
   const serviceAreasStr = (ctx.serviceAreas ?? []).slice(0, 8).join(', ');
   const serviceNamesStr = (ctx.serviceNames ?? []).slice(0, 10).join(', ');
+  const targetKeywordsStr = (ctx.targetKeywords ?? []).slice(0, 14).join(', ');
 
   let block = `BUSINESS CONTEXT:${line(client.industry, `- Industry: ${client.industry}`)}${line(client.state, `- Location: ${client.state}`)}${line(serviceAreasStr, `- Service areas: ${serviceAreasStr}`)}${line(i?.service_priorities, `- Key services: ${i?.service_priorities}`)}${line(serviceNamesStr, `- Specific services: ${serviceNamesStr}`)}${line(i?.brand_voice, `- Brand voice: ${i?.brand_voice}`)}${line(i?.tone_keywords, `- Tone: ${i?.tone_keywords}`)}${line(i?.audience_notes, `- Audience: ${i?.audience_notes}`)}${line(i?.content_goals, `- Goals: ${i?.content_goals}`)}${line(i?.content_angles, `- Preferred angles: ${i?.content_angles}`)}${line(client.cta_text, `- Preferred CTA: ${client.cta_text}`)}${line(i?.approved_ctas, `- Approved CTAs: ${i?.approved_ctas}`)}${line(i?.prohibited_terms, `- NEVER USE: ${i?.prohibited_terms}`)}${line(i?.seasonal_notes, `- Seasonal notes: ${i?.seasonal_notes}`)}${line(client.notes, `- Additional context: ${client.notes}`)}${line(i?.humanization_style, `- Humanization style: ${i?.humanization_style}`)}`;
+  if (targetKeywordsStr) block += `\n- Required keyword pool: ${targetKeywordsStr}`;
 
   if (mode === 'blog') {
     block += `${line(i?.local_seo_themes, `\n- Local SEO themes: ${i?.local_seo_themes}`)}${line(i?.primary_keyword, `\n- Primary keyword: ${i?.primary_keyword}`)}${line(i?.secondary_keywords, `\n- Secondary keywords: ${i?.secondary_keywords}`)}`;
@@ -324,6 +377,7 @@ function buildSharedContext(ctx: GenerationContext, mode: 'social' | 'blog'): st
   block += '\n\nCONTENT SAFETY:';
   block += '\n- NEVER include exact prices, dollar amounts, percentages, or invented statistics.';
   block += '\n- Keep claims specific to services, expertise, process, and value.';
+  block += '\n- Stay inside the service list, service areas, and required keyword pool. Do not introduce unrelated industries, cities, services, or themes.';
   block += '\n- Write naturally. Avoid filler openers and generic marketing language.';
   if (lang !== 'en') block += `\n- Write all customer-facing copy in ${lang}.`;
 
@@ -789,6 +843,11 @@ export function normalizeGeneratedPost(value: unknown, ctx: GenerationContext): 
   };
 
   for (const [key, raw] of Object.entries(parsed)) {
+    if (isGeneratedCaptionField(key)) {
+      const clean = normalizeGeneratedCaptionValue(raw);
+      if (clean) (normalized as unknown as Record<string, string>)[key] = clean;
+      continue;
+    }
     if (typeof raw !== 'string') continue;
     const clean = raw.trim();
     if (!clean) continue;
@@ -1099,6 +1158,12 @@ export function validateGeneratedContent(
   const serviceAreas = (ctx.serviceAreas ?? [])
     .map((area) => area.trim())
     .filter(Boolean);
+  const serviceNames = (ctx.serviceNames ?? [])
+    .map((service) => service.trim())
+    .filter(Boolean);
+  const targetKeywords = (ctx.targetKeywords ?? [])
+    .map((keyword) => keyword.trim())
+    .filter(Boolean);
 
   const BANNED = ['delve', 'tapestry', 'vibrant', 'unleash', 'elevate', 'embark', 'transformative', 'paramount', 'journey'];
   for (const w of BANNED) {
@@ -1124,6 +1189,16 @@ export function validateGeneratedContent(
     }
   }
 
+  const unsupportedExactClaims: Array<[RegExp, string]> = [
+    [/\$\s?\d[\d,]*(?:\.\d{2})?/i, 'exact price'],
+    [/\b\d{1,3}\s*[-–]\s*\d{1,3}\s*(?:minute|min)\b/i, 'arrival-time window'],
+    [/\b\d(?:\.\d)?\s*stars?\b/i, 'star-rating claim'],
+    [/\b(?:nearly|over|more than|almost)?\s*\d{2,5}\s+reviews?\b/i, 'review-count claim'],
+  ];
+  for (const [pattern, label] of unsupportedExactClaims) {
+    if (pattern.test(allText)) warnings.push(`unsupported exact claim: ${label}`);
+  }
+
   const titleWords = new Set(
     title.toLowerCase().split(/\s+/).filter(w => w.length > 4 && !/^(about|their|which|should|would|could|these|those|where|there|every|after|before)$/.test(w))
   );
@@ -1138,12 +1213,35 @@ export function validateGeneratedContent(
     }
   }
 
-  if (ctx.topicResearch && title) {
+  if (ctx.topicResearch) {
     const topicWords = ctx.topicResearch.topic.toLowerCase().split(/\s+/).filter(w => w.length > 3);
-    const titleLower = title.toLowerCase();
-    const matched = topicWords.filter(w => titleLower.includes(w));
-    if (topicWords.length >= 3 && matched.length < 2) {
-      warnings.push(`title may not reflect researched topic: "${ctx.topicResearch.topic}"`);
+    const matched = topicWords.filter(w => normalizedAll.includes(w));
+    if (topicWords.length >= 4 && matched.length < 2) {
+      warnings.push(`content may not reflect selected topic: "${ctx.topicResearch.topic}"`);
+    }
+  }
+
+  if (ctx.topicResearch?.targetKeyword) {
+    const keywordTokens = ctx.topicResearch.targetKeyword.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
+    const matchedKeywordTokens = keywordTokens.filter((token) => normalizedAll.includes(token));
+    if (keywordTokens.length >= 2 && matchedKeywordTokens.length < Math.min(2, keywordTokens.length)) {
+      warnings.push(`missing selected target keyword: "${ctx.topicResearch.targetKeyword}"`);
+    }
+  } else if (targetKeywords.length > 0) {
+    const keywordHit = targetKeywords.slice(0, 8).some((keyword) => {
+      const tokens = keyword.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
+      return tokens.length > 0 && tokens.some((token) => normalizedAll.includes(token));
+    });
+    if (!keywordHit) warnings.push(`missing target keyword pool usage: use one of ${targetKeywords.slice(0, 4).join(', ')}`);
+  }
+
+  if (serviceNames.length > 0) {
+    const serviceHit = serviceNames.some((service) => {
+      const tokens = service.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
+      return tokens.length > 0 && tokens.some((token) => normalizedAll.includes(token));
+    });
+    if (!serviceHit) {
+      warnings.push(`missing confirmed service: must reference one of ${serviceNames.slice(0, 5).join(', ')}`);
     }
   }
 
@@ -1151,11 +1249,6 @@ export function validateGeneratedContent(
     const phoneMatches = [...normalizedAll.matchAll(/(?:\+?\d[\d().\-\s]{7,}\d)/g)].map((m) => normalizeDigits(m[0])).filter(Boolean);
     if (phoneMatches.some((digits) => digits !== clientPhoneDigits)) {
       warnings.push(`phone mismatch: only the exact client phone ${ctx.client.phone} is allowed`);
-    }
-    const phoneMentioned = normalizedAll.includes(clientPhoneDigits.slice(-7)) || normalizedAll.includes(clientPhoneDigits);
-    const ctaMentions = /\b(call|text|phone|contact|reach|book|schedule|dial)\b/i.test(normalizedAll);
-    if (ctaMentions && !phoneMentioned) {
-      warnings.push(`missing client phone in CTA: use ${ctx.client.phone}`);
     }
   }
 

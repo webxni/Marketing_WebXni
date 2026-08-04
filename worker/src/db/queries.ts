@@ -507,7 +507,7 @@ export async function getPostByAutomationSlot(
   contentType: string,
 ): Promise<PostRow | null> {
   const bySlot = await db
-    .prepare('SELECT * FROM posts WHERE client_id = ? AND automation_slot_key = ? LIMIT 1')
+    .prepare("SELECT * FROM posts WHERE client_id = ? AND automation_slot_key = ? AND status != 'cancelled' LIMIT 1")
     .bind(clientId, automationSlotKey)
     .first<PostRow>();
   if (bySlot) return bySlot;
@@ -518,6 +518,7 @@ export async function getPostByAutomationSlot(
                 AND substr(publish_date, 1, 10) = ?
                 AND content_type = ?
                 AND scheduled_by_automation = 1
+                AND status != 'cancelled'
               ORDER BY updated_at DESC
               LIMIT 1`)
     .bind(clientId, publishDate, contentType)
@@ -1514,6 +1515,10 @@ export interface AgencyClientCoverageRow {
   client_name: string;
   package: string | null;
   weekly_schedule: string | null;
+  images_per_month: number;
+  videos_per_month: number;
+  reels_per_month: number;
+  blog_posts_per_month: number;
   last_research_date: string | null;
   research_freshness: string;
   current_strategy_status: string;
@@ -2004,6 +2009,10 @@ export async function getAgencyClientCoverage(db: D1Database): Promise<AgencyCli
        c.canonical_name AS client_name,
        c.package AS package,
        pkg.weekly_schedule AS weekly_schedule,
+       COALESCE(pkg.images_per_month, 0) AS images_per_month,
+       COALESCE(pkg.videos_per_month, 0) AS videos_per_month,
+       COALESCE(pkg.reels_per_month, 0) AS reels_per_month,
+       COALESCE(pkg.blog_posts_per_month, 0) AS blog_posts_per_month,
        (SELECT MAX(r.freshness_date) FROM client_research_notes r WHERE r.client_id = c.id) AS last_research_date,
        COALESCE((SELECT s.status FROM client_strategy_plans s WHERE s.client_id = c.id ORDER BY s.created_at DESC LIMIT 1), 'none') AS current_strategy_status,
        (SELECT COUNT(*) FROM client_monthly_topics mt WHERE mt.client_id = c.id AND COALESCE(mt.content_type_preference, '') != 'blog') AS posts_planned,
@@ -2039,6 +2048,10 @@ export async function getAgencyClientCoverage(db: D1Database): Promise<AgencyCli
       posts_waiting_designer: row.posts_waiting_designer ?? 0,
       blogs_planned: row.blogs_planned ?? 0,
       blogs_drafted: row.blogs_drafted ?? 0,
+      images_per_month: row.images_per_month ?? 0,
+      videos_per_month: row.videos_per_month ?? 0,
+      reels_per_month: row.reels_per_month ?? 0,
+      blog_posts_per_month: row.blog_posts_per_month ?? 0,
       research_freshness: researchFreshness,
       weekly_schedule: row.weekly_schedule ?? null,
       next_agent_action: nextAction,

@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { expandPriority, runTerminalJsonAgent } from './lib/terminal-json-agent.mjs';
+import { buildCodexExecArgs, expandPriority, runTerminalJsonAgent } from './lib/terminal-json-agent.mjs';
 
 function argValue(flag) {
   const idx = process.argv.indexOf(flag);
@@ -328,22 +328,16 @@ function runCodex(prompt, schema, plan = null) {
   const workDir = mkdtempSync(join(tmpdir(), 'webxni-codex-'));
   const schemaPath = join(workDir, 'schema.json');
   const outputPath = join(workDir, 'last-message.txt');
-  const codexHome = join(workDir, 'codex-home');
-  mkdirSync(codexHome, { recursive: true });
   writeFileSync(schemaPath, JSON.stringify(schema));
 
-  const args = [
-    'exec',
-    '--skip-git-repo-check',
-    '--ephemeral',
-    '--output-schema', schemaPath,
-    '-o', outputPath,
-    '-C', process.cwd(),
-    '-m', plan?.mode === 'blog'
+  const args = buildCodexExecArgs({
+    prompt: wrappedPrompt,
+    schemaPath,
+    outputPath,
+    model: plan?.mode === 'blog'
       ? (process.env.CODEX_BLOG_MODEL || 'gpt-5')
       : (process.env.CODEX_SOCIAL_MODEL || 'gpt-5-mini'),
-    wrappedPrompt,
-  ];
+  });
 
   return new Promise((resolve, reject) => {
     const child = spawn('codex', args, {
@@ -351,7 +345,6 @@ function runCodex(prompt, schema, plan = null) {
       shell: false,
       env: {
         ...process.env,
-        CODEX_HOME: codexHome,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });

@@ -53,6 +53,7 @@ import {
   getClientGenerationTopicHistory,
   getLatestClientResearch,
   getLatestClientStrategy,
+  getClientKeywords,
   type GenerationProgress,
   buildTopicFingerprint,
 } from '../db/queries';
@@ -61,6 +62,8 @@ import {
   validateGeneratedContent,
   detectFormatFromTitle,
   buildBlogContentHtml,
+  isGeneratedCaptionField,
+  normalizeGeneratedCaptionValue,
   type GenerationContext,
   type ContentFormat,
   type GeneratedPost,
@@ -150,6 +153,7 @@ interface PackageRow {
   slug:                 string;
   posting_days:         string | null;
   weekly_schedule:      string | null;
+  posts_per_month?:     number | null;
   images_per_month:     number;
   videos_per_month:     number;
   reels_per_month:      number;
@@ -175,6 +179,12 @@ interface IntelRow {
 }
 
 interface FeedbackRow { sentiment: string; note: string; }
+
+interface ClientKeywordLite {
+  keyword: string;
+  kw_type: string;
+  locality: string | null;
+}
 
 function applyMonthlyPlanToIntelligence(
   intel: IntelRow | null,
@@ -219,6 +229,12 @@ const DAY_NAME_TO_NUM: Record<string, number> = {
   thursday: 4, friday: 5, saturday: 6,
 };
 const DAY_NUM_TO_NAME = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+
+interface PackageSlotCandidate {
+  date: string;
+  contentType: string;
+  dailyIndex: number;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Date / schedule helpers
@@ -265,6 +281,85 @@ function buildContentSequence(pkg: PackageRow): string[] {
   return positioned.map(p => p.type);
 }
 
+function packageContentCounts(pkg: PackageRow): Record<string, number> {
+  return {
+    image: Math.max(0, Number(pkg.images_per_month ?? 0)),
+    video: Math.max(0, Number(pkg.videos_per_month ?? 0)),
+    reel: Math.max(0, Number(pkg.reels_per_month ?? 0)),
+    blog: Math.max(0, Number(pkg.blog_posts_per_month ?? 0)),
+  };
+}
+
+function packageAllowsContentType(pkg: PackageRow, contentType: string): boolean {
+  const counts = packageContentCounts(pkg);
+  return (counts[normalizeContentType(contentType)] ?? 0) > 0;
+}
+
+function monthKey(date: string): string {
+  return date.slice(0, 7);
+}
+
+function addMonths(month: string, offset: number): string {
+  const [yearStr, monthStr] = month.split('-');
+  const date = new Date(Date.UTC(Number(yearStr), Number(monthStr) - 1 + offset, 1, 12, 0, 0));
+  return date.toISOString().slice(0, 7);
+}
+
+function packageCandidatesForRange(pkg: PackageRow, periodStart: string, periodEnd: string): PackageSlotCandidate[] {
+  const weeklySchedule = parseWeeklySchedule(pkg.weekly_schedule ?? null);
+  const counts = packageContentCounts(pkg);
+  const dates = buildDates(periodStart, periodEnd, pkg.posting_frequency, pkg.posting_days ?? null, pkg.weekly_schedule ?? null);
+  const candidates: PackageSlotCandidate[] = [];
+
+  if (weeklySchedule) {
+    for (const date of dates) {
+      const dayName = getDayName(date);
+      const contentTypes = weeklySchedule[dayName] ?? [];
+      for (const [dailyIndex, rawType] of contentTypes.entries()) {
+        const contentType = normalizeContentType(rawType);
+        if ((counts[contentType] ?? 0) <= 0) continue;
+        candidates.push({ date, contentType, dailyIndex });
+      }
+    }
+    return candidates;
+  }
+
+  const sequence = buildContentSequence(pkg).map((type) => normalizeContentType(type));
+  const totalAllowed = Object.values(counts).reduce((sum, n) => sum + n, 0);
+  if (totalAllowed <= 0) return [];
+  const limitedDates = dates.slice(0, totalAllowed);
+  return limitedDates.map((date, index) => ({
+    date,
+    contentType: sequence[index % sequence.length] ?? 'image',
+    dailyIndex: 0,
+  }));
+}
+
+export function buildPackageSlots(pkg: PackageRow, periodStart: string, periodEnd: string): PackageSlotCandidate[] {
+  const counts = packageContentCounts(pkg);
+  const startMonth = monthKey(periodStart);
+  const endMonth = monthKey(periodEnd);
+  const allowed = new Set<string>();
+
+  for (let month = startMonth; month <= endMonth; month = addMonths(month, 1)) {
+    const { start, end } = getMonthBounds(month);
+    const monthCandidates = packageCandidatesForRange(pkg, start, end);
+    const used: Record<string, number> = {};
+    for (const candidate of monthCandidates) {
+      const contentType = normalizeContentType(candidate.contentType);
+      const maxForType = counts[contentType] ?? 0;
+      if (maxForType <= 0) continue;
+      const next = (used[contentType] ?? 0) + 1;
+      if (next > maxForType) continue;
+      used[contentType] = next;
+      allowed.add(`${candidate.date}:${candidate.dailyIndex}:${contentType}`);
+    }
+  }
+
+  return packageCandidatesForRange(pkg, periodStart, periodEnd)
+    .filter((candidate) => allowed.has(`${candidate.date}:${candidate.dailyIndex}:${normalizeContentType(candidate.contentType)}`));
+}
+
 function buildDates(
   periodStart: string, periodEnd: string,
   frequency: string, postingDays: string | null,
@@ -274,7 +369,7 @@ function buildDates(
     const sched = parseWeeklySchedule(weeklySchedule);
     if (sched && Object.keys(sched).length > 0) {
       const activeDayNums = new Set(Object.keys(sched).map(d => DAY_NAME_TO_NUM[d]).filter(n => n !== undefined));
-      return buildDatesRaw(periodStart, periodEnd, frequency, activeDayNums);
+      return buildDatesRaw(periodStart, periodEnd, 'weekly', activeDayNums);
     }
   }
   return buildDatesRaw(periodStart, periodEnd, frequency, new Set(parsePostingDays(postingDays)));
@@ -334,18 +429,6 @@ function getMonthBounds(month: string): { start: string; end: string } {
   };
 }
 
-function getMonthlySequenceTypeForDate(
-  pkg: PackageRow,
-  date: string,
-): string {
-  const month = planMonth(date);
-  const { start, end } = getMonthBounds(month);
-  const monthDates = buildDates(start, end, pkg.posting_frequency, pkg.posting_days ?? null, pkg.weekly_schedule ?? null);
-  const dateIndex = Math.max(0, monthDates.indexOf(date));
-  const sequence = buildContentSequence(pkg);
-  return sequence[dateIndex % sequence.length] ?? 'image';
-}
-
 async function buildMonthlyTopicSelection(
   db: D1Database,
   clientId: string,
@@ -403,6 +486,125 @@ function getTopicResearchFromSelection(
     localModifier: serviceAreas[0] ?? '',
     searchQuestion: selection.notes?.trim() || (selection.topicTitle ?? ''),
   };
+}
+
+const FALLBACK_FORMATS: ContentFormat[] = [
+  'local_advice',
+  'checklist',
+  'mistake_to_avoid',
+  'process_breakdown',
+  'faq',
+  'comparison',
+  'quick_explainer',
+  'trust_builder',
+];
+
+function uniqueClean(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    const clean = String(value ?? '').trim();
+    if (!clean) continue;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(clean);
+  }
+  return out;
+}
+
+function keywordPoolFromContext(intel: IntelRow | null, keywords: ClientKeywordLite[], serviceNames: string[], serviceAreas: string[]): string[] {
+  const splitJsonOrCsv = (raw: string | null | undefined): string[] => {
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) return parsed.map((item) => String(item));
+    } catch { /* csv fallback */ }
+    return raw.split(',').map((item) => item.trim());
+  };
+  const rankedKeywords = [...keywords].sort((a, b) => {
+    const rank = (k: ClientKeywordLite) => ({ primary: 0, local: 1, near_me: 2, long_tail: 3 }[k.kw_type] ?? 4);
+    return rank(a) - rank(b);
+  });
+  return uniqueClean([
+    ...rankedKeywords.map((k) => k.keyword),
+    intel?.primary_keyword,
+    ...splitJsonOrCsv(intel?.secondary_keywords),
+    ...serviceNames.flatMap((service) => serviceAreas.slice(0, 3).map((area) => `${service} ${area}`)),
+    ...serviceNames,
+  ]).slice(0, 18);
+}
+
+function selectFallbackTopic(
+  client: ClientRow,
+  slot: PostSlot,
+  intel: IntelRow | null,
+  serviceNames: string[],
+  serviceAreas: string[],
+  keywords: ClientKeywordLite[],
+  topicHistory: ClientGenerationTopicHistoryItem[],
+  recentFormats: ContentFormat[],
+): { selection: SlotTopicSelection; research: TopicResearch; keywords: string[] } | null {
+  const services = uniqueClean([
+    ...serviceNames,
+    ...String(intel?.service_priorities ?? '').split(/[,\n|;]/).map((item) => item.trim()),
+  ]).slice(0, 12);
+  const areas = uniqueClean(serviceAreas.length ? serviceAreas : [client.state]).slice(0, 8);
+  const keywordPool = keywordPoolFromContext(intel, keywords, services, areas);
+  if (!services.length || !keywordPool.length) return null;
+
+  const historyFingerprints = new Set(
+    topicHistory
+      .map((item) => buildTopicFingerprint({
+        topic: item.title,
+        contentType: item.content_type,
+        targetKeyword: item.target_keyword,
+      }))
+      .filter(Boolean),
+  );
+  const recentFormatSet = new Set(recentFormats.slice(0, 6));
+  const preferredFormats = FALLBACK_FORMATS.filter((format) => !recentFormatSet.has(format));
+  const formats = preferredFormats.length ? preferredFormats : FALLBACK_FORMATS;
+  const dateSeed = new Date(`${slot.date}T12:00:00Z`).getUTCDate();
+
+  for (let i = 0; i < keywordPool.length; i++) {
+    const keyword = keywordPool[(dateSeed + i) % keywordPool.length];
+    const keywordLower = keyword.toLowerCase();
+    const service = services.find((name) => keywordLower.includes(name.toLowerCase().split(/\s+/)[0])) ?? services[(dateSeed + i) % services.length];
+    const locality = areas[(dateSeed + i) % Math.max(areas.length, 1)] ?? '';
+    const format = formats[(dateSeed + i) % formats.length];
+    const topic = slot.content_type === 'blog'
+      ? `${keyword}: what local customers should know`
+      : `${service} question in ${locality || client.state || 'your area'}`;
+    const fingerprint = buildTopicFingerprint({
+      topic,
+      serviceCategory: service,
+      contentType: slot.content_type,
+      targetKeyword: keyword,
+    });
+    if (fingerprint && historyFingerprints.has(fingerprint)) continue;
+    const selection: SlotTopicSelection = {
+      monthlyTopicId: null,
+      topicTitle: topic,
+      targetKeyword: keyword,
+      serviceCategory: service,
+      topicFingerprint: fingerprint,
+      notes: `Deterministic package fallback from client services, service areas, and target keyword set. Keep this ${slot.content_type} educational and on-company.`,
+      source: 'research',
+    };
+    const research: TopicResearch = {
+      topic,
+      angle: `Answer a practical customer question about ${service}${locality ? ` in ${locality}` : ''}; stay inside confirmed company services.`,
+      format,
+      targetKeyword: keyword,
+      localModifier: locality,
+      searchQuestion: locality
+        ? `What should I know before hiring for ${keyword} in ${locality}?`
+        : `What should I know before hiring for ${keyword}?`,
+    };
+    return { selection, research, keywords: keywordPool };
+  }
+  return null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -535,31 +737,23 @@ export async function prepareGenerationPlan(env: Env, params: GenerationParams):
       if (row) pkg = row;
     }
 
-    const weeklySchedule = parseWeeklySchedule(pkg.weekly_schedule ?? null);
-    const dates = buildDates(params.period_start, params.period_end, pkg.posting_frequency, pkg.posting_days ?? null, pkg.weekly_schedule ?? null);
+    const packageSlots = buildPackageSlots(pkg, params.period_start, params.period_end);
 
-    for (const date of dates) {
-      const dayName = getDayName(date);
-      const contentTypes = weeklySchedule
-        ? (weeklySchedule[dayName] ?? ['image'])
-        : [getMonthlySequenceTypeForDate(pkg, date)];
-
-      for (const [dailyIndex, contentType] of contentTypes.entries()) {
-        const totalSoFar = intentEduc + intentSales;
-        const salesRatio = totalSoFar === 0 ? 0 : intentSales / totalSoFar;
-        const intent: 'educational' | 'sales' = salesRatio < 0.30 ? 'sales' : 'educational';
-        slots.push({
-          client_id: client.id,
-          client_slug: client.slug,
-          date,
-          content_type: normalizeContentType(contentType),
-          content_intent: intent,
-          slot_key: getAutomationSlotKey(client.id, date, contentType, dailyIndex),
-          high_quality: params.high_quality ?? false,
-          provider,
-        });
-        if (intent === 'sales') intentSales++; else intentEduc++;
-      }
+    for (const packageSlot of packageSlots) {
+      const totalSoFar = intentEduc + intentSales;
+      const salesRatio = totalSoFar === 0 ? 0 : intentSales / totalSoFar;
+      const intent: 'educational' | 'sales' = salesRatio < 0.30 ? 'sales' : 'educational';
+      slots.push({
+        client_id: client.id,
+        client_slug: client.slug,
+        date: packageSlot.date,
+        content_type: normalizeContentType(packageSlot.contentType),
+        content_intent: intent,
+        slot_key: getAutomationSlotKey(client.id, packageSlot.date, packageSlot.contentType, packageSlot.dailyIndex),
+        high_quality: params.high_quality ?? false,
+        provider,
+      });
+      if (intent === 'sales') intentSales++; else intentEduc++;
     }
   }
 
@@ -625,7 +819,13 @@ function mergeGeneratedContent(
     'ai_video_prompt',
   ];
   for (const key of keys) {
-    next[key] = pickGeneratedValue(current[key], post[key], overwrite) ?? null;
+    const existingValue = isGeneratedCaptionField(key)
+      ? (normalizeGeneratedCaptionValue(current[key]) ?? current[key])
+      : current[key];
+    const generatedValue = isGeneratedCaptionField(key)
+      ? normalizeGeneratedCaptionValue(post[key])
+      : post[key];
+    next[key] = pickGeneratedValue(existingValue, generatedValue, overwrite) ?? null;
   }
   return next;
 }
@@ -817,6 +1017,7 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
     const row = await db.prepare('SELECT * FROM packages WHERE slug = ? AND active = 1').bind(client.package).first<PackageRow>();
     if (row) pkg = row;
   }
+  if (!packageAllowsContentType(pkg, slot.content_type)) return null;
 
   const clientPlatforms = withImplicitBlogPlatform(await getClientPlatforms(db, client.id), client);
   let packagePlatforms: string[] = [];
@@ -841,12 +1042,13 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
     return null;
   }
 
-  const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows, gbpLocations, topicHistory] = await Promise.all([
+  const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows, keywordRows, gbpLocations, topicHistory] = await Promise.all([
     db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then((row) => row ?? null),
     db.prepare('SELECT sentiment, message AS note FROM client_feedback WHERE client_id = ? ORDER BY created_at DESC LIMIT 10').bind(client.id).all<FeedbackRow>(),
     db.prepare(`SELECT title, master_caption, content_type FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`).bind(client.id).all<{title:string|null;master_caption:string|null;content_type:string|null}>(),
     db.prepare('SELECT city FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 8').bind(client.id).all<{city:string}>(),
     db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC LIMIT 12').bind(client.id).all<{name:string}>(),
+    getClientKeywords(db, client.id),
     getClientGbpLocations(db, client.id),
     getClientGenerationTopicHistory(db, client.id, 24),
   ]);
@@ -856,6 +1058,7 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
   const serviceNames  = svcNameRows.results.map((row) => row.name);
   const monthlyPlan = await getClientMonthlyContentPlan(db, client.id, planMonth(slot.date));
   const intel = applyMonthlyPlanToIntelligence(intelBase, monthlyPlan);
+  let targetKeywords = keywordPoolFromContext(intel, keywordRows, serviceNames, serviceAreas);
   const recentFormats = recRows.results
     .map((row) => detectFormatFromTitle(row.title ?? row.master_caption ?? ''))
     .filter((format): format is ContentFormat => format !== null);
@@ -882,6 +1085,7 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
     recentFormats,
     serviceAreas,
     serviceNames,
+    targetKeywords,
   };
 
   // Topic research drives non-repetitive, SEO-aware prompts. Terminal runs stay
@@ -928,6 +1132,14 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
       source: 'research',
     };
   }
+  if (!topicResearch || !topicSelection) {
+    const fallback = selectFallbackTopic(client, slot, intel, serviceNames, serviceAreas, keywordRows, topicHistory, recentFormats);
+    if (fallback) {
+      topicResearch = fallback.research;
+      topicSelection = fallback.selection;
+      targetKeywords = fallback.keywords;
+    }
+  }
 
   const [latestResearch, latestStrategy] = await Promise.all([
     getLatestClientResearch(db, client.id),
@@ -973,6 +1185,7 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
     topicResearch,
     serviceAreas,
     serviceNames,
+    targetKeywords,
     recentFormats,
     highQuality: slot.high_quality ?? false,
     strategicContext,
@@ -1056,6 +1269,9 @@ export async function saveGeneratedSlotResult(
     const row = await db.prepare('SELECT * FROM packages WHERE slug = ? AND active = 1').bind(client.package).first<PackageRow>();
     if (row) pkg = row;
   }
+  if (!packageAllowsContentType(pkg, slot.content_type)) {
+    return finalizeSlotProgress(db, env, runId, slotIdx + 1, 'skipped', client.canonical_name, slots, async () => undefined);
+  }
   let packagePlatforms: string[] = [];
   try { packagePlatforms = JSON.parse(pkg.platforms_included); } catch { /* */ }
   const platformSelection = resolvePlatformSelection({
@@ -1099,6 +1315,63 @@ export async function saveGeneratedSlotResult(
         wp_template_key: client.wp_template_key ?? client.wp_template ?? null,
       }, slot.date);
       if (assembled) src.blog_content = assembled;
+    }
+  }
+
+  const [validationRecentRows, validationAreaRows, validationServiceRows, validationKeywordRows, validationIntel] = await Promise.all([
+    db.prepare(`SELECT title, master_caption FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`)
+      .bind(client.id)
+      .all<{ title: string | null; master_caption: string | null }>(),
+    db.prepare('SELECT city FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 8')
+      .bind(client.id)
+      .all<{ city: string }>(),
+    db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC LIMIT 12')
+      .bind(client.id)
+      .all<{ name: string }>(),
+    getClientKeywords(db, client.id),
+    db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then((row) => row ?? null),
+  ]);
+  const validationServiceAreas = validationAreaRows.results.map((row) => row.city);
+  const validationServiceNames = validationServiceRows.results.map((row) => row.name);
+  const validationTargetKeywords = keywordPoolFromContext(validationIntel, validationKeywordRows, validationServiceNames, validationServiceAreas);
+  const validationTopicResearch = topicSelection?.targetKeyword || topicSelection?.topicTitle
+    ? getTopicResearchFromSelection(topicSelection, validationServiceAreas)
+    : null;
+  const validationResult = validateGeneratedContent(generatedPost, {
+    client: {
+      slug: client.slug,
+      canonical_name: client.canonical_name,
+      notes: client.notes,
+      brand_json: client.brand_json,
+      brand_primary_color: (client as unknown as { brand_primary_color?: string | null }).brand_primary_color ?? null,
+      language: client.language,
+      phone: client.phone,
+      cta_text: client.cta_text,
+      industry: client.industry,
+      state: client.state,
+      owner_name: client.owner_name,
+      wp_template_key: client.wp_template_key ?? client.wp_template ?? null,
+    },
+    intelligence: validationIntel,
+    recentTitles: validationRecentRows.results.map((row) => row.title ?? row.master_caption?.slice(0, 80) ?? '').filter(Boolean) as string[],
+    feedback: [],
+    publishDate: slot.date,
+    contentType: normalizeContentType(slot.content_type),
+    platforms,
+    contentIntent: slot.content_intent,
+    topicResearch: validationTopicResearch,
+    serviceAreas: validationServiceAreas,
+    serviceNames: validationServiceNames,
+    targetKeywords: validationTargetKeywords,
+    recentFormats: [],
+    highQuality: slot.high_quality ?? false,
+    strategicContext: null,
+  });
+  if (!validationResult.passed) {
+    await appendGenerationLog(db, runId, slot.high_quality ? 'ERROR' : 'WARN', `Quality validation failed for slot ${slotIdx + 1}/${slots.length}: ${validationResult.warnings.join('; ')}`);
+    if (slot.high_quality) {
+      await appendGenerationError(db, runId, `Slot ${slotIdx + 1} ${slot.client_slug}/${slot.content_type} quality validation failed: ${validationResult.warnings.join('; ')}`);
+      return finalizeSlotProgress(db, env, runId, slotIdx + 1, 'skipped', client.canonical_name, slots, async () => undefined);
     }
   }
 

@@ -14,6 +14,7 @@ const apiBaseUrl = arg('--api-base-url') || process.env.API_BASE_URL || 'https:/
 const botSecret = arg('--bot-secret') || process.env.DISCORD_BOT_SECRET || '';
 const EXECUTE_AI = process.env.AGENCY_EXECUTE_AI === '1';
 const ALLOW_DRAFT_POSTS = process.env.AGENCY_ALLOW_DRAFT_POSTS === '1';
+const notifiedFallbacks = new Set();
 
 if (!jobId) {
   console.error('Missing --job-id');
@@ -356,6 +357,77 @@ function nextScheduledDate(dayName) {
   return date.toISOString().slice(0, 10);
 }
 
+function parseWeeklySchedule(raw) {
+  try {
+    const parsed = JSON.parse(raw || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function packageTypeAllowed(client, type) {
+  const normalized = String(type || '').toLowerCase();
+  if (normalized === 'blog') return Number(client.blog_posts_per_month || 0) > 0;
+  if (normalized === 'video') return Number(client.videos_per_month || 0) > 0;
+  if (normalized === 'reel') return Number(client.reels_per_month || 0) > 0;
+  return Number(client.images_per_month || 0) > 0;
+}
+
+function packageSocialSlots(client) {
+  const weeklySchedule = parseWeeklySchedule(client.weekly_schedule);
+  const slots = [];
+  for (const [day, types] of Object.entries(weeklySchedule)) {
+    for (const type of (Array.isArray(types) ? types : [])) {
+      const normalized = String(type || '').toLowerCase();
+      if (normalized === 'blog') continue;
+      if (!packageTypeAllowed(client, normalized)) continue;
+      slots.push({ day, type: normalized });
+    }
+  }
+  return slots;
+}
+
+function packageBlogSlots(client) {
+  if (!packageTypeAllowed(client, 'blog')) return [];
+  const weeklySchedule = parseWeeklySchedule(client.weekly_schedule);
+  return Object.entries(weeklySchedule)
+    .filter(([, types]) => Array.isArray(types) && types.map((t) => String(t).toLowerCase()).includes('blog'))
+    .map(([day]) => day);
+}
+
+function collectDraftText(value) {
+  if (!value || typeof value !== 'object') return '';
+  const parts = [];
+  for (const [key, raw] of Object.entries(value)) {
+    if (typeof raw === 'string') parts.push(raw);
+    else if (raw && typeof raw === 'object' && /caption|captions|platform/i.test(key)) {
+      for (const nested of Object.values(raw)) {
+        if (typeof nested === 'string') parts.push(nested);
+      }
+    }
+  }
+  return parts.join('\n');
+}
+
+function assertNoUnsupportedExactClaims(draft, contentBrief, label) {
+  const text = collectDraftText(draft);
+  const brief = String(contentBrief || '').toLowerCase();
+  const risky = [
+    { pattern: /\$\s?\d[\d,]*(?:\.\d{2})?/i, label: 'exact price' },
+    { pattern: /\b\d{1,3}\s*[-–]\s*\d{1,3}\s*(?:minute|min)\b/i, label: 'arrival-time window' },
+    { pattern: /\b\d(?:\.\d)?\s*stars?\b/i, label: 'star-rating claim' },
+    { pattern: /\b(?:nearly|over|more than|almost)?\s*\d{2,5}\s+reviews?\b/i, label: 'review-count claim' },
+  ];
+  const failures = risky
+    .filter((item) => item.pattern.test(text))
+    .filter((item) => !item.pattern.test(brief))
+    .map((item) => item.label);
+  if (failures.length) {
+    throw new Error(`${label} blocked unsupported exact claim(s): ${failures.join(', ')}. Add the claim to the client brief or remove it.`);
+  }
+}
+
 /**
  * Returns publish_date strings for the upcoming Mon–Sat in Nicaragua time (CST = UTC-6).
  * Spreads totalClients evenly across 6 days at staggered times for natural variety.
@@ -518,6 +590,9 @@ async function runStructuredAgent(kind, agentSlug, backend, client, snapshot, ta
   }).catch(() => {});
 
   if (result.fallback_used) {
+    const fallbackKey = `${agentSlug}:${result.primary_backend || chain[0] || 'unknown'}:${result.backend || 'unknown'}`;
+    if (notifiedFallbacks.has(fallbackKey)) return result;
+    notifiedFallbacks.add(fallbackKey);
     await post('/internal/agency/notify-discord', {
       title: 'Agency backend fallback used',
       body: `${agentSlug} primary backend failed; completed with ${result.backend}.`,
@@ -536,15 +611,22 @@ async function runStructuredAgent(kind, agentSlug, backend, client, snapshot, ta
 // Quality gate (§1/§7). Scores a single generated draft against the rubric and,
 // if it fails, runs ONE Claude-routed revision then re-scores. Returns the
 // (possibly revised) draft with the verdict appended to review_notes so
-// Editorial Review and Marvin see it. Enabled by AGENCY_QUALITY_GATE=1.
+// Editorial Review and Marvin see it. Enabled by default; set
+// AGENCY_QUALITY_GATE=0 only for emergency bypass.
 // Never approves/publishes — content-quality only; gates stay intact.
 async function qualityGateDraft(agentSlug, backend, client, snapshot, baseTask, draft, revisionKind) {
-  if (process.env.AGENCY_QUALITY_GATE !== '1' || !draft || typeof draft !== 'object') {
+  if (process.env.AGENCY_QUALITY_GATE === '0' || !draft || typeof draft !== 'object') {
     return { output: draft, verdict: null };
   }
   const budget_state = (await isAgentOverBudget(agentSlug)) ? 'over' : 'ok';
   const validateChain = pick_executor({ task_type: 'validate', budget_state });
   const reviseChain = pick_executor({ task_type: 'revision', quality_target: 'high', budget_state });
+  const minScore = Number(process.env.AGENCY_QUALITY_MIN_SCORE || 85);
+  const verdictFails = (v) => {
+    if (!v || typeof v !== 'object') return true;
+    const checks = ['relevance', 'accuracy', 'brand_fit', 'keyword_usage', 'no_fluff', 'cta_present'];
+    return v.pass !== true || Number(v.score || 0) < minScore || checks.some((key) => v[key] !== true);
+  };
 
   let current = draft;
   let verdict = {};
@@ -553,7 +635,7 @@ async function qualityGateDraft(agentSlug, backend, client, snapshot, baseTask, 
       { ...baseTask, draft: current }, 'default', validateChain);
     verdict = check.output || {};
 
-    if (verdict.pass === false) {
+    if (verdictFails(verdict)) {
       const revised = await runStructuredAgent(revisionKind, agentSlug, backend, client, snapshot,
         { ...baseTask, draft: current, revision_required: true, quality_issues: verdict.issues ?? [], required_fixes: verdict.required_fixes ?? [] },
         undefined, reviseChain);
@@ -565,9 +647,15 @@ async function qualityGateDraft(agentSlug, backend, client, snapshot, baseTask, 
       verdict = check.output || {};
     }
   } catch (err) {
-    // A gate failure must never drop the draft — Marvin still reviews it.
     console.warn(`[quality-gate] ${agentSlug} check failed (keeping draft): ${redactSecrets(err instanceof Error ? err.message : String(err)).slice(0, 160)}`);
     return { output: current, verdict: null };
+  }
+
+  if (verdictFails(verdict)) {
+    const issues = Array.isArray(verdict.issues) && verdict.issues.length
+      ? verdict.issues.slice(0, 4).join('; ')
+      : 'quality gate failed';
+    throw new Error(`Quality gate blocked ${revisionKind}: score ${verdict.score ?? '?'} below ${minScore} or rubric failed — ${issues}`);
   }
 
   const note = `Quality gate: ${verdict.pass ? 'PASS' : 'NEEDS REVIEW'} (score ${verdict.score ?? '?'})`
@@ -835,21 +923,10 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
     for (const client of clients) {
       try {
         await pingLease(`social-copy: ${client.client_name}`);
-        // Parse package weekly_schedule from coverage
-        let weeklySchedule = {};
-        try { weeklySchedule = JSON.parse(client.weekly_schedule || '{}'); } catch { /* ignore */ }
-
-        // Collect social (non-blog) slots
-        const socialSlots = [];
-        for (const [day, types] of Object.entries(weeklySchedule)) {
-          for (const type of (Array.isArray(types) ? types : [])) {
-            if (type !== 'blog') socialSlots.push({ day, type });
-          }
-        }
-
-        // Fallback: Mon/Wed/Fri image if no schedule found
+        const socialSlots = packageSocialSlots(client);
         if (!socialSlots.length) {
-          socialSlots.push({ day: 'monday', type: 'image' }, { day: 'wednesday', type: 'image' }, { day: 'friday', type: 'image' });
+          errors.push({ client: client.client_name, error: 'No package social slots — assign weekly_schedule and non-zero image/video/reel counts.' });
+          continue;
         }
 
         const scheduleText = socialSlots.map((s) => `${s.day}: ${s.type}`).join('\n');
@@ -883,6 +960,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
           // Quality gate before save (no post leaves the agent below the bar).
           const gated = await qualityGateDraft(agentSlug, backend, clientWithSchedule, snapshot, taskInput, draft, 'socialDraft');
           const finalDraft = gated.output;
+          assertNoUnsupportedExactClaims(finalDraft, brief.brief, 'social draft');
 
           const matchedSlot = socialSlots.find(
             (s) => s.day.toLowerCase() === (finalDraft.day_of_week || '').toLowerCase() && s.type === finalDraft.content_type,
@@ -981,14 +1059,11 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
     for (const client of clients) {
       try {
         await pingLease(`blog-writer: ${client.client_name}`);
-        // Parse blog slots from package weekly_schedule
-        let weeklySchedule = {};
-        try { weeklySchedule = JSON.parse(client.weekly_schedule || '{}'); } catch { /* ignore */ }
-        const blogSlots = [];
-        for (const [day, types] of Object.entries(weeklySchedule)) {
-          if (Array.isArray(types) && types.includes('blog')) blogSlots.push(day);
+        const blogSlots = packageBlogSlots(client);
+        if (!blogSlots.length) {
+          blogErrors.push({ client: client.client_name, error: 'No package blog slots — assign weekly_schedule and non-zero blog_posts_per_month.' });
+          continue;
         }
-        if (!blogSlots.length) blogSlots.push('thursday'); // fallback
 
         const blogScheduleText = blogSlots.map((d) => `${d}: blog`).join('\n');
 
@@ -1012,6 +1087,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
           // Quality gate before save (no blog leaves the agent below the bar).
           const gated = await qualityGateDraft(agentSlug, backend, clientWithSchedule, snapshot, taskInput, draft, 'blogDraft');
           const finalDraft = gated.output;
+          assertNoUnsupportedExactClaims(finalDraft, brief.brief, 'blog draft');
 
           const blogDay = String(finalDraft.day_of_week || blogSlots[0] || 'thursday');
           const publishDate = `${nextScheduledDate(blogDay)}T09:00`;
@@ -1118,6 +1194,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
           let d = r.output;
           if (!d || !(d.body || '').trim()) return null;
           const g = await qualityGateDraft(agentSlug, backend, clientWithBrief, snapshot, locTask, d, 'gmbPost');
+          assertNoUnsupportedExactClaims(g.output, brief.brief, 'gmb draft');
           return { draft: g.output, backend: r.backend };
         };
 

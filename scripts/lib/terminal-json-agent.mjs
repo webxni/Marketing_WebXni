@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 
@@ -10,6 +10,9 @@ const JSON_ONLY_SYSTEM =
   'All Claude skills (webxni-agency-orchestrator, webxni-system-reliability, webxni-security-sentinel, ' +
   'webxni-client-research, webxni-strategist, webxni-social-copywriter, webxni-blog-writer, ' +
   'webxni-editorial-reviewer) apply equally to every backend.';
+
+const BROKEN_BACKEND_TTL_MS = Number(process.env.AGENCY_BACKEND_FAILURE_TTL_MS || 15 * 60 * 1000);
+const brokenBackends = new Map();
 
 // ── Backend availability ─────────────────────────────────────────────────────
 
@@ -48,6 +51,9 @@ function normalizeBackendName(backend) {
 
 function isBackendAvailable(backend) {
   const b = normalizeBackendName(backend);
+  const brokenUntil = brokenBackends.get(b) || 0;
+  if (brokenUntil > Date.now()) return false;
+  if (brokenUntil) brokenBackends.delete(b);
   if (b === 'openai') return !!process.env.OPENAI_API_KEY;
   if (b === 'hermes') return !!resolveHermesCommand();
   // Gemini runs via the REST API (the CLI's free OAuth tier was deprecated), so
@@ -86,6 +92,12 @@ function expandPriority(backends) {
     );
   }
   return result;
+}
+
+function markBackendBroken(backend) {
+  const normalized = normalizeBackendName(backend);
+  if (!normalized || normalized === 'openai' || BROKEN_BACKEND_TTL_MS <= 0) return;
+  brokenBackends.set(normalized, Date.now() + BROKEN_BACKEND_TTL_MS);
 }
 
 // ── JSON helpers ─────────────────────────────────────────────────────────────
@@ -289,6 +301,20 @@ function runHermes(prompt, schema, mode, skills = []) {
   return runSpawnJson(hermesCmd, args, (stdout) => ({ output: parseJsonFromText(stdout), cost_usd: null }));
 }
 
+export function buildCodexExecArgs({ prompt, schemaPath, outputPath, model }) {
+  const args = [
+    'exec',
+    '--skip-git-repo-check',
+    '--ephemeral',
+    '--output-schema', schemaPath,
+    '--output-last-message', outputPath,
+    '-C', process.cwd(),
+  ];
+  if (model) args.push('-m', model);
+  args.push(prompt);
+  return args;
+}
+
 function runCodex(prompt, schema, mode) {
   const { wrappedPrompt } = buildWrappedPrompt(prompt, schema);
   const workDir = mkdtempSync(join(tmpdir(), 'webxni-agency-codex-'));
@@ -298,18 +324,10 @@ function runCodex(prompt, schema, mode) {
   const configuredModel = mode === 'blog'
     ? (process.env.CODEX_BLOG_MODEL || 'gpt-4.1')
     : (process.env.CODEX_SOCIAL_MODEL || 'gpt-4.1-mini');
-  const args = [
-    'exec',
-    '--skip-git-repo-check',
-    '--ephemeral',
-    '--output-schema', schemaPath,
-    '-o', outputPath,
-    '-C', process.cwd(),
-    wrappedPrompt,
-  ];
-  if (process.env.CODEX_BLOG_MODEL || process.env.CODEX_SOCIAL_MODEL || process.env.CODEX_MODEL) {
-    args.splice(args.length - 1, 0, '-m', process.env.CODEX_MODEL || configuredModel);
-  }
+  const model = (process.env.CODEX_BLOG_MODEL || process.env.CODEX_SOCIAL_MODEL || process.env.CODEX_MODEL)
+    ? (process.env.CODEX_MODEL || configuredModel)
+    : '';
+  const args = buildCodexExecArgs({ prompt: wrappedPrompt, schemaPath, outputPath, model });
   return runSpawnJson('codex', args, () => ({ output: parseJsonFromText(readFileSync(outputPath, 'utf8')), cost_usd: null }), {
     cleanup: () => rmSync(workDir, { recursive: true, force: true }),
   });
@@ -411,6 +429,12 @@ function classifyBackendFailure(command, text) {
   if (lower.includes('refusing to create helper binaries') || lower.includes('could not update path')) {
     return `cause: ${command} helper/PATH setup warning; verify auth/model if the command also failed`;
   }
+  if (command === 'codex' && lower.includes('reading additional input from stdin')) {
+    return 'cause: codex CLI did not receive a valid non-interactive prompt/output argument';
+  }
+  if (command.includes('hermes') && lower.includes('agent failed: code')) {
+    return 'cause: hermes agent execution failed before returning JSON';
+  }
   return 'cause: unknown terminal backend failure';
 }
 
@@ -455,6 +479,7 @@ export async function runTerminalJsonAgent({ prompt, schema, preferredBackend, m
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      markBackendBroken(backend);
       errors.push(`[${backend}] ${msg.slice(0, 200)}`);
       attempts.push({ backend, status: 'failed', error: msg.slice(0, 300) });
       console.warn(`[agency] backend ${backend} failed, trying next: ${msg.slice(0, 120)}`);

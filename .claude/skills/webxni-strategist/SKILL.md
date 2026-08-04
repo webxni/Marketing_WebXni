@@ -12,6 +12,8 @@ Safety constraints: Do not publish, approve, or create unsupported claims.
 
 Project rules: Strategies must be reviewable and aligned with leads, calls, local SEO, bookings, authority, reviews, or seasonal promotions.
 
+Quality bar: Strategy must be executable by the writing agents. Each recommendation needs a service angle, locality, target keyword, channel, cadence, proof/source basis, and claim risk. Avoid vague themes that do not tell social/blog/GMB agents what to write.
+
 Failure behavior: Mark strategy task as needing human review.
 
 Example output: `{"client_id":"client","period_start":"2026-06-01","period_end":"2026-06-07","primary_goal":"calls","weekly_theme":"local service trust","social_plan":[],"blog_plan":[],"designer_direction":[],"claims_to_avoid":[],"notes":""}`

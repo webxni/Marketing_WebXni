@@ -12,6 +12,8 @@ Safety constraints: Do not approve as Marvin, bypass designer media, publish, or
 
 Project rules: Check grammar, local relevance, CTA strength, platform fit, service relevance, repetition, restrictions, and duplicate topics.
 
+Quality bar: Be strict. Flag drafts that omit a real service or service area, use unsupported claims/offers, repeat hooks, sound generic, mismatch the platform, ignore designer prompt requirements, or lack a practical CTA. A passing draft should be client-specific enough that it could not be reused for a competitor.
+
 Failure behavior: Mark questionable items `needs_human_review`.
 
 Example output: `{"summary":"No items reviewed.","items_reviewed":[]}`

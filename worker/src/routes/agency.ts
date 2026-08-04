@@ -662,12 +662,25 @@ agencyInternalRoutes.get('/review-queue', async (c) => {
   // The LEFT JOIN ... r.id IS NULL guard means each post is reviewed at most
   // once, so widening the status set cannot cause repeat review spam.
   const rows = await c.env.DB.prepare(
-    `SELECT p.id, c.canonical_name AS client_name, p.content_type, p.title,
+    `SELECT p.id, c.slug AS client_slug, c.canonical_name AS client_name, c.package,
+            pkg.images_per_month, pkg.videos_per_month, pkg.reels_per_month, pkg.blog_posts_per_month,
+            CASE
+              WHEN p.content_type = 'image' AND COALESCE(pkg.images_per_month, 0) = 0 THEN 'image_not_in_package'
+              WHEN p.content_type = 'video' AND COALESCE(pkg.videos_per_month, 0) = 0 THEN 'video_not_in_package'
+              WHEN p.content_type = 'reel' AND COALESCE(pkg.reels_per_month, 0) = 0 THEN 'reel_not_in_package'
+              WHEN p.content_type = 'blog' AND COALESCE(pkg.blog_posts_per_month, 0) = 0 THEN 'blog_not_in_package'
+              ELSE NULL
+            END AS package_violation,
+            p.content_type, p.title, p.platforms, p.publish_date, p.status,
             p.target_keyword, p.blog_excerpt, p.master_caption,
             p.cap_facebook, p.cap_instagram, p.cap_google_business,
+            p.cap_linkedin, p.cap_x, p.cap_threads, p.cap_tiktok, p.cap_pinterest, p.cap_bluesky,
+            p.youtube_title, p.youtube_description, p.video_script,
+            p.ai_image_prompt, p.ai_video_prompt,
             substr(p.blog_content, 1, 4000) AS blog_content
      FROM posts p
      JOIN clients c ON c.id = p.client_id
+     LEFT JOIN packages pkg ON pkg.slug = c.package
      LEFT JOIN content_review_notes r ON r.post_id = p.id
      WHERE p.status IN ('draft', 'pending_approval', 'generated', 'ready', 'approved')
        AND p.scheduled_by_automation = 1
