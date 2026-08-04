@@ -581,6 +581,16 @@ function keywordPoolFromContext(intel: IntelRow | null, keywords: ClientKeywordL
   ]).slice(0, 24);
 }
 
+export function resolveKeywordLocality(keyword: string, areas: string[], fallbackIndex: number): string {
+  if (!areas.length) return '';
+  const normalizePhrase = (value: string) => ` ${value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()} `;
+  const normalizedKeyword = normalizePhrase(keyword);
+  const embeddedArea = [...areas]
+    .sort((a, b) => normalizePhrase(b).length - normalizePhrase(a).length)
+    .find((area) => normalizedKeyword.includes(normalizePhrase(area)));
+  return embeddedArea ?? areas[fallbackIndex % areas.length] ?? '';
+}
+
 function selectFallbackTopic(
   client: ClientRow,
   slot: PostSlot,
@@ -616,7 +626,7 @@ function selectFallbackTopic(
   for (let i = 0; i < keywordPool.length; i++) {
     const keyword = keywordPool[(dateSeed + i) % keywordPool.length];
     const service = pickServiceForKeyword(services, keyword, dateSeed + i);
-    const locality = areas[(dateSeed + i) % Math.max(areas.length, 1)] ?? '';
+    const locality = resolveKeywordLocality(keyword, areas, dateSeed + i);
     const format = formats[(dateSeed + i) % formats.length];
     const fallback = fallbackTopicForFormat(format, service, locality || client.state || '');
     const topic = slot.content_type === 'blog'
@@ -717,7 +727,7 @@ async function finalizeSlotProgress(
   const now = Math.floor(Date.now() / 1000);
   await db
     .prepare(`UPDATE generation_runs
-              SET current_slot_idx = ?,
+              SET current_slot_idx = MAX(COALESCE(current_slot_idx, 0), ?),
                   posts_created    = posts_created + ?,
                   posts_updated    = posts_updated + ?,
                   last_activity_at = ?
@@ -745,7 +755,8 @@ async function finalizeSlotProgress(
   };
   try { await updateGenerationProgress(db, runId, progress); } catch { /* ignore */ }
 
-  if (updated.current_slot_idx >= updated.total_slots) {
+  const terminalRun = isTerminalContentProvider(normalizeContentProvider(slots[0]?.provider));
+  if (updated.current_slot_idx >= updated.total_slots && !terminalRun) {
     const totalTouched = (updated.posts_created ?? 0) + (updated.posts_updated ?? 0);
     const finalStatus = totalTouched > 0 ? (updated.error_log ? 'completed_with_errors' : 'completed') : 'failed';
     await finalizeGenerationRun(db, runId, finalStatus, updated.posts_created, updated.error_log ?? null);
@@ -1309,10 +1320,9 @@ export async function prebuildApprovedTerminalSlotRequests(
   if (!run) throw new Error('Generation run not found');
 
   const slots = JSON.parse(run.post_slots ?? '[]') as PostSlot[];
-  const startIdx = Math.max(0, run.current_slot_idx ?? 0);
   const prepared: PreparedApprovedSlotRequest[] = [];
 
-  for (let slotIdx = startIdx; slotIdx < slots.length; slotIdx++) {
+  for (let slotIdx = 0; slotIdx < slots.length; slotIdx++) {
     const built = await buildSlotGenerationRequest(env, runId, slotIdx);
     if (!built) continue;
     prepared.push({

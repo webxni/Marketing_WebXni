@@ -480,7 +480,7 @@ QUALITY BAR FOR THIS SOCIAL POST:
 - Facebook and Google Business captions should read like expert guidance, not ad copy.
 - Instagram can be warmer, but still must include a specific service/local angle before hashtags.
 - If the topic is broad, narrow it to one useful homeowner decision instead of making a generic list.`;
-  prompt += `\n- Do not use recycled title frames such as "before you hire," "what to know," "questions answered," "things to check," "expert insights," or generic checklists.`;
+  prompt += `\n- Do not use recycled title frames such as "before you hire," "what to know," "questions answered," "things to check," "expert insights," "trusted solutions," "addressing concerns," "top tips," "choosing the right," "key criteria," or generic checklists. Name the concrete decision, risk, material, mechanism, or process the post teaches.`;
 
   prompt += `\n- "ai_image_prompt": MUST BE IN SPANISH. Designer brief with ${assetSpec}${brandColors ? ` Colores de marca: ${brandColors}.` : ''} Include style, composition, mood, visual elements, overlay text, and recommended tool in 3-4 sentences.`;
   if (isVideo) {
@@ -1197,6 +1197,30 @@ export function validateGeneratedContent(
     if (p.test(title) || p.test(caption)) {
       warnings.push(`generic pattern: "${p.source}"`);
     }
+  }
+
+  const GENERIC_TITLE: RegExp[] = [
+    /^expert\b/i,
+    /^trusted\b/i,
+    /^precision\b/i,
+    /^professional .+ solutions\b/i,
+    /^choosing the right\b/i,
+    /^top tips?\b/i,
+    /\bsmart tips?\b/i,
+    /^addressing .+ concerns\b/i,
+    /^addressing concerns\b/i,
+    /^(?:three|\d+) (?:key )?criteria\b/i,
+    /:\s*(?:three|\d+) (?:key )?(?:criteria|details|checks)\b/i,
+    /\bkey project criteria\b/i,
+    /^key decisions?\b/i,
+    /^ensuring quality\b/i,
+    /^q&a\s*:/i,
+    /^mastering\b/i,
+    /^crafting effective\b/i,
+    /^solving .+ challenges\b/i,
+  ];
+  for (const p of GENERIC_TITLE) {
+    if (p.test(title)) warnings.push(`generic pattern: "${p.source}"`);
   }
 
   const unsupportedExactClaims: Array<[RegExp, string]> = [

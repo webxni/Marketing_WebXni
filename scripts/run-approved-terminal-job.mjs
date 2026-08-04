@@ -15,7 +15,7 @@ const jobId = argValue('--job-id');
 const runnerId = argValue('--runner-id') || 'discord-bot-runner';
 const apiBaseUrl = argValue('--api-base-url') || process.env.API_BASE_URL || 'https://marketing.webxni.com';
 const botSecret = argValue('--bot-secret') || process.env.DISCORD_BOT_SECRET || '';
-const CONCURRENCY = parseInt(argValue('--concurrency') || '10', 10);
+const CONCURRENCY = parseInt(argValue('--concurrency') || '4', 10);
 const TERMINAL_AGENT = (argValue('--terminal-agent') || process.env.TERMINAL_AGENT || process.env.TERMINAL_AI_BACKEND || 'auto').trim().toLowerCase();
 const HEARTBEAT_INTERVAL_MS = 45000;
 
@@ -394,7 +394,7 @@ ${JSON.stringify(draft.output)}
 
 MANDATORY REVIEW CHECKS:
 - Preserve the assigned client, content type, topic, exact target_keyword, and exact target_locality from the original brief.
-- Replace recycled title frames such as "before you hire," "what to know," "questions answered," "things to check," "expert insights," and generic checklists with a specific educational angle.
+- Replace recycled title frames such as "before you hire," "what to know," "questions answered," "things to check," "expert insights," "trusted solutions," "addressing concerns," "top tips," "choosing the right," "key criteria," and generic checklists with a title that names the concrete decision, risk, material, mechanism, or process being taught.
 - Remove invented prices, statistics, ratings, review counts, response times, arrival windows, guarantees, certifications, and offers.
 - If a phone appears, use only the exact client phone supplied in the original brief; otherwise omit it.
 - Keep every service and location inside the confirmed client profile. Remove unrelated industries, products, cities, and keyword phrases.
@@ -442,7 +442,10 @@ async function processSlot(summary, args, total, backend) {
   }
 
   try {
-    const generatedResult = await runTerminalAgent(slotReq.prompt, slotReq.schema, slotReq.plan ?? null);
+    const generationPrompt = summary.retry_feedback
+      ? `${slotReq.prompt}\n\nRETRY CORRECTION\nThe previous attempt was rejected for the following reason. Correct it explicitly while preserving the assigned schema and brief:\n${summary.retry_feedback}`
+      : slotReq.prompt;
+    const generatedResult = await runTerminalAgent(generationPrompt, slotReq.schema, slotReq.plan ?? null);
     const generated = generatedResult.output;
 
     // Critical write — the content save. A failure here means the slot is NOT
@@ -480,7 +483,7 @@ async function processSlot(summary, args, total, backend) {
       level: 'ERROR',
       message,
     });
-    return { ok: false, slot_idx: summary.slot_idx, prefix };
+    return { ok: false, slot_idx: summary.slot_idx, prefix, retry_feedback: message };
   }
 }
 
@@ -489,18 +492,21 @@ async function runBatch(batch, args, total, backend) {
     batch.map(summary => processSlot(summary, args, total, backend))
   );
   let batchCompleted = 0;
-  const failedIdx = new Set();
+  const failed = [];
   results.forEach((r, i) => {
     if (r.status === 'fulfilled' && r.value.ok) batchCompleted++;
     else {
-      failedIdx.add(batch[i].slot_idx);
       if (r.status === 'rejected') {
         console.error('Slot error:', r.reason instanceof Error ? r.reason.message : String(r.reason));
       }
+      failed.push({
+        ...batch[i],
+        retry_feedback: r.status === 'fulfilled'
+          ? r.value.retry_feedback
+          : (r.reason instanceof Error ? r.reason.message : String(r.reason)),
+      });
     }
   });
-  // Return the summaries that did not save so the caller can retry them.
-  const failed = batch.filter((s) => failedIdx.has(s.slot_idx));
   return { batchCompleted, failed };
 }
 
@@ -562,9 +568,9 @@ async function main() {
     let completed = first.completed;
     let failed = first.failed;
 
-    // Retry pass — transient failures (D1 contention, flaky backend) get one
-    // more attempt so a single hiccup no longer produces a silent 80/81 partial.
-    const RETRY_PASSES = parseInt(process.env.TERMINAL_RETRY_PASSES || '1', 10);
+    // Retry failed slots with the rejection reason so transient errors and
+    // correctable quality failures do not leave silent holes in the plan.
+    const RETRY_PASSES = parseInt(process.env.TERMINAL_RETRY_PASSES || '2', 10);
     for (let pass = 1; pass <= RETRY_PASSES && failed.length > 0; pass++) {
       console.log(`Retry pass ${pass}: ${failed.length} slot(s) to retry`);
       await postBestEffort(`/internal/discord/approved-jobs/${jobId}/log`, {

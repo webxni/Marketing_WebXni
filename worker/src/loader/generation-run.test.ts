@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildPackageSlots } from './generation-run';
+import { buildPackageSlots, resolveKeywordLocality } from './generation-run';
 
 function pkg(overrides: Record<string, unknown>) {
   return {
@@ -82,5 +82,23 @@ describe('buildPackageSlots', () => {
     const countMap = counts(slots);
     expect(countMap).toEqual({ image: 17, video: 9, reel: 21, blog: 21 });
     expectNotOver(countMap, { video: 9, reel: 22, blog: 22, image: 17 });
+  });
+});
+
+describe('resolveKeywordLocality', () => {
+  it('uses the confirmed area embedded in the selected keyword', () => {
+    expect(resolveKeywordLocality(
+      'general contractor Los Angeles',
+      ['Seattle', 'Los Angeles', 'Portland'],
+      0,
+    )).toBe('Los Angeles');
+  });
+
+  it('prefers the longest embedded area name', () => {
+    expect(resolveKeywordLocality('building key copying West Hollywood', ['Hollywood', 'West Hollywood'], 0)).toBe('West Hollywood');
+  });
+
+  it('uses the deterministic fallback when the keyword has no area', () => {
+    expect(resolveKeywordLocality('bathroom remodeling', ['Seattle', 'Portland'], 3)).toBe('Portland');
   });
 });

@@ -78,4 +78,15 @@ describe('generated caption normalization', () => {
     expect(quality.warnings).toContain('target_keyword must exactly match selected keyword: "residential locksmith Hollywood"');
     expect(quality.warnings).toContain('target_locality must exactly match one confirmed area: Hollywood');
   });
+
+  it('rejects generic authority claims in titles', () => {
+    const quality = validateGeneratedContent({
+      title: 'Trusted Residential Locksmith in Hollywood',
+      master_caption: 'A residential locksmith Hollywood homeowners call can explain how rekeying changes access after a move.',
+      target_keyword: 'residential locksmith Hollywood',
+      target_locality: 'Hollywood',
+    }, socialContext);
+    expect(quality.passed).toBe(false);
+    expect(quality.warnings.some((warning) => warning.includes('^trusted'))).toBe(true);
+  });
 });
