@@ -93,6 +93,45 @@ export function normalizeGeneratedCaptionValue(raw: unknown): string | undefined
   return clean;
 }
 
+const GENERATED_PHONE_FIELDS: Array<keyof GeneratedPost> = [
+  'master_caption',
+  'cap_facebook',
+  'cap_instagram',
+  'cap_linkedin',
+  'cap_x',
+  'cap_threads',
+  'cap_tiktok',
+  'cap_pinterest',
+  'cap_bluesky',
+  'cap_google_business',
+  'cap_gbp_la',
+  'cap_gbp_wa',
+  'cap_gbp_or',
+  'youtube_description',
+  'blog_content',
+  'blog_excerpt',
+  'meta_description',
+  'video_script',
+  'ai_image_prompt',
+  'ai_video_prompt',
+];
+
+export function canonicalizeGeneratedPhoneNumbers(post: GeneratedPost, clientPhone?: string | null): void {
+  const canonical = clientPhone?.trim();
+  if (!canonical) return;
+
+  for (const field of GENERATED_PHONE_FIELDS) {
+    const value = post[field];
+    if (typeof value !== 'string') continue;
+    post[field] = value.replace(/(?:\+?\d[\d().\-\s]{7,}\d)/g, (candidate) => {
+      const digits = candidate.replace(/\D/g, '');
+      return digits.length === 10 || (digits.length === 11 && digits.startsWith('1'))
+        ? canonical
+        : candidate;
+    });
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Content format rotation + topic research types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1209,6 +1248,7 @@ export function validateGeneratedContent(
     /\bsmart tips?\b/i,
     /^addressing .+ concerns\b/i,
     /^addressing concerns\b/i,
+    /\bkey criteria\b/i,
     /^(?:three|\d+) (?:key )?criteria\b/i,
     /^(?:three|\d+) (?:key |site )?(?:details|checks|questions|things|tips)\b/i,
     /\b(?:three|\d+)\b.*\bcriteria\b/i,

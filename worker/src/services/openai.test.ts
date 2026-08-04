@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildGenerationRequest,
+  canonicalizeGeneratedPhoneNumbers,
   isGeneratedCaptionField,
   normalizeGeneratedCaptionValue,
   validateGeneratedContent,
@@ -99,5 +100,16 @@ describe('generated caption normalization', () => {
     }, socialContext);
     expect(quality.passed).toBe(false);
     expect(quality.warnings.some((warning) => warning.includes('details|checks|questions|things|tips'))).toBe(true);
+  });
+
+  it('canonicalizes generated phone numbers to the verified client phone', () => {
+    const post = {
+      title: 'Hollywood Rekeying',
+      master_caption: 'Call 818-555-0199 to discuss residential rekeying in Hollywood.',
+      ai_image_prompt: 'Texto: 818.555.0199',
+    };
+    canonicalizeGeneratedPhoneNumbers(post, '(323) 555-0100');
+    expect(post.master_caption).toContain('(323) 555-0100');
+    expect(post.ai_image_prompt).toContain('(323) 555-0100');
   });
 });

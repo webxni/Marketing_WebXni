@@ -64,6 +64,7 @@ import {
   validateGeneratedContent,
   detectFormatFromTitle,
   buildBlogContentHtml,
+  canonicalizeGeneratedPhoneNumbers,
   isGeneratedCaptionField,
   normalizeGeneratedCaptionValue,
   type GenerationContext,
@@ -1400,6 +1401,7 @@ export async function saveGeneratedSlotResult(
   const overwriteExisting = run.overwrite_existing === 1;
   if (topicSelection?.targetKeyword) generatedPost.target_keyword = topicSelection.targetKeyword;
   if (topicSelection?.targetLocality) generatedPost.target_locality = topicSelection.targetLocality;
+  canonicalizeGeneratedPhoneNumbers(generatedPost, client.phone);
 
   // Terminal-generated blogs return structured fields (intro/sections/faq), not a
   // ready-to-store blog_content. The OpenAI path assembles the body inside
