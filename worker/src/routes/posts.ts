@@ -15,6 +15,7 @@ import {
   listPostAssetsRows,
   attachAssetsToPost,
   getLatestContentReview,
+  preserveEditorialFeedbackBeforePostDelete,
 } from '../db/queries';
 import { buildPostContentHash, hasReviewAffectingUpdate } from '../modules/content-review';
 import { normalizeContentType, parsePlatforms, resolvePlatformSelection, withImplicitBlogPlatform } from '../modules/platform-compatibility';
@@ -566,6 +567,7 @@ postRoutes.delete('/:id', async (c) => {
     // Delete all child rows before the post — posting_attempts and content_memory have
     // FK references to posts(id) without CASCADE, so D1 would reject the parent delete.
     const db = c.env.DB;
+    await preserveEditorialFeedbackBeforePostDelete(db, post);
     await db.prepare('DELETE FROM posting_attempts WHERE post_id = ?').bind(post.id).run();
     await db.prepare('DELETE FROM content_memory   WHERE post_id = ?').bind(post.id).run();
     await db.prepare('DELETE FROM assets          WHERE post_id = ?').bind(post.id).run();

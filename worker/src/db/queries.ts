@@ -2196,6 +2196,44 @@ export async function getLatestContentReview(
   return row ?? null;
 }
 
+export async function preserveEditorialFeedbackBeforePostDelete(
+  db: D1Database,
+  post: Pick<PostRow, 'id' | 'client_id' | 'publish_date'>,
+): Promise<boolean> {
+  const review = await getLatestContentReview(db, post.id);
+  if (!review || !['medium', 'high', 'critical'].includes(review.severity)) return false;
+
+  let summary = '';
+  let issues: string[] = [];
+  try {
+    const parsed = JSON.parse(review.notes_json) as { summary?: unknown; issues?: unknown };
+    summary = typeof parsed.summary === 'string' ? parsed.summary.trim() : '';
+    issues = Array.isArray(parsed.issues)
+      ? parsed.issues.filter((issue): issue is string => typeof issue === 'string' && issue.trim().length > 0)
+      : [];
+  } catch { /* retain the severity-only fallback */ }
+
+  const details = [summary, ...issues.slice(0, 3)].filter(Boolean).join(' ');
+  const message = redactSecrets(
+    `Editorial ${review.severity}: ${details || 'Replace this draft and avoid repeating its editorial quality failures.'}`,
+  ).slice(0, 3000);
+  const duplicate = await db.prepare(
+    `SELECT id FROM client_feedback
+     WHERE client_id = ? AND category = 'editorial_review' AND message = ?
+     LIMIT 1`,
+  ).bind(post.client_id, message).first<{ id: string }>();
+  if (duplicate) return false;
+
+  const now = Math.floor(Date.now() / 1000);
+  const month = post.publish_date?.slice(0, 7) || new Date(now * 1000).toISOString().slice(0, 7);
+  await db.prepare(
+    `INSERT INTO client_feedback
+       (id, client_id, month, post_id, category, sentiment, message, admin_reviewed, applied_to_intelligence, created_at)
+     VALUES (?, ?, ?, NULL, 'editorial_review', 'negative', ?, 0, 0, ?)`,
+  ).bind(crypto.randomUUID().replace(/-/g, ''), post.client_id, month, message, now).run();
+  return true;
+}
+
 export interface AgencyBackendHealthRow {
   backend: string;
   status: string;
