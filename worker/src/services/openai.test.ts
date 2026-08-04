@@ -89,4 +89,15 @@ describe('generated caption normalization', () => {
     expect(quality.passed).toBe(false);
     expect(quality.warnings.some((warning) => warning.includes('^trusted'))).toBe(true);
   });
+
+  it('rejects leading numbered detail-list titles', () => {
+    const quality = validateGeneratedContent({
+      title: '3 Details That Decide Your Hollywood Rekey Plan',
+      master_caption: 'A residential locksmith Hollywood homeowners call can explain how rekeying changes access after a move.',
+      target_keyword: 'residential locksmith Hollywood',
+      target_locality: 'Hollywood',
+    }, socialContext);
+    expect(quality.passed).toBe(false);
+    expect(quality.warnings.some((warning) => warning.includes('details|checks|questions|things|tips'))).toBe(true);
+  });
 });

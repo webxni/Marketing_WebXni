@@ -1210,6 +1210,7 @@ export function validateGeneratedContent(
     /^addressing .+ concerns\b/i,
     /^addressing concerns\b/i,
     /^(?:three|\d+) (?:key )?criteria\b/i,
+    /^(?:three|\d+) (?:key |site )?(?:details|checks|questions|things|tips)\b/i,
     /\b(?:three|\d+)\b.*\bcriteria\b/i,
     /:\s*(?:three|\d+) (?:key )?(?:criteria|details|checks)\b/i,
     /\bkey project criteria\b/i,
