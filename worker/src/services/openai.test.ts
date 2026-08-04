@@ -1,8 +1,33 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildGenerationRequest,
   isGeneratedCaptionField,
   normalizeGeneratedCaptionValue,
+  validateGeneratedContent,
+  type GenerationContext,
 } from './openai';
+
+const socialContext: GenerationContext = {
+  client: { canonical_name: 'Daniel\'s Locks & Key', industry: 'Locksmith', state: 'CA', phone: '(323) 555-0100' },
+  intelligence: null,
+  recentTitles: [],
+  feedback: [],
+  publishDate: '2026-08-05',
+  contentType: 'image',
+  platforms: ['facebook', 'instagram'],
+  serviceAreas: ['Hollywood'],
+  serviceNames: ['Residential Rekeying'],
+  targetKeywords: ['residential locksmith Hollywood'],
+  topicResearch: {
+    topic: 'How residential rekeying changes access after a move',
+    angle: 'Explain the practical access-control decision.',
+    format: 'process_breakdown',
+    targetKeyword: 'residential locksmith Hollywood',
+    localModifier: 'Hollywood',
+    searchQuestion: 'How does residential rekeying work after moving in Hollywood?',
+  },
+  highQuality: true,
+};
 
 describe('generated caption normalization', () => {
   it('keeps plain captions unchanged after trimming', () => {
@@ -33,5 +58,24 @@ describe('generated caption normalization', () => {
     expect(isGeneratedCaptionField('cap_gbp_la')).toBe(true);
     expect(isGeneratedCaptionField('cap_google_business')).toBe(true);
     expect(isGeneratedCaptionField('ai_image_prompt')).toBe(false);
+  });
+
+  it('requires SEO keyword and locality metadata for social generation', () => {
+    const schema = buildGenerationRequest(socialContext).schema.schema as { required: string[] };
+    expect(schema.required).toContain('target_keyword');
+    expect(schema.required).toContain('target_locality');
+  });
+
+  it('rejects recycled titles and missing exact SEO metadata', () => {
+    const quality = validateGeneratedContent({
+      title: 'Before You Hire a Residential Locksmith',
+      master_caption: 'Hollywood residents can use residential rekeying to control who has keys after a move.',
+      target_keyword: 'residential locksmith',
+      target_locality: 'Los Angeles',
+    }, socialContext);
+    expect(quality.passed).toBe(false);
+    expect(quality.warnings.some((warning) => warning.startsWith('generic pattern:'))).toBe(true);
+    expect(quality.warnings).toContain('target_keyword must exactly match selected keyword: "residential locksmith Hollywood"');
+    expect(quality.warnings).toContain('target_locality must exactly match one confirmed area: Hollywood');
   });
 });

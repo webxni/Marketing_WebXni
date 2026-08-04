@@ -25,7 +25,7 @@
  */
 
 import type { Env } from '../types';
-import type { ClientRow, PostRow } from '../types';
+import type { ClientRow } from '../types';
 import {
   buildWeeklyMarketingStrategicContext,
   buildAutonomousResearchSignals,
@@ -55,6 +55,7 @@ import {
   getLatestClientStrategy,
   getClientKeywords,
   getClientProfileCompleteness,
+  reclassifyActiveClientKeywords,
   type GenerationProgress,
   buildTopicFingerprint,
 } from '../db/queries';
@@ -143,6 +144,7 @@ export interface SlotTopicSelection {
   monthlyTopicId: string | null;
   topicTitle: string | null;
   targetKeyword: string | null;
+  targetLocality: string | null;
   serviceCategory: string | null;
   topicFingerprint: string | null;
   notes?: string | null;
@@ -436,7 +438,7 @@ async function buildMonthlyTopicSelection(
   date: string,
   contentType: string,
   platforms: string[],
-  _serviceAreas: string[],
+  serviceAreas: string[],
   excludedTopicIds: string[] = [],
 ): Promise<SlotTopicSelection | null> {
   const month = planMonth(date);
@@ -464,6 +466,7 @@ async function buildMonthlyTopicSelection(
     topicTitle: monthlyTopic.topic_title,
     serviceCategory: monthlyTopic.service_category ?? null,
     targetKeyword: monthlyTopic.target_keyword?.trim() || monthlyTopic.topic_title.toLowerCase().split(' ').slice(0, 4).join(' '),
+    targetLocality: serviceAreas[0] ?? null,
     topicFingerprint: buildTopicFingerprint({
       topic: monthlyTopic.topic_title,
       serviceCategory: monthlyTopic.service_category,
@@ -484,7 +487,7 @@ function getTopicResearchFromSelection(
     angle: selection.serviceCategory ?? selection.source,
     format: 'quick_explainer',
     targetKeyword: selection.targetKeyword ?? selection.topicTitle ?? '',
-    localModifier: serviceAreas[0] ?? '',
+    localModifier: selection.targetLocality ?? serviceAreas[0] ?? '',
     searchQuestion: selection.notes?.trim() || (selection.topicTitle ?? ''),
   };
 }
@@ -514,26 +517,68 @@ function uniqueClean(values: Array<string | null | undefined>): string[] {
   return out;
 }
 
+function splitJsonOrCsv(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed)) return parsed.map((item) => String(item).trim()).filter(Boolean);
+  } catch { /* delimited fallback */ }
+  return raw
+    .split(/[,\n|;]/)
+    .map((item) => item.replace(/^[\s["']+|[\s\]"']+$/g, '').trim())
+    .filter(Boolean);
+}
+
+function stableSlotSeed(slot: PostSlot): number {
+  return [...`${slot.slot_key}:${slot.content_type}`]
+    .reduce((sum, char) => (sum + char.charCodeAt(0)) % 997, 0);
+}
+
+function pickServiceForKeyword(services: string[], keyword: string, seed: number): string {
+  const normalizedKeyword = keyword.toLowerCase();
+  const scored = services
+    .map((service) => ({
+      service,
+      score: service.toLowerCase().split(/\s+/).filter((token) => token.length > 3 && normalizedKeyword.includes(token.replace(/(ing|ed|s)$/, ''))).length,
+    }))
+    .sort((a, b) => b.score - a.score);
+  return scored[0]?.score ? scored[0].service : services[seed % services.length];
+}
+
+function fallbackTopicForFormat(format: ContentFormat, service: string, locality: string): { topic: string; question: string } {
+  const local = locality ? ` in ${locality}` : '';
+  switch (format) {
+    case 'comparison':
+      return { topic: `${service}${local}: compare two practical approaches`, question: `Which ${service} approach fits different customer situations${local}?` };
+    case 'mistake_to_avoid':
+      return { topic: `${service}${local}: one costly mistake and how to prevent it`, question: `What common ${service} mistake should customers${local} prevent?` };
+    case 'process_breakdown':
+      return { topic: `How a professional ${service} process works${local}`, question: `What happens during a professional ${service} service${local}?` };
+    case 'faq':
+      return { topic: `${service}${local}: answer one specific customer concern`, question: `What specific concern do customers have about ${service}${local}?` };
+    case 'quick_explainer':
+      return { topic: `${service}${local}: explain one technical decision clearly`, question: `Which technical ${service} decision confuses customers${local}?` };
+    case 'trust_builder':
+      return { topic: `${service}${local}: show a verifiable quality-control step`, question: `Which quality-control step matters most for ${service}${local}?` };
+    case 'checklist':
+      return { topic: `${service}${local}: three project-specific decision criteria`, question: `Which three project details determine the right ${service} plan${local}?` };
+    default:
+      return { topic: `${service}${local}: advice tied to a real local condition`, question: `Which local condition changes how ${service} should be handled${local}?` };
+  }
+}
+
 function keywordPoolFromContext(intel: IntelRow | null, keywords: ClientKeywordLite[], serviceNames: string[], serviceAreas: string[]): string[] {
-  const splitJsonOrCsv = (raw: string | null | undefined): string[] => {
-    if (!raw) return [];
-    try {
-      const parsed = JSON.parse(raw) as unknown;
-      if (Array.isArray(parsed)) return parsed.map((item) => String(item));
-    } catch { /* csv fallback */ }
-    return raw.split(',').map((item) => item.trim());
-  };
   const rankedKeywords = [...keywords].sort((a, b) => {
     const rank = (k: ClientKeywordLite) => ({ primary: 0, local: 1, near_me: 2, long_tail: 3 }[k.kw_type] ?? 4);
     return rank(a) - rank(b);
   });
   return uniqueClean([
-    ...rankedKeywords.map((k) => k.keyword),
     intel?.primary_keyword,
     ...splitJsonOrCsv(intel?.secondary_keywords),
     ...serviceNames.flatMap((service) => serviceAreas.slice(0, 3).map((area) => `${service} ${area}`)),
+    ...rankedKeywords.map((k) => k.keyword),
     ...serviceNames,
-  ]).slice(0, 18);
+  ]).slice(0, 24);
 }
 
 function selectFallbackTopic(
@@ -548,7 +593,7 @@ function selectFallbackTopic(
 ): { selection: SlotTopicSelection; research: TopicResearch; keywords: string[] } | null {
   const services = uniqueClean([
     ...serviceNames,
-    ...String(intel?.service_priorities ?? '').split(/[,\n|;]/).map((item) => item.trim()),
+    ...splitJsonOrCsv(intel?.service_priorities),
   ]).slice(0, 12);
   const areas = uniqueClean(serviceAreas.length ? serviceAreas : [client.state]).slice(0, 8);
   const keywordPool = keywordPoolFromContext(intel, keywords, services, areas);
@@ -566,17 +611,17 @@ function selectFallbackTopic(
   const recentFormatSet = new Set(recentFormats.slice(0, 6));
   const preferredFormats = FALLBACK_FORMATS.filter((format) => !recentFormatSet.has(format));
   const formats = preferredFormats.length ? preferredFormats : FALLBACK_FORMATS;
-  const dateSeed = new Date(`${slot.date}T12:00:00Z`).getUTCDate();
+  const dateSeed = new Date(`${slot.date}T12:00:00Z`).getUTCDate() + stableSlotSeed(slot);
 
   for (let i = 0; i < keywordPool.length; i++) {
     const keyword = keywordPool[(dateSeed + i) % keywordPool.length];
-    const keywordLower = keyword.toLowerCase();
-    const service = services.find((name) => keywordLower.includes(name.toLowerCase().split(/\s+/)[0])) ?? services[(dateSeed + i) % services.length];
+    const service = pickServiceForKeyword(services, keyword, dateSeed + i);
     const locality = areas[(dateSeed + i) % Math.max(areas.length, 1)] ?? '';
     const format = formats[(dateSeed + i) % formats.length];
+    const fallback = fallbackTopicForFormat(format, service, locality || client.state || '');
     const topic = slot.content_type === 'blog'
-      ? `${keyword}: what local customers should know`
-      : `${service} question in ${locality || client.state || 'your area'}`;
+      ? `${keyword}: ${fallback.topic}`
+      : fallback.topic;
     const fingerprint = buildTopicFingerprint({
       topic,
       serviceCategory: service,
@@ -588,6 +633,7 @@ function selectFallbackTopic(
       monthlyTopicId: null,
       topicTitle: topic,
       targetKeyword: keyword,
+      targetLocality: locality || null,
       serviceCategory: service,
       topicFingerprint: fingerprint,
       notes: `Deterministic package fallback from client services, service areas, and target keyword set. Keep this ${slot.content_type} educational and on-company.`,
@@ -599,9 +645,7 @@ function selectFallbackTopic(
       format,
       targetKeyword: keyword,
       localModifier: locality,
-      searchQuestion: locality
-        ? `What should I know before hiring for ${keyword} in ${locality}?`
-        : `What should I know before hiring for ${keyword}?`,
+      searchQuestion: fallback.question,
     };
     return { selection, research, keywords: keywordPool };
   }
@@ -742,6 +786,15 @@ export async function prepareGenerationPlan(env: Env, params: GenerationParams):
       );
       continue;
     }
+    const keywordAudit = await reclassifyActiveClientKeywords(db, client.id);
+    if (keywordAudit.quarantined > 0) {
+      await appendGenerationLog(
+        db,
+        params.run_id,
+        'WARN',
+        `${client.slug}: quarantined ${keywordAudit.quarantined}/${keywordAudit.checked} active research keywords outside the confirmed profile.`,
+      );
+    }
     eligibleClients.push(client);
     let pkg = DEFAULT_PACKAGE;
     if (client.package) {
@@ -750,8 +803,25 @@ export async function prepareGenerationPlan(env: Env, params: GenerationParams):
     }
 
     const packageSlots = buildPackageSlots(pkg, params.period_start, params.period_end);
+    const postedRows = await db.prepare(
+      `SELECT automation_slot_key, substr(publish_date, 1, 10) AS publish_day, content_type
+       FROM posts
+       WHERE client_id = ? AND status = 'posted'
+         AND substr(publish_date, 1, 10) BETWEEN ? AND ?`,
+    ).bind(client.id, params.period_start, params.period_end).all<{
+      automation_slot_key: string | null;
+      publish_day: string;
+      content_type: string;
+    }>();
+    const postedSlotKeys = new Set(postedRows.results.map((row) => row.automation_slot_key).filter(Boolean));
+    const postedLegacySlots = new Set(postedRows.results.map((row) => `${row.publish_day}:${normalizeContentType(row.content_type)}`));
 
     for (const packageSlot of packageSlots) {
+      const slotKey = getAutomationSlotKey(client.id, packageSlot.date, packageSlot.contentType, packageSlot.dailyIndex);
+      if (postedSlotKeys.has(slotKey) || postedLegacySlots.has(`${packageSlot.date}:${normalizeContentType(packageSlot.contentType)}`)) {
+        await appendGenerationLog(db, params.run_id, 'INFO', `${client.slug}: ${packageSlot.date}/${packageSlot.contentType} already posted — omitted from generation plan.`);
+        continue;
+      }
       const totalSoFar = intentEduc + intentSales;
       const salesRatio = totalSoFar === 0 ? 0 : intentSales / totalSoFar;
       const intent: 'educational' | 'sales' = salesRatio < 0.30 ? 'sales' : 'educational';
@@ -761,7 +831,7 @@ export async function prepareGenerationPlan(env: Env, params: GenerationParams):
         date: packageSlot.date,
         content_type: normalizeContentType(packageSlot.contentType),
         content_intent: intent,
-        slot_key: getAutomationSlotKey(client.id, packageSlot.date, packageSlot.contentType, packageSlot.dailyIndex),
+        slot_key: slotKey,
         high_quality: params.high_quality ?? false,
         provider,
       });
@@ -824,6 +894,7 @@ function mergeGeneratedContent(
     'seo_title',
     'meta_description',
     'target_keyword',
+    'target_locality',
     'secondary_keywords',
     'slug',
     'video_script',
@@ -840,16 +911,6 @@ function mergeGeneratedContent(
     next[key] = pickGeneratedValue(existingValue, generatedValue, overwrite) ?? null;
   }
   return next;
-}
-
-function hasMaterializedSlotContent(post: PostRow | null | undefined): boolean {
-  if (!post) return false;
-  const contentType = normalizeContentType(post.content_type, post.asset_type);
-  if (String(post.title ?? '').trim()) return true;
-  if (String(post.master_caption ?? '').trim()) return true;
-  if (contentType === 'blog' && String(post.blog_content ?? '').trim()) return true;
-  if ((contentType === 'video' || contentType === 'reel') && String(post.video_script ?? '').trim()) return true;
-  return false;
 }
 
 export interface SlotWorkResult {
@@ -1054,6 +1115,15 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
     return null;
   }
 
+  const existingPost = await getPostByAutomationSlot(
+    db,
+    client.id,
+    slot.slot_key,
+    slot.date,
+    normalizeContentType(slot.content_type),
+  );
+  if (existingPost?.status === 'posted') return null;
+
   const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows, keywordRows, gbpLocations, topicHistory] = await Promise.all([
     db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then((row) => row ?? null),
     db.prepare('SELECT sentiment, message AS note FROM client_feedback WHERE client_id = ? ORDER BY created_at DESC LIMIT 10').bind(client.id).all<FeedbackRow>(),
@@ -1068,6 +1138,7 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
   const recentTitles  = recRows.results.map((row) => row.title ?? row.master_caption?.slice(0, 80) ?? '').filter(Boolean) as string[];
   const serviceAreas  = svcAreaRows.results.map((row) => row.city);
   const serviceNames  = svcNameRows.results.map((row) => row.name);
+  if (existingPost && run.overwrite_existing !== 1 && isPostContentComplete(existingPost, gbpLocations)) return null;
   const monthlyPlan = await getClientMonthlyContentPlan(db, client.id, planMonth(slot.date));
   const intel = applyMonthlyPlanToIntelligence(intelBase, monthlyPlan);
   let targetKeywords = keywordPoolFromContext(intel, keywordRows, serviceNames, serviceAreas);
@@ -1135,6 +1206,7 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
       monthlyTopicId: null,
       topicTitle: topicResearch.topic,
       targetKeyword: topicResearch.targetKeyword,
+      targetLocality: topicResearch.localModifier || null,
       serviceCategory: null,
       topicFingerprint: buildTopicFingerprint({
         topic: topicResearch.topic,
@@ -1214,6 +1286,7 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
       monthlyTopicId: null,
       topicTitle: topicResearch?.topic ?? null,
       targetKeyword: topicResearch?.targetKeyword ?? null,
+      targetLocality: topicResearch?.localModifier ?? null,
       serviceCategory: null,
       topicFingerprint: topicResearch
         ? buildTopicFingerprint({
@@ -1303,7 +1376,12 @@ export async function saveGeneratedSlotResult(
     slot.date,
     normalizeContentType(slot.content_type),
   );
+  if (existingPost?.status === 'posted') {
+    return finalizeSlotProgress(db, env, runId, slotIdx + 1, 'skipped', client.canonical_name, slots, async () => undefined);
+  }
   const overwriteExisting = run.overwrite_existing === 1;
+  if (topicSelection?.targetKeyword) generatedPost.target_keyword = topicSelection.targetKeyword;
+  if (topicSelection?.targetLocality) generatedPost.target_locality = topicSelection.targetLocality;
 
   // Terminal-generated blogs return structured fields (intro/sections/faq), not a
   // ready-to-store blog_content. The OpenAI path assembles the body inside
@@ -1383,7 +1461,7 @@ export async function saveGeneratedSlotResult(
     await appendGenerationLog(db, runId, slot.high_quality ? 'ERROR' : 'WARN', `Quality validation failed for slot ${slotIdx + 1}/${slots.length}: ${validationResult.warnings.join('; ')}`);
     if (slot.high_quality) {
       await appendGenerationError(db, runId, `Slot ${slotIdx + 1} ${slot.client_slug}/${slot.content_type} quality validation failed: ${validationResult.warnings.join('; ')}`);
-      return finalizeSlotProgress(db, env, runId, slotIdx + 1, 'skipped', client.canonical_name, slots, async () => undefined);
+      throw new Error(`Quality validation failed: ${validationResult.warnings.join('; ')}`);
     }
   }
 
@@ -1392,6 +1470,7 @@ export async function saveGeneratedSlotResult(
     monthlyTopicId: null,
     topicTitle: generatedPost.title ?? merged.title ?? null,
     targetKeyword: generatedPost.target_keyword ?? merged.target_keyword ?? null,
+    targetLocality: generatedPost.target_locality ?? merged.target_locality ?? null,
     serviceCategory: null,
     topicFingerprint: buildTopicFingerprint({
       topic: generatedPost.title ?? merged.title ?? null,
@@ -1411,10 +1490,7 @@ export async function saveGeneratedSlotResult(
     publishDate: `${slot.date}T${postTime}`,
     excludePostId: existingPost?.id ?? null,
   });
-  const duplicateDraftPost = duplicateConflict && ['draft', 'pending_approval', 'approved', 'ready'].includes(duplicateConflict.post.status ?? '')
-    ? duplicateConflict.post
-    : null;
-  const targetPost = existingPost ?? duplicateDraftPost;
+  const targetPost = existingPost;
   const isBlogSlot = normalizeContentType(slot.content_type) === 'blog';
   const blogGbpDefaults = isBlogSlot
     ? { gbp_cta_type: 'LEARN_MORE' as string, gbp_topic_type: 'STANDARD' as string }
@@ -1426,6 +1502,7 @@ export async function saveGeneratedSlotResult(
     if (selectedTopic.monthlyTopicId) {
       await markClientMonthlyTopicSkipped(db, selectedTopic.monthlyTopicId, duplicateConflict.reason);
     }
+    throw new Error(`Generated slot duplicates existing post ${duplicateConflict.post.id}: ${duplicateConflict.reason}`);
   } else if (targetPost) {
     const nextPlatforms = targetPost.platform_manual_override === 1 && parsePlatforms(targetPost.platforms).length > 0
       ? parsePlatforms(targetPost.platforms)
@@ -1471,7 +1548,7 @@ export async function saveGeneratedSlotResult(
     savedPostId = createdPost.id;
     outcome = 'created';
   }
-  if (selectedTopic.monthlyTopicId && outcome !== 'skipped') {
+  if (selectedTopic.monthlyTopicId && savedPostId) {
     await markClientMonthlyTopicUsed(db, selectedTopic.monthlyTopicId, savedPostId);
   }
 
@@ -1595,13 +1672,13 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
       const gbpLocations = await getClientGbpLocations(db, client.id);
       const overwriteExisting = run.overwrite_existing === 1;
 
-      if (existingPost && !overwriteExisting && isPostContentComplete(existingPost, gbpLocations)) {
-        await log('INFO', `${postKey}: existing post ${existingPost.id} already complete — skipping`);
+      if (existingPost?.status === 'posted') {
+        await log('INFO', `${postKey}: existing post ${existingPost.id} is already posted — immutable, skipping`);
         return await finishSlot(slot_idx + 1, 'skipped', clientName, slots);
       }
 
-      if (existingPost && !overwriteExisting && hasMaterializedSlotContent(existingPost)) {
-        await log('INFO', `${postKey}: existing post ${existingPost.id} already has generated content — reusing and advancing`);
+      if (existingPost && !overwriteExisting && isPostContentComplete(existingPost, gbpLocations)) {
+        await log('INFO', `${postKey}: existing post ${existingPost.id} already complete — skipping`);
         return await finishSlot(slot_idx + 1, 'skipped', clientName, slots);
       }
 
@@ -1692,6 +1769,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
           monthlyTopicId: null,
           topicTitle: topicResearch.topic,
           targetKeyword: topicResearch.targetKeyword,
+          targetLocality: topicResearch.localModifier || null,
           serviceCategory: null,
           topicFingerprint: buildTopicFingerprint({
             topic: topicResearch.topic,
@@ -1794,10 +1872,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         publishDate: `${slot.date}T${postTime}`,
         excludePostId: existingPost?.id ?? null,
       });
-      const duplicateDraftPost = duplicateConflict && ['draft', 'pending_approval', 'approved', 'ready'].includes(duplicateConflict.post.status ?? '')
-        ? duplicateConflict.post
-        : null;
-      const targetPost = existingPost ?? duplicateDraftPost;
+      const targetPost = existingPost;
 
       if (targetPost) {
         const nextPlatforms = targetPost.platform_manual_override === 1 && parsePlatforms(targetPost.platforms).length > 0
@@ -1827,7 +1902,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         if (topicSelection?.monthlyTopicId) {
           await markClientMonthlyTopicSkipped(db, topicSelection.monthlyTopicId, duplicateConflict.reason);
         }
-        await log('WARN', `${postKey}: skipped because ${duplicateConflict.reason} (post ${duplicateConflict.post.id})`);
+        throw new Error(`Generated slot duplicates existing post ${duplicateConflict.post.id}: ${duplicateConflict.reason}`);
       } else {
         const createdPost = await createPost(db, {
           client_id:           client.id,

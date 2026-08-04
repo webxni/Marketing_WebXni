@@ -1327,6 +1327,51 @@ export async function getClientKeywords(db: D1Database, clientId: string): Promi
   return rows.results ?? [];
 }
 
+export async function reclassifyActiveClientKeywords(
+  db: D1Database,
+  clientId: string,
+): Promise<{ checked: number; quarantined: number }> {
+  const [client, services, areas, keywords] = await Promise.all([
+    db.prepare('SELECT industry, state FROM clients WHERE id = ?').bind(clientId).first<{ industry: string | null; state: string | null }>(),
+    db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC')
+      .bind(clientId).all<{ name: string }>(),
+    db.prepare('SELECT city FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC')
+      .bind(clientId).all<{ city: string }>(),
+    db.prepare(
+      `SELECT id, keyword, kw_type, locality, source, confidence
+       FROM client_keywords
+       WHERE client_id = ? AND status = 'active' AND COALESCE(source, '') != 'manual'`,
+    ).bind(clientId).all<ClientKeywordRow>(),
+  ]);
+  const profile = {
+    industry: client?.industry ?? null,
+    state: client?.state ?? null,
+    services: services.results.map((row) => row.name).filter(Boolean),
+    serviceAreas: areas.results.map((row) => row.city).filter(Boolean),
+  };
+  const updates: D1PreparedStatement[] = [];
+  for (const keyword of keywords.results) {
+    const classification = classifyKeywordCandidate(keyword, profile);
+    if (classification.status === 'active') continue;
+    const note = `Quarantined: ${classification.reason ?? 'profile_mismatch'}`;
+    updates.push(db.prepare(
+      `UPDATE client_keywords
+       SET status = 'proposed',
+           opportunity_notes = CASE
+             WHEN COALESCE(opportunity_notes, '') LIKE '%' || ? || '%' THEN opportunity_notes
+             WHEN TRIM(COALESCE(opportunity_notes, '')) = '' THEN ?
+             ELSE opportunity_notes || ' | ' || ?
+           END,
+           updated_at = unixepoch()
+       WHERE id = ? AND status = 'active'`,
+    ).bind(note, note, note, keyword.id));
+  }
+  for (let index = 0; index < updates.length; index += 100) {
+    await db.batch(updates.slice(index, index + 100));
+  }
+  return { checked: keywords.results.length, quarantined: updates.length };
+}
+
 // Upsert keeps the unique (client_id, keyword) row fresh without ever deleting —
 // curated/manual keywords survive. Dedup via the uq_client_keyword index.
 export async function upsertClientKeywords(

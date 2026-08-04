@@ -42,6 +42,25 @@ describe('keyword candidate classification', () => {
     }, locksmithProfile).reason).toBe('low_confidence');
   });
 
+  it('quarantines keywords that share a broad industry word but add unrelated products or geography', () => {
+    expect(classifyKeywordCandidate({
+      keyword: 'Canadian automotive car care products',
+      kw_type: 'primary',
+      source: 'research',
+      confidence: 'medium',
+    }, {
+      ...locksmithProfile,
+      services: ['Automotive Locksmith', 'Car Lockout'],
+    })).toEqual({ status: 'proposed', reason: 'outside_confirmed_services' });
+
+    expect(classifyKeywordCandidate({
+      keyword: 'emergency locksmith Hampton Roads',
+      kw_type: 'primary',
+      source: 'research',
+      confidence: 'medium',
+    }, locksmithProfile)).toEqual({ status: 'proposed', reason: 'outside_confirmed_profile' });
+  });
+
   it('preserves explicitly curated manual keywords', () => {
     expect(classifyKeywordCandidate({
       keyword: 'brand campaign phrase',

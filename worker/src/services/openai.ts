@@ -35,6 +35,7 @@ export interface GeneratedPost {
   seo_title?:          string;
   meta_description?:   string;
   target_keyword?:     string;
+  target_locality?:    string;
   secondary_keywords?: string;
   slug?:               string;  // URL slug suggestion
   video_script?:       string;
@@ -376,6 +377,7 @@ function buildSharedContext(ctx: GenerationContext, mode: 'social' | 'blog'): st
 
   block += '\n\nCONTENT SAFETY:';
   block += '\n- NEVER include exact prices, dollar amounts, percentages, or invented statistics.';
+  block += '\n- NEVER invent response-time or arrival-time promises. If the client phone is used, reproduce only the exact phone from the client profile.';
   block += '\n- Keep claims specific to services, expertise, process, and value.';
   block += '\n- Stay inside the service list, service areas, and required keyword pool. Do not introduce unrelated industries, cities, services, or themes.';
   block += '\n- Write naturally. Avoid filler openers and generic marketing language.';
@@ -438,6 +440,9 @@ Return ONLY JSON matching the requested schema. Keep captions concise and platfo
 - "title": short descriptive title, 5-10 words. Make it specific to the service, customer situation, or city. Do NOT use generic listicle titles like "Top 5 Benefits..." unless that exact format was requested.
 - "master_caption": fallback caption, 120-260 chars. Mention one concrete service, area, process detail, or homeowner scenario.`;
 
+  prompt += `\n- "target_keyword": use the exact selected target keyword from the content directive.`;
+  prompt += `\n- "target_locality": use the exact confirmed local modifier from the content directive.`;
+
   if (platforms.includes('facebook'))  prompt += '\n- "cap_facebook": Facebook caption, 140-320 chars';
   if (platforms.includes('instagram')) prompt += '\n- "cap_instagram": Instagram caption, 120-260 chars plus 8-12 hashtags';
   if (platforms.includes('linkedin'))  prompt += '\n- "cap_linkedin": LinkedIn caption, 180-420 chars, professional and insight-driven';
@@ -475,6 +480,7 @@ QUALITY BAR FOR THIS SOCIAL POST:
 - Facebook and Google Business captions should read like expert guidance, not ad copy.
 - Instagram can be warmer, but still must include a specific service/local angle before hashtags.
 - If the topic is broad, narrow it to one useful homeowner decision instead of making a generic list.`;
+  prompt += `\n- Do not use recycled title frames such as "before you hire," "what to know," "questions answered," "things to check," "expert insights," or generic checklists.`;
 
   prompt += `\n- "ai_image_prompt": MUST BE IN SPANISH. Designer brief with ${assetSpec}${brandColors ? ` Colores de marca: ${brandColors}.` : ''} Include style, composition, mood, visual elements, overlay text, and recommended tool in 3-4 sentences.`;
   if (isVideo) {
@@ -563,6 +569,7 @@ Return ONLY JSON matching the requested schema:
 - "seo_title": 50-60 chars — optimized differently from title (can include city or service variation)
 - "meta_description": 148-155 chars — benefit-driven, includes keyword and local context, ends with light CTA
 - "target_keyword": primary keyword phrase${ctx.topicResearch?.targetKeyword ? ` (use: "${ctx.topicResearch.targetKeyword}")` : ''}
+- "target_locality": confirmed locality${ctx.topicResearch?.localModifier ? ` (use exactly: "${ctx.topicResearch.localModifier}")` : ''}
 - "secondary_keywords": 5-8 comma-separated phrases — local variants, related searches, service+location combos
 - "intro": 150-200 words plain text — open with a specific problem, question, or fact; include keyword within first 80 words; set the reader's expectations; do NOT repeat the title
 - "sections": array of 4-6 objects, each with:
@@ -601,6 +608,8 @@ function buildResponseSchema(ctx: GenerationContext): GenerationRequestSchema {
   const properties: Record<string, JsonSchema> = {
     title: { type: 'string' },
     master_caption: { type: 'string' },
+    target_keyword: { type: 'string' },
+    target_locality: { type: 'string' },
   };
   const required = ['title', 'master_caption'];
 
@@ -609,7 +618,6 @@ function buildResponseSchema(ctx: GenerationContext): GenerationRequestSchema {
     properties.slug = { type: 'string' };
     properties.seo_title = { type: 'string' };
     properties.meta_description = { type: 'string' };
-    properties.target_keyword = { type: 'string' };
     properties.secondary_keywords = { type: 'string' };
     properties.intro = { type: 'string' };
     properties.sections = {
@@ -1124,7 +1132,7 @@ export function validateGeneratedContent(
   const warnings: string[] = [];
   const title = post.title ?? '';
   const caption = post.master_caption ?? '';
-  const allText = [
+  const customerText = [
     post.title,
     post.master_caption,
     post.cap_facebook,
@@ -1145,14 +1153,9 @@ export function validateGeneratedContent(
     post.blog_excerpt,
     post.seo_title,
     post.meta_description,
-    post.target_keyword,
-    post.secondary_keywords,
-    post.slug,
     post.video_script,
-    post.ai_image_prompt,
-    post.ai_video_prompt,
   ].filter(Boolean).join(' ');
-  const normalizedAll = allText.toLowerCase();
+  const normalizedAll = customerText.toLowerCase();
   const normalizeDigits = (value: string): string => value.replace(/\D/g, '');
   const clientPhoneDigits = normalizeDigits(ctx.client.phone ?? '');
   const serviceAreas = (ctx.serviceAreas ?? [])
@@ -1182,6 +1185,13 @@ export function validateGeneratedContent(
     /at the end of the day/i,
     /game.?changer/i,
     /level up your/i,
+    /\bbefore (?:you )?hire\b/i,
+    /\bwhat to (?:know|check)\b/i,
+    /\bquestions? (?:to ask|answered)\b/i,
+    /\b(?:top|your top) questions?\b/i,
+    /\b\d+\s+(?:things?|steps?|tips?)\b/i,
+    /\bexpert (?:insights?|tips?)\b/i,
+    /\bessentials? of\b/i,
   ];
   for (const p of GENERIC) {
     if (p.test(title) || p.test(caption)) {
@@ -1196,7 +1206,7 @@ export function validateGeneratedContent(
     [/\b(?:nearly|over|more than|almost)?\s*\d{2,5}\s+reviews?\b/i, 'review-count claim'],
   ];
   for (const [pattern, label] of unsupportedExactClaims) {
-    if (pattern.test(allText)) warnings.push(`unsupported exact claim: ${label}`);
+    if (pattern.test(customerText)) warnings.push(`unsupported exact claim: ${label}`);
   }
 
   const titleWords = new Set(
@@ -1222,6 +1232,9 @@ export function validateGeneratedContent(
   }
 
   if (ctx.topicResearch?.targetKeyword) {
+    if (post.target_keyword?.trim().toLowerCase() !== ctx.topicResearch.targetKeyword.trim().toLowerCase()) {
+      warnings.push(`target_keyword must exactly match selected keyword: "${ctx.topicResearch.targetKeyword}"`);
+    }
     const keywordTokens = ctx.topicResearch.targetKeyword.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
     const matchedKeywordTokens = keywordTokens.filter((token) => normalizedAll.includes(token));
     if (keywordTokens.length >= 2 && matchedKeywordTokens.length < Math.min(2, keywordTokens.length)) {
@@ -1246,13 +1259,21 @@ export function validateGeneratedContent(
   }
 
   if (clientPhoneDigits) {
-    const phoneMatches = [...normalizedAll.matchAll(/(?:\+?\d[\d().\-\s]{7,}\d)/g)].map((m) => normalizeDigits(m[0])).filter(Boolean);
+    const phoneMatches = [...customerText.matchAll(/(?:\+?\d[\d().\-\s]{7,}\d)/g)].map((m) => normalizeDigits(m[0])).filter(Boolean);
     if (phoneMatches.some((digits) => digits !== clientPhoneDigits)) {
       warnings.push(`phone mismatch: only the exact client phone ${ctx.client.phone} is allowed`);
     }
   }
 
   if (serviceAreas.length > 0) {
+    const selectedLocality = post.target_locality?.trim() ?? '';
+    const exactLocality = serviceAreas.find((area) => area.toLowerCase() === selectedLocality.toLowerCase());
+    if (!exactLocality) {
+      warnings.push(`target_locality must exactly match one confirmed area: ${serviceAreas.slice(0, 5).join(', ')}`);
+    }
+    if (ctx.topicResearch?.localModifier && selectedLocality.toLowerCase() !== ctx.topicResearch.localModifier.trim().toLowerCase()) {
+      warnings.push(`target_locality must exactly match selected locality: "${ctx.topicResearch.localModifier}"`);
+    }
     const locationMentioned = serviceAreas.some((area) => {
       const tokens = area.toLowerCase().split(/\s+/).filter(Boolean);
       return tokens.length > 0 && tokens.every((token) => normalizedAll.includes(token));

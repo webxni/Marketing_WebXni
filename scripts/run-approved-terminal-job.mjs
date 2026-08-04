@@ -378,12 +378,42 @@ async function runTerminalAgent(prompt, schema, plan = null) {
   const backendChain = (isBlog && TERMINAL_AGENT === 'auto')
     ? ['claude', ...preferredTerminalBackends()]
     : preferredTerminalBackends();
-  return runTerminalJsonAgent({
+  const draft = await runTerminalJsonAgent({
     prompt,
     schema,
     preferredBackend: backendChain,
     mode: isBlog ? 'blog' : 'default',
   });
+  const reviewPrompt = `${prompt}
+
+EDITORIAL REVISION PASS
+Review and improve the complete draft JSON below before it is saved. Return a complete replacement object matching the same schema, not comments or a score.
+
+DRAFT JSON:
+${JSON.stringify(draft.output)}
+
+MANDATORY REVIEW CHECKS:
+- Preserve the assigned client, content type, topic, exact target_keyword, and exact target_locality from the original brief.
+- Replace recycled title frames such as "before you hire," "what to know," "questions answered," "things to check," "expert insights," and generic checklists with a specific educational angle.
+- Remove invented prices, statistics, ratings, review counts, response times, arrival windows, guarantees, certifications, and offers.
+- If a phone appears, use only the exact client phone supplied in the original brief; otherwise omit it.
+- Keep every service and location inside the confirmed client profile. Remove unrelated industries, products, cities, and keyword phrases.
+- Make platform captions meaningfully distinct and useful on their channel; keep designer prompts in Spanish.
+- Ensure the copy contains the assigned keyword and locality naturally, is concrete enough not to fit a competitor unchanged, and remains a draft for human approval.
+
+Return only the final revised JSON object.`;
+  const reviewed = await runTerminalJsonAgent({
+    prompt: reviewPrompt,
+    schema,
+    preferredBackend: [draft.backend, ...backendChain],
+    mode: isBlog ? 'blog' : 'default',
+  });
+  return {
+    ...reviewed,
+    attempts: [...(draft.attempts ?? []), ...(reviewed.attempts ?? [])],
+    fallback_used: draft.fallback_used || reviewed.fallback_used || reviewed.backend !== draft.backend,
+    draft_backend: draft.backend,
+  };
 }
 
 async function processSlot(summary, args, total, backend) {
