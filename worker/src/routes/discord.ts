@@ -856,9 +856,9 @@ discordInternalRoute.post('/approved-jobs/:id/save-slot', async (c) => {
   if (!body.run_id || typeof body.slot_idx !== 'number' || !body.post) return c.json({ error: 'run_id, slot_idx, and post required' }, 400);
   try {
     const result = await saveGeneratedSlotResult(c.env, body.run_id, body.slot_idx, body.post, body.topic_selection ?? null);
-    const outcomeLabel = result.outcome === 'skipped' ? 'skipped' : 'saved';
+    const outcomeLabel = result.persisted === 'skipped' ? 'skipped' : 'saved';
     try {
-      await appendGenerationLog(c.env.DB, body.run_id, result.outcome === 'skipped' ? 'WARN' : 'SAVED', `Terminal slot ${body.slot_idx + 1} ${outcomeLabel}`);
+      await appendGenerationLog(c.env.DB, body.run_id, result.persisted === 'skipped' ? 'WARN' : 'SAVED', `Terminal slot ${body.slot_idx + 1} ${outcomeLabel}`);
     } catch (err) {
       console.warn(`[approved-jobs/save-slot] saved slot but could not append log: ${err instanceof Error ? err.message : String(err)}`);
     }

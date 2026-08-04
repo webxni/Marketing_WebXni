@@ -747,7 +747,7 @@ async function finalizeSlotProgress(
     .bind(runId)
     .first<{ current_slot_idx: number; total_slots: number; posts_created: number; posts_updated: number; error_log: string | null }>();
 
-  if (!updated) return { outcome: 'skipped' };
+  if (!updated) return { outcome: 'skipped', persisted: 'skipped' };
 
   const progress: GenerationProgress = {
     current_client: clientName,
@@ -774,10 +774,10 @@ async function finalizeSlotProgress(
     } catch (err) {
       await log('WARN', `Discord completion notify failed: ${str(err)}`);
     }
-    return { outcome: 'completed', totalSlots: updated.total_slots };
+    return { outcome: 'completed', persisted: outcome, totalSlots: updated.total_slots };
   }
 
-  return { outcome: 'continue', nextSlot: updated.current_slot_idx, totalSlots: updated.total_slots };
+  return { outcome: 'continue', persisted: outcome, nextSlot: updated.current_slot_idx, totalSlots: updated.total_slots };
 }
 
 export async function prepareGenerationPlan(env: Env, params: GenerationParams): Promise<{ slots: PostSlot[]; clients: ClientRow[] }> {
@@ -933,6 +933,7 @@ function mergeGeneratedContent(
 
 export interface SlotWorkResult {
   outcome: 'skipped' | 'continue' | 'completed';
+  persisted?: 'created' | 'updated' | 'skipped';
   nextSlot?: number;
   totalSlots?: number;
 }

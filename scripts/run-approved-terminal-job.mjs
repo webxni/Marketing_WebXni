@@ -451,12 +451,17 @@ async function processSlot(summary, args, total, backend) {
 
     // Critical write — the content save. A failure here means the slot is NOT
     // saved and must be retried, so this stays strict (throws → caught below).
-    await post(`/internal/discord/approved-jobs/${jobId}/save-slot`, {
+    const saveResult = await post(`/internal/discord/approved-jobs/${jobId}/save-slot`, {
       run_id: args.run_id,
       slot_idx: summary.slot_idx,
       post: generated,
       topic_selection: slotReq.topic_selection ?? null,
     });
+
+    if (saveResult?.result?.persisted === 'skipped') {
+      console.warn(`[${displayPosition}/${total}] ${prefix} skipped by save policy`);
+      return { ok: true, persisted: false, slot_idx: summary.slot_idx, prefix };
+    }
 
     // Progress log is cosmetic — best-effort so a logging hiccup never
     // turns a successfully-saved slot into a counted failure (the 80/81 bug).
@@ -467,7 +472,7 @@ async function processSlot(summary, args, total, backend) {
     });
 
     console.log(`[${displayPosition}/${total}] ${prefix} [${generatedResult.backend}]`);
-    return { ok: true, slot_idx: summary.slot_idx, prefix };
+    return { ok: true, persisted: true, slot_idx: summary.slot_idx, prefix };
   } catch (err) {
     const message = `Slot ${displayPosition} processing failed: ${err instanceof Error ? err.message : String(err)}`;
     await postBestEffort(`/internal/discord/approved-jobs/${jobId}/error`, {
@@ -495,7 +500,9 @@ async function runBatch(batch, args, total, backend) {
   let batchCompleted = 0;
   const failed = [];
   results.forEach((r, i) => {
-    if (r.status === 'fulfilled' && r.value.ok) batchCompleted++;
+    if (r.status === 'fulfilled' && r.value.ok) {
+      if (r.value.persisted !== false) batchCompleted++;
+    }
     else {
       if (r.status === 'rejected') {
         console.error('Slot error:', r.reason instanceof Error ? r.reason.message : String(r.reason));
