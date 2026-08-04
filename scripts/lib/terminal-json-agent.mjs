@@ -486,7 +486,9 @@ export async function runTerminalJsonAgent({ prompt, schema, preferredBackend, m
     }
   }
 
-  throw new Error(`All backends failed:\n${errors.join('\n')}`);
+  const failure = new Error(`All backends failed:\n${errors.join('\n')}`);
+  failure.attempts = attempts;
+  throw failure;
 }
 
 export { isBackendAvailable, expandPriority, normalizeBackendName };

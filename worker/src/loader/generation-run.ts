@@ -54,6 +54,7 @@ import {
   getLatestClientResearch,
   getLatestClientStrategy,
   getClientKeywords,
+  getClientProfileCompleteness,
   type GenerationProgress,
   buildTopicFingerprint,
 } from '../db/queries';
@@ -727,10 +728,21 @@ export async function prepareGenerationPlan(env: Env, params: GenerationParams):
 
   const provider = normalizeContentProvider(params.provider);
   const slots: PostSlot[] = [];
+  const eligibleClients: ClientRow[] = [];
   let intentEduc = 0;
   let intentSales = 0;
 
   for (const client of clients) {
+    const profile = await getClientProfileCompleteness(db, client.id);
+    if (!profile.complete) {
+      await appendGenerationError(
+        db,
+        params.run_id,
+        `${client.slug} skipped: client profile is missing ${profile.gaps.join(', ')}.`,
+      );
+      continue;
+    }
+    eligibleClients.push(client);
     let pkg = DEFAULT_PACKAGE;
     if (client.package) {
       const row = await db.prepare('SELECT * FROM packages WHERE slug = ? AND active = 1').bind(client.package).first<PackageRow>();
@@ -758,7 +770,7 @@ export async function prepareGenerationPlan(env: Env, params: GenerationParams):
   }
 
   if (slots.length === 0) throw new Error('No posts to generate for this period and client selection');
-  return { slots, clients };
+  return { slots, clients: eligibleClients };
 }
 
 function str(err: unknown): string {

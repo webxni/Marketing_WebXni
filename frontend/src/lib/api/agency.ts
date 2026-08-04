@@ -3,6 +3,7 @@ import type {
   AgencyClientCoverage,
   AgencyLog,
   AgencyOverview,
+  AgencyStrategyPlan,
   AgencySkill,
   AgencyTimelineItem,
   AgentDefinition,
@@ -57,6 +58,12 @@ export const agencyApi = {
 
   clientCoverage: () =>
     api.get<{ clients: AgencyClientCoverage[] }>('/api/agency/client-coverage'),
+
+  strategies: () =>
+    api.get<{ strategies: AgencyStrategyPlan[] }>('/api/agency/strategies'),
+
+  approveStrategy: (id: string) =>
+    api.post<{ ok: boolean; strategy: AgencyStrategyPlan }>(`/api/agency/strategies/${id}/approve`, {}),
 
   timeline: () =>
     api.get<{ items: AgencyTimelineItem[] }>('/api/agency/timeline'),

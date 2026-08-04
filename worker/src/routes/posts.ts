@@ -14,12 +14,15 @@ import {
   getClientWithConfig,
   listPostAssetsRows,
   attachAssetsToPost,
+  getLatestContentReview,
 } from '../db/queries';
+import { buildPostContentHash, hasReviewAffectingUpdate } from '../modules/content-review';
 import { normalizeContentType, parsePlatforms, resolvePlatformSelection, withImplicitBlogPlatform } from '../modules/platform-compatibility';
 import { cleanupLegacyInvalidPlatformAttempts, syncPublishedUrls } from '../modules/published-urls';
 import { runPosting } from '../loader/posting-run';
 import { runFetchUrls } from './run';
 import { normalizeBlogDraftPayload } from '../modules/blog-publishing';
+import { requirePermission } from '../middleware/auth';
 
 export const postRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -92,7 +95,7 @@ postRoutes.get('/', async (c) => {
 
 /** GET /api/posts/:id */
 postRoutes.get('/:id', async (c) => {
-  const post = await getPostById(c.env.DB, c.req.param('id'));
+  const post = await getPostById(c.env.DB, c.req.param('id') ?? '');
   if (!post) return c.json({ error: 'Not found' }, 404);
   const platforms = await getPostPlatforms(c.env.DB, post.id);
   // Join client name
@@ -308,6 +311,15 @@ postRoutes.put('/:id', async (c) => {
   if (!clientConfig) return c.json({ error: 'Client not found' }, 404);
   body = normalizeBlogDraftPayload(clientConfig, body);
 
+  if (
+    post.scheduled_by_automation === 1
+    && ['approved', 'ready', 'scheduled'].includes(post.status ?? '')
+    && hasReviewAffectingUpdate(body)
+  ) {
+    body['status'] = 'pending_approval';
+    body['ready_for_automation'] = 0;
+  }
+
   // Version snapshot
   const snap = JSON.stringify(post);
   const version = await c.env.DB
@@ -325,9 +337,19 @@ postRoutes.put('/:id', async (c) => {
 });
 
 /** POST /api/posts/:id/approve */
-postRoutes.post('/:id/approve', async (c) => {
-  const post = await getPostById(c.env.DB, c.req.param('id'));
+postRoutes.post('/:id/approve', requirePermission('posts.approve'), async (c) => {
+  const post = await getPostById(c.env.DB, c.req.param('id') ?? '');
   if (!post) return c.json({ error: 'Not found' }, 404);
+  if (post.scheduled_by_automation === 1) {
+    const review = await getLatestContentReview(c.env.DB, post.id);
+    const contentHash = await buildPostContentHash(post);
+    if (!review || !review.content_hash || review.content_hash !== contentHash) {
+      return c.json({ error: 'Editorial review is required for the current version before approval.' }, 409);
+    }
+    if (review.disposition === 'blocked' || review.severity === 'high' || review.severity === 'critical') {
+      return c.json({ error: `Editorial review blocked approval (${review.severity}). Revise the content and run review again.` }, 409);
+    }
+  }
   const mediaRequired = post.content_type !== 'blog' && post.content_type !== 'text';
   const canMoveToReady = !mediaRequired || post.asset_delivered === 1;
   const nextStatus = canMoveToReady ? 'ready' : 'approved';

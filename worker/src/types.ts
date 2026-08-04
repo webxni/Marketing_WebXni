@@ -491,6 +491,9 @@ export interface ContentReviewNoteRow {
   agent_task_id: string | null;
   severity:      string;
   notes_json:    string;
+  post_updated_at: number | null;
+  content_hash:  string | null;
+  disposition:   string;
   created_at:    number;
 }
 

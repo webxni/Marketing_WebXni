@@ -76,12 +76,15 @@ export const AGENCY_SCHEMAS = {
   socialDraft: {
     type: 'object',
     additionalProperties: false,
-    required: ['title', 'content_type', 'platforms', 'master_caption', 'platform_captions', 'designer_prompt_es', 'review_notes'],
+    required: ['title', 'content_type', 'platforms', 'master_caption', 'platform_captions', 'target_keyword', 'target_locality', 'hook_family', 'designer_prompt_es', 'review_notes'],
     properties: {
       title: { type: 'string' },
       content_type: { type: 'string', enum: ['image', 'reel', 'video'] },
       platforms: { type: 'array', items: { type: 'string' } },
       master_caption: { type: 'string' },
+      target_keyword: { type: 'string' },
+      target_locality: { type: 'string' },
+      hook_family: { type: 'string', enum: ['customer_question', 'myth_buster', 'process', 'mistake', 'comparison', 'seasonal', 'case_example', 'maintenance', 'cost_factor'] },
       platform_captions: {
         type: 'object',
         additionalProperties: false,
@@ -94,6 +97,9 @@ export const AGENCY_SCHEMAS = {
           threads:         { type: 'string' },
           google_business: { type: 'string' },
           linkedin:        { type: 'string' },
+          pinterest:       { type: 'string' },
+          bluesky:         { type: 'string' },
+          youtube:         { type: 'string' },
         },
       },
       designer_prompt_es: { type: 'string' },
@@ -110,12 +116,15 @@ export const AGENCY_SCHEMAS = {
         items: {
           type: 'object',
           additionalProperties: false,
-          required: ['title', 'content_type', 'day_of_week', 'master_caption', 'platform_captions', 'designer_prompt_es'],
+          required: ['title', 'content_type', 'day_of_week', 'master_caption', 'platform_captions', 'target_keyword', 'target_locality', 'hook_family', 'designer_prompt_es'],
           properties: {
             title: { type: 'string' },
             content_type: { type: 'string', enum: ['image', 'reel', 'video'] },
             day_of_week: { type: 'string', enum: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] },
             master_caption: { type: 'string' },
+            target_keyword: { type: 'string' },
+            target_locality: { type: 'string' },
+            hook_family: { type: 'string', enum: ['customer_question', 'myth_buster', 'process', 'mistake', 'comparison', 'seasonal', 'case_example', 'maintenance', 'cost_factor'] },
             platform_captions: {
               type: 'object',
               additionalProperties: false,
@@ -128,6 +137,9 @@ export const AGENCY_SCHEMAS = {
                 threads:         { type: 'string' },
                 google_business: { type: 'string' },
                 linkedin:        { type: 'string' },
+                pinterest:       { type: 'string' },
+                bluesky:         { type: 'string' },
+                youtube:         { type: 'string' },
               },
             },
             designer_prompt_es: { type: 'string' },
@@ -292,6 +304,41 @@ export const AGENCY_SCHEMAS = {
       },
     },
   },
+  reliabilityReview: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['severity', 'summary', 'findings', 'recommended_actions', 'code_proposals'],
+    properties: {
+      severity: { type: 'string', enum: ['info', 'low', 'medium', 'high', 'critical'] },
+      summary: { type: 'string' },
+      findings: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['severity', 'title', 'description'], properties: { severity: { type: 'string', enum: ['info', 'low', 'medium', 'high', 'critical'] }, title: { type: 'string' }, description: { type: 'string' } } } },
+      recommended_actions: { type: 'array', items: { type: 'string' } },
+      code_proposals: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['title', 'problem', 'suggested_fix', 'affected_files', 'risk'], properties: { title: { type: 'string' }, problem: { type: 'string' }, root_cause: { type: 'string' }, suggested_fix: { type: 'string' }, affected_files: { type: 'array', items: { type: 'string' } }, diff: { type: 'string' }, risk: { type: 'string', enum: ['low', 'medium', 'high'] } } } },
+    },
+  },
+  securityReview: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['severity', 'summary', 'findings', 'recommended_actions'],
+    properties: {
+      severity: { type: 'string', enum: ['info', 'low', 'medium', 'high', 'critical'] },
+      summary: { type: 'string' },
+      findings: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['severity', 'title', 'description'], properties: { severity: { type: 'string', enum: ['info', 'low', 'medium', 'high', 'critical'] }, title: { type: 'string' }, description: { type: 'string' } } } },
+      recommended_actions: { type: 'array', items: { type: 'string' } },
+    },
+  },
+  orchestratorReview: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['severity', 'summary', 'findings', 'recommended_actions', 'assignments'],
+    properties: {
+      severity: { type: 'string', enum: ['info', 'low', 'medium', 'high', 'critical'] },
+      summary: { type: 'string' },
+      findings: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['severity', 'title', 'description'], properties: { severity: { type: 'string', enum: ['info', 'low', 'medium', 'high', 'critical'] }, title: { type: 'string' }, description: { type: 'string' } } } },
+      recommended_actions: { type: 'array', items: { type: 'string' } },
+      assignments: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['agent_slug', 'action', 'priority', 'reason'], properties: { agent_slug: { type: 'string' }, action: { type: 'string' }, priority: { type: 'string', enum: ['low', 'medium', 'high'] }, reason: { type: 'string' } } } },
+    },
+  },
 };
 
 const HIGH_QUALITY_CONTENT_STANDARD = [
@@ -358,10 +405,10 @@ export function buildAgencyPrompt(kind, { client, snapshot, task }) {
   }
   if (kind === 'socialWeeklyBatch') {
     const schedule = client?.weekly_schedule_text || 'No package schedule provided.';
-    return `${shared}\n\n${PLATFORM_QUALITY_STANDARD}\n\nGenerate ALL social posts for this client's upcoming week based on their package schedule.\n\nPACKAGE SCHEDULE:\n${schedule}\n\nRULES:\n- Create exactly one post per slot in the schedule (exclude blog slots — those are handled separately).\n- Each post must use the correct content_type (image, reel, or video) and day_of_week.\n- Use the client's REAL services and local service areas. Be specific — avoid generic captions.\n- Vary the hook, service angle, locality, and CTA across posts — no repeated openings or recycled captions.\n- Each post needs a clear CTA (call, text, book, visit).\n- master_caption should be 70-140 words for image posts, 45-90 words for reels/videos, unless the platform caption requires shorter copy.\n- LOCAL SEO: weave the TARGET KEYWORDS + the city/service-area term naturally into captions (especially google_business). The package goal is ranking #1 locally — make each post locally specific. No keyword stuffing.\n- platform_captions must include facebook AND instagram with distinct tones, optimized PER PLATFORM:\n  facebook: conversational, slightly longer, emojis ok; lead with a local hook.\n  instagram: short, punchy, hashtags at the end including local + service hashtags.\n  google_business: concise, local-SEO focused, primary keyword + city near the front, no emojis.\n- designer_prompt_es: write the visual concept in Spanish for the designer using the designer prompt standard.\n- review_notes: include service used, locality used, CTA reason, and any assumption.\n- Status must remain draft — do not approve, publish, or schedule.`;
+    return `${shared}\n\n${PLATFORM_QUALITY_STANDARD}\n\nGenerate ALL social posts for this client's upcoming week based on their package schedule.\n\nPACKAGE SCHEDULE:\n${schedule}\n\nRULES:\n- Create exactly one post per slot in the schedule (exclude blog slots — those are handled separately).\n- Each post must use the correct content_type (image, reel, or video) and day_of_week.\n- Use the client's REAL services and local service areas. Be specific — avoid generic captions.\n- Vary hook_family, service angle, target_locality, target_keyword, and CTA. Do not reuse a hook family until all suitable families have been used.\n- Avoid recurring templates such as before-you-hire/call, permit checklists, project-manager checklists, and numbered things-to-know unless the brief makes that exact angle necessary.\n- Each post needs a clear CTA (call, text, book, visit).\n- master_caption should be 70-140 words for image posts, 45-90 words for reels/videos, unless the platform caption requires shorter copy.\n- LOCAL SEO: set target_keyword to one approved TARGET KEYWORD and target_locality to one confirmed service area. Use both naturally without stuffing.\n- Generate distinct platform_captions for every platform in ACTIVE DELIVERY PLATFORMS in the client context. Never copy the same caption across channels.\n- platform_captions must include facebook AND instagram with distinct tones, optimized PER PLATFORM:\n  facebook: conversational, slightly longer, emojis ok; lead with a local hook.\n  instagram: short, punchy, hashtags at the end including local + service hashtags.\n  google_business: concise, local-SEO focused, primary keyword + city near the front, no emojis.\n- designer_prompt_es: write the visual concept in Spanish for the designer using the designer prompt standard.\n- review_notes: include service used, locality used, CTA reason, and any assumption.\n- Status must remain draft — do not approve, publish, or schedule.`;
   }
   if (kind === 'socialDraft') {
-    return `${shared}\n\n${PLATFORM_QUALITY_STANDARD}\n\nDraft one reviewable social content item for this client.\n\nRULES:\n- Use the client's real services and local service areas.\n- Avoid generic captions. Be specific, local, and conversion-focused.\n- Do not start with the business name; start with a local problem, seasonal trigger, or customer situation.\n- Include a clear CTA (call, text, visit, book).\n- platform_captions must include BOTH facebook AND instagram keys with distinct, platform-appropriate text.\n  facebook: slightly longer, conversational, allows emojis.\n  instagram: shorter, punchy, hashtag-friendly.\n  tiktok: casual and energetic if relevant to client.\n  google_business: concise, local SEO focused, no emojis.\n- designer_prompt_es: write the image/video prompt in Spanish using the designer prompt standard.\n- review_notes: include service used, locality used, CTA reason, and any assumption.\n- Do not claim to publish, approve, or schedule. Status remains draft.`;
+    return `${shared}\n\n${PLATFORM_QUALITY_STANDARD}\n\nDraft one reviewable social content item for this client.\n\nRULES:\n- Use the client's real services and local service areas.\n- Avoid generic captions. Be specific, local, and conversion-focused.\n- Preserve target_keyword, target_locality, hook_family, day_of_week, and content_type during revision.\n- Do not start with the business name; start with the selected hook family and a concrete local situation.\n- Include a clear CTA (call, text, visit, book).\n- platform_captions must include BOTH facebook AND instagram keys with distinct, platform-appropriate text.\n  facebook: slightly longer, conversational, allows emojis.\n  instagram: shorter, punchy, hashtag-friendly.\n  tiktok: casual and energetic if relevant to client.\n  google_business: concise, local SEO focused, no emojis.\n- designer_prompt_es: write the image/video prompt in Spanish using the designer prompt standard.\n- review_notes: include service used, locality used, CTA reason, and any assumption.\n- Do not claim to publish, approve, or schedule. Status remains draft.`;
   }
   if (kind === 'blogWeeklyBatch') {
     const schedule = client?.blog_schedule_text || 'thursday: blog';
@@ -397,6 +444,15 @@ export function buildAgencyPrompt(kind, { client, snapshot, task }) {
       return `${base}\n\nADDITIONALLY: for recurring or code-level reliability issues, output a "code_proposals" array. Each proposal must name the problem, the likely root cause, a concrete suggested fix, the affected_files, and a risk rating. Optionally include a small unified-diff snippet in "diff". These proposals are POSTED TO DISCORD FOR A HUMAN — they are NEVER applied automatically. Do NOT attempt to edit files, run commands, deploy, or change any production state yourself. Propose only.`;
     }
     return base;
+  }
+  if (kind === 'reliabilityReview') {
+    return `${shared}\n\nAudit runtime reliability only: generation runs, approved jobs, backend attempts, leases, expected schedule timing, retries, and recorded errors. A zero-output run is not a failure when no package slot was due. Tie every finding to a run, job, or backend identifier in the supplied snapshot. Do not discuss content strategy, local git state, or security unless it directly caused a runtime failure. Code proposals are advisory and must never be applied automatically.`;
+  }
+  if (kind === 'securityReview') {
+    return `${shared}\n\nAudit security only: authentication failures, authorization boundaries, role access, bot-secret protection, approved-command whitelisting, credential exposure, MCP permissions, and sensitive logging. Do not report content throughput, local git status, copy quality, or ordinary generation failures as security findings. Redact secrets and recommend human-reviewed remediation only.`;
+  }
+  if (kind === 'orchestratorReview') {
+    return `${shared}\n\nAct as the agency operations coordinator. Prioritize only current, evidence-backed work. Convert each actionable issue into an assignment naming the responsible existing agent, one concrete action, priority, and reason. Respect profile-completeness, editorial-review, Marvin approval, and designer gates. Do not duplicate reliability/security findings and do not claim an assignment was executed.`;
   }
   return `${shared}\n\nReview the provided task/content context for factual risk, repetition, quality, and platform fit.`;
 }
