@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildPackageSlots, resolveKeywordLocality } from './generation-run';
+import { buildPackageSlots, resolveKeywordLocality, resolveKeywordService } from './generation-run';
 
 function pkg(overrides: Record<string, unknown>) {
   return {
@@ -100,5 +100,15 @@ describe('resolveKeywordLocality', () => {
 
   it('uses the deterministic fallback when the keyword has no area', () => {
     expect(resolveKeywordLocality('bathroom remodeling', ['Seattle', 'Portland'], 3)).toBe('Portland');
+  });
+});
+
+describe('resolveKeywordService', () => {
+  it('prefers the exact service phrase over a shared generic token', () => {
+    expect(resolveKeywordService(
+      ['Building lockouts', 'Car lockouts'],
+      'Car lockouts Pasadena',
+      0,
+    )).toBe('Car lockouts');
   });
 });

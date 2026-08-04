@@ -418,12 +418,13 @@ Return only the final revised JSON object.`;
 
 async function processSlot(summary, args, total, backend) {
   const prefix = `${summary.client_slug} / ${summary.publish_date} / ${summary.content_type}`;
-  setHeartbeatMessage(`Terminal AI heartbeat — working on slot ${summary.slot_idx + 1}/${total}: ${prefix}`);
+  const displayPosition = summary.display_position ?? summary.slot_idx + 1;
+  setHeartbeatMessage(`Terminal AI heartbeat — working on slot ${displayPosition}/${total}: ${prefix}`);
   let slotReq;
   try {
     slotReq = await get(`/internal/discord/approved-jobs/${jobId}/slot-request/${summary.slot_idx}`);
   } catch (err) {
-    const message = `Slot ${summary.slot_idx + 1} prompt build failed: ${err instanceof Error ? err.message : String(err)}`;
+    const message = `Slot ${displayPosition} prompt build failed: ${err instanceof Error ? err.message : String(err)}`;
     await postBestEffort(`/internal/discord/approved-jobs/${jobId}/error`, {
       run_id: args.run_id,
       client_slug: summary.client_slug,
@@ -462,13 +463,13 @@ async function processSlot(summary, args, total, backend) {
     await postBestEffort(`/internal/discord/approved-jobs/${jobId}/log`, {
       run_id: args.run_id,
       level: 'INFO',
-      message: `Saved slot ${summary.slot_idx + 1}/${total}: ${prefix}`,
+      message: `Saved slot ${displayPosition}/${total}: ${prefix}`,
     });
 
-    console.log(`[${summary.slot_idx + 1}/${total}] ${prefix} [${generatedResult.backend}]`);
+    console.log(`[${displayPosition}/${total}] ${prefix} [${generatedResult.backend}]`);
     return { ok: true, slot_idx: summary.slot_idx, prefix };
   } catch (err) {
-    const message = `Slot ${summary.slot_idx + 1} processing failed: ${err instanceof Error ? err.message : String(err)}`;
+    const message = `Slot ${displayPosition} processing failed: ${err instanceof Error ? err.message : String(err)}`;
     await postBestEffort(`/internal/discord/approved-jobs/${jobId}/error`, {
       run_id: args.run_id,
       client_slug: summary.client_slug,
@@ -528,7 +529,9 @@ async function main() {
   await loadAiConfig();
   const context = await get(`/internal/discord/approved-jobs/${jobId}/context`);
   const job = context.job;
-  const slotSummaries = Array.isArray(context.slots) ? context.slots : [];
+  const slotSummaries = Array.isArray(context.slots)
+    ? context.slots.map((slot, index) => ({ ...slot, display_position: index + 1 }))
+    : [];
 
   if (!job || !slotSummaries.length) {
     await post(`/internal/discord/approved-jobs/${jobId}/fail`, {

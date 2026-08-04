@@ -534,7 +534,14 @@ function stableSlotSeed(slot: PostSlot): number {
     .reduce((sum, char) => (sum + char.charCodeAt(0)) % 997, 0);
 }
 
-function pickServiceForKeyword(services: string[], keyword: string, seed: number): string {
+export function resolveKeywordService(services: string[], keyword: string, seed: number): string {
+  const normalizePhrase = (value: string) => ` ${value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()} `;
+  const normalizedKeywordPhrase = normalizePhrase(keyword);
+  const exactService = [...services]
+    .sort((a, b) => normalizePhrase(b).length - normalizePhrase(a).length)
+    .find((service) => normalizedKeywordPhrase.includes(normalizePhrase(service)));
+  if (exactService) return exactService;
+
   const normalizedKeyword = keyword.toLowerCase();
   const scored = services
     .map((service) => ({
@@ -625,7 +632,7 @@ function selectFallbackTopic(
 
   for (let i = 0; i < keywordPool.length; i++) {
     const keyword = keywordPool[(dateSeed + i) % keywordPool.length];
-    const service = pickServiceForKeyword(services, keyword, dateSeed + i);
+    const service = resolveKeywordService(services, keyword, dateSeed + i);
     const locality = resolveKeywordLocality(keyword, areas, dateSeed + i);
     const format = formats[(dateSeed + i) % formats.length];
     const fallback = fallbackTopicForFormat(format, service, locality || client.state || '');

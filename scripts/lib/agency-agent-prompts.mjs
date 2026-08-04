@@ -345,10 +345,12 @@ const HIGH_QUALITY_CONTENT_STANDARD = [
   'HIGH-QUALITY CONTENT STANDARD (applies to every content agent):',
   '- Write like a senior local marketer, not a generic AI assistant.',
   '- Every draft must name a real service and a real city/service area from the brief or client context.',
-  '- Prefer concrete customer situations, job types, materials, response times, neighborhoods, or seasonal needs over vague claims.',
+  '- Prefer concrete customer situations, job types, materials, project constraints, neighborhoods, or seasonal needs over vague claims.',
   '- Never invent licenses, awards, guarantees, discounts, reviews, emergency availability, years in business, service areas, or offers.',
   '- Avoid filler phrases: trusted team, top-notch, high-quality, exceptional service, your go-to, look no further, tailored solutions, transform your space, peace of mind.',
   '- Use one primary keyword naturally plus one local modifier; do not repeat the same keyword phrase more than twice in a caption or paragraph.',
+  '- If a target keyword contains a confirmed service area, target_locality and the customer-facing copy must use that same area. Never mix cities or markets in one draft.',
+  '- Reject recycled title frames such as trusted solutions, expert service, addressing concerns, top tips, choosing the right, key criteria, and generic numbered checklists. Name the concrete decision, risk, material, mechanism, or process being taught.',
   '- Make the CTA specific to the platform and business: call, request an estimate, book a consultation, ask for availability, or visit the website.',
   '- review_notes must explain why the draft is on-brand, what source/brief facts it used, and any assumption Marvin should verify.',
 ].join('\n');

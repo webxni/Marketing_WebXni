@@ -1772,13 +1772,17 @@ export async function updateAgentHeartbeat(
       `UPDATE agent_definitions
        SET heartbeat_status            = ?,
            heartbeat_message           = ?,
-           last_error                  = CASE WHEN ? IS NOT NULL THEN ? ELSE last_error END,
+           last_error                  = CASE
+                                           WHEN ? IN ('healthy', 'idle') THEN NULL
+                                           WHEN ? IS NOT NULL THEN ?
+                                           ELSE last_error
+                                         END,
            last_heartbeat_at           = ?,
            next_expected_heartbeat_at  = CASE WHEN ? THEN unixepoch() + (stale_after_minutes * 60) ELSE NULL END,
            updated_at                  = ?
        WHERE slug = ?`,
     )
-    .bind(status, message, error, error, now, active ? 1 : 0, now, slug)
+    .bind(status, message, status, error, error, now, active ? 1 : 0, now, slug)
     .run();
 }
 
@@ -3424,10 +3428,6 @@ export async function findRecentTopicConflict(
     );
     if (candidateFingerprint && rowFingerprint && candidateFingerprint === rowFingerprint) {
       return { post: row, reason: 'topic fingerprint matched recent post' };
-    }
-
-    if (candidateKeyword && row.target_keyword && normalizeTopicFingerprint(candidateKeyword) === normalizeTopicFingerprint(row.target_keyword)) {
-      return { post: row, reason: 'target keyword matched recent post' };
     }
 
     if (candidateTitle && row.title && topicSimilarity(candidateTitle, row.title) >= 0.74) {
