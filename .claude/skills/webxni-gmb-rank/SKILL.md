@@ -10,6 +10,8 @@ Required output JSON (one post): `post_type` (OFFER|UPDATE|EVENT), `title`, `bod
 
 Local-SEO engineering: inject primary + local/near-me keywords and the real service-area/city term naturally (no stuffing). Align to the client's real GMB categories and actual services. Keep it fresh, locally specific, conversion-focused; a clear CTA; GMB-appropriate body (no hashtags, minimal emoji).
 
+Quality bar: The first sentence must include service + locality. Body target is 120-220 words. Each post must use a concrete customer situation, seasonal trigger, neighborhood/service-area angle, or offer/event reason. review_notes must list keyword, locality, CTA reason, post_type reason, and assumptions.
+
 Multi-location clients: some clients (e.g. Elite Team Builders: LA/WA/OR) have a separate Google Business Profile per location. Write a DISTINCT, location-adapted post for each active profile — different neighborhoods, landmarks, and local keyword variants per location; never copy-paste across them. Each location's caption is stored in its caption_field and posts to its own upload-post profile.
 
 Posting: drafts post to Google Business (Offers/Updates/Events) through the existing upload-post automation AFTER Marvin approval + designer asset — the agent never posts, approves, marks assets delivered, or sets ready_for_automation. Never invent services, locations, hours, certifications, or offers.

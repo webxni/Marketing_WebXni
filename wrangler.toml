@@ -12,7 +12,7 @@ crons = [
   "0 20 * * FRI", # Agency weekend sequence begins — Friday 8PM UTC
   "0 8 * * SAT",  # Agency Saturday morning — research + strategy
   "0 16 * * SAT", # Agency Saturday afternoon — blog drafts + editorial
-  "0 7 * * SUN",  # Agency Sunday morning — social copy + editorial
+  "0 7 * * SUN",  # Package-driven weekly generation + GMB + editorial
   "0 16 * * SUN", # Agency Sunday afternoon — orchestrator wrap-up
   "0 16,19,22 * * MON-FRI", # Editorial review sweep — every 3h during business hours (9am/12pm/3pm PT)
 ]

@@ -39,3 +39,63 @@ describe('mcp limits', () => {
     expect(d.reason).toMatch(/designer|asset/i);
   });
 });
+
+describe('mcp auto-publish policy', () => {
+  const base = { category: 'social' as const, usedForCategory: 0, usedForPlatform: 0, limits };
+
+  describe('ai_and_text policy', () => {
+    const policy = 'ai_and_text' as const;
+
+    it('publishes text-only posts (no image)', () => {
+      const d = decidePublish({ ...base, isMedia: false, hasDeliveredMedia: false, assetSource: null, policy });
+      expect(d.allowed).toBe(true);
+    });
+
+    it('publishes AI-generated image without a designer delivery', () => {
+      const d = decidePublish({ ...base, isMedia: true, hasDeliveredMedia: false, assetSource: 'ai_generated', policy });
+      expect(d.allowed).toBe(true);
+    });
+
+    it('publishes a designer-delivered image', () => {
+      const d = decidePublish({ ...base, isMedia: true, hasDeliveredMedia: true, assetSource: 'designer', policy });
+      expect(d.allowed).toBe(true);
+    });
+
+    it('routes an externally-uploaded image to pending-approval', () => {
+      const d = decidePublish({ ...base, isMedia: true, hasDeliveredMedia: false, assetSource: 'external_upload', policy });
+      expect(d.allowed).toBe(false);
+      expect(d.reason).toMatch(/approval|designer|asset/i);
+    });
+
+    it('routes an undelivered designer asset to pending-approval', () => {
+      const d = decidePublish({ ...base, isMedia: true, hasDeliveredMedia: false, assetSource: 'designer', policy });
+      expect(d.allowed).toBe(false);
+    });
+  });
+
+  describe('strict policy keeps the old gate for all cases', () => {
+    const policy = 'strict' as const;
+
+    it('publishes text-only posts', () => {
+      const d = decidePublish({ ...base, isMedia: false, hasDeliveredMedia: false, assetSource: null, policy });
+      expect(d.allowed).toBe(true);
+    });
+
+    it('does NOT auto-publish an AI-generated image (undelivered)', () => {
+      const d = decidePublish({ ...base, isMedia: true, hasDeliveredMedia: false, assetSource: 'ai_generated', policy });
+      expect(d.allowed).toBe(false);
+    });
+
+    it('publishes only when a designer asset is delivered', () => {
+      const delivered = decidePublish({ ...base, isMedia: true, hasDeliveredMedia: true, assetSource: 'designer', policy });
+      const undelivered = decidePublish({ ...base, isMedia: true, hasDeliveredMedia: false, assetSource: 'designer', policy });
+      expect(delivered.allowed).toBe(true);
+      expect(undelivered.allowed).toBe(false);
+    });
+  });
+
+  it('defaults to strict when no policy is provided (backward compatible)', () => {
+    const d = decidePublish({ ...base, isMedia: true, hasDeliveredMedia: false, assetSource: 'ai_generated' });
+    expect(d.allowed).toBe(false);
+  });
+});

@@ -34,10 +34,13 @@
     bulkProcessing = true;
     const ids = [...selected];
     let done = 0;
+    const errors: string[] = [];
     for (const id of ids) {
-      try { await postsApi.approve(id); done++; } catch { /* continue */ }
+      try { await postsApi.approve(id); done++; }
+      catch (e) { errors.push(e instanceof Error ? e.message : String(e)); }
     }
-    toast.success(`${done} of ${ids.length} posts approved`);
+    if (done > 0) toast.success(`${done} of ${ids.length} posts approved`);
+    if (errors.length > 0) toast.error(`${errors.length} blocked: ${errors[0]}`);
     selected = new Set();
     load();
     bulkProcessing = false;
@@ -73,7 +76,7 @@
       await postsApi.approve(post.id);
       toast.success(`"${post.title ?? 'Post'}" approved ✓`);
       posts = posts.filter(p => p.id !== post.id);
-    } catch { toast.error('Failed to approve'); }
+    } catch (e) { toast.error(e instanceof Error ? e.message : 'Failed to approve'); }
     finally { actionLoading = null; }
   }
 

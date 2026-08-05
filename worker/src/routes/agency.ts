@@ -4,12 +4,15 @@ import type { ClientRow, Env, SessionData } from '../types';
 import {
   appendAgencyLog,
   getAgencyClientContentBrief,
+  getClientGenerationTopicHistory,
   createAgentFinding,
   createAgentRun,
   createAgentTask,
   createApprovedCommandJob,
   createPost,
   updatePost,
+  getPostById,
+  getPostByAutomationSlot,
   getAgencyClientCoverage,
   getAgencyLogs,
   getApprovedCommandJobById,
@@ -18,6 +21,9 @@ import {
   saveClientResearch,
   saveClientStrategy,
   saveContentReview,
+  listAgencyReviewQueueCandidates,
+  listAgencyBackendHealth,
+  recordAgencyBackendHealth,
   listAgencyOverview,
   listAgentDefinitions,
   listAgentFindings,
@@ -38,15 +44,21 @@ import {
   upsertClientProfileGap,
   createClientOfferDraft,
   createClientEventDraft,
+  listAgencyStrategyPlans,
+  approveAgencyStrategyPlan,
 } from '../db/queries';
+import { buildPostContentHash } from '../modules/content-review';
 import { redactSecrets } from '../modules/redaction';
 import { resolveBlogTemplateConfig } from '../modules/blog-templates';
 import { syncUploadPostClientPlatforms } from '../modules/uploadpost-platform-sync';
 import { UploadPostClient } from '../services/uploadpost';
 import { discordSend } from '../services/discord';
+import { requirePermission } from '../middleware/auth';
 
 export const agencyRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 export const agencyInternalRoutes = new Hono<{ Bindings: Env; Variables: Record<string, unknown> }>();
+
+agencyRoutes.use('*', requirePermission('automation.generate'));
 
 const AGENT_COMMANDS: Record<string, string> = {
   'agency-orchestrator': 'agency_orchestrator',
@@ -146,6 +158,21 @@ agencyRoutes.get('/tasks/:id', async (c) => {
 });
 agencyRoutes.get('/findings', async (c) => c.json({ findings: await listAgentFindings(c.env.DB) }));
 agencyRoutes.get('/client-coverage', async (c) => c.json({ clients: await getAgencyClientCoverage(c.env.DB) }));
+agencyRoutes.get('/strategies', async (c) => c.json({ strategies: await listAgencyStrategyPlans(c.env.DB) }));
+
+agencyRoutes.post('/strategies/:id/approve', requirePermission('posts.approve'), async (c) => {
+  const strategy = await approveAgencyStrategyPlan(c.env.DB, c.req.param('id') ?? '');
+  if (!strategy) return c.json({ error: 'Strategy plan not found' }, 404);
+  await writeAuditLog(c.env.DB, {
+    user_id: c.get('user').userId,
+    action: 'agency.strategy.approve',
+    entity_type: 'client_strategy_plan',
+    entity_id: strategy.id,
+    new_value: { client_id: strategy.client_id, period_start: strategy.period_start, period_end: strategy.period_end },
+    ip: c.req.header('CF-Connecting-IP') ?? c.req.header('X-Forwarded-For') ?? undefined,
+  });
+  return c.json({ ok: true, strategy });
+});
 agencyRoutes.get('/timeline', async (c) => c.json({ items: TIMELINE.map((item) => ({ ...item, status: timelineStatus(item.day) })) }));
 agencyRoutes.get('/logs', async (c) => c.json({ logs: await getAgencyLogs(c.env.DB) }));
 agencyRoutes.get('/skills', async (c) => c.json({ skills: agencySkills() }));
@@ -206,12 +233,21 @@ async function enqueueAgent(c: Context<{ Bindings: Env; Variables: { user: Sessi
     });
   if (!task) return c.json({ error: 'Task not found' }, 404);
 
+  let taskInput: Record<string, unknown> = {};
+  try {
+    const parsedInput = JSON.parse(task.input_json ?? '{}') as unknown;
+    if (parsedInput && typeof parsedInput === 'object' && !Array.isArray(parsedInput)) {
+      taskInput = parsedInput as Record<string, unknown>;
+    }
+  } catch { /* retain empty task input */ }
+
   const job = await createApprovedCommandJob(c.env.DB, {
     generation_run_id: null,
     command_name: commandName,
     provider: agent.default_backend,
     requested_by: c.get('user').userId,
     args_json: JSON.stringify({
+      ...taskInput,
       agent_slug: agentSlug,
       task_id: task.id,
       source: 'agency_dashboard',
@@ -332,6 +368,7 @@ const internalReviewSchema = z.object({
   blog_id: z.string().nullable().optional(),
   severity: z.enum(['info', 'low', 'medium', 'high', 'critical']),
   notes_json: z.record(z.unknown()),
+  disposition: z.enum(['reviewed', 'blocked']).optional(),
 });
 
 const internalDraftPostSchema = z.object({
@@ -350,10 +387,16 @@ const internalDraftPostSchema = z.object({
   slug: z.string().nullable().optional(),
   target_keyword: z.string().nullable().optional(),
   target_locality: z.string().nullable().optional(),
+  youtube_title: z.string().nullable().optional(),
+  youtube_description: z.string().nullable().optional(),
+  video_script: z.string().nullable().optional(),
   ai_image_prompt: z.string().nullable().optional(),
   ai_video_prompt: z.string().nullable().optional(),
   skarleth_notes: z.string().nullable().optional(),
   publish_date: z.string().nullable().optional(),
+  automation_slot_key: z.string().min(8).max(240).nullable().optional(),
+  merge_existing: z.boolean().optional(),
+  require_existing_slot: z.boolean().optional(),
   // GMB structured fields (§2) — populated by the GMB Rank agent so posting via
   // upload-post can publish Offers/Updates/Events after the gates pass.
   gbp_topic_type: z.enum(['STANDARD', 'EVENT', 'OFFER']).nullable().optional(),
@@ -521,7 +564,7 @@ agencyInternalRoutes.post('/enqueue', async (c) => {
 
 agencyInternalRoutes.post('/snapshot', async (c) => {
   if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
-  const [overview, agents, tasks, findings, coverage, logs, approved_jobs, system_health] = await Promise.all([
+  const [overview, agents, tasks, findings, coverage, logs, approved_jobs, system_health, backend_health] = await Promise.all([
     listAgencyOverview(c.env.DB),
     listAgentDefinitions(c.env.DB),
     listAgentTasks(c.env.DB, 50),
@@ -530,6 +573,7 @@ agencyInternalRoutes.post('/snapshot', async (c) => {
     getAgencyLogs(c.env.DB, 40),
     listApprovedCommandJobs(c.env.DB, 30),
     getAgentSystemHealthSnapshot(c.env.DB, { lookbackHours: 168 }),
+    listAgencyBackendHealth(c.env.DB),
   ]);
   return c.json({
     ok: true,
@@ -554,6 +598,7 @@ agencyInternalRoutes.post('/snapshot', async (c) => {
           error_log: job.error_log ? redactSecrets(job.error_log) : null,
         })),
       system_health,
+      backend_health,
     },
   });
 });
@@ -653,49 +698,101 @@ agencyInternalRoutes.post('/strategy-plan', async (c) => {
 agencyInternalRoutes.get('/review-queue', async (c) => {
   if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
   const limit = Math.min(Math.max(Number(c.req.query('limit') ?? '8'), 1), 25);
-  // Recent automation drafts (blog + social) that have no content review note yet.
-  // The status list must cover the whole pre-publish lifecycle: blogs are born
-  // 'pending_approval'/'generated' and move quickly to 'ready'/'approved' once
-  // Marvin signs off — but they should still be reviewed (a high-severity note
-  // lets Marvin pull a post before it goes out). We deliberately EXCLUDE
-  // 'posted'/'scheduled'/'rejected'/'cancelled' (too late or out of scope).
-  // The LEFT JOIN ... r.id IS NULL guard means each post is reviewed at most
-  // once, so widening the status set cannot cause repeat review spam.
-  const rows = await c.env.DB.prepare(
-    `SELECT p.id, c.canonical_name AS client_name, p.content_type, p.title,
-            p.target_keyword, p.blog_excerpt, p.master_caption,
-            p.cap_facebook, p.cap_instagram, p.cap_google_business,
-            substr(p.blog_content, 1, 4000) AS blog_content
-     FROM posts p
-     JOIN clients c ON c.id = p.client_id
-     LEFT JOIN content_review_notes r ON r.post_id = p.id
-     WHERE p.status IN ('draft', 'pending_approval', 'generated', 'ready', 'approved')
-       AND p.scheduled_by_automation = 1
-       AND p.created_at >= unixepoch() - 1209600
-       AND r.id IS NULL
-     ORDER BY p.created_at DESC
-     LIMIT ?`,
-  ).bind(limit).all<Record<string, unknown>>();
-  return c.json({ items: rows.results ?? [] });
+  const forceReviewBefore = Math.max(0, Number(c.req.query('force_before') ?? 0) || 0);
+  const candidates = await listAgencyReviewQueueCandidates(c.env.DB, 150);
+  const items: Array<Record<string, unknown>> = [];
+  const clientBriefs = new Map<string, Awaited<ReturnType<typeof getAgencyClientContentBrief>>>();
+  const clientRecentTopics = new Map<string, Awaited<ReturnType<typeof getClientGenerationTopicHistory>>>();
+  for (const post of candidates) {
+    const contentHash = await buildPostContentHash(post);
+    const hasCurrentReview = post.latest_review_hash === contentHash;
+    const reviewIsNewEnough = (post.latest_review_created_at ?? 0) >= forceReviewBefore;
+    if (hasCurrentReview && (forceReviewBefore === 0 || reviewIsNewEnough)) continue;
+    let clientBrief = clientBriefs.get(post.client_id);
+    if (!clientBrief) {
+      clientBrief = await getAgencyClientContentBrief(c.env.DB, post.client_id, { includeRecentTopics: false });
+      clientBriefs.set(post.client_id, clientBrief);
+    }
+    let recentTopics = clientRecentTopics.get(post.client_id);
+    if (!recentTopics) {
+      recentTopics = await getClientGenerationTopicHistory(c.env.DB, post.client_id, 60);
+      clientRecentTopics.set(post.client_id, recentTopics);
+    }
+    items.push({
+      id: post.id,
+      client_slug: post.client_slug,
+      client_name: post.client_name,
+      content_brief: clientBrief.brief,
+      recent_topics: recentTopics.filter((topic) => topic.id !== post.id).slice(0, 24),
+      package: post.package,
+      package_violation: post.package_violation,
+      content_type: post.content_type,
+      title: post.title,
+      platforms: post.platforms,
+      publish_date: post.publish_date,
+      status: post.status,
+      target_keyword: post.target_keyword,
+      target_locality: post.target_locality,
+      blog_excerpt: post.blog_excerpt,
+      master_caption: post.master_caption,
+      cap_facebook: post.cap_facebook,
+      cap_instagram: post.cap_instagram,
+      cap_google_business: post.cap_google_business,
+      cap_linkedin: post.cap_linkedin,
+      cap_x: post.cap_x,
+      cap_threads: post.cap_threads,
+      cap_tiktok: post.cap_tiktok,
+      cap_pinterest: post.cap_pinterest,
+      cap_bluesky: post.cap_bluesky,
+      caption_lengths: {
+        x: post.cap_x?.length ?? 0,
+        threads: post.cap_threads?.length ?? 0,
+        tiktok: post.cap_tiktok?.length ?? 0,
+        pinterest: post.cap_pinterest?.length ?? 0,
+        bluesky: post.cap_bluesky?.length ?? 0,
+      },
+      youtube_title: post.youtube_title,
+      youtube_description: post.youtube_description,
+      video_script: post.video_script,
+      ai_image_prompt: post.ai_image_prompt,
+      ai_video_prompt: post.ai_video_prompt,
+      blog_content: post.blog_content?.slice(0, 40000) ?? null,
+      content_hash: contentHash,
+      post_updated_at: post.updated_at,
+    });
+    if (items.length >= limit) break;
+  }
+  return c.json({ items });
 });
 
 agencyInternalRoutes.post('/content-review', async (c) => {
   if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
   const parsed = internalReviewSchema.safeParse(await c.req.json().catch(() => ({})));
   if (!parsed.success) return c.json({ error: 'Invalid input', issues: parsed.error.issues }, 400);
+  const post = parsed.data.post_id ? await getPostById(c.env.DB, parsed.data.post_id) : null;
+  if (parsed.data.post_id && !post) return c.json({ error: 'Post not found' }, 404);
+  const contentHash = post ? await buildPostContentHash(post) : null;
+  const disposition = parsed.data.disposition
+    ?? (parsed.data.severity === 'high' || parsed.data.severity === 'critical' ? 'blocked' : 'reviewed');
   await saveContentReview(c.env.DB, {
     post_id: parsed.data.post_id ?? null,
     blog_id: parsed.data.blog_id ?? null,
     agent_task_id: parsed.data.task_id ?? null,
     severity: parsed.data.severity,
     notes_json: JSON.stringify(parsed.data.notes_json),
+    post_updated_at: post?.updated_at ?? null,
+    content_hash: contentHash,
+    disposition,
   });
+  if (post && disposition === 'blocked' && ['approved', 'ready', 'scheduled'].includes(post.status ?? '')) {
+    await updatePost(c.env.DB, post.id, { status: 'pending_approval', ready_for_automation: 0 });
+  }
   await appendAgencyLog(c.env.DB, {
     agent_slug: parsed.data.agent_slug,
     task_id: parsed.data.task_id ?? null,
     status: 'saved',
     step: 'content-review',
-    summary: `${parsed.data.severity.toUpperCase()} content review note saved.`,
+    summary: `${parsed.data.severity.toUpperCase()} content review note saved${post && disposition === 'blocked' ? '; automation approval blocked' : ''}.`,
   });
   return c.json({ ok: true });
 });
@@ -705,19 +802,17 @@ agencyInternalRoutes.post('/draft-post', async (c) => {
   const parsed = internalDraftPostSchema.safeParse(await c.req.json().catch(() => ({})));
   if (!parsed.success) return c.json({ error: 'Invalid input', issues: parsed.error.issues }, 400);
 
-  // Deduplication guard: skip if a draft already exists for this client/date/type slot
+  let existing = null;
   if (parsed.data.publish_date) {
     const datePrefix = parsed.data.publish_date.slice(0, 10);
-    const existing = await c.env.DB
-      .prepare(
-        `SELECT id FROM posts
-         WHERE client_id = ? AND content_type = ? AND status = 'draft'
-           AND substr(publish_date, 1, 10) = ? AND scheduled_by_automation = 1
-         LIMIT 1`,
-      )
-      .bind(parsed.data.client_id, parsed.data.content_type, datePrefix)
-      .first<{ id: string }>();
-    if (existing) {
+    existing = await getPostByAutomationSlot(
+      c.env.DB,
+      parsed.data.client_id,
+      parsed.data.automation_slot_key ?? '',
+      datePrefix,
+      parsed.data.content_type,
+    );
+    if (existing && !parsed.data.merge_existing) {
       await appendAgencyLog(c.env.DB, {
         agent_slug: parsed.data.agent_slug,
         task_id: parsed.data.task_id ?? null,
@@ -750,8 +845,11 @@ agencyInternalRoutes.post('/draft-post', async (c) => {
     });
     return c.json({ ok: true, skipped: true, reason: 'empty_content' });
   }
+  if (parsed.data.require_existing_slot && !existing) {
+    return c.json({ ok: true, skipped: true, reason: 'package_slot_not_generated' });
+  }
 
-  const post = await createPost(c.env.DB, {
+  const postData = {
     client_id: parsed.data.client_id,
     title: parsed.data.title,
     status: 'draft',
@@ -774,6 +872,9 @@ agencyInternalRoutes.post('/draft-post', async (c) => {
     slug: parsed.data.slug ?? null,
     target_keyword: parsed.data.target_keyword ?? null,
     target_locality: parsed.data.target_locality ?? null,
+    youtube_title: parsed.data.youtube_title ?? null,
+    youtube_description: parsed.data.youtube_description ?? null,
+    video_script: parsed.data.video_script ?? null,
     ai_image_prompt: parsed.data.ai_image_prompt ?? null,
     ai_video_prompt: parsed.data.ai_video_prompt ?? null,
     skarleth_notes: parsed.data.skarleth_notes ?? null,
@@ -781,7 +882,51 @@ agencyInternalRoutes.post('/draft-post', async (c) => {
     ready_for_automation: 0,
     asset_delivered: 0,
     scheduled_by_automation: 1,
-  });
+    automation_slot_key: parsed.data.automation_slot_key ?? null,
+  };
+
+  if (existing && parsed.data.merge_existing) {
+    let existingPlatforms: string[] = [];
+    try { existingPlatforms = JSON.parse(existing.platforms ?? '[]') as string[]; } catch { existingPlatforms = []; }
+    const mergedPlatforms = [...new Set([...existingPlatforms, ...parsed.data.platforms])];
+    const mergeUpdates: Record<string, unknown> = {
+      platforms: JSON.stringify(mergedPlatforms),
+      cap_google_business: captions.google_business ?? existing.cap_google_business,
+      target_keyword: existing.target_keyword ?? parsed.data.target_keyword ?? null,
+      target_locality: existing.target_locality ?? parsed.data.target_locality ?? null,
+      automation_slot_key: existing.automation_slot_key ?? parsed.data.automation_slot_key ?? null,
+    };
+    if (existing.status === 'approved' || existing.status === 'ready' || existing.status === 'scheduled') {
+      mergeUpdates.status = 'pending_approval';
+      mergeUpdates.ready_for_automation = 0;
+    }
+    const structuredUpdates: Record<string, string | null> = {};
+    if (parsed.data.gbp_topic_type) structuredUpdates.gbp_topic_type = parsed.data.gbp_topic_type;
+    if (parsed.data.gbp_cta_type) structuredUpdates.gbp_cta_type = parsed.data.gbp_cta_type;
+    if (parsed.data.gbp_cta_url) structuredUpdates.gbp_cta_url = parsed.data.gbp_cta_url;
+    if (parsed.data.gbp_coupon_code) structuredUpdates.gbp_coupon_code = parsed.data.gbp_coupon_code;
+    if (parsed.data.gbp_redeem_url) structuredUpdates.gbp_redeem_url = parsed.data.gbp_redeem_url;
+    if (parsed.data.gbp_terms) structuredUpdates.gbp_terms = parsed.data.gbp_terms;
+    if (parsed.data.gbp_event_title) structuredUpdates.gbp_event_title = parsed.data.gbp_event_title;
+    if (parsed.data.gbp_event_start_date) structuredUpdates.gbp_event_start_date = parsed.data.gbp_event_start_date;
+    if (parsed.data.gbp_event_end_date) structuredUpdates.gbp_event_end_date = parsed.data.gbp_event_end_date;
+    if (parsed.data.location_captions) {
+      for (const [field, value] of Object.entries(parsed.data.location_captions)) {
+        if (ALLOWED_LOCATION_CAPTION_FIELDS.has(field) && value.trim()) structuredUpdates[field] = value;
+      }
+    }
+    await updatePost(c.env.DB, existing.id, { ...mergeUpdates, ...structuredUpdates });
+    await appendAgencyLog(c.env.DB, {
+      agent_slug: parsed.data.agent_slug,
+      task_id: parsed.data.task_id ?? null,
+      status: 'saved',
+      step: 'draft-post',
+      summary: `Merged ${parsed.data.content_type} channel content into package slot ${parsed.data.automation_slot_key ?? existing.id}.`,
+    });
+    return c.json({ ok: true, post_id: existing.id, merged: true });
+  }
+
+  const post = await createPost(c.env.DB, postData);
 
   // GMB structured fields + per-location captions are set via updatePost (keeps
   // createPost's column list untouched). Never changes gates: status stays draft,
@@ -815,6 +960,29 @@ agencyInternalRoutes.post('/draft-post', async (c) => {
     summary: `Draft ${post.content_type} post created for review: ${post.title}`,
   });
   return c.json({ ok: true, post_id: post.id });
+});
+
+agencyInternalRoutes.get('/backend-health', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  return c.json({ backends: await listAgencyBackendHealth(c.env.DB), now: Math.floor(Date.now() / 1000) });
+});
+
+agencyInternalRoutes.post('/backend-health', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const parsed = z.object({
+    backend: z.string().min(1).max(40),
+    status: z.enum(['completed', 'failed']),
+    error: z.string().nullable().optional(),
+    cooldown_seconds: z.number().int().min(60).max(86400).optional(),
+  }).safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json({ error: 'Invalid input', issues: parsed.error.issues }, 400);
+  await recordAgencyBackendHealth(c.env.DB, {
+    backend: parsed.data.backend,
+    status: parsed.data.status,
+    error: parsed.data.error,
+    cooldownSeconds: parsed.data.cooldown_seconds,
+  });
+  return c.json({ ok: true });
 });
 
 agencyInternalRoutes.get('/client-brief/:clientId', async (c) => {
@@ -1083,8 +1251,8 @@ agencyInternalRoutes.post('/keywords', async (c) => {
   const rows = (Array.isArray(body.keywords) ? body.keywords : [])
     .filter((k) => k && typeof k.keyword === 'string' && k.keyword.trim())
     .map((k) => ({ ...k, keyword: String(k.keyword).trim() }));
-  const saved = await upsertClientKeywords(c.env.DB, body.client_id, rows);
-  return c.json({ ok: true, saved });
+  const result = await upsertClientKeywords(c.env.DB, body.client_id, rows);
+  return c.json({ ok: true, ...result });
 });
 
 // §5: persist profile gaps (needs_info) and recorded assumptions for a client.

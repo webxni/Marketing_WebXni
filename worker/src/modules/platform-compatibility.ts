@@ -51,12 +51,12 @@ export const PLATFORM_RULES: Record<SupportedContentType, PlatformCompatibilityR
     excluded: ['tiktok', 'youtube', 'website_blog'],
   },
   reel: {
-    allowed: ['instagram', 'facebook', 'tiktok', 'youtube', 'threads', 'google_business'],
-    excluded: ['website_blog', 'pinterest', 'linkedin', 'x', 'bluesky'],
+    allowed: ['instagram', 'facebook', 'tiktok', 'youtube', 'threads'],
+    excluded: ['website_blog', 'pinterest', 'linkedin', 'x', 'bluesky', 'google_business'],
   },
   video: {
-    allowed: ['facebook', 'instagram', 'youtube', 'linkedin', 'x', 'google_business'],
-    excluded: ['website_blog', 'tiktok', 'pinterest', 'bluesky', 'threads'],
+    allowed: ['facebook', 'instagram', 'youtube', 'linkedin', 'x'],
+    excluded: ['website_blog', 'tiktok', 'pinterest', 'bluesky', 'threads', 'google_business'],
   },
   blog: {
     allowed: ['website_blog'],
@@ -141,9 +141,10 @@ export function getClientActivePlatforms(clientPlatforms: ClientPlatformRow[]): 
 export function withImplicitBlogPlatform<T extends Pick<ClientRow, 'id' | 'wp_base_url' | 'wp_url'> | null | undefined>(
   clientPlatforms: ClientPlatformRow[],
   client: T,
+  allowPackageDraft = false,
 ): ClientPlatformRow[] {
   const hasWordPress = Boolean(String(client?.wp_base_url ?? client?.wp_url ?? '').trim());
-  if (!hasWordPress) return clientPlatforms;
+  if (!hasWordPress && !allowPackageDraft) return clientPlatforms;
   if (clientPlatforms.some((platform) => normalizePlatform(platform.platform) === 'website_blog')) return clientPlatforms;
 
   return [
@@ -167,7 +168,48 @@ export function withImplicitBlogPlatform<T extends Pick<ClientRow, 'id' | 'wp_ba
       paused: 0,
       paused_reason: null,
       paused_since: null,
-      notes: 'Implicit website_blog platform from WordPress configuration',
+      notes: hasWordPress
+        ? 'Implicit website_blog platform from WordPress configuration'
+        : 'Implicit website_blog platform for package draft generation',
+    },
+  ];
+}
+
+export function withImplicitGbpPlatform(
+  clientPlatforms: ClientPlatformRow[],
+  gbpLocations: ClientGbpLocationRow[],
+  clientId: string,
+): ClientPlatformRow[] {
+  if (!gbpLocations.some((location) => location.paused !== 1)) return clientPlatforms;
+  if (clientPlatforms.some((platform) => (
+    normalizePlatform(platform.platform) === 'google_business'
+    && platform.paused !== 1
+    && platform.connection_status !== 'failed'
+  ))) return clientPlatforms;
+
+  const primaryLocation = gbpLocations.find((location) => location.paused !== 1)!;
+  return [
+    ...clientPlatforms,
+    {
+      id: `implicit_google_business_${clientId}`,
+      client_id: clientId,
+      platform: 'google_business',
+      account_id: null,
+      username: primaryLocation.upload_post_profile,
+      page_id: null,
+      upload_post_board_id: null,
+      upload_post_location_id: primaryLocation.location_id,
+      privacy_level: null,
+      privacy_status: null,
+      profile_url: null,
+      profile_username: primaryLocation.upload_post_profile,
+      connection_status: 'connected',
+      yt_channel_id: null,
+      linkedin_urn: null,
+      paused: 0,
+      paused_reason: null,
+      paused_since: null,
+      notes: 'Implicit google_business platform from active GBP locations',
     },
   ];
 }
@@ -275,9 +317,13 @@ export function getGbpPostedKey(location: Pick<ClientGbpLocationRow, 'label' | '
   return byKey[normalized] ?? `gbp_${normalizePlatform(location.label)}`;
 }
 
-export function isPostContentComplete(post: PostRow, clientGbpLocations: ClientGbpLocationRow[] = []): boolean {
+export function isPostContentComplete(
+  post: PostRow,
+  clientGbpLocations: ClientGbpLocationRow[] = [],
+  expectedPlatforms?: string[],
+): boolean {
   const contentType = normalizeContentType(post.content_type, post.asset_type);
-  const selectedPlatforms = parsePlatforms(post.platforms);
+  const selectedPlatforms = expectedPlatforms ? uniquePlatforms(expectedPlatforms) : parsePlatforms(post.platforms);
   if (!String(post.master_caption ?? '').trim()) return false;
 
   if (contentType === 'blog') {

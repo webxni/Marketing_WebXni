@@ -101,29 +101,29 @@ export const CLIENT_EXPERTISE = `
 
 ### Locksmith (auto / residential / commercial)
 - Buyer jobs: emergency lockout, rekey after move-in, smart-lock upgrade, key duplication, ignition repair.
-- Trust signals: licensed/bonded/insured, 24/7 availability, sub-30-min response, mobile service.
-- Platform style: GBP factual + city + phone; Facebook mini-case-study; Instagram photo-first hook; LinkedIn commercial (property managers, HOAs).
-- Blog angles: "locked out in [city]", "are smart locks secure", "cost of rekey in [city] 2026".
+- Trust signals when explicitly confirmed: licensing/insurance, operating hours, mobile service, and documented response practices. Never invent a response time.
+- Platform style: GBP factual + confirmed city + exact profile phone when needed; Facebook mini-case-study; Instagram photo-first hook; LinkedIn commercial (property managers, HOAs).
+- Blog angles: "locked out in [city]", "are smart locks secure", "factors that shape a rekey in [city]".
 - Never imply bypass of a lock the customer doesn't own.
 
 ### Builder / general contractor / remodeler
 - Buyer jobs: kitchen/bath remodel, home addition, ADU, whole-home build.
-- Trust signals: licensed GC, permits pulled, warranty (5-10yr), portfolio proof.
-- Platform style: Instagram portfolio + #beforeafter; Pinterest aspirational finished rooms; LinkedIn commercial + team culture; GBP local neighborhood + testimonials.
-- Blog angles: "how long does a [kitchen] remodel take in [city]", "permits for [project] in [state]", "cost breakdown [room] in [city] 2026".
+- Trust signals when explicitly confirmed: license status, permit process, project management, written warranty terms, and portfolio proof.
+- Platform style: Instagram portfolio + #beforeafter; Pinterest aspirational finished rooms; LinkedIn commercial + team culture; GBP local neighborhood + sourced project details.
+- Blog angles: "factors that shape a [kitchen] remodel timeline in [city]", "permits for [project] in [state]", "cost factors for [room] remodeling in [city]".
 
 ### Roofing (residential / commercial / storm damage)
 - Buyer jobs: replacement, storm repair, inspection, leak repair, new-construction.
-- Trust signals: GAF/Owens Corning certification, insurance-claim help, material+labor warranty.
+- Trust signals only when explicitly confirmed: factory certifications, insurance-claim assistance, written warranty terms, and crew experience.
 - Seasonality: storm content Q1+Q4, inspections shoulder seasons, cool-roof summer.
 - Platform style: GBP hyperlocal storm CTA; Facebook neighborhood spotlights; Instagram drone + shingle close-ups; Pinterest style guides.
-- Blog angles: "5 warning signs your [city] roof needs replacement", "insurance claim help for storm-damaged roofs in [state]", "shingle vs metal vs tile for [climate]".
+- Blog angles: "warning signs your [city] roof needs attention", "documenting storm damage in [state]", "shingle vs metal vs tile for [climate]".
 
 ### Marketing agency / AI / SaaS (WebXni itself)
 - Buyer: small-business owners, agency operators, in-house marketers (skeptical of agencies).
-- Trust signals: case studies with numbers, retention %, platform certifications, real team.
+- Trust signals only when explicitly confirmed: sourced case-study metrics, retention data, platform certifications, and real team photos.
 - Platform style: LinkedIn thought leadership (300-600 chars, frameworks); X one-idea posts; Instagram BTS + carousels; blog long-form with client-work examples.
-- Blog angles: "how [workflow] saved [client type] [X] hours/week", "the [X] tools we use", "before you hire an agency, ask [X]".
+- Blog angles: "how [workflow] changes the week for [client type]", "the tools we use for [workflow]", "how to compare an agency's reporting process".
 - Never write generic "digital marketing is important" fluff — always lead with a specific outcome.
 
 ### Default / unknown industry
@@ -135,7 +135,7 @@ export const CLIENT_EXPERTISE = `
 - Instagram: 150-300 chars + 10-15 hashtags on new lines.
 - Facebook: 200-400 chars, conversational, 1 emoji max.
 - LinkedIn: 200-400 chars, insight-driven, ≤5 hashtags.
-- Google Business: 100-250 chars, NO hashtags, always include city + phone.
+- Google Business: 100-250 chars, NO hashtags, always include a confirmed city; use only the exact profile phone when needed.
 - Pinterest: 150-200 char keyword-rich description + 5-8 hashtags.
 - X / Threads: ≤280 chars, one idea.
 - TikTok: 150-250 chars, trending hashtags, hook in first line.
@@ -161,9 +161,9 @@ Each caption MUST score YES on all of the following. If ANY fails, rewrite and c
 |-------|----------|
 | Service named | At least one specific service from client.services (not just "our services") |
 | Area named | At least one city/neighborhood from client.service_areas |
-| CTA present | Phone number OR website OR explicit action ("call us", "free estimate", "book now"); if a phone appears, it must be the exact client phone |
+| CTA present | Phone number OR website OR approved explicit action ("call us", "request an estimate", "book now"); if a phone appears, it must be the exact client phone |
 | Voice matches | Tone matches client.brand_voice (professional ≠ casual ≠ neighborhood) |
-| Platform format | Instagram has hashtags; GBP has no hashtags + phone; X/Twitter ≤280 chars |
+| Platform format | Instagram has hashtags; GBP has no hashtags and a confirmed city; X/Twitter ≤280 chars |
 | No fluff | No sentences that say nothing ("we are dedicated to excellence" without proof) |
 
 ### Step 3 — Rotate service + area + hook per post (batch context)
@@ -172,7 +172,7 @@ Same service three posts in a row = fail. Same area three posts in a row = fail.
 
 ### Step 4 — Lead generation power check
 Every post must end with one concrete next step and use the exact client phone whenever a phone CTA is chosen:
-- Home services: "📞 [phone] for free estimate" OR "Free inspection → [phone]"
+- Home services: use the approved client CTA; never add "free" or an inspection offer unless the profile authorizes it
 - Beauty: "Book your session → [link]" OR "DM to reserve"
 - Agency/SaaS: "Free audit → [website]" OR "Schedule a call → [link]"
 
@@ -195,10 +195,10 @@ export const BUYER_PERSONAS = `
 ## Buyer personas
 
 - **Emergency Caller** (locksmiths, leak repair): stressed, phone-searching, wants fast response + phone CTA. Hook: "Locked out at 2am?" CTA: CALL.
-- **Homeowner Planner** (remodelers, builders, roof replacement): researching 3-6 months, wants portfolio + timeline + permits. CTA: free estimate / portfolio.
+- **Homeowner Planner** (remodelers, builders, roof replacement): researching 3-6 months, wants portfolio + timeline + permits. CTA: approved estimate/consultation CTA or portfolio.
 - **Commercial Property Manager** (multi-site services): budget-accountable, wants reliability + multi-location + invoicing. CTA: multi-site quote / PM program.
 - **Status-Driven Remodeler** (kitchen/bath/ADU): aesthetics + resale value. CTA: finished project / design consult.
-- **Local Small-Business Buyer** (WebXni's own buyer): skeptical of agencies, wants specific ROI + no long contracts + a real human. CTA: 15-min audit / case study.
+- **Local Small-Business Buyer** (WebXni's own buyer): skeptical of agencies, wants sourced ROI evidence + clear terms + a real human. CTA: approved audit / case study.
 
 Writing framework (every caption):
 1. Sentence 1: name the specific pain (concrete, not abstract).
@@ -296,7 +296,7 @@ Applies to: locksmiths, roofing-leak repair, burst-pipe plumbers, 24/7 locksmith
 - **State:** stressed, time-compressed, searching from a phone, can't wait.
 - **Wants:** fast response, clear pricing, "are you open now?", reassurance.
 - **Hook:** "Locked out at 2 am?" / "Water dripping from your ceiling?"
-- **CTA:** \`CALL\` — include phone number prominently.
+- **CTA:** \`CALL\` when approved — include only the exact phone from the client profile.
 - **Avoid:** long explanations; save those for the blog.
 
 ## The Homeowner Planner
@@ -304,7 +304,7 @@ Applies to: remodelers, builders, roof replacement, solar, large-ticket HVAC.
 - **State:** researching 3-6 months before purchase, comparing 2-3 contractors, risk-averse.
 - **Wants:** portfolio proof, realistic timeline, permit + insurance clarity, references, warranty terms.
 - **Hook:** "Thinking about remodeling your [kitchen]?" / "Planning a 2026 [project]?"
-- **CTA:** book a free estimate / see our portfolio.
+- **CTA:** use the approved estimate or consultation CTA; do not add "free" unless the client profile authorizes it.
 - **Avoid:** pressure tactics; build trust with specifics instead.
 
 ## The Commercial Property Manager
@@ -312,20 +312,20 @@ Applies to: multi-site locksmiths, commercial roofing, commercial builders, acce
 - **State:** juggling budget + owner/HOA reporting, needs a vendor they can trust with 10+ properties.
 - **Wants:** reliability, multi-location coverage, invoiced billing, after-hours response, speed.
 - **Hook:** "Multi-property portfolio? Here's what to ask your [service] provider."
-- **CTA:** request a property-manager quote / ask about our commercial program.
+- **CTA:** request a property-manager quote; mention a commercial program only when the client profile confirms one.
 - **Avoid:** consumer-retail framing; speak B2B.
 
 ## The Status-Driven Remodeler
 Applies to: kitchen / bath remodelers, ADU, high-end builders.
 - **State:** motivated by aesthetics + neighborhood resale value, likes finished-space imagery.
-- **Wants:** high-end finishes, designer imagery, "this will add $X to resale."
+- **Wants:** high-end finishes, designer imagery, and resale-aware choices without unsupported dollar-value claims.
 - **Hook:** "The [kitchen island] trend adding real value in [city] in 2026."
 - **CTA:** see the finished project / book a design consult.
 
 ## The Local Small-Business Buyer
 Applies to: marketing agency clients (WebXni's own buyer), local-SEO services.
 - **State:** wearing five hats, skeptical of agencies, has been burned before.
-- **Wants:** specific ROI numbers, no long contracts, a real human they can call.
+- **Wants:** sourced ROI evidence, clear engagement terms, and a real human they can call. Never invent metrics or contract terms.
 - **Hook:** "[Industry] owners: here's the one report we pull weekly."
 - **CTA:** book a 15-min audit / see a real case study.
 - **Avoid:** jargon, "digital transformation," vanity metrics.
@@ -341,54 +341,54 @@ Applies to: marketing agency clients (WebXni's own buyer), local-SEO services.
 ## Writing framework (after you pick a persona)
 1. Sentence 1 — name the specific pain (concrete: "at 2 am in the rain," not abstract: "when things go wrong").
 2. Sentence 2 — offer ONE outcome they'll get from this client.
-3. Sentence 3 — the approved CTA (\`client.cta_text\` or the persona default).
+3. Sentence 3 — the approved CTA (\`client.cta_text\` or a neutral persona fallback). Use only exact contact details from the client profile.
 
 Keep it to three sentences for social. For blog intros, expand each sentence into a paragraph while keeping the same beats.
 `;
 
 export const WEEKLY_MARKETING_CLIENT_EXPERTISE = `# Client expertise playbooks
 
-Use these playbooks to frame captions, blog topics, and recurring-content strategies on a per-industry basis. Match on \`clients.industry\` (case-insensitive substring match against the headings below). When in doubt, call \`get_client_details\` and read the services + service areas before writing content.
+Use these playbooks to frame captions, blog topics, and recurring-content strategies on a per-industry basis. Match on \`clients.industry\` (case-insensitive substring match against the headings below). When in doubt, call \`get_client_details\` and read the services + service areas before writing content. Treat every trust signal below as an angle to verify, not a fact: use it only when the client profile explicitly confirms it.
 
 ---
 
 ## Locksmith / automotive / commercial locksmith
 - **Dominant buyer jobs:** emergency lockout (urgency), rekey after move-in, upgrade to smart locks, key duplication, ignition repair.
-- **Trust signals to surface:** licensed/bonded/insured, 24/7 availability, sub-30-min response time, mobile-service vehicle.
-- **Local-SEO pattern:** \`[service] in [city]\` — always include a service area and a phone number.
+- **Trust signals to surface when confirmed:** licensing/insurance, operating hours, mobile service, and documented response practices. Never invent a response time.
+- **Local-SEO pattern:** \`[service] in [city]\` — always include one confirmed service area. Include only the exact profile phone, and only when the CTA needs it.
 - **Platform style**
-  - Google Business: factual, local, 100-250 chars, direct CTA (CALL), include city + phone.
+  - Google Business: factual, local, 100-250 chars, direct CTA, and the exact profile phone only when present.
   - Facebook: mini-case-study or before/after, 200-350 chars, one emoji max.
   - Instagram: photo-first; caption opens with the hook ("Locked out at 2 am?").
   - LinkedIn: commercial focus — property managers, HOAs, office buildings, access-control integrators.
 - **Blog angles**
   - "What to do if you're locked out of your [car|house|business] in [city]"
   - "Are smart locks secure? An honest take from a [city] locksmith"
-  - "How much does [rekey | lock replacement] cost in [city] in 2026?"
+  - "Which factors affect [rekey | lock replacement] scope in [city]?"
 - **Never** promise bypass of locks on vehicles/properties the customer doesn't own; never imply illicit entry.
 
 ---
 
 ## Builder / general contractor / remodeler
 - **Dominant buyer jobs:** kitchen remodel, bathroom remodel, home addition, ADU, whole-home build.
-- **Trust signals:** licensed GC, permits pulled, project-manager on site, workmanship warranty (5-10 years), real portfolio photos.
+- **Trust signals when confirmed:** license status, permit process, assigned project management, written warranty terms, and real portfolio photos. Otherwise explain the process without claiming the credential or term.
 - **Visual direction:** before/after, progress shots, close-ups of finishes (cabinetry, tile, trim).
 - **Platform style**
   - Instagram: strong portfolio imagery, \`#beforeafter\`, \`#remodel\`, local + style hashtags.
   - Pinterest: aspirational finished rooms, keyword-rich description, brand-board thinking.
   - LinkedIn: design-build expertise, commercial projects, team culture, subcontractor relationships.
-  - Google Business: local neighborhood names, project-specific testimonials.
+  - Google Business: local neighborhood names and project details; use testimonials only from a supplied, verifiable source.
 - **Blog angles**
-  - "How long does a [kitchen|bathroom] remodel take in [city]?"
+  - "Which factors shape a [kitchen|bathroom] remodel timeline in [city]?"
   - "Permits you need for a [project type] in [city/state]"
-  - "Cost breakdown: remodeling a [room] in [city] in 2026"
+  - "Cost factors to plan for when remodeling a [room] in [city]"
 - **Never** over-promise turnaround without caveats; always mention inspections/permits.
 
 ---
 
 ## Roofing / storm-damage / roof repair
 - **Dominant buyer jobs:** roof replacement, storm damage repair, inspection, leak repair, new-construction roofing.
-- **Trust signals:** factory certifications (GAF, Owens Corning), insurance-claim help, material + labor warranty, crew tenure.
+- **Trust signals when confirmed:** factory certifications, insurance-claim assistance, written material/labor warranty terms, and crew experience. Never infer these from the industry.
 - **Seasonality:** storm/wind/rainy-season content in Q1 + Q4; inspections in shoulder seasons; cool-roof / energy content in summer.
 - **Platform style**
   - Google Business: hyperlocal storm damage / inspection CTAs.
@@ -397,7 +397,7 @@ Use these playbooks to frame captions, blog topics, and recurring-content strate
   - Pinterest: style guides (architectural shingles, metal, tile).
 - **Blog angles**
   - "5 warning signs your [city] roof needs replacement"
-  - "Insurance claim help for storm-damaged roofs in [state]"
+  - "Documenting storm damage before speaking with a roofer in [state]"
   - "Shingle vs. metal vs. tile: best roof for [city]'s climate"
 - **Never** use cold insurance-claim-chasing language; stay educational.
 
@@ -405,16 +405,16 @@ Use these playbooks to frame captions, blog topics, and recurring-content strate
 
 ## Marketing agency / AI / SaaS (WebXni self)
 - **Buyer:** small-business owners, agency operators, in-house marketers.
-- **Trust signals:** case studies with numbers, retention rate, platform certifications (Meta, Google), team photos.
+- **Trust signals when confirmed:** sourced case-study metrics, retention data, platform certifications, and real team photos.
 - **Platform style**
   - LinkedIn: thought leadership, frameworks, contrarian takes, 300-600 chars.
   - X: one idea per post, punchy insight.
   - Instagram: behind-the-scenes, team, carousel frameworks.
   - Blog: long-form "how to" with real client-work examples.
 - **Blog angles**
-  - "How [specific workflow] saved [client type] [X] hours per week"
+  - "How [specific workflow] changes the weekly process for [client type]"
   - "The [X] tools we use to manage [Y] clients"
-  - "Before you hire a marketing agency, ask these [X] questions"
+  - "How to compare a marketing agency's reporting process"
 - **Never** write generic "digital marketing is important" platitudes; always lead with a specific outcome.
 
 ---
@@ -422,7 +422,7 @@ Use these playbooks to frame captions, blog topics, and recurring-content strate
 ## Default / unknown industry
 - Always call \`get_client_details\` first.
 - Tone: conversational-professional.
-- CTA: \`client.cta_text\` if set, otherwise a neutral "Learn more" / "Get in touch" tied to the client's phone.
+- CTA: \`client.cta_text\` if set, otherwise a neutral "Learn more" / "Get in touch". Use only the exact profile phone when one is present.
 - Blog template: "[Service] in [service_area]: [how-to | cost | timeline | warning signs]".
 
 ---
@@ -431,7 +431,7 @@ Use these playbooks to frame captions, blog topics, and recurring-content strate
 - **Instagram:** 150-300 char caption + 10-15 hashtags on new lines.
 - **Facebook:** 200-400 chars, conversational, 1 emoji max.
 - **LinkedIn:** 200-400 chars, insight-driven, ≤5 hashtags.
-- **Google Business:** 100-250 chars, NO hashtags, always include city + phone.
+- **Google Business:** 100-250 chars, NO hashtags, always include a confirmed city; include only the exact profile phone when the CTA requires it.
 - **Pinterest:** 150-200 char description + 5-8 hashtags, keyword-rich.
 - **X / Threads:** ≤280 chars, one idea.
 - **TikTok:** 150-250 chars, trending hashtags, hook in first line.
@@ -446,6 +446,7 @@ Use these playbooks to frame captions, blog topics, and recurring-content strate
 export interface ClientGenerationTopicHistoryItem {
   title: string;
   target_keyword: string | null;
+  topic_service_category: string | null;
   content_type: string | null;
   publish_date: string | null;
   platforms: string[];

@@ -501,6 +501,9 @@ export interface ContentReviewNote {
   agent_task_id: string | null;
   severity: string;
   notes_json: string;
+  post_updated_at: number | null;
+  content_hash: string | null;
+  disposition: string;
   created_at: number;
 }
 
@@ -514,6 +517,15 @@ export interface AgencyOverview {
   research_completed_this_week: number;
   posts_generated_this_week: number;
   blogs_generated_this_week: number;
+  quality_scorecard: {
+    current_reviews: number;
+    blocked_reviews: number;
+    automated_drafts: number;
+    keyword_coverage_percent: number;
+    package_violations: number;
+    profile_complete_clients: number;
+    active_clients: number;
+  };
   approval_pipeline: {
     research_complete_clients: number;
     active_clients: number;
@@ -537,6 +549,7 @@ export interface AgencyTimelineItem {
 
 export interface AgencyClientCoverage {
   weekly_schedule: string | null;
+  platforms_included: string | null;
   client_id: string;
   client_slug: string;
   client_name: string;
@@ -552,6 +565,21 @@ export interface AgencyClientCoverage {
   blogs_drafted: number;
   next_agent_action: string;
   risk_issues: string | null;
+  profile_complete: boolean;
+  profile_gaps: string[];
+}
+
+export interface AgencyStrategyPlan {
+  id: string;
+  client_id: string;
+  client_name: string;
+  client_slug: string;
+  period_start: string;
+  period_end: string;
+  strategy_json: string;
+  status: string;
+  created_at: number;
+  updated_at: number;
 }
 
 export interface AgencySkill {

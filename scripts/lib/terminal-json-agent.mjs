@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 
@@ -10,6 +10,10 @@ const JSON_ONLY_SYSTEM =
   'All Claude skills (webxni-agency-orchestrator, webxni-system-reliability, webxni-security-sentinel, ' +
   'webxni-client-research, webxni-strategist, webxni-social-copywriter, webxni-blog-writer, ' +
   'webxni-editorial-reviewer) apply equally to every backend.';
+
+const BROKEN_BACKEND_TTL_MS = Number(process.env.AGENCY_BACKEND_FAILURE_TTL_MS || 15 * 60 * 1000);
+const TERMINAL_PROCESS_TIMEOUT_MS = Number(process.env.AGENCY_TERMINAL_TIMEOUT_MS || 15 * 60 * 1000);
+const brokenBackends = new Map();
 
 // ── Backend availability ─────────────────────────────────────────────────────
 
@@ -48,6 +52,9 @@ function normalizeBackendName(backend) {
 
 function isBackendAvailable(backend) {
   const b = normalizeBackendName(backend);
+  const brokenUntil = brokenBackends.get(b) || 0;
+  if (brokenUntil > Date.now()) return false;
+  if (brokenUntil) brokenBackends.delete(b);
   if (b === 'openai') return !!process.env.OPENAI_API_KEY;
   if (b === 'hermes') return !!resolveHermesCommand();
   // Gemini runs via the REST API (the CLI's free OAuth tier was deprecated), so
@@ -61,22 +68,29 @@ function isBackendAvailable(backend) {
  * Expand a priority list into an ordered list of available backends.
  * 'auto' expands to all available backends in default order.
  */
-function expandPriority(backends) {
-  const AUTO_ORDER = ['hermes', 'claude', 'openai'];
+function completePriority(backends, excludedBackends = []) {
+  const AUTO_ORDER = ['codex', 'gemini', 'claude', 'hermes', 'openai'];
+  const excluded = new Set(excludedBackends.map(normalizeBackendName));
+  const requested = backends.flatMap((backend) => {
+    const normalized = normalizeBackendName(backend);
+    return normalized === 'auto' ? AUTO_ORDER : [normalized];
+  });
+  return [...new Set([
+    ...requested.filter((backend) => backend && backend !== 'openai'),
+    ...AUTO_ORDER.filter((backend) => backend !== 'openai'),
+    'openai',
+  ])].filter((backend) => !excluded.has(backend));
+}
+
+function expandPriority(backends, excludedBackends = []) {
+  const completeOrder = completePriority(backends, excludedBackends);
   const seen = new Set();
   const result = [];
-  for (const b of backends) {
-    const normalized = normalizeBackendName(b);
-    const candidates = normalized === 'auto' ? AUTO_ORDER : [normalized];
-    for (const c of candidates) {
-      if (!seen.has(c) && isBackendAvailable(c)) {
-        seen.add(c);
-        result.push(c);
-      }
+  for (const backend of completeOrder) {
+    if (!seen.has(backend) && isBackendAvailable(backend)) {
+      seen.add(backend);
+      result.push(backend);
     }
-  }
-  if (!seen.has('openai') && isBackendAvailable('openai')) {
-    result.push('openai');
   }
   if (result.length === 0) {
     const tried = backends.join(', ');
@@ -86,6 +100,12 @@ function expandPriority(backends) {
     );
   }
   return result;
+}
+
+function markBackendBroken(backend) {
+  const normalized = normalizeBackendName(backend);
+  if (!normalized || normalized === 'openai' || BROKEN_BACKEND_TTL_MS <= 0) return;
+  brokenBackends.set(normalized, Date.now() + BROKEN_BACKEND_TTL_MS);
 }
 
 // ── JSON helpers ─────────────────────────────────────────────────────────────
@@ -163,14 +183,15 @@ function runClaude(prompt, schema, mode) {
   }
   const args = [
     '-p',
+    '--safe-mode',
+    '--tools', '',
     '--output-format', 'json',
     '--effort', mode === 'blog' ? 'medium' : 'low',
     '--model', process.env.CLAUDE_CODE_MODEL || 'sonnet',
-    '--max-turns', process.env.CLAUDE_CODE_MAX_TURNS || '3',
+    '--max-turns', process.env.CLAUDE_CODE_MAX_TURNS || '6',
     '--no-session-persistence',
     '--append-system-prompt', JSON_ONLY_SYSTEM,
     '--json-schema', schemaStr,
-    wrappedPrompt,
   ];
   if (process.env.AGENCY_CLAUDE_BARE === '1') {
     args.splice(1, 0, '--bare');
@@ -184,7 +205,7 @@ function runClaude(prompt, schema, mode) {
       ? wrapper.structured_output
       : parseJsonFromText(wrapper?.result || stdout);
     return { output, cost_usd };
-  }, { env });
+  }, { env, input: wrappedPrompt });
 }
 
 // Rough per-1M-token USD prices (input, output) for cost estimation.
@@ -266,14 +287,18 @@ async function runGemini(prompt, schema, mode) {
   }
 
   // Legacy fallback: the gemini CLI (only works if its OAuth is still valid).
-  return runSpawnJson('gemini', ['-p', wrappedPrompt, '-o', 'json', '-m', model],
-    (stdout) => ({ output: parseJsonFromText(stdout), cost_usd: null }));
+  return runSpawnJson('gemini', ['-p', '', '-o', 'json', '-m', model],
+    (stdout) => ({ output: parseJsonFromText(stdout), cost_usd: null }),
+    { input: wrappedPrompt });
 }
 
 function runHermes(prompt, schema, mode, skills = []) {
   const hermesCmd = resolveHermesCommand();
   if (!hermesCmd) throw new Error('Hermes CLI not found. Run the installer or set HERMES_CLI_PATH.');
   const { wrappedPrompt } = buildWrappedPrompt(prompt, schema);
+  if (Buffer.byteLength(wrappedPrompt, 'utf8') > 120000) {
+    throw new Error('Hermes prompt exceeds the safe CLI argument limit');
+  }
   const args = ['-z', wrappedPrompt];
   if (skills.length) args.push('--skills', skills.join(','));
   // Only override provider/model when explicitly configured via HERMES_* env.
@@ -289,6 +314,21 @@ function runHermes(prompt, schema, mode, skills = []) {
   return runSpawnJson(hermesCmd, args, (stdout) => ({ output: parseJsonFromText(stdout), cost_usd: null }));
 }
 
+export function buildCodexExecArgs({ prompt, schemaPath, outputPath, model }) {
+  const args = [
+    'exec',
+    '--skip-git-repo-check',
+    '--ephemeral',
+    '--ignore-user-config',
+    '--output-schema', schemaPath,
+    '--output-last-message', outputPath,
+    '-C', process.cwd(),
+  ];
+  if (model) args.push('-m', model);
+  args.push(prompt);
+  return args;
+}
+
 function runCodex(prompt, schema, mode) {
   const { wrappedPrompt } = buildWrappedPrompt(prompt, schema);
   const workDir = mkdtempSync(join(tmpdir(), 'webxni-agency-codex-'));
@@ -298,20 +338,13 @@ function runCodex(prompt, schema, mode) {
   const configuredModel = mode === 'blog'
     ? (process.env.CODEX_BLOG_MODEL || 'gpt-4.1')
     : (process.env.CODEX_SOCIAL_MODEL || 'gpt-4.1-mini');
-  const args = [
-    'exec',
-    '--skip-git-repo-check',
-    '--ephemeral',
-    '--output-schema', schemaPath,
-    '-o', outputPath,
-    '-C', process.cwd(),
-    wrappedPrompt,
-  ];
-  if (process.env.CODEX_BLOG_MODEL || process.env.CODEX_SOCIAL_MODEL || process.env.CODEX_MODEL) {
-    args.splice(args.length - 1, 0, '-m', process.env.CODEX_MODEL || configuredModel);
-  }
+  const model = (process.env.CODEX_BLOG_MODEL || process.env.CODEX_SOCIAL_MODEL || process.env.CODEX_MODEL)
+    ? (process.env.CODEX_MODEL || configuredModel)
+    : '';
+  const args = buildCodexExecArgs({ prompt: '-', schemaPath, outputPath, model });
   return runSpawnJson('codex', args, () => ({ output: parseJsonFromText(readFileSync(outputPath, 'utf8')), cost_usd: null }), {
     cleanup: () => rmSync(workDir, { recursive: true, force: true }),
+    input: wrappedPrompt,
   });
 }
 
@@ -367,19 +400,44 @@ async function runOpenAI(prompt, schema, mode) {
 
 function runSpawnJson(command, args, parser, extra = {}) {
   return new Promise((resolve, reject) => {
+    const hasInput = typeof extra.input === 'string';
     const child = spawn(command, args, {
       cwd: process.cwd(),
       shell: false,
       env: extra.env || process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [hasInput ? 'pipe' : 'ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
     let stderr = '';
+    let timedOut = false;
+    let forceKillTimer;
+    const timeout = TERMINAL_PROCESS_TIMEOUT_MS > 0
+      ? setTimeout(() => {
+        timedOut = true;
+        child.kill('SIGTERM');
+        forceKillTimer = setTimeout(() => child.kill('SIGKILL'), 5000);
+        forceKillTimer.unref();
+      }, TERMINAL_PROCESS_TIMEOUT_MS)
+      : null;
+    timeout?.unref();
     child.stdout.on('data', (chunk) => { stdout += String(chunk); });
     child.stderr.on('data', (chunk) => { stderr += String(chunk); });
-    child.on('error', reject);
+    if (hasInput && child.stdin) {
+      child.stdin.on('error', () => {});
+      child.stdin.end(extra.input);
+    }
+    child.on('error', (err) => {
+      if (timeout) clearTimeout(timeout);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
+      if (extra.cleanup) extra.cleanup();
+      reject(err);
+    });
     child.on('exit', (code) => {
       try {
+        if (timedOut) {
+          reject(new Error(`${command} timed out after ${TERMINAL_PROCESS_TIMEOUT_MS}ms`));
+          return;
+        }
         if (code !== 0) {
           const combined = `${stderr}\n${stdout}`;
           reject(new Error(
@@ -394,6 +452,8 @@ function runSpawnJson(command, args, parser, extra = {}) {
       } catch (err) {
         reject(err);
       } finally {
+        if (timeout) clearTimeout(timeout);
+        if (forceKillTimer) clearTimeout(forceKillTimer);
         if (extra.cleanup) extra.cleanup();
       }
     });
@@ -411,6 +471,12 @@ function classifyBackendFailure(command, text) {
   if (lower.includes('refusing to create helper binaries') || lower.includes('could not update path')) {
     return `cause: ${command} helper/PATH setup warning; verify auth/model if the command also failed`;
   }
+  if (command === 'codex' && lower.includes('reading additional input from stdin')) {
+    return 'cause: codex CLI did not receive a valid non-interactive prompt/output argument';
+  }
+  if (command.includes('hermes') && lower.includes('agent failed: code')) {
+    return 'cause: hermes agent execution failed before returning JSON';
+  }
   return 'cause: unknown terminal backend failure';
 }
 
@@ -424,12 +490,12 @@ function classifyBackendFailure(command, text) {
  * @param {string|string[]} opts.preferredBackend - single name, array, or 'auto'
  * @param {string} [opts.mode] - 'default' | 'blog'
  */
-export async function runTerminalJsonAgent({ prompt, schema, preferredBackend, mode = 'default', skills = [] }) {
+export async function runTerminalJsonAgent({ prompt, schema, preferredBackend, mode = 'default', skills = [], excludedBackends = [] }) {
   const rawPriority = Array.isArray(preferredBackend)
     ? preferredBackend
     : [preferredBackend || 'auto'];
 
-  const priority = expandPriority(rawPriority);
+  const priority = expandPriority(rawPriority, excludedBackends);
   const errors = [];
   const attempts = [];
 
@@ -455,13 +521,16 @@ export async function runTerminalJsonAgent({ prompt, schema, preferredBackend, m
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      markBackendBroken(backend);
       errors.push(`[${backend}] ${msg.slice(0, 200)}`);
       attempts.push({ backend, status: 'failed', error: msg.slice(0, 300) });
       console.warn(`[agency] backend ${backend} failed, trying next: ${msg.slice(0, 120)}`);
     }
   }
 
-  throw new Error(`All backends failed:\n${errors.join('\n')}`);
+  const failure = new Error(`All backends failed:\n${errors.join('\n')}`);
+  failure.attempts = attempts;
+  throw failure;
 }
 
-export { isBackendAvailable, expandPriority, normalizeBackendName };
+export { isBackendAvailable, expandPriority, completePriority, normalizeBackendName };

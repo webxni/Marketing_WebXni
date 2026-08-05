@@ -2,7 +2,7 @@
  * Post routes — CRUD + workflow actions
  */
 import { Hono } from 'hono';
-import type { Env, SessionData } from '../types';
+import type { Env, PostRow, SessionData } from '../types';
 import {
   listPosts,
   getPostById,
@@ -14,12 +14,19 @@ import {
   getClientWithConfig,
   listPostAssetsRows,
   attachAssetsToPost,
+  getLatestContentReview,
+  preserveEditorialFeedbackBeforePostDelete,
+  getClientRestrictions,
 } from '../db/queries';
+import { buildPostContentHash, hasReviewAffectingUpdate } from '../modules/content-review';
+import { CAPTION_MAX_LEN } from '../modules/captions';
 import { normalizeContentType, parsePlatforms, resolvePlatformSelection, withImplicitBlogPlatform } from '../modules/platform-compatibility';
 import { cleanupLegacyInvalidPlatformAttempts, syncPublishedUrls } from '../modules/published-urls';
 import { runPosting } from '../loader/posting-run';
 import { runFetchUrls } from './run';
 import { normalizeBlogDraftPayload } from '../modules/blog-publishing';
+import { requirePermission } from '../middleware/auth';
+import { buildGenerationSystemMessage, findRestrictedContentPhrase } from '../services/openai';
 
 export const postRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -27,6 +34,53 @@ function parseRequestedPlatforms(body: Record<string, unknown>): string[] {
   if (typeof body['platforms'] === 'string') return parsePlatforms(body['platforms'] as string);
   if (Array.isArray(body['platforms'])) return parsePlatforms(body['platforms'] as string[]);
   return [];
+}
+
+function generatedCaptionField(platform: string): keyof PostRow | null {
+  switch (platform) {
+    case 'facebook': return 'cap_facebook';
+    case 'instagram': return 'cap_instagram';
+    case 'linkedin': return 'cap_linkedin';
+    case 'x': return 'cap_x';
+    case 'threads': return 'cap_threads';
+    case 'tiktok': return 'cap_tiktok';
+    case 'pinterest': return 'cap_pinterest';
+    case 'bluesky': return 'cap_bluesky';
+    case 'google_business': return 'cap_google_business';
+    case 'youtube': return 'youtube_title';
+    case 'website_blog': return 'blog_excerpt';
+    default: return null;
+  }
+}
+
+export function generatedCaptionQualityIssue(
+  platform: string,
+  caption: string,
+  targetKeyword: string | null,
+  restrictions: string[],
+): string | null {
+  if (/\b(?:unlock|optimize|boost|elevate|transform) your\b|\bdiscover\b|\bready to\b|game.?changer/i.test(caption)) {
+    return 'used generic marketing language';
+  }
+  if (/\b(?:fix|improve|increase|grow)(?:s|ed|ing)?\s+(?:your\s+)?(?:reach|rankings?|sales|traffic|leads?)\b/i.test(caption)) {
+    return 'made an unsupported outcome claim';
+  }
+  const maxLength = CAPTION_MAX_LEN[platform];
+  if (maxLength && caption.length > maxLength) {
+    return `exceeds ${platform} limit of ${maxLength} characters`;
+  }
+  const restrictedPhrase = findRestrictedContentPhrase(caption, restrictions);
+  if (restrictedPhrase) return `violated a client restriction: ${restrictedPhrase}`;
+  if (platform === 'pinterest') {
+    const keyword = targetKeyword?.trim();
+    if (keyword && !caption.toLowerCase().startsWith(keyword.toLowerCase())) {
+      return 'does not begin with the exact target keyword';
+    }
+    if (/#(?:marketing|business|smallbusiness|viral|trending|fyp)\b/i.test(caption)) {
+      return 'used a generic Pinterest hashtag';
+    }
+  }
+  return null;
 }
 
 /** GET /api/posts */
@@ -92,7 +146,7 @@ postRoutes.get('/', async (c) => {
 
 /** GET /api/posts/:id */
 postRoutes.get('/:id', async (c) => {
-  const post = await getPostById(c.env.DB, c.req.param('id'));
+  const post = await getPostById(c.env.DB, c.req.param('id') ?? '');
   if (!post) return c.json({ error: 'Not found' }, 404);
   const platforms = await getPostPlatforms(c.env.DB, post.id);
   // Join client name
@@ -230,7 +284,7 @@ postRoutes.post('/', async (c) => {
       const isVideo = (first.content_type ?? '').startsWith('video/');
       await c.env.DB
         .prepare(`UPDATE posts
-                  SET asset_r2_key = ?, asset_r2_bucket = ?, asset_type = ?, asset_delivered = 1, updated_at = ?
+                  SET asset_r2_key = ?, asset_r2_bucket = ?, asset_type = ?, asset_delivered = 1, asset_source = 'designer', updated_at = ?
                   WHERE id = ?`)
         .bind(first.r2_key, first.r2_bucket, isVideo ? 'video' : 'image', Math.floor(Date.now() / 1000), post.id)
         .run();
@@ -308,6 +362,15 @@ postRoutes.put('/:id', async (c) => {
   if (!clientConfig) return c.json({ error: 'Client not found' }, 404);
   body = normalizeBlogDraftPayload(clientConfig, body);
 
+  if (
+    post.scheduled_by_automation === 1
+    && ['approved', 'ready', 'scheduled'].includes(post.status ?? '')
+    && hasReviewAffectingUpdate(body)
+  ) {
+    body['status'] = 'pending_approval';
+    body['ready_for_automation'] = 0;
+  }
+
   // Version snapshot
   const snap = JSON.stringify(post);
   const version = await c.env.DB
@@ -325,9 +388,19 @@ postRoutes.put('/:id', async (c) => {
 });
 
 /** POST /api/posts/:id/approve */
-postRoutes.post('/:id/approve', async (c) => {
-  const post = await getPostById(c.env.DB, c.req.param('id'));
+postRoutes.post('/:id/approve', requirePermission('posts.approve'), async (c) => {
+  const post = await getPostById(c.env.DB, c.req.param('id') ?? '');
   if (!post) return c.json({ error: 'Not found' }, 404);
+  if (post.scheduled_by_automation === 1) {
+    const review = await getLatestContentReview(c.env.DB, post.id);
+    const contentHash = await buildPostContentHash(post);
+    if (!review || !review.content_hash || review.content_hash !== contentHash) {
+      return c.json({ error: 'Editorial review is required for the current version before approval.' }, 409);
+    }
+    if (review.disposition === 'blocked' || review.severity === 'high' || review.severity === 'critical') {
+      return c.json({ error: `Editorial review blocked approval (${review.severity}). Revise the content and run review again.` }, 409);
+    }
+  }
   const mediaRequired = post.content_type !== 'blog' && post.content_type !== 'text';
   const canMoveToReady = !mediaRequired || post.asset_delivered === 1;
   const nextStatus = canMoveToReady ? 'ready' : 'approved';
@@ -544,6 +617,7 @@ postRoutes.delete('/:id', async (c) => {
     // Delete all child rows before the post — posting_attempts and content_memory have
     // FK references to posts(id) without CASCADE, so D1 would reject the parent delete.
     const db = c.env.DB;
+    await preserveEditorialFeedbackBeforePostDelete(db, post);
     await db.prepare('DELETE FROM posting_attempts WHERE post_id = ?').bind(post.id).run();
     await db.prepare('DELETE FROM content_memory   WHERE post_id = ?').bind(post.id).run();
     await db.prepare('DELETE FROM assets          WHERE post_id = ?').bind(post.id).run();
@@ -638,8 +712,8 @@ postRoutes.post('/:id/generate-caption', async (c) => {
   const { platform, allow_platform_override } = await c.req.json<{ platform: string; allow_platform_override?: boolean }>();
   if (!platform) return c.json({ error: 'platform required' }, 400);
 
-  // Map platform to caption field
-  const capField = platform === 'google_business' ? 'cap_google_business' : `cap_${platform}`;
+  const capField = generatedCaptionField(platform);
+  if (!capField) return c.json({ error: 'Unsupported platform' }, 400);
 
   const client = await getClientWithConfig(c.env.DB, post.client_id);
   if (!client) return c.json({ error: 'Client not found' }, 404);
@@ -659,10 +733,13 @@ postRoutes.post('/:id/generate-caption', async (c) => {
     }, 409);
   }
 
-  const intel = await c.env.DB
-    .prepare('SELECT * FROM client_intelligence WHERE client_id = ?')
-    .bind(post.client_id)
-    .first<{ brand_voice?: string | null; prohibited_terms?: string | null }>();
+  const [intel, restrictions] = await Promise.all([
+    c.env.DB
+      .prepare('SELECT * FROM client_intelligence WHERE client_id = ?')
+      .bind(post.client_id)
+      .first<{ brand_voice?: string | null; prohibited_terms?: string | null }>(),
+    getClientRestrictions(c.env.DB, post.client_id),
+  ]);
 
   // Build a focused prompt for one platform caption
   const platformInstructions: Record<string, string> = {
@@ -671,16 +748,23 @@ postRoutes.post('/:id/generate-caption', async (c) => {
     linkedin:        'professional LinkedIn caption, insight-driven, no hashtag spam (200-500 chars, 3-5 hashtags max)',
     x:               'X/Twitter post, punchy and direct, max 280 chars total',
     threads:         'casual Threads post, conversational, 100-250 chars',
-    tiktok:          'TikTok caption with trending hashtags (150-250 chars + 5-10 hashtags)',
-    pinterest:       'Pinterest description, keyword-rich, 100-200 chars + 5-8 hashtags',
+    tiktok:          'complete TikTok caption, maximum 90 characters total including hashtags; never rely on truncation',
+    pinterest:       'complete Pinterest title, maximum 100 characters total including hashtags; never rely on truncation',
     bluesky:         'Bluesky post, casual and direct, max 300 chars',
     google_business: 'Google Business post, factual and local, 100-250 chars, NO hashtags',
-    youtube:         'YouTube description with CTA (200-400 chars)',
+    youtube:         'YouTube title, 60-70 characters',
     website_blog:    'blog teaser/excerpt, compelling lead paragraph (100-200 chars)',
   };
 
   let instrText = platformInstructions[platform] ?? 'concise social media caption (100-250 chars)';
   const lang = client.language && client.language !== 'en' ? client.language : 'en';
+  const topicConstraint = platform === 'pinterest' && post.target_keyword?.trim()
+    ? `Begin with the exact target keyword "${post.target_keyword.trim()}". Use no emoji, exclamation mark, or generic hashtag.`
+    : platform === 'pinterest'
+      ? 'Begin with a concrete service or customer decision from the source. Use no emoji, exclamation mark, or generic hashtag.'
+    : platform === 'tiktok'
+      ? 'Name the specific service or customer decision and target locality before any optional hashtag.'
+      : 'Lead with the specific service, customer decision, or local detail from the source.';
 
   // For GBP, inject CTA and topic type context into the instruction
   if (platform === 'google_business') {
@@ -697,46 +781,78 @@ postRoutes.post('/:id/generate-caption', async (c) => {
     if (post.gbp_cta_type && GBP_CTA_INTENT[post.gbp_cta_type]) instrText += ` ${GBP_CTA_INTENT[post.gbp_cta_type]}`;
   }
 
-  const prompt = `You are a social media writer for ${client.canonical_name}.${client.industry ? ` Industry: ${client.industry}.` : ''}${lang !== 'en' ? ` Write in ${lang}.` : ''}
-${intel?.brand_voice ? `Brand voice: ${intel.brand_voice}.` : ''}${intel?.prohibited_terms ? ` NEVER USE: ${intel.prohibited_terms}.` : ''}${client.cta_text ? ` Preferred CTA: ${client.cta_text}.` : ''}
+  const prompt = `You are a social media writer for ${client.canonical_name}.${client.industry ? ` Industry: ${client.industry}.` : ''} Write in ${lang === 'en' ? 'English' : lang}.
+${intel?.brand_voice ? `Brand voice: ${intel.brand_voice}.` : ''}${intel?.prohibited_terms ? ` NEVER USE: ${intel.prohibited_terms}.` : ''}${restrictions.length > 0 ? ` CLIENT RESTRICTIONS: ${restrictions.join('; ')}.` : ''}${client.cta_text ? ` Preferred CTA: ${client.cta_text}.` : ''}
 
 Post title: ${post.title ?? ''}
 Master caption: ${post.master_caption ?? ''}
+Target keyword: ${post.target_keyword ?? ''}
+Target locality: ${post.target_locality ?? ''}
 
 Write a ${platform} caption: ${instrText}.
+Keep the concrete service, educational point, and target locality from the source. Use the target keyword naturally when it fits the platform limit. Do not replace the topic with generic marketing language, slogans, filler, or broad promises. Do not invent a process, offer, credential, result, or business fact that is not present above.
+${topicConstraint}
+Never use canned openings such as "unlock your," "optimize your," "boost your," "elevate your," "transform your," "discover," or "ready to."
 
 Return JSON: { "caption": "..." }`;
 
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${c.env.OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: 'You are a social media content writer. Always respond with valid JSON only.' },
-        { role: 'user', content: prompt },
-      ],
-      response_format: { type: 'json_object' },
-      temperature: 0.75,
-      max_tokens: 400,
-    }),
-  });
-
-  if (!res.ok) return c.json({ error: 'Generation service unavailable' }, 502);
-
-  const data = await res.json() as { choices: Array<{ message: { content: string } }> };
-  const raw  = data.choices?.[0]?.message?.content;
-  if (!raw) return c.json({ error: 'Empty response' }, 502);
-
-  let caption: string;
+  let model = 'gpt-4o-mini';
   try {
-    caption = (JSON.parse(raw) as { caption: string }).caption;
-  } catch {
-    return c.json({ error: 'Failed to parse response' }, 502);
+    const rawSettings = await c.env.KV_BINDING.get('settings:system');
+    const configured = rawSettings ? JSON.parse(rawSettings) as Record<string, unknown> : {};
+    if (typeof configured['ai_model'] === 'string' && /^gpt-[a-z0-9.-]+$/i.test(configured['ai_model'])) {
+      model = configured['ai_model'];
+    }
+  } catch { /* retain default model */ }
+
+  let caption = '';
+  let qualityIssue = '';
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const retryDirection = qualityIssue
+      ? `\nThe prior draft was rejected because it ${qualityIssue}. Rewrite it and correct that issue.`
+      : '';
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${c.env.OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: buildGenerationSystemMessage('social') },
+          { role: 'user', content: prompt + retryDirection },
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0.35,
+        max_tokens: 400,
+      }),
+    });
+
+    if (!res.ok) return c.json({ error: 'Generation service unavailable' }, 502);
+
+    const data = await res.json() as { choices: Array<{ message: { content: string } }> };
+    const raw = data.choices?.[0]?.message?.content;
+    if (!raw) return c.json({ error: 'Empty response' }, 502);
+
+    let candidate = '';
+    try {
+      candidate = (JSON.parse(raw) as { caption: string }).caption?.trim();
+    } catch {
+      qualityIssue = 'was not valid JSON';
+      continue;
+    }
+    if (!candidate) {
+      qualityIssue = 'was empty';
+      continue;
+    }
+    qualityIssue = generatedCaptionQualityIssue(platform, candidate, post.target_keyword, restrictions) ?? '';
+    if (!qualityIssue) {
+      caption = candidate;
+      break;
+    }
   }
+  if (!caption) return c.json({ error: `Generated caption failed quality review: ${qualityIssue}` }, 502);
 
   // Save caption to post and add platform to platforms list
   const existingPlatforms: string[] = JSON.parse(post.platforms ?? '[]');
@@ -744,10 +860,11 @@ Return JSON: { "caption": "..." }`;
     ? existingPlatforms
     : [...existingPlatforms, platform];
 
-  await c.env.DB
-    .prepare(`UPDATE posts SET ${capField} = ?, platforms = ?, platform_manual_override = ?, updated_at = ? WHERE id = ?`)
-    .bind(caption, JSON.stringify(updatedPlatforms), allow_platform_override === true ? 1 : post.platform_manual_override, Math.floor(Date.now() / 1000), post.id)
-    .run();
+  await updatePost(c.env.DB, post.id, {
+    [capField]: caption,
+    platforms: JSON.stringify(updatedPlatforms),
+    platform_manual_override: allow_platform_override === true ? 1 : post.platform_manual_override,
+  } as Partial<PostRow>);
 
   await writeAuditLog(c.env.DB, {
     user_id: c.get('user').userId,

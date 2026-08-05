@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { expandPriority, runTerminalJsonAgent } from './lib/terminal-json-agent.mjs';
+import { buildCodexExecArgs, expandPriority, runTerminalJsonAgent } from './lib/terminal-json-agent.mjs';
+import { buildRetryCorrection } from './lib/retry-feedback.mjs';
 
 function argValue(flag) {
   const idx = process.argv.indexOf(flag);
@@ -15,7 +16,7 @@ const jobId = argValue('--job-id');
 const runnerId = argValue('--runner-id') || 'discord-bot-runner';
 const apiBaseUrl = argValue('--api-base-url') || process.env.API_BASE_URL || 'https://marketing.webxni.com';
 const botSecret = argValue('--bot-secret') || process.env.DISCORD_BOT_SECRET || '';
-const CONCURRENCY = parseInt(argValue('--concurrency') || '10', 10);
+const CONCURRENCY = parseInt(argValue('--concurrency') || '4', 10);
 const TERMINAL_AGENT = (argValue('--terminal-agent') || process.env.TERMINAL_AGENT || process.env.TERMINAL_AI_BACKEND || 'auto').trim().toLowerCase();
 const HEARTBEAT_INTERVAL_MS = 45000;
 
@@ -163,8 +164,11 @@ function resolveTerminalBackend() {
 
 function preferredTerminalBackends() {
   const requested = TERMINAL_AGENT === 'auto' ? '' : TERMINAL_AGENT;
-  if (requested) return [requested, 'hermes', 'openai'];
-  return ['hermes', 'claude', 'gemini', 'openai'];
+  const terminalBackends = ['codex', 'gemini', 'claude', 'hermes'];
+  if (requested) {
+    return [requested, ...terminalBackends.filter((backend) => backend !== requested), 'openai'];
+  }
+  return [...terminalBackends, 'openai'];
 }
 
 function buildWrappedPrompt(prompt, schema) {
@@ -328,22 +332,16 @@ function runCodex(prompt, schema, plan = null) {
   const workDir = mkdtempSync(join(tmpdir(), 'webxni-codex-'));
   const schemaPath = join(workDir, 'schema.json');
   const outputPath = join(workDir, 'last-message.txt');
-  const codexHome = join(workDir, 'codex-home');
-  mkdirSync(codexHome, { recursive: true });
   writeFileSync(schemaPath, JSON.stringify(schema));
 
-  const args = [
-    'exec',
-    '--skip-git-repo-check',
-    '--ephemeral',
-    '--output-schema', schemaPath,
-    '-o', outputPath,
-    '-C', process.cwd(),
-    '-m', plan?.mode === 'blog'
+  const args = buildCodexExecArgs({
+    prompt: wrappedPrompt,
+    schemaPath,
+    outputPath,
+    model: plan?.mode === 'blog'
       ? (process.env.CODEX_BLOG_MODEL || 'gpt-5')
       : (process.env.CODEX_SOCIAL_MODEL || 'gpt-5-mini'),
-    wrappedPrompt,
-  ];
+  });
 
   return new Promise((resolve, reject) => {
     const child = spawn('codex', args, {
@@ -351,7 +349,6 @@ function runCodex(prompt, schema, plan = null) {
       shell: false,
       env: {
         ...process.env,
-        CODEX_HOME: codexHome,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -380,27 +377,61 @@ function runCodex(prompt, schema, plan = null) {
 
 async function runTerminalAgent(prompt, schema, plan = null) {
   const isBlog = plan?.mode === 'blog';
-  // Complex (blog) slots lead with Claude; social slots keep the default chain
-  // (Hermes-first). Honors an explicit --terminal-agent override either way.
+  // Complex blog slots lead with Claude; explicit overrides remain primary.
+  // Every chain still tries all authenticated terminal backends before API fallback.
   const backendChain = (isBlog && TERMINAL_AGENT === 'auto')
     ? ['claude', ...preferredTerminalBackends()]
     : preferredTerminalBackends();
-  return runTerminalJsonAgent({
+  const draft = await runTerminalJsonAgent({
     prompt,
     schema,
     preferredBackend: backendChain,
     mode: isBlog ? 'blog' : 'default',
   });
+  const reviewPrompt = `${prompt}
+
+EDITORIAL REVISION PASS
+Review and improve the complete draft JSON below before it is saved. Return a complete replacement object matching the same schema, not comments or a score.
+
+DRAFT JSON:
+${JSON.stringify(draft.output)}
+
+MANDATORY REVIEW CHECKS:
+- Preserve the assigned client, content type, topic, exact target_keyword, and exact target_locality from the original brief.
+- Replace recycled title frames such as "before you hire," "what to know," "questions answered," "things to check," "expert insights," "trusted solutions," "addressing concerns," "top tips," "choosing the right," "key criteria," and generic checklists with a title that names the concrete decision, risk, material, mechanism, or process being taught.
+- Remove invented prices, statistics, ratings, review counts, response times, arrival windows, guarantees, certifications, and offers.
+- Present unverified workflows as educational factors a technician may evaluate, not as an established company-wide policy, mandatory step, or universal procedure.
+- Make the title clear to an ordinary customer. Replace technician shorthand, unexplained jargon, and ambiguous fragments with the concrete decision, risk, or outcome being taught.
+- If a phone appears, use only the exact client phone supplied in the original brief; otherwise omit it.
+- Keep every service and location inside the confirmed client profile. Remove unrelated industries, products, cities, and keyword phrases.
+- Make platform captions meaningfully distinct and useful on their channel; keep designer prompts in Spanish.
+- Ensure the copy contains the assigned keyword and locality naturally, is concrete enough not to fit a competitor unchanged, and remains a draft for human approval.
+
+Return only the final revised JSON object.`;
+  const reviewed = await runTerminalJsonAgent({
+    prompt: reviewPrompt,
+    schema,
+    preferredBackend: [draft.backend, ...backendChain],
+    mode: isBlog ? 'blog' : 'default',
+  });
+  return {
+    ...reviewed,
+    attempts: [...(draft.attempts ?? []), ...(reviewed.attempts ?? [])],
+    fallback_used: draft.fallback_used || reviewed.fallback_used || reviewed.backend !== draft.backend,
+    draft_backend: draft.backend,
+  };
 }
 
 async function processSlot(summary, args, total, backend) {
   const prefix = `${summary.client_slug} / ${summary.publish_date} / ${summary.content_type}`;
-  setHeartbeatMessage(`Terminal AI heartbeat — working on slot ${summary.slot_idx + 1}/${total}: ${prefix}`);
+  const displayPosition = summary.display_position ?? summary.slot_idx + 1;
+  setHeartbeatMessage(`Terminal AI heartbeat — working on slot ${displayPosition}/${total}: ${prefix}`);
   let slotReq;
   try {
-    slotReq = await get(`/internal/discord/approved-jobs/${jobId}/slot-request/${summary.slot_idx}`);
+    const refreshQuery = summary.retry_feedback ? '?refresh=1' : '';
+    slotReq = await get(`/internal/discord/approved-jobs/${jobId}/slot-request/${summary.slot_idx}${refreshQuery}`);
   } catch (err) {
-    const message = `Slot ${summary.slot_idx + 1} prompt build failed: ${err instanceof Error ? err.message : String(err)}`;
+    const message = `Slot ${displayPosition} prompt build failed: ${err instanceof Error ? err.message : String(err)}`;
     await postBestEffort(`/internal/discord/approved-jobs/${jobId}/error`, {
       run_id: args.run_id,
       client_slug: summary.client_slug,
@@ -419,30 +450,38 @@ async function processSlot(summary, args, total, backend) {
   }
 
   try {
-    const generatedResult = await runTerminalAgent(slotReq.prompt, slotReq.schema, slotReq.plan ?? null);
+    const generationPrompt = summary.retry_feedback
+      ? `${slotReq.prompt}\n\nRETRY CORRECTION\nCorrect the previous attempt while preserving the assigned schema and refreshed brief:\n${buildRetryCorrection(summary.retry_feedback)}`
+      : slotReq.prompt;
+    const generatedResult = await runTerminalAgent(generationPrompt, slotReq.schema, slotReq.plan ?? null);
     const generated = generatedResult.output;
 
     // Critical write — the content save. A failure here means the slot is NOT
     // saved and must be retried, so this stays strict (throws → caught below).
-    await post(`/internal/discord/approved-jobs/${jobId}/save-slot`, {
+    const saveResult = await post(`/internal/discord/approved-jobs/${jobId}/save-slot`, {
       run_id: args.run_id,
       slot_idx: summary.slot_idx,
       post: generated,
       topic_selection: slotReq.topic_selection ?? null,
     });
 
+    if (saveResult?.result?.persisted === 'skipped') {
+      console.warn(`[${displayPosition}/${total}] ${prefix} skipped by save policy`);
+      return { ok: true, persisted: false, backend: generatedResult.backend, slot_idx: summary.slot_idx, prefix };
+    }
+
     // Progress log is cosmetic — best-effort so a logging hiccup never
     // turns a successfully-saved slot into a counted failure (the 80/81 bug).
     await postBestEffort(`/internal/discord/approved-jobs/${jobId}/log`, {
       run_id: args.run_id,
       level: 'INFO',
-      message: `Saved slot ${summary.slot_idx + 1}/${total}: ${prefix}`,
+      message: `Saved slot ${displayPosition}/${total}: ${prefix}`,
     });
 
-    console.log(`[${summary.slot_idx + 1}/${total}] ${prefix} [${generatedResult.backend}]`);
-    return { ok: true, slot_idx: summary.slot_idx, prefix };
+    console.log(`[${displayPosition}/${total}] ${prefix} [${generatedResult.backend}]`);
+    return { ok: true, persisted: true, backend: generatedResult.backend, slot_idx: summary.slot_idx, prefix };
   } catch (err) {
-    const message = `Slot ${summary.slot_idx + 1} processing failed: ${err instanceof Error ? err.message : String(err)}`;
+    const message = `Slot ${displayPosition} processing failed: ${err instanceof Error ? err.message : String(err)}`;
     await postBestEffort(`/internal/discord/approved-jobs/${jobId}/error`, {
       run_id: args.run_id,
       client_slug: summary.client_slug,
@@ -457,7 +496,7 @@ async function processSlot(summary, args, total, backend) {
       level: 'ERROR',
       message,
     });
-    return { ok: false, slot_idx: summary.slot_idx, prefix };
+    return { ok: false, slot_idx: summary.slot_idx, prefix, retry_feedback: message };
   }
 }
 
@@ -466,40 +505,60 @@ async function runBatch(batch, args, total, backend) {
     batch.map(summary => processSlot(summary, args, total, backend))
   );
   let batchCompleted = 0;
-  const failedIdx = new Set();
+  const failed = [];
+  const backendCounts = {};
   results.forEach((r, i) => {
-    if (r.status === 'fulfilled' && r.value.ok) batchCompleted++;
+    if (r.status === 'fulfilled' && r.value.ok) {
+      if (r.value.persisted !== false) {
+        batchCompleted++;
+        const usedBackend = r.value.backend || 'unknown';
+        backendCounts[usedBackend] = (backendCounts[usedBackend] || 0) + 1;
+      }
+    }
     else {
-      failedIdx.add(batch[i].slot_idx);
       if (r.status === 'rejected') {
         console.error('Slot error:', r.reason instanceof Error ? r.reason.message : String(r.reason));
       }
+      failed.push({
+        ...batch[i],
+        retry_feedback: r.status === 'fulfilled'
+          ? r.value.retry_feedback
+          : (r.reason instanceof Error ? r.reason.message : String(r.reason)),
+      });
     }
   });
-  // Return the summaries that did not save so the caller can retry them.
-  const failed = batch.filter((s) => failedIdx.has(s.slot_idx));
-  return { batchCompleted, failed };
+  return { batchCompleted, failed, backendCounts };
+}
+
+function mergeBackendCounts(target, source) {
+  for (const [backend, count] of Object.entries(source || {})) {
+    target[backend] = (target[backend] || 0) + Number(count || 0);
+  }
 }
 
 // Run all slots in concurrency-limited batches; collect every slot that failed.
 async function runAllBatches(slots, args, total, backend, onProgress) {
   let completed = 0;
   const failed = [];
+  const backendCounts = {};
   for (let i = 0; i < slots.length; i += CONCURRENCY) {
     const batch = slots.slice(i, i + CONCURRENCY);
     const res = await runBatch(batch, args, total, backend);
     completed += res.batchCompleted;
     failed.push(...res.failed);
+    mergeBackendCounts(backendCounts, res.backendCounts);
     if (onProgress) await onProgress(completed);
   }
-  return { completed, failed };
+  return { completed, failed, backendCounts };
 }
 
 async function main() {
   await loadAiConfig();
   const context = await get(`/internal/discord/approved-jobs/${jobId}/context`);
   const job = context.job;
-  const slotSummaries = Array.isArray(context.slots) ? context.slots : [];
+  const slotSummaries = Array.isArray(context.slots)
+    ? context.slots.map((slot, index) => ({ ...slot, display_position: index + 1 }))
+    : [];
 
   if (!job || !slotSummaries.length) {
     await post(`/internal/discord/approved-jobs/${jobId}/fail`, {
@@ -516,9 +575,9 @@ async function main() {
   setHeartbeatMessage(`Terminal AI heartbeat — preparing weekly job for ${total} slots`);
 
   try {
-    console.log(`Starting terminal content job: ${total} slots | concurrency: ${CONCURRENCY} | backend: ${backend}`);
+    console.log(`Starting terminal content job: ${total} slots | concurrency: ${CONCURRENCY} | preferred backend: ${backend}`);
     await postBestEffort('/internal/discord/notify', {
-      content: `🧠 Terminal AI started weekly content job\nRun ID: \`${args.run_id}\`\nRunner: \`${runnerId}\`\nBackend: \`${backend}\`\nSlots: ${total} | Concurrency: ${CONCURRENCY}`,
+      content: `🧠 Terminal AI started weekly content job\nRun ID: \`${args.run_id}\`\nRunner: \`${runnerId}\`\nPreferred backend: \`${backend}\`\nSlots: ${total} | Concurrency: ${CONCURRENCY}`,
     });
 
     await postBestEffort(`/internal/discord/approved-jobs/${jobId}/log`, {
@@ -530,7 +589,7 @@ async function main() {
     const reportProgress = async (done) => {
       console.log(`Batch done: ${done}/${total} total saved`);
       await postBestEffort('/internal/discord/notify', {
-        content: `⏳ Terminal AI (${backend}): ${done}/${total} slots — run \`${args.run_id}\``,
+        content: `⏳ Terminal AI: ${done}/${total} slots — run \`${args.run_id}\``,
       });
     };
 
@@ -538,10 +597,11 @@ async function main() {
     const first = await runAllBatches(slotSummaries, args, total, backend, reportProgress);
     let completed = first.completed;
     let failed = first.failed;
+    const backendCounts = { ...first.backendCounts };
 
-    // Retry pass — transient failures (D1 contention, flaky backend) get one
-    // more attempt so a single hiccup no longer produces a silent 80/81 partial.
-    const RETRY_PASSES = parseInt(process.env.TERMINAL_RETRY_PASSES || '1', 10);
+    // Retry failed slots with the rejection reason so transient errors and
+    // correctable quality failures do not leave silent holes in the plan.
+    const RETRY_PASSES = parseInt(process.env.TERMINAL_RETRY_PASSES || '2', 10);
     for (let pass = 1; pass <= RETRY_PASSES && failed.length > 0; pass++) {
       console.log(`Retry pass ${pass}: ${failed.length} slot(s) to retry`);
       await postBestEffort(`/internal/discord/approved-jobs/${jobId}/log`, {
@@ -552,6 +612,7 @@ async function main() {
       const retry = await runAllBatches(failed, args, total, backend, null);
       completed += retry.completed;
       failed = retry.failed;
+      mergeBackendCounts(backendCounts, retry.backendCounts);
       await reportProgress(completed);
     }
 
@@ -567,13 +628,20 @@ async function main() {
       throw new Error(error);
     }
 
+    const actualBackend = Object.entries(backendCounts)
+      .sort((a, b) => b[1] - a[1])[0]?.[0] ?? backend;
+    const backendSummary = Object.entries(backendCounts)
+      .map(([name, count]) => `${name}: ${count}`)
+      .join(', ');
+
     await post(`/internal/discord/approved-jobs/${jobId}/complete`, {
       result_json: {
         run_id: args.run_id,
         completed_slots: completed,
         requested_slots: total,
         provider: 'terminal',
-        backend,
+        backend: actualBackend,
+        backend_counts: backendCounts,
         runner_id: runnerId,
       },
     });
@@ -581,7 +649,7 @@ async function main() {
     // Milestone summary — best-effort so it never affects job status.
     const summaryEmoji = completed >= total ? '✅' : '⚠️';
     await postBestEffort('/internal/discord/notify', {
-      content: `${summaryEmoji} Terminal AI weekly job done: saved ${completed}/${total} slot(s)\nRun ID: \`${args.run_id}\`\nBackend: \`${backend}\``,
+      content: `${summaryEmoji} Terminal AI weekly job done: saved ${completed}/${total} slot(s)\nRun ID: \`${args.run_id}\`\nBackends: \`${backendSummary || actualBackend}\``,
     });
 
     console.log(`Done: ${completed}/${total} slots completed`);

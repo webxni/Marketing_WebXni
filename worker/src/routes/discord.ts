@@ -711,7 +711,7 @@ discordInternalRoute.post('/upload-asset', async (c) => {
 
   if (postId) {
     await c.env.DB
-      .prepare(`UPDATE posts SET asset_r2_key = ?, asset_r2_bucket = 'MEDIA', asset_type = ?, asset_delivered = 1, updated_at = ? WHERE id = ?`)
+      .prepare(`UPDATE posts SET asset_r2_key = ?, asset_r2_bucket = 'MEDIA', asset_type = ?, asset_delivered = 1, asset_source = 'designer', updated_at = ? WHERE id = ?`)
       .bind(r2Key, assetType, now, postId)
       .run();
   }
@@ -740,6 +740,7 @@ discordInternalRoute.get('/approved-jobs/:id/context', async (c) => {
     .bind(args.run_id)
     .first<{ post_slots: string | null; total_slots: number | null; current_slot_idx: number | null; status: string }>();
   if (!run) return c.json({ error: 'Generation run not found' }, 404);
+  if (run.status !== 'running') return c.json({ ok: true, job, run, slots: [] });
   const startIdx = Math.max(0, run.current_slot_idx ?? 0);
   const cachedSlots = Array.isArray(args.prepared_slots) ? args.prepared_slots : [];
   const slotSummaries = cachedSlots.length > 0
@@ -768,7 +769,8 @@ discordInternalRoute.get('/approved-jobs/:id/slot-request/:slotIdx', async (c) =
   const slotIdx = Number.parseInt(c.req.param('slotIdx'), 10);
   if (!Number.isInteger(slotIdx) || slotIdx < 0) return c.json({ error: 'Invalid slot index' }, 400);
   try {
-    const cached = Array.isArray(args.prepared_slots)
+    const refresh = c.req.query('refresh') === '1';
+    const cached = !refresh && Array.isArray(args.prepared_slots)
       ? args.prepared_slots.find((slot) => slot.slot_idx === slotIdx)
       : null;
     if (cached) {
@@ -823,7 +825,7 @@ discordInternalRoute.post('/approved-jobs/:id/start', async (c) => {
     await c.env.DB.prepare(
       `UPDATE generation_runs
        SET status = 'running', completed_at = NULL, last_activity_at = ?
-       WHERE id = ?`,
+       WHERE id = ? AND status IN ('pending', 'running')`,
     ).bind(now, runId).run();
   }
   return c.json({ ok: true });
@@ -854,10 +856,20 @@ discordInternalRoute.post('/approved-jobs/:id/save-slot', async (c) => {
   let body: { run_id?: string; slot_idx?: number; post?: GeneratedPost | null; topic_selection?: SlotTopicSelection | null } = {};
   try { body = await c.req.json(); } catch { /* */ }
   if (!body.run_id || typeof body.slot_idx !== 'number' || !body.post) return c.json({ error: 'run_id, slot_idx, and post required' }, 400);
-  const result = await saveGeneratedSlotResult(c.env, body.run_id, body.slot_idx, body.post, body.topic_selection ?? null);
-  const outcomeLabel = result.outcome === 'skipped' ? 'skipped' : 'saved';
-  await appendGenerationLog(c.env.DB, body.run_id, result.outcome === 'skipped' ? 'WARN' : 'SAVED', `Terminal slot ${body.slot_idx + 1} ${outcomeLabel}`);
-  return c.json({ ok: true, result });
+  try {
+    const result = await saveGeneratedSlotResult(c.env, body.run_id, body.slot_idx, body.post, body.topic_selection ?? null);
+    const outcomeLabel = result.persisted === 'skipped' ? 'skipped' : 'saved';
+    try {
+      await appendGenerationLog(c.env.DB, body.run_id, result.persisted === 'skipped' ? 'WARN' : 'SAVED', `Terminal slot ${body.slot_idx + 1} ${outcomeLabel}`);
+    } catch (err) {
+      console.warn(`[approved-jobs/save-slot] saved slot but could not append log: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return c.json({ ok: true, result });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    try { await appendGenerationLog(c.env.DB, body.run_id, 'ERROR', `Terminal slot ${body.slot_idx + 1} rejected: ${message}`); } catch { /* best effort */ }
+    return c.json({ error: message }, 422);
+  }
 });
 
 discordInternalRoute.post('/approved-jobs/:id/error', async (c) => {
@@ -898,15 +910,16 @@ discordInternalRoute.post('/approved-jobs/:id/complete', async (c) => {
   if (runId && completedSlots !== null && requestedSlots !== null && completedSlots > 0) {
     const now = Math.floor(Date.now() / 1000);
     const finalStatus = completedSlots >= requestedSlots ? 'completed' : 'completed_with_errors';
-    await c.env.DB.prepare(
+    const updatedRun = await c.env.DB.prepare(
       `UPDATE generation_runs
        SET status = ?,
            current_slot_idx = CASE WHEN ? = 'completed' THEN COALESCE(total_slots, current_slot_idx) ELSE current_slot_idx END,
            completed_at = ?,
            last_activity_at = ?,
            error_log = CASE WHEN ? = 'completed' THEN NULL ELSE error_log END
-       WHERE id = ?`,
+       WHERE id = ? AND status != 'cancelled'`,
     ).bind(finalStatus, finalStatus, now, now, finalStatus, runId).run();
+    if (Number(updatedRun.meta?.changes ?? 0) === 0) return c.json({ ok: true, run_status_preserved: 'cancelled' });
     if (finalStatus === 'completed_with_errors') {
       const errorRecord = {
         kind: 'generation_error' as const,

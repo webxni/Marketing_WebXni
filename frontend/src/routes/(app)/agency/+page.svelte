@@ -8,6 +8,7 @@
     AgencyClientCoverage,
     AgencyLog,
     AgencyOverview,
+    AgencyStrategyPlan,
     AgencySkill,
     AgencyTimelineItem,
     AgentDefinition,
@@ -23,6 +24,7 @@
   let tasks: AgentTask[] = [];
   let findings: AgentFinding[] = [];
   let clients: AgencyClientCoverage[] = [];
+  let strategies: AgencyStrategyPlan[] = [];
   let timeline: AgencyTimelineItem[] = [];
   let logs: AgencyLog[] = [];
   let skills: AgencySkill[] = [];
@@ -30,6 +32,7 @@
   let loading = true;
   let error = '';
   let runningSlug = '';
+  let approvingStrategy = '';
 
   const boardColumns = [
     ['queued', 'Queued'],
@@ -48,13 +51,14 @@
     loading = true;
     error = '';
     try {
-      const [overviewRes, agentsRes, healthRes, tasksRes, findingsRes, clientsRes, timelineRes, logsRes, skillsRes, flowRes] = await Promise.all([
+      const [overviewRes, agentsRes, healthRes, tasksRes, findingsRes, clientsRes, strategiesRes, timelineRes, logsRes, skillsRes, flowRes] = await Promise.all([
         agencyApi.overview(),
         agencyApi.agents(),
         agencyApi.health(),
         agencyApi.tasks(),
         agencyApi.findings(),
         agencyApi.clientCoverage(),
+        agencyApi.strategies(),
         agencyApi.timeline(),
         agencyApi.logs(),
         agencyApi.skills(),
@@ -66,6 +70,7 @@
       tasks = tasksRes.tasks;
       findings = findingsRes.findings;
       clients = clientsRes.clients;
+      strategies = strategiesRes.strategies;
       timeline = timelineRes.items;
       logs = logsRes.logs;
       skills = skillsRes.skills;
@@ -97,6 +102,37 @@
       toast.success('Finding acknowledged');
     } catch (e) {
       toast.error(`Failed to acknowledge: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  function strategySummary(strategy: AgencyStrategyPlan): string {
+    try {
+      const parsed = JSON.parse(strategy.strategy_json);
+      if (parsed && typeof parsed === 'object') {
+        const summary = 'summary' in parsed ? parsed.summary : null;
+        const focus = 'monthly_focus' in parsed ? parsed.monthly_focus : null;
+        if (typeof summary === 'string' && summary.trim()) return summary;
+        if (typeof focus === 'string' && focus.trim()) return focus;
+      }
+    } catch { /* show fallback */ }
+    return 'Strategy draft is ready for review.';
+  }
+
+  async function approveStrategy(id: string) {
+    approvingStrategy = id;
+    try {
+      const result = await agencyApi.approveStrategy(id);
+      strategies = strategies.map((strategy) => strategy.id === id
+        ? result.strategy
+        : strategy.client_id === result.strategy.client_id && strategy.status === 'approved'
+          ? { ...strategy, status: 'archived' }
+          : strategy);
+      toast.success('Strategy approved for content generation');
+      await loadAgency();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to approve strategy');
+    } finally {
+      approvingStrategy = '';
     }
   }
 
@@ -310,6 +346,20 @@
       <a href="/posts" class="metric-card"><div class="metric-value">{overview.posts_generated_this_week}</div><div class="metric-label">Posts Generated</div></a>
       <a href="/posts?content_type=blog" class="metric-card"><div class="metric-value">{overview.blogs_generated_this_week}</div><div class="metric-label">Blogs Generated</div></a>
     </div>
+    <section class="card mb-5">
+      <div class="px-5 py-4 border-b border-border flex items-center justify-between gap-3">
+        <h2 class="section-title">Generation Quality</h2>
+        <span class="text-xs text-muted">Current week</span>
+      </div>
+      <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-px bg-border">
+        <div class="bg-card p-4"><div class="text-lg font-semibold text-white">{overview.quality_scorecard.keyword_coverage_percent}%</div><div class="text-xs text-muted mt-1">Keyword Coverage</div></div>
+        <div class="bg-card p-4"><div class="text-lg font-semibold text-white">{overview.quality_scorecard.current_reviews}</div><div class="text-xs text-muted mt-1">Editorial Reviews</div></div>
+        <div class="bg-card p-4"><div class="text-lg font-semibold {overview.quality_scorecard.blocked_reviews > 0 ? 'text-yellow-400' : 'text-white'}">{overview.quality_scorecard.blocked_reviews}</div><div class="text-xs text-muted mt-1">Blocked Reviews</div></div>
+        <div class="bg-card p-4"><div class="text-lg font-semibold {overview.quality_scorecard.package_violations > 0 ? 'text-red-400' : 'text-white'}">{overview.quality_scorecard.package_violations}</div><div class="text-xs text-muted mt-1">Package Violations</div></div>
+        <div class="bg-card p-4"><div class="text-lg font-semibold text-white">{overview.quality_scorecard.automated_drafts}</div><div class="text-xs text-muted mt-1">Automated Drafts</div></div>
+        <div class="bg-card p-4"><div class="text-lg font-semibold text-white">{overview.quality_scorecard.profile_complete_clients}/{overview.quality_scorecard.active_clients}</div><div class="text-xs text-muted mt-1">Complete Profiles</div></div>
+      </div>
+    </section>
   {/if}
 
   <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.65fr)] gap-5">
@@ -446,6 +496,32 @@
               {/each}
             </tbody>
           </table>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="px-5 py-4 border-b border-border flex items-center justify-between gap-3">
+          <h2 class="section-title">Strategy Review</h2>
+          <span class="text-xs text-muted">Only approved plans guide generation</span>
+        </div>
+        <div class="divide-y divide-border">
+          {#each strategies.filter((strategy) => strategy.status === 'draft' || strategy.status === 'needs_review').slice(0, 10) as strategy}
+            <div class="p-4 flex items-start gap-4">
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2">
+                  <h3 class="text-sm font-semibold text-white">{strategy.client_name}</h3>
+                  <span class={statusClass(strategy.status)}>{strategy.status.replace('_', ' ')}</span>
+                </div>
+                <p class="text-xs text-muted mt-1">{strategy.period_start} to {strategy.period_end}</p>
+                <p class="text-sm text-white/80 mt-2 line-clamp-3">{strategySummary(strategy)}</p>
+              </div>
+              <button class="btn-primary btn-sm shrink-0" disabled={approvingStrategy !== ''} on:click={() => approveStrategy(strategy.id)}>
+                {approvingStrategy === strategy.id ? 'Approving...' : 'Approve'}
+              </button>
+            </div>
+          {:else}
+            <p class="text-sm text-muted p-5">No strategy drafts are waiting for review.</p>
+          {/each}
         </div>
       </section>
     </div>

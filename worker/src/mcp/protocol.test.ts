@@ -8,6 +8,21 @@ describe('mcp protocol', () => {
     const res: any = await handleMcpRpc({ jsonrpc: '2.0', id: 1, method: 'initialize' }, deps(async () => ({ success: true })));
     expect(res.result.serverInfo.name).toContain('acme');
     expect(res.result.protocolVersion).toBeTruthy();
+    expect(res.result.capabilities.prompts).toBeUndefined();
+  });
+
+  it('notifications/initialized returns no JSON-RPC response', async () => {
+    const res = await handleMcpRpc({ jsonrpc: '2.0', method: 'notifications/initialized' }, deps(async () => ({ success: true })));
+    expect(res).toBeNull();
+  });
+
+  it('handles startup compatibility methods', async () => {
+    const ping: any = await handleMcpRpc({ jsonrpc: '2.0', id: 11, method: 'ping' }, deps(async () => ({ success: true })));
+    const prompts: any = await handleMcpRpc({ jsonrpc: '2.0', id: 12, method: 'prompts/list' }, deps(async () => ({ success: true })));
+    const templates: any = await handleMcpRpc({ jsonrpc: '2.0', id: 13, method: 'resources/templates/list' }, deps(async () => ({ success: true })));
+    expect(ping.result).toEqual({});
+    expect(prompts.result.prompts).toEqual([]);
+    expect(templates.result.resourceTemplates).toEqual([]);
   });
 
   it('tools/list returns only allowlisted tools', async () => {
@@ -35,6 +50,33 @@ describe('mcp protocol', () => {
     );
     expect(seen.client).toBe('acme');
     expect(res.result.isError).toBeFalsy();
+  });
+
+  it('tools/call preserves data in structured content', async () => {
+    const data = { platforms: [{ platform: 'facebook', paused: 0, page_id: '123' }] };
+    const res: any = await handleMcpRpc(
+      { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'get_client_details', arguments: {} } },
+      deps(async () => ({ success: true, action_summary: 'ok', data })),
+    );
+    expect(res.result.structuredContent.data).toEqual(data);
+  });
+
+  it('tools/call redacts credential fields from structured content', async () => {
+    const data = {
+      profile: {
+        canonical_name: 'Acme',
+        wp_auth: 'secret',
+        wp_application_password: 'secret',
+        api_token: 'secret',
+      },
+      platforms: [{ platform: 'facebook', page_id: '123' }],
+    };
+    const res: any = await handleMcpRpc(
+      { jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'get_client_details', arguments: {} } },
+      deps(async () => ({ success: true, action_summary: 'ok', data })),
+    );
+    expect(res.result.structuredContent.data.profile).toEqual({ canonical_name: 'Acme' });
+    expect(res.result.structuredContent.data.platforms[0].page_id).toBe('123');
   });
 
   it('publish tool blocked by guard does not call exec', async () => {

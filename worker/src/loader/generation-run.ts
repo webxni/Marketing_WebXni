@@ -24,8 +24,7 @@
  *                 ...
  */
 
-import type { Env } from '../types';
-import type { ClientRow, PostRow } from '../types';
+import type { ClientGbpLocationRow, ClientRow, Env, PostRow } from '../types';
 import {
   buildWeeklyMarketingStrategicContext,
   buildAutonomousResearchSignals,
@@ -51,16 +50,28 @@ import {
   getGenerationRunById,
   createApprovedCommandJob,
   getClientGenerationTopicHistory,
+  getClientGenerationTopicHistoryForPeriod,
   getLatestClientResearch,
   getLatestClientStrategy,
+  getClientKeywords,
+  getClientRestrictions,
+  getClientProfileCompleteness,
+  reclassifyActiveClientKeywords,
   type GenerationProgress,
   buildTopicFingerprint,
+  createGenerationRun,
 } from '../db/queries';
 import {
   buildGenerationRequest,
   validateGeneratedContent,
   detectFormatFromTitle,
   buildBlogContentHtml,
+  canonicalizeGeneratedPhoneNumbers,
+  normalizeGeneratedMarketingCliches,
+  normalizeGeneratedUnverifiedClaims,
+  findRestrictedContentPhrase,
+  isGeneratedCaptionField,
+  normalizeGeneratedCaptionValue,
   type GenerationContext,
   type ContentFormat,
   type GeneratedPost,
@@ -84,6 +95,7 @@ import {
   parsePlatforms,
   resolvePlatformSelection,
   withImplicitBlogPlatform,
+  withImplicitGbpPlatform,
 } from '../modules/platform-compatibility';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -100,6 +112,27 @@ export interface GenerationParams {
   overwrite_existing?: boolean;
   high_quality?: boolean;
   provider?: ContentProviderName;
+}
+
+export function relevantGbpLocationsForTarget(
+  locations: ClientGbpLocationRow[],
+  targetLocality: string | null | undefined,
+  serviceAreas: Array<{ city: string; state: string | null }>,
+): ClientGbpLocationRow[] {
+  const active = locations.filter((location) => location.paused !== 1);
+  const target = targetLocality?.trim().toLowerCase();
+  if (!target) return active;
+
+  const targetArea = serviceAreas.find((area) => area.city.trim().toLowerCase() === target);
+  const targetState = targetArea?.state?.trim().toUpperCase() ?? '';
+  return active.filter((location) => {
+    const label = location.label.trim().toLowerCase();
+    if (label === target) return true;
+
+    const fieldRegion = getGbpCaptionField(location)?.match(/^cap_gbp_([a-z]{2})$/i)?.[1].toUpperCase() ?? '';
+    if (fieldRegion === 'LA') return targetState === 'CA';
+    return Boolean(targetState && (location.label.trim().toUpperCase() === targetState || fieldRegion === targetState));
+  });
 }
 
 interface PostSlot {
@@ -139,6 +172,7 @@ export interface SlotTopicSelection {
   monthlyTopicId: string | null;
   topicTitle: string | null;
   targetKeyword: string | null;
+  targetLocality: string | null;
   serviceCategory: string | null;
   topicFingerprint: string | null;
   notes?: string | null;
@@ -150,6 +184,7 @@ interface PackageRow {
   slug:                 string;
   posting_days:         string | null;
   weekly_schedule:      string | null;
+  posts_per_month?:     number | null;
   images_per_month:     number;
   videos_per_month:     number;
   reels_per_month:      number;
@@ -176,6 +211,12 @@ interface IntelRow {
 
 interface FeedbackRow { sentiment: string; note: string; }
 
+interface ClientKeywordLite {
+  keyword: string;
+  kw_type: string;
+  locality: string | null;
+}
+
 function applyMonthlyPlanToIntelligence(
   intel: IntelRow | null,
   plan: { monthly_focus?: string | null; promotion_notes?: string | null; priority_services?: string | null; notes?: string | null } | null,
@@ -192,6 +233,7 @@ function mapTopicHistoryForContext(rows: ClientGenerationTopicHistoryItem[]): Cl
   return rows.map((row) => ({
     title: row.title,
     target_keyword: row.target_keyword,
+    topic_service_category: row.topic_service_category,
     content_type: row.content_type,
     publish_date: row.publish_date,
     platforms: row.platforms,
@@ -219,6 +261,12 @@ const DAY_NAME_TO_NUM: Record<string, number> = {
   thursday: 4, friday: 5, saturday: 6,
 };
 const DAY_NUM_TO_NAME = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+
+interface PackageSlotCandidate {
+  date: string;
+  contentType: string;
+  dailyIndex: number;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Date / schedule helpers
@@ -265,6 +313,85 @@ function buildContentSequence(pkg: PackageRow): string[] {
   return positioned.map(p => p.type);
 }
 
+function packageContentCounts(pkg: PackageRow): Record<string, number> {
+  return {
+    image: Math.max(0, Number(pkg.images_per_month ?? 0)),
+    video: Math.max(0, Number(pkg.videos_per_month ?? 0)),
+    reel: Math.max(0, Number(pkg.reels_per_month ?? 0)),
+    blog: Math.max(0, Number(pkg.blog_posts_per_month ?? 0)),
+  };
+}
+
+function packageAllowsContentType(pkg: PackageRow, contentType: string): boolean {
+  const counts = packageContentCounts(pkg);
+  return (counts[normalizeContentType(contentType)] ?? 0) > 0;
+}
+
+function monthKey(date: string): string {
+  return date.slice(0, 7);
+}
+
+function addMonths(month: string, offset: number): string {
+  const [yearStr, monthStr] = month.split('-');
+  const date = new Date(Date.UTC(Number(yearStr), Number(monthStr) - 1 + offset, 1, 12, 0, 0));
+  return date.toISOString().slice(0, 7);
+}
+
+function packageCandidatesForRange(pkg: PackageRow, periodStart: string, periodEnd: string): PackageSlotCandidate[] {
+  const weeklySchedule = parseWeeklySchedule(pkg.weekly_schedule ?? null);
+  const counts = packageContentCounts(pkg);
+  const dates = buildDates(periodStart, periodEnd, pkg.posting_frequency, pkg.posting_days ?? null, pkg.weekly_schedule ?? null);
+  const candidates: PackageSlotCandidate[] = [];
+
+  if (weeklySchedule) {
+    for (const date of dates) {
+      const dayName = getDayName(date);
+      const contentTypes = weeklySchedule[dayName] ?? [];
+      for (const [dailyIndex, rawType] of contentTypes.entries()) {
+        const contentType = normalizeContentType(rawType);
+        if ((counts[contentType] ?? 0) <= 0) continue;
+        candidates.push({ date, contentType, dailyIndex });
+      }
+    }
+    return candidates;
+  }
+
+  const sequence = buildContentSequence(pkg).map((type) => normalizeContentType(type));
+  const totalAllowed = Object.values(counts).reduce((sum, n) => sum + n, 0);
+  if (totalAllowed <= 0) return [];
+  const limitedDates = dates.slice(0, totalAllowed);
+  return limitedDates.map((date, index) => ({
+    date,
+    contentType: sequence[index % sequence.length] ?? 'image',
+    dailyIndex: 0,
+  }));
+}
+
+export function buildPackageSlots(pkg: PackageRow, periodStart: string, periodEnd: string): PackageSlotCandidate[] {
+  const counts = packageContentCounts(pkg);
+  const startMonth = monthKey(periodStart);
+  const endMonth = monthKey(periodEnd);
+  const allowed = new Set<string>();
+
+  for (let month = startMonth; month <= endMonth; month = addMonths(month, 1)) {
+    const { start, end } = getMonthBounds(month);
+    const monthCandidates = packageCandidatesForRange(pkg, start, end);
+    const used: Record<string, number> = {};
+    for (const candidate of monthCandidates) {
+      const contentType = normalizeContentType(candidate.contentType);
+      const maxForType = counts[contentType] ?? 0;
+      if (maxForType <= 0) continue;
+      const next = (used[contentType] ?? 0) + 1;
+      if (next > maxForType) continue;
+      used[contentType] = next;
+      allowed.add(`${candidate.date}:${candidate.dailyIndex}:${contentType}`);
+    }
+  }
+
+  return packageCandidatesForRange(pkg, periodStart, periodEnd)
+    .filter((candidate) => allowed.has(`${candidate.date}:${candidate.dailyIndex}:${normalizeContentType(candidate.contentType)}`));
+}
+
 function buildDates(
   periodStart: string, periodEnd: string,
   frequency: string, postingDays: string | null,
@@ -274,7 +401,7 @@ function buildDates(
     const sched = parseWeeklySchedule(weeklySchedule);
     if (sched && Object.keys(sched).length > 0) {
       const activeDayNums = new Set(Object.keys(sched).map(d => DAY_NAME_TO_NUM[d]).filter(n => n !== undefined));
-      return buildDatesRaw(periodStart, periodEnd, frequency, activeDayNums);
+      return buildDatesRaw(periodStart, periodEnd, 'weekly', activeDayNums);
     }
   }
   return buildDatesRaw(periodStart, periodEnd, frequency, new Set(parsePostingDays(postingDays)));
@@ -334,25 +461,13 @@ function getMonthBounds(month: string): { start: string; end: string } {
   };
 }
 
-function getMonthlySequenceTypeForDate(
-  pkg: PackageRow,
-  date: string,
-): string {
-  const month = planMonth(date);
-  const { start, end } = getMonthBounds(month);
-  const monthDates = buildDates(start, end, pkg.posting_frequency, pkg.posting_days ?? null, pkg.weekly_schedule ?? null);
-  const dateIndex = Math.max(0, monthDates.indexOf(date));
-  const sequence = buildContentSequence(pkg);
-  return sequence[dateIndex % sequence.length] ?? 'image';
-}
-
 async function buildMonthlyTopicSelection(
   db: D1Database,
   clientId: string,
   date: string,
   contentType: string,
   platforms: string[],
-  _serviceAreas: string[],
+  serviceAreas: string[],
   excludedTopicIds: string[] = [],
 ): Promise<SlotTopicSelection | null> {
   const month = planMonth(date);
@@ -380,6 +495,7 @@ async function buildMonthlyTopicSelection(
     topicTitle: monthlyTopic.topic_title,
     serviceCategory: monthlyTopic.service_category ?? null,
     targetKeyword: monthlyTopic.target_keyword?.trim() || monthlyTopic.topic_title.toLowerCase().split(' ').slice(0, 4).join(' '),
+    targetLocality: serviceAreas[0] ?? null,
     topicFingerprint: buildTopicFingerprint({
       topic: monthlyTopic.topic_title,
       serviceCategory: monthlyTopic.service_category,
@@ -400,9 +516,301 @@ function getTopicResearchFromSelection(
     angle: selection.serviceCategory ?? selection.source,
     format: 'quick_explainer',
     targetKeyword: selection.targetKeyword ?? selection.topicTitle ?? '',
-    localModifier: serviceAreas[0] ?? '',
+    localModifier: selection.targetLocality ?? serviceAreas[0] ?? '',
     searchQuestion: selection.notes?.trim() || (selection.topicTitle ?? ''),
   };
+}
+
+export function existingPostTopicSelection(
+  post: Pick<PostRow, 'title' | 'target_keyword' | 'target_locality' | 'monthly_topic_id' | 'topic_fingerprint' | 'topic_service_category'>,
+  contentType: string,
+): SlotTopicSelection | null {
+  const topicTitle = post.title?.trim() || null;
+  const targetKeyword = post.target_keyword?.trim() || null;
+  if (!topicTitle && !targetKeyword) return null;
+
+  return {
+    monthlyTopicId: post.monthly_topic_id ?? null,
+    topicTitle,
+    targetKeyword,
+    targetLocality: post.target_locality?.trim() || null,
+    serviceCategory: post.topic_service_category?.trim() || null,
+    topicFingerprint: post.topic_fingerprint?.trim() || buildTopicFingerprint({
+      topic: topicTitle,
+      serviceCategory: post.topic_service_category,
+      contentType,
+      targetKeyword,
+    }),
+    source: 'research',
+  };
+}
+
+const FALLBACK_FORMATS: ContentFormat[] = [
+  'local_advice',
+  'checklist',
+  'mistake_to_avoid',
+  'process_breakdown',
+  'faq',
+  'comparison',
+  'quick_explainer',
+  'trust_builder',
+];
+
+function uniqueClean(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    const clean = String(value ?? '').trim();
+    if (!clean) continue;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(clean);
+  }
+  return out;
+}
+
+function splitJsonOrCsv(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed)) return parsed.map((item) => String(item).trim()).filter(Boolean);
+  } catch { /* delimited fallback */ }
+  return raw
+    .split(/[,\n|;]/)
+    .map((item) => item.replace(/^[\s["']+|[\s\]"']+$/g, '').trim())
+    .filter(Boolean);
+}
+
+function stableSlotSeed(slot: PostSlot): number {
+  return [...`${slot.slot_key}:${slot.content_type}`]
+    .reduce((sum, char) => (sum + char.charCodeAt(0)) % 997, 0);
+}
+
+export function resolveKeywordService(services: string[], keyword: string, seed: number): string {
+  const normalizePhrase = (value: string) => ` ${value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()} `;
+  const normalizedKeywordPhrase = normalizePhrase(keyword);
+  const exactService = [...services]
+    .sort((a, b) => normalizePhrase(b).length - normalizePhrase(a).length)
+    .find((service) => normalizedKeywordPhrase.includes(normalizePhrase(service)));
+  if (exactService) return exactService;
+
+  const normalizedKeyword = keyword.toLowerCase();
+  const intentGroups = [
+    ['car', 'auto', 'automotive', 'vehicle'],
+    ['building', 'commercial', 'residential', 'door'],
+  ];
+  for (const intent of intentGroups) {
+    if (!intent.some((token) => normalizedKeyword.includes(token))) continue;
+    const matches = services.filter((service) => {
+      const normalizedService = service.toLowerCase();
+      return intent.some((token) => normalizedService.includes(token));
+    });
+    if (matches.length > 0) return matches[seed % matches.length];
+  }
+
+  const scored = services
+    .map((service) => ({
+      service,
+      score: service.toLowerCase().split(/\s+/).filter((token) => token.length > 3 && normalizedKeyword.includes(token.replace(/(ing|ed|s)$/, ''))).length,
+    }))
+    .sort((a, b) => b.score - a.score);
+  return scored[0]?.score ? scored[0].service : services[seed % services.length];
+}
+
+function fallbackTopicForFormat(format: ContentFormat, service: string, locality: string): { topic: string; question: string } {
+  const local = locality ? ` in ${locality}` : '';
+  switch (format) {
+    case 'comparison':
+      return { topic: `${service}${local}: compare two practical approaches`, question: `Which ${service} approach fits different customer situations${local}?` };
+    case 'mistake_to_avoid':
+      return { topic: `${service}${local}: one costly mistake and how to prevent it`, question: `What common ${service} mistake should customers${local} prevent?` };
+    case 'process_breakdown':
+      return { topic: `How a professional ${service} process works${local}`, question: `What happens during a professional ${service} service${local}?` };
+    case 'faq':
+      return { topic: `${service}${local}: answer one specific customer concern`, question: `What specific concern do customers have about ${service}${local}?` };
+    case 'quick_explainer':
+      return { topic: `${service}${local}: explain one technical decision clearly`, question: `Which technical ${service} decision confuses customers${local}?` };
+    case 'trust_builder':
+      return { topic: `${service}${local}: show a verifiable quality-control step`, question: `Which quality-control step matters most for ${service}${local}?` };
+    case 'checklist':
+      return { topic: `${service}${local}: three project-specific decision criteria`, question: `Which three project details determine the right ${service} plan${local}?` };
+    default:
+      return { topic: `${service}${local}: advice tied to a real local condition`, question: `Which local condition changes how ${service} should be handled${local}?` };
+  }
+}
+
+function keywordPoolFromContext(
+  intel: IntelRow | null,
+  keywords: ClientKeywordLite[],
+  serviceNames: string[],
+  serviceAreas: string[],
+  restrictions: string[] = [],
+): string[] {
+  const rankedKeywords = [...keywords].sort((a, b) => {
+    const rank = (k: ClientKeywordLite) => ({ primary: 0, local: 1, near_me: 2, long_tail: 3 }[k.kw_type] ?? 4);
+    return rank(a) - rank(b);
+  });
+  const normalizePhrase = (value: string) => ` ${value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()} `;
+  const intelligenceKeywords = uniqueClean([
+    intel?.primary_keyword,
+    ...splitJsonOrCsv(intel?.secondary_keywords),
+  ]).filter((keyword) => serviceAreas.length === 0 || serviceAreas.some((area) => normalizePhrase(keyword).includes(normalizePhrase(area))));
+  return uniqueClean([
+    ...intelligenceKeywords,
+    ...serviceNames.flatMap((service) => serviceAreas.slice(0, 3).map((area) => `${service} ${area}`)),
+    ...rankedKeywords.map((k) => k.keyword),
+    ...serviceNames,
+  ]).filter((keyword) => !findRestrictedContentPhrase(keyword, restrictions)).slice(0, 24);
+}
+
+export function resolveKeywordLocality(keyword: string, areas: string[], fallbackIndex: number): string {
+  if (!areas.length) return '';
+  const normalizePhrase = (value: string) => ` ${value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()} `;
+  const normalizedKeyword = normalizePhrase(keyword);
+  const embeddedArea = [...areas]
+    .sort((a, b) => normalizePhrase(b).length - normalizePhrase(a).length)
+    .find((area) => normalizedKeyword.includes(normalizePhrase(area)));
+  return embeddedArea ?? areas[fallbackIndex % areas.length] ?? '';
+}
+
+export function weeklyUsedTargetKeywords(
+  topicHistory: ClientGenerationTopicHistoryItem[],
+  slotDate: string,
+): Set<string> {
+  const { from, to } = contentWeekDateRange(slotDate);
+  return new Set(topicHistory
+    .filter((item) => {
+      const publishDate = item.publish_date?.slice(0, 10) ?? '';
+      return publishDate >= from && publishDate <= to;
+    })
+    .map((item) => item.target_keyword?.trim().toLowerCase() ?? '')
+    .filter(Boolean));
+}
+
+export function contentWeekDateRange(slotDate: string): { from: string; to: string } {
+  const date = new Date(`${slotDate.slice(0, 10)}T12:00:00Z`);
+  const weekday = date.getUTCDay();
+  const mondayOffset = weekday === 0 ? 6 : weekday - 1;
+  const weekStart = new Date(date);
+  weekStart.setUTCDate(date.getUTCDate() - mondayOffset);
+  const weekEnd = new Date(weekStart);
+  weekEnd.setUTCDate(weekStart.getUTCDate() + 6);
+  const from = weekStart.toISOString().slice(0, 10);
+  const to = weekEnd.toISOString().slice(0, 10);
+  return { from, to };
+}
+
+export function normalizeWeeklyServiceFamily(serviceCategory: string): string {
+  const normalized = serviceCategory.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  if (!normalized) return '';
+  if (/\b(key|keys)\b.*\b(copy|copying|duplicate|duplication)\b|\b(copy|copying|duplicate|duplication)\b.*\b(key|keys)\b/.test(normalized)) {
+    return 'key copying';
+  }
+  if (/\b(lockout|lockouts)\b|\blocked out\b/.test(normalized)) {
+    return /\b(car|auto|automotive|vehicle)\b/.test(normalized) ? 'automotive lockouts' : 'building lockouts';
+  }
+  if (/\brekey|rekeying\b/.test(normalized)) return 'lock rekeying';
+  if (/\bsafe\b/.test(normalized)) return 'safe services';
+  if (/\binstall|installation\b/.test(normalized) && /\b(lock|locks|bolt|hardware)\b/.test(normalized)) {
+    return 'lock installation';
+  }
+  if (/\brepair|repairs\b/.test(normalized) && /\b(lock|locks|bolt|hardware)\b/.test(normalized)) {
+    return 'lock repair';
+  }
+  return normalized;
+}
+
+export function weeklyUsedServiceCategories(
+  topicHistory: ClientGenerationTopicHistoryItem[],
+  slotDate: string,
+): Set<string> {
+  const { from, to } = contentWeekDateRange(slotDate);
+  return new Set(topicHistory
+    .filter((item) => {
+      const publishDate = item.publish_date?.slice(0, 10) ?? '';
+      return publishDate >= from && publishDate <= to;
+    })
+    .map((item) => normalizeWeeklyServiceFamily(item.topic_service_category ?? ''))
+    .filter(Boolean));
+}
+
+function selectFallbackTopic(
+  client: ClientRow,
+  slot: PostSlot,
+  intel: IntelRow | null,
+  serviceNames: string[],
+  serviceAreas: string[],
+  keywords: ClientKeywordLite[],
+  topicHistory: ClientGenerationTopicHistoryItem[],
+  recentFormats: ContentFormat[],
+  restrictions: string[] = [],
+): { selection: SlotTopicSelection; research: TopicResearch; keywords: string[] } | null {
+  const services = uniqueClean([
+    ...serviceNames,
+    ...splitJsonOrCsv(intel?.service_priorities),
+  ]).filter((service) => !findRestrictedContentPhrase(service, restrictions)).slice(0, 12);
+  const areas = uniqueClean(serviceAreas.length ? serviceAreas : [client.state]).slice(0, 8);
+  const keywordPool = keywordPoolFromContext(intel, keywords, services, areas, restrictions);
+  if (!services.length || !keywordPool.length) return null;
+
+  const historyFingerprints = new Set(
+    topicHistory
+      .map((item) => buildTopicFingerprint({
+        topic: item.title,
+        contentType: item.content_type,
+        targetKeyword: item.target_keyword,
+      }))
+      .filter(Boolean),
+  );
+  const usedWeeklyKeywords = weeklyUsedTargetKeywords(topicHistory, slot.date);
+  const usedWeeklyServices = weeklyUsedServiceCategories(topicHistory, slot.date);
+  const recentFormatSet = new Set(recentFormats.slice(0, 6));
+  const preferredFormats = FALLBACK_FORMATS.filter((format) => !recentFormatSet.has(format));
+  const formats = preferredFormats.length ? preferredFormats : FALLBACK_FORMATS;
+  const dateSeed = new Date(`${slot.date}T12:00:00Z`).getUTCDate() + stableSlotSeed(slot);
+
+  for (const requireUnusedService of [true, false]) {
+    for (let i = 0; i < keywordPool.length; i++) {
+      const keyword = keywordPool[(dateSeed + i) % keywordPool.length];
+      if (usedWeeklyKeywords.has(keyword.toLowerCase())) continue;
+      const service = resolveKeywordService(services, keyword, dateSeed + i);
+      if (requireUnusedService && usedWeeklyServices.has(normalizeWeeklyServiceFamily(service))) continue;
+      const locality = resolveKeywordLocality(keyword, areas, dateSeed + i);
+      const format = formats[(dateSeed + i) % formats.length];
+      const fallback = fallbackTopicForFormat(format, service, locality || client.state || '');
+      const topic = slot.content_type === 'blog'
+        ? `${keyword}: ${fallback.topic}`
+        : fallback.topic;
+      const fingerprint = buildTopicFingerprint({
+        topic,
+        serviceCategory: service,
+        contentType: slot.content_type,
+        targetKeyword: keyword,
+      });
+      if (fingerprint && historyFingerprints.has(fingerprint)) continue;
+      const selection: SlotTopicSelection = {
+        monthlyTopicId: null,
+        topicTitle: topic,
+        targetKeyword: keyword,
+        targetLocality: locality || null,
+        serviceCategory: service,
+        topicFingerprint: fingerprint,
+        notes: `Deterministic package fallback from client services, service areas, and target keyword set. Keep this ${slot.content_type} educational and on-company.`,
+        source: 'research',
+      };
+      const research: TopicResearch = {
+        topic,
+        angle: `Answer a practical customer question about ${service}${locality ? ` in ${locality}` : ''}; stay inside confirmed company services.`,
+        format,
+        targetKeyword: keyword,
+        localModifier: locality,
+        searchQuestion: fallback.question,
+      };
+      return { selection, research, keywords: keywordPool };
+    }
+  }
+  return null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -468,22 +876,25 @@ async function finalizeSlotProgress(
   log: (level: Parameters<typeof appendGenerationLog>[2], msg: string) => Promise<void>,
 ): Promise<SlotWorkResult> {
   const now = Math.floor(Date.now() / 1000);
-  await db
+  const advanced = await db
     .prepare(`UPDATE generation_runs
-              SET current_slot_idx = ?,
+              SET current_slot_idx = MAX(COALESCE(current_slot_idx, 0), ?),
                   posts_created    = posts_created + ?,
                   posts_updated    = posts_updated + ?,
                   last_activity_at = ?
-              WHERE id = ?`)
+              WHERE id = ? AND status = 'running'`)
     .bind(nextCompletedIdx, outcome === 'created' ? 1 : 0, outcome === 'updated' ? 1 : 0, now, runId)
     .run();
+  if (Number(advanced.meta?.changes ?? 0) === 0) {
+    return { outcome: 'skipped', persisted: 'skipped' };
+  }
 
   const updated = await db
     .prepare('SELECT current_slot_idx, total_slots, posts_created, posts_updated, error_log FROM generation_runs WHERE id = ?')
     .bind(runId)
     .first<{ current_slot_idx: number; total_slots: number; posts_created: number; posts_updated: number; error_log: string | null }>();
 
-  if (!updated) return { outcome: 'skipped' };
+  if (!updated) return { outcome: 'skipped', persisted: 'skipped' };
 
   const progress: GenerationProgress = {
     current_client: clientName,
@@ -498,7 +909,8 @@ async function finalizeSlotProgress(
   };
   try { await updateGenerationProgress(db, runId, progress); } catch { /* ignore */ }
 
-  if (updated.current_slot_idx >= updated.total_slots) {
+  const terminalRun = isTerminalContentProvider(normalizeContentProvider(slots[0]?.provider));
+  if (updated.current_slot_idx >= updated.total_slots && !terminalRun) {
     const totalTouched = (updated.posts_created ?? 0) + (updated.posts_updated ?? 0);
     const finalStatus = totalTouched > 0 ? (updated.error_log ? 'completed_with_errors' : 'completed') : 'failed';
     await finalizeGenerationRun(db, runId, finalStatus, updated.posts_created, updated.error_log ?? null);
@@ -509,10 +921,10 @@ async function finalizeSlotProgress(
     } catch (err) {
       await log('WARN', `Discord completion notify failed: ${str(err)}`);
     }
-    return { outcome: 'completed', totalSlots: updated.total_slots };
+    return { outcome: 'completed', persisted: outcome, totalSlots: updated.total_slots };
   }
 
-  return { outcome: 'continue', nextSlot: updated.current_slot_idx, totalSlots: updated.total_slots };
+  return { outcome: 'continue', persisted: outcome, nextSlot: updated.current_slot_idx, totalSlots: updated.total_slots };
 }
 
 export async function prepareGenerationPlan(env: Env, params: GenerationParams): Promise<{ slots: PostSlot[]; clients: ClientRow[] }> {
@@ -525,46 +937,75 @@ export async function prepareGenerationPlan(env: Env, params: GenerationParams):
 
   const provider = normalizeContentProvider(params.provider);
   const slots: PostSlot[] = [];
+  const eligibleClients: ClientRow[] = [];
   let intentEduc = 0;
   let intentSales = 0;
 
   for (const client of clients) {
+    const profile = await getClientProfileCompleteness(db, client.id);
+    if (!profile.complete) {
+      await appendGenerationError(
+        db,
+        params.run_id,
+        `${client.slug} skipped: client profile is missing ${profile.gaps.join(', ')}.`,
+      );
+      continue;
+    }
+    const keywordAudit = await reclassifyActiveClientKeywords(db, client.id);
+    if (keywordAudit.quarantined > 0) {
+      await appendGenerationLog(
+        db,
+        params.run_id,
+        'WARN',
+        `${client.slug}: quarantined ${keywordAudit.quarantined}/${keywordAudit.checked} active research keywords outside the confirmed profile.`,
+      );
+    }
+    eligibleClients.push(client);
     let pkg = DEFAULT_PACKAGE;
     if (client.package) {
       const row = await db.prepare('SELECT * FROM packages WHERE slug = ? AND active = 1').bind(client.package).first<PackageRow>();
       if (row) pkg = row;
     }
 
-    const weeklySchedule = parseWeeklySchedule(pkg.weekly_schedule ?? null);
-    const dates = buildDates(params.period_start, params.period_end, pkg.posting_frequency, pkg.posting_days ?? null, pkg.weekly_schedule ?? null);
+    const packageSlots = buildPackageSlots(pkg, params.period_start, params.period_end);
+    const postedRows = await db.prepare(
+      `SELECT automation_slot_key, substr(publish_date, 1, 10) AS publish_day, content_type
+       FROM posts
+       WHERE client_id = ? AND status = 'posted'
+         AND substr(publish_date, 1, 10) BETWEEN ? AND ?`,
+    ).bind(client.id, params.period_start, params.period_end).all<{
+      automation_slot_key: string | null;
+      publish_day: string;
+      content_type: string;
+    }>();
+    const postedSlotKeys = new Set(postedRows.results.map((row) => row.automation_slot_key).filter(Boolean));
+    const postedLegacySlots = new Set(postedRows.results.map((row) => `${row.publish_day}:${normalizeContentType(row.content_type)}`));
 
-    for (const date of dates) {
-      const dayName = getDayName(date);
-      const contentTypes = weeklySchedule
-        ? (weeklySchedule[dayName] ?? ['image'])
-        : [getMonthlySequenceTypeForDate(pkg, date)];
-
-      for (const [dailyIndex, contentType] of contentTypes.entries()) {
-        const totalSoFar = intentEduc + intentSales;
-        const salesRatio = totalSoFar === 0 ? 0 : intentSales / totalSoFar;
-        const intent: 'educational' | 'sales' = salesRatio < 0.30 ? 'sales' : 'educational';
-        slots.push({
-          client_id: client.id,
-          client_slug: client.slug,
-          date,
-          content_type: normalizeContentType(contentType),
-          content_intent: intent,
-          slot_key: getAutomationSlotKey(client.id, date, contentType, dailyIndex),
-          high_quality: params.high_quality ?? false,
-          provider,
-        });
-        if (intent === 'sales') intentSales++; else intentEduc++;
+    for (const packageSlot of packageSlots) {
+      const slotKey = getAutomationSlotKey(client.id, packageSlot.date, packageSlot.contentType, packageSlot.dailyIndex);
+      if (postedSlotKeys.has(slotKey) || postedLegacySlots.has(`${packageSlot.date}:${normalizeContentType(packageSlot.contentType)}`)) {
+        await appendGenerationLog(db, params.run_id, 'INFO', `${client.slug}: ${packageSlot.date}/${packageSlot.contentType} already posted — omitted from generation plan.`);
+        continue;
       }
+      const totalSoFar = intentEduc + intentSales;
+      const salesRatio = totalSoFar === 0 ? 0 : intentSales / totalSoFar;
+      const intent: 'educational' | 'sales' = salesRatio < 0.30 ? 'sales' : 'educational';
+      slots.push({
+        client_id: client.id,
+        client_slug: client.slug,
+        date: packageSlot.date,
+        content_type: normalizeContentType(packageSlot.contentType),
+        content_intent: intent,
+        slot_key: slotKey,
+        high_quality: params.high_quality ?? false,
+        provider,
+      });
+      if (intent === 'sales') intentSales++; else intentEduc++;
     }
   }
 
   if (slots.length === 0) throw new Error('No posts to generate for this period and client selection');
-  return { slots, clients };
+  return { slots, clients: eligibleClients };
 }
 
 function str(err: unknown): string {
@@ -618,6 +1059,7 @@ function mergeGeneratedContent(
     'seo_title',
     'meta_description',
     'target_keyword',
+    'target_locality',
     'secondary_keywords',
     'slug',
     'video_script',
@@ -625,23 +1067,20 @@ function mergeGeneratedContent(
     'ai_video_prompt',
   ];
   for (const key of keys) {
-    next[key] = pickGeneratedValue(current[key], post[key], overwrite) ?? null;
+    const existingValue = isGeneratedCaptionField(key)
+      ? (normalizeGeneratedCaptionValue(current[key]) ?? current[key])
+      : current[key];
+    const generatedValue = isGeneratedCaptionField(key)
+      ? normalizeGeneratedCaptionValue(post[key])
+      : post[key];
+    next[key] = pickGeneratedValue(existingValue, generatedValue, overwrite) ?? null;
   }
   return next;
 }
 
-function hasMaterializedSlotContent(post: PostRow | null | undefined): boolean {
-  if (!post) return false;
-  const contentType = normalizeContentType(post.content_type, post.asset_type);
-  if (String(post.title ?? '').trim()) return true;
-  if (String(post.master_caption ?? '').trim()) return true;
-  if (contentType === 'blog' && String(post.blog_content ?? '').trim()) return true;
-  if ((contentType === 'video' || contentType === 'reel') && String(post.video_script ?? '').trim()) return true;
-  return false;
-}
-
 export interface SlotWorkResult {
   outcome: 'skipped' | 'continue' | 'completed';
+  persisted?: 'created' | 'updated' | 'skipped';
   nextSlot?: number;
   totalSlots?: number;
 }
@@ -800,10 +1239,16 @@ export async function planGeneration(env: Env, params: GenerationParams, baseUrl
   }
 }
 
-export async function buildSlotGenerationRequest(env: Env, runId: string, slotIdx: number): Promise<SlotGenerationRequest | null> {
+export async function buildSlotGenerationRequest(
+  env: Env,
+  runId: string,
+  slotIdx: number,
+  reservedTopicHistory: ClientGenerationTopicHistoryItem[] = [],
+): Promise<SlotGenerationRequest | null> {
   const db = env.DB;
   const run = await getGenerationRunById(db, runId);
   if (!run) throw new Error('Generation run not found');
+  if (run.status === 'cancelled') return null;
   const slots = JSON.parse(run.post_slots ?? '[]') as PostSlot[];
   if (slotIdx < 0 || slotIdx >= slots.length) throw new Error('Slot out of range');
 
@@ -817,8 +1262,17 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
     const row = await db.prepare('SELECT * FROM packages WHERE slug = ? AND active = 1').bind(client.package).first<PackageRow>();
     if (row) pkg = row;
   }
+  if (!packageAllowsContentType(pkg, slot.content_type)) return null;
 
-  const clientPlatforms = withImplicitBlogPlatform(await getClientPlatforms(db, client.id), client);
+  const [storedClientPlatforms, gbpLocations] = await Promise.all([
+    getClientPlatforms(db, client.id),
+    getClientGbpLocations(db, client.id),
+  ]);
+  const clientPlatforms = withImplicitGbpPlatform(
+    withImplicitBlogPlatform(storedClientPlatforms, client, true),
+    gbpLocations,
+    client.id,
+  );
   let packagePlatforms: string[] = [];
   try { packagePlatforms = JSON.parse(pkg.platforms_included); } catch { /* */ }
   const platformSelection = resolvePlatformSelection({
@@ -832,7 +1286,7 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
     clientPlatforms,
     allowIncompatibleOverride: true,
   });
-  const platforms = platformSelection.selected.length > 0 ? platformSelection.selected : fallbackSelection.selected;
+  let platforms = platformSelection.selected.length > 0 ? platformSelection.selected : fallbackSelection.selected;
   if (platformSelection.selected.length === 0 && platforms.length > 0) {
     console.warn(`[gen:${runId.slice(0, 8)}] falling back to unconnected platforms for slot ${slotIdx + 1}/${slots.length} (${slot.client_slug} ${slot.date} ${slot.content_type}) -> ${platforms.join(', ')}`);
   }
@@ -841,22 +1295,49 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
     return null;
   }
 
-  const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows, gbpLocations, topicHistory] = await Promise.all([
+  const existingPost = await getPostByAutomationSlot(
+    db,
+    client.id,
+    slot.slot_key,
+    slot.date,
+    normalizeContentType(slot.content_type),
+  );
+  if (existingPost?.status === 'posted') return null;
+
+  const contentWeek = contentWeekDateRange(slot.date);
+  const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows, keywordRows, topicHistory, weeklyTopicHistory, restrictions] = await Promise.all([
     db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then((row) => row ?? null),
     db.prepare('SELECT sentiment, message AS note FROM client_feedback WHERE client_id = ? ORDER BY created_at DESC LIMIT 10').bind(client.id).all<FeedbackRow>(),
-    db.prepare(`SELECT title, master_caption, content_type FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`).bind(client.id).all<{title:string|null;master_caption:string|null;content_type:string|null}>(),
-    db.prepare('SELECT city FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 8').bind(client.id).all<{city:string}>(),
+    db.prepare(`SELECT id, title, master_caption, content_type FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`).bind(client.id).all<{id:string;title:string|null;master_caption:string|null;content_type:string|null}>(),
+    db.prepare('SELECT city, state FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 8').bind(client.id).all<{city:string;state:string|null}>(),
     db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC LIMIT 12').bind(client.id).all<{name:string}>(),
-    getClientGbpLocations(db, client.id),
+    getClientKeywords(db, client.id),
     getClientGenerationTopicHistory(db, client.id, 24),
+    getClientGenerationTopicHistoryForPeriod(db, client.id, contentWeek.from, contentWeek.to),
+    getClientRestrictions(db, client.id),
   ]);
 
-  const recentTitles  = recRows.results.map((row) => row.title ?? row.master_caption?.slice(0, 80) ?? '').filter(Boolean) as string[];
+  const recentRows = recRows.results.filter((row) => row.id !== existingPost?.id);
+  const seenTopicHistory = new Set<string>();
+  const combinedTopicHistory = [...weeklyTopicHistory, ...topicHistory, ...reservedTopicHistory]
+    .filter((item) => {
+      const key = [item.publish_date, item.content_type, item.title, item.target_keyword].join('|').toLowerCase();
+      if (seenTopicHistory.has(key)) return false;
+      seenTopicHistory.add(key);
+      return true;
+    });
+  const recentTitles = uniqueClean([
+    ...recentRows.map((row) => row.title ?? row.master_caption?.slice(0, 80) ?? ''),
+    ...reservedTopicHistory.map((item) => item.title),
+  ]);
   const serviceAreas  = svcAreaRows.results.map((row) => row.city);
-  const serviceNames  = svcNameRows.results.map((row) => row.name);
+  const serviceNames  = svcNameRows.results
+    .map((row) => row.name)
+    .filter((service) => !findRestrictedContentPhrase(service, restrictions));
   const monthlyPlan = await getClientMonthlyContentPlan(db, client.id, planMonth(slot.date));
   const intel = applyMonthlyPlanToIntelligence(intelBase, monthlyPlan);
-  const recentFormats = recRows.results
+  let targetKeywords = keywordPoolFromContext(intel, keywordRows, serviceNames, serviceAreas, restrictions);
+  const recentFormats = recentRows
     .map((row) => detectFormatFromTitle(row.title ?? row.master_caption ?? ''))
     .filter((format): format is ContentFormat => format !== null);
 
@@ -882,18 +1363,37 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
     recentFormats,
     serviceAreas,
     serviceNames,
+    targetKeywords,
   };
 
   // Topic research drives non-repetitive, SEO-aware prompts. Terminal runs stay
   // terminal-only, so if there is no monthly topic selection and no API-backed
   // research provider, the prompt falls back to the client context alone.
   const primaryKey = resolveProviderApiKey(env, settings, provider);
-  let topicResearch: TopicResearch | null = null;
-  let topicSelection: SlotTopicSelection | null = null;
+  let topicSelection = existingPost && run.overwrite_existing !== 1
+    ? existingPostTopicSelection(existingPost, slot.content_type)
+    : null;
+  let topicResearch: TopicResearch | null = topicSelection
+    ? getTopicResearchFromSelection(topicSelection, serviceAreas)
+    : null;
   const skippedTopicIds: string[] = [];
-  for (let attempt = 0; attempt < 12; attempt++) {
+  const usedWeeklyServices = weeklyUsedServiceCategories(combinedTopicHistory, slot.date);
+  for (let attempt = 0; !topicSelection && attempt < 12; attempt++) {
     const candidate = await buildMonthlyTopicSelection(db, client.id, slot.date, slot.content_type, platforms, serviceAreas, skippedTopicIds);
     if (!candidate) break;
+    if (candidate.serviceCategory && usedWeeklyServices.has(normalizeWeeklyServiceFamily(candidate.serviceCategory))) {
+      if (!candidate.monthlyTopicId) break;
+      skippedTopicIds.push(candidate.monthlyTopicId);
+      continue;
+    }
+    const restrictedPhrase = findRestrictedContentPhrase(
+      [candidate.topicTitle, candidate.targetKeyword, candidate.serviceCategory].filter(Boolean).join(' '),
+      restrictions,
+    );
+    if (restrictedPhrase) {
+      if (candidate.monthlyTopicId) skippedTopicIds.push(candidate.monthlyTopicId);
+      continue;
+    }
     const conflict = await findRecentTopicConflict(db, {
       clientId: client.id,
       candidateTitle: candidate.topicTitle,
@@ -903,7 +1403,8 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
       topicFingerprint: candidate.topicFingerprint,
       publishDate: slot.date,
     });
-    if (conflict && candidate.monthlyTopicId) {
+    if (conflict) {
+      if (!candidate.monthlyTopicId) break;
       skippedTopicIds.push(candidate.monthlyTopicId);
       continue;
     }
@@ -919,6 +1420,7 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
       monthlyTopicId: null,
       topicTitle: topicResearch.topic,
       targetKeyword: topicResearch.targetKeyword,
+      targetLocality: topicResearch.localModifier || null,
       serviceCategory: null,
       topicFingerprint: buildTopicFingerprint({
         topic: topicResearch.topic,
@@ -928,6 +1430,32 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
       source: 'research',
     };
   }
+  if (topicResearch && findRestrictedContentPhrase(
+    [topicResearch.topic, topicResearch.targetKeyword, topicResearch.searchQuestion].join(' '),
+    restrictions,
+  )) {
+    topicResearch = null;
+    topicSelection = null;
+  }
+  if (!topicResearch || !topicSelection) {
+    const fallback = selectFallbackTopic(client, slot, intel, serviceNames, serviceAreas, keywordRows, combinedTopicHistory, recentFormats, restrictions);
+    if (fallback) {
+      topicResearch = fallback.research;
+      topicSelection = fallback.selection;
+      targetKeywords = fallback.keywords;
+    }
+  }
+
+  const topicGbpLocations = relevantGbpLocationsForTarget(
+    gbpLocations,
+    topicSelection?.targetLocality ?? topicResearch?.localModifier,
+    svcAreaRows.results,
+  );
+  if (gbpLocations.length > 0 && platforms.includes('google_business') && topicGbpLocations.length === 0) {
+    platforms = platforms.filter((platform) => platform !== 'google_business');
+  }
+  if (platforms.length === 0) return null;
+  if (existingPost && run.overwrite_existing !== 1 && isPostContentComplete(existingPost, topicGbpLocations, platforms)) return null;
 
   const [latestResearch, latestStrategy] = await Promise.all([
     getLatestClientResearch(db, client.id),
@@ -940,7 +1468,7 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
       industry: client.industry,
       language: client.language,
     },
-    topicHistory: mapTopicHistoryForContext(topicHistory),
+    topicHistory: mapTopicHistoryForContext(combinedTopicHistory),
     autonomousSignals: buildAutonomousResearchSignals(latestResearch, latestStrategy),
   });
 
@@ -966,13 +1494,14 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
     contentType: slot.content_type,
     platforms,
     contentIntent: slot.content_intent,
-    gbpLocations: gbpLocations
-      .filter((location) => location.paused !== 1)
+    gbpLocations: topicGbpLocations
       .map((location) => ({ label: location.label, captionField: getGbpCaptionField(location) }))
       .filter((location) => Boolean(location.captionField)),
     topicResearch,
     serviceAreas,
     serviceNames,
+    targetKeywords,
+    restrictions,
     recentFormats,
     highQuality: slot.high_quality ?? false,
     strategicContext,
@@ -989,6 +1518,7 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
       monthlyTopicId: null,
       topicTitle: topicResearch?.topic ?? null,
       targetKeyword: topicResearch?.targetKeyword ?? null,
+      targetLocality: topicResearch?.localModifier ?? null,
       serviceCategory: null,
       topicFingerprint: topicResearch
         ? buildTopicFingerprint({
@@ -1011,12 +1541,22 @@ export async function prebuildApprovedTerminalSlotRequests(
   if (!run) throw new Error('Generation run not found');
 
   const slots = JSON.parse(run.post_slots ?? '[]') as PostSlot[];
-  const startIdx = Math.max(0, run.current_slot_idx ?? 0);
   const prepared: PreparedApprovedSlotRequest[] = [];
+  const reservedByClient = new Map<string, ClientGenerationTopicHistoryItem[]>();
 
-  for (let slotIdx = startIdx; slotIdx < slots.length; slotIdx++) {
-    const built = await buildSlotGenerationRequest(env, runId, slotIdx);
+  for (let slotIdx = 0; slotIdx < slots.length; slotIdx++) {
+    const clientReserved = reservedByClient.get(slots[slotIdx].client_slug) ?? [];
+    const built = await buildSlotGenerationRequest(env, runId, slotIdx, clientReserved);
     if (!built) continue;
+    clientReserved.push({
+      title: built.topicSelection.topicTitle ?? '',
+      target_keyword: built.topicSelection.targetKeyword,
+      topic_service_category: built.topicSelection.serviceCategory,
+      content_type: built.slot.content_type,
+      publish_date: built.slot.date,
+      platforms: [],
+    });
+    reservedByClient.set(built.slot.client_slug, clientReserved);
     prepared.push({
       slot_idx: slotIdx,
       client_slug: built.slot.client_slug,
@@ -1033,6 +1573,84 @@ export async function prebuildApprovedTerminalSlotRequests(
   return prepared;
 }
 
+export interface ApprovedTerminalGenerationInput {
+  client_slugs: string[];
+  period_start: string;
+  period_end: string;
+  triggered_by: string;
+  publish_time?: string | null;
+  overwrite_existing?: boolean;
+  requested_in: string;
+}
+
+export async function queueApprovedTerminalGeneration(
+  env: Env,
+  input: ApprovedTerminalGenerationInput,
+): Promise<{ run_id: string; job_id: string; total_slots: number }> {
+  const publishTime = input.publish_time ?? null;
+  const run = await createGenerationRun(env.DB, {
+    triggered_by: input.triggered_by,
+    date_range: `${input.period_start}:${input.period_end}`,
+    client_filter: input.client_slugs.length > 0 ? JSON.stringify(input.client_slugs) : null,
+    overwrite_existing: input.overwrite_existing === true,
+  });
+
+  try {
+    const params: GenerationParams = {
+      run_id: run.id,
+      client_slugs: input.client_slugs,
+      period_start: input.period_start,
+      period_end: input.period_end,
+      triggered_by: input.triggered_by,
+      publish_time: publishTime,
+      overwrite_existing: input.overwrite_existing === true,
+      high_quality: true,
+      provider: 'terminal',
+    };
+    const { slots, clients } = await prepareGenerationPlan(env, params);
+    await storeGenerationPlan(env.DB, run.id, slots, publishTime);
+    await updateGenerationProgress(env.DB, run.id, {
+      current_client: clients[0]?.canonical_name ?? '',
+      current_post: slots[0] ? `${slots[0].date} / ${slots[0].content_type}` : '',
+      completed: 0,
+      total_estimated: slots.length,
+      errors: 0,
+      clients_done: 0,
+      clients_total: clients.length,
+    });
+    await appendGenerationLog(
+      env.DB,
+      run.id,
+      'START',
+      `Terminal AI job queued from ${input.requested_in} - ${input.period_start} to ${input.period_end}`,
+    );
+    const preparedSlots = await prebuildApprovedTerminalSlotRequests(env, run.id);
+    const job = await createApprovedCommandJob(env.DB, {
+      generation_run_id: run.id,
+      command_name: 'weekly_content_terminal',
+      provider: 'terminal',
+      requested_by: input.triggered_by,
+      args_json: JSON.stringify({
+        run_id: run.id,
+        client_slugs: input.client_slugs,
+        period_start: input.period_start,
+        period_end: input.period_end,
+        content_only: true,
+        generate_images: false,
+        provider: 'terminal',
+        requested_in: input.requested_in,
+        prepared_slots: preparedSlots,
+      }),
+    });
+    return { run_id: run.id, job_id: job.id, total_slots: slots.length };
+  } catch (err) {
+    const message = `Terminal generation queue failed: ${str(err)}`;
+    await appendGenerationError(env.DB, run.id, message).catch(() => undefined);
+    await finalizeGenerationRun(env.DB, run.id, 'failed', 0, message).catch(() => undefined);
+    throw err;
+  }
+}
+
 export async function saveGeneratedSlotResult(
   env: Env,
   runId: string,
@@ -1043,6 +1661,7 @@ export async function saveGeneratedSlotResult(
   const db = env.DB;
   const run = await getGenerationRunById(db, runId);
   if (!run) throw new Error('Generation run not found');
+  if (run.status !== 'running') return { outcome: 'skipped', persisted: 'skipped' };
   const slots = JSON.parse(run.post_slots ?? '[]') as PostSlot[];
   if (slotIdx < 0 || slotIdx >= slots.length) throw new Error('Slot out of range');
   const slot = slots[slotIdx];
@@ -1050,11 +1669,22 @@ export async function saveGeneratedSlotResult(
   const client = await db.prepare('SELECT * FROM clients WHERE id = ?').bind(slot.client_id).first<ClientRow>();
   if (!client) throw new Error(`Client not found: ${slot.client_slug}`);
 
-  const clientPlatforms = withImplicitBlogPlatform(await getClientPlatforms(db, client.id), client);
+  const [storedClientPlatforms, gbpLocations] = await Promise.all([
+    getClientPlatforms(db, client.id),
+    getClientGbpLocations(db, client.id),
+  ]);
+  const clientPlatforms = withImplicitGbpPlatform(
+    withImplicitBlogPlatform(storedClientPlatforms, client, true),
+    gbpLocations,
+    client.id,
+  );
   let pkg = DEFAULT_PACKAGE;
   if (client.package) {
     const row = await db.prepare('SELECT * FROM packages WHERE slug = ? AND active = 1').bind(client.package).first<PackageRow>();
     if (row) pkg = row;
+  }
+  if (!packageAllowsContentType(pkg, slot.content_type)) {
+    return finalizeSlotProgress(db, env, runId, slotIdx + 1, 'skipped', client.canonical_name, slots, async () => undefined);
   }
   let packagePlatforms: string[] = [];
   try { packagePlatforms = JSON.parse(pkg.platforms_included); } catch { /* */ }
@@ -1063,7 +1693,7 @@ export async function saveGeneratedSlotResult(
     packagePlatforms,
     clientPlatforms,
   });
-  const platforms = platformSelection.selected;
+  let platforms = platformSelection.selected;
   if (platforms.length === 0) {
     return finalizeSlotProgress(db, env, runId, slotIdx + 1, 'skipped', client.canonical_name, slots, async () => undefined);
   }
@@ -1075,7 +1705,14 @@ export async function saveGeneratedSlotResult(
     slot.date,
     normalizeContentType(slot.content_type),
   );
+  if (existingPost?.status === 'posted') {
+    return finalizeSlotProgress(db, env, runId, slotIdx + 1, 'skipped', client.canonical_name, slots, async () => undefined);
+  }
   const overwriteExisting = run.overwrite_existing === 1;
+  if (topicSelection?.targetKeyword) generatedPost.target_keyword = topicSelection.targetKeyword;
+  if (topicSelection?.targetLocality) generatedPost.target_locality = topicSelection.targetLocality;
+  normalizeGeneratedMarketingCliches(generatedPost, client.industry);
+  canonicalizeGeneratedPhoneNumbers(generatedPost, client.phone);
 
   // Terminal-generated blogs return structured fields (intro/sections/faq), not a
   // ready-to-store blog_content. The OpenAI path assembles the body inside
@@ -1100,13 +1737,114 @@ export async function saveGeneratedSlotResult(
       }, slot.date);
       if (assembled) src.blog_content = assembled;
     }
+    normalizeGeneratedMarketingCliches(generatedPost, client.industry);
+    canonicalizeGeneratedPhoneNumbers(generatedPost, client.phone);
+  }
+
+  const [validationRecentRows, validationAreaRows, validationServiceRows, validationKeywordRows, validationIntel, validationRestrictions] = await Promise.all([
+    db.prepare(`SELECT id, title, master_caption FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`)
+      .bind(client.id)
+      .all<{ id: string; title: string | null; master_caption: string | null }>(),
+    db.prepare('SELECT city, state FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 8')
+      .bind(client.id)
+      .all<{ city: string; state: string | null }>(),
+    db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC LIMIT 12')
+      .bind(client.id)
+      .all<{ name: string }>(),
+    getClientKeywords(db, client.id),
+    db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then((row) => row ?? null),
+    getClientRestrictions(db, client.id),
+  ]);
+  const validationServiceAreas = validationAreaRows.results.map((row) => row.city);
+  const topicGbpLocations = relevantGbpLocationsForTarget(
+    gbpLocations,
+    topicSelection?.targetLocality ?? generatedPost.target_locality,
+    validationAreaRows.results,
+  );
+  if (gbpLocations.length > 0 && platforms.includes('google_business') && topicGbpLocations.length === 0) {
+    platforms = platforms.filter((platform) => platform !== 'google_business');
+  }
+  if (platforms.length === 0) {
+    return finalizeSlotProgress(db, env, runId, slotIdx + 1, 'skipped', client.canonical_name, slots, async () => undefined);
+  }
+  const validationServiceNames = validationServiceRows.results.map((row) => row.name);
+  normalizeGeneratedUnverifiedClaims(generatedPost, [
+    client.notes,
+    client.brand_json,
+    client.cta_text,
+    validationIntel?.approved_ctas,
+  ].filter(Boolean).join(' '));
+  const validationTargetKeywords = keywordPoolFromContext(
+    validationIntel,
+    validationKeywordRows,
+    validationServiceNames,
+    validationServiceAreas,
+    validationRestrictions,
+  );
+  const validationTopicResearch = topicSelection?.targetKeyword || topicSelection?.topicTitle
+    ? getTopicResearchFromSelection(topicSelection, validationServiceAreas)
+    : null;
+  const validationResult = validateGeneratedContent(generatedPost, {
+    client: {
+      slug: client.slug,
+      canonical_name: client.canonical_name,
+      notes: client.notes,
+      brand_json: client.brand_json,
+      brand_primary_color: (client as unknown as { brand_primary_color?: string | null }).brand_primary_color ?? null,
+      language: client.language,
+      phone: client.phone,
+      cta_text: client.cta_text,
+      industry: client.industry,
+      state: client.state,
+      owner_name: client.owner_name,
+      wp_template_key: client.wp_template_key ?? client.wp_template ?? null,
+    },
+    intelligence: validationIntel,
+    recentTitles: validationRecentRows.results
+      .filter((row) => row.id !== existingPost?.id)
+      .map((row) => row.title ?? row.master_caption?.slice(0, 80) ?? '')
+      .filter(Boolean) as string[],
+    feedback: [],
+    publishDate: slot.date,
+    contentType: normalizeContentType(slot.content_type),
+    platforms,
+    contentIntent: slot.content_intent,
+    gbpLocations: topicGbpLocations
+      .map((location) => ({ label: location.label, captionField: getGbpCaptionField(location) }))
+      .filter((location) => Boolean(location.captionField)),
+    topicResearch: validationTopicResearch,
+    serviceAreas: validationServiceAreas,
+    serviceNames: validationServiceNames,
+    targetKeywords: validationTargetKeywords,
+    restrictions: validationRestrictions,
+    recentFormats: [],
+    highQuality: slot.high_quality ?? false,
+    strategicContext: null,
+  });
+  if (!validationResult.passed) {
+    await appendGenerationLog(db, runId, slot.high_quality ? 'ERROR' : 'WARN', `Quality validation failed for slot ${slotIdx + 1}/${slots.length}: ${validationResult.warnings.join('; ')}`);
+    if (slot.high_quality) {
+      await appendGenerationError(db, runId, `Slot ${slotIdx + 1} ${slot.client_slug}/${slot.content_type} quality validation failed: ${validationResult.warnings.join('; ')}`);
+      throw new Error(`Quality validation failed: ${validationResult.warnings.join('; ')}`);
+    }
   }
 
   const merged = mergeGeneratedContent(existingPost as unknown as Record<string, string | null | undefined>, generatedPost as unknown as Record<string, string | undefined>, overwriteExisting);
+  const topicGbpFields = new Set(topicGbpLocations.map((location) => getGbpCaptionField(location)).filter(Boolean));
+  for (const location of gbpLocations) {
+    const field = getGbpCaptionField(location);
+    if (field && !topicGbpFields.has(field)) merged[field] = null;
+  }
+  if (!platforms.includes('google_business')) merged.cap_google_business = null;
+  if (normalizeContentType(slot.content_type) === 'blog') {
+    merged.ai_image_prompt = null;
+    merged.ai_video_prompt = null;
+  }
   const selectedTopic = topicSelection ?? {
     monthlyTopicId: null,
     topicTitle: generatedPost.title ?? merged.title ?? null,
     targetKeyword: generatedPost.target_keyword ?? merged.target_keyword ?? null,
+    targetLocality: generatedPost.target_locality ?? merged.target_locality ?? null,
     serviceCategory: null,
     topicFingerprint: buildTopicFingerprint({
       topic: generatedPost.title ?? merged.title ?? null,
@@ -1126,14 +1864,18 @@ export async function saveGeneratedSlotResult(
     publishDate: `${slot.date}T${postTime}`,
     excludePostId: existingPost?.id ?? null,
   });
-  const duplicateDraftPost = duplicateConflict && ['draft', 'pending_approval', 'approved', 'ready'].includes(duplicateConflict.post.status ?? '')
-    ? duplicateConflict.post
-    : null;
-  const targetPost = existingPost ?? duplicateDraftPost;
+  const targetPost = existingPost;
   const isBlogSlot = normalizeContentType(slot.content_type) === 'blog';
   const blogGbpDefaults = isBlogSlot
     ? { gbp_cta_type: 'LEARN_MORE' as string, gbp_topic_type: 'STANDARD' as string }
     : {};
+
+  const activeRun = await db.prepare('SELECT status FROM generation_runs WHERE id = ?')
+    .bind(runId)
+    .first<{ status: string }>();
+  if (activeRun?.status !== 'running') {
+    return { outcome: 'skipped', persisted: 'skipped' };
+  }
 
   let outcome: 'created' | 'updated' | 'skipped' = 'skipped';
   let savedPostId: string | null = targetPost?.id ?? null;
@@ -1141,6 +1883,7 @@ export async function saveGeneratedSlotResult(
     if (selectedTopic.monthlyTopicId) {
       await markClientMonthlyTopicSkipped(db, selectedTopic.monthlyTopicId, duplicateConflict.reason);
     }
+    throw new Error(`Generated slot duplicates existing post ${duplicateConflict.post.id}: ${duplicateConflict.reason}`);
   } else if (targetPost) {
     const nextPlatforms = targetPost.platform_manual_override === 1 && parsePlatforms(targetPost.platforms).length > 0
       ? parsePlatforms(targetPost.platforms)
@@ -1186,7 +1929,7 @@ export async function saveGeneratedSlotResult(
     savedPostId = createdPost.id;
     outcome = 'created';
   }
-  if (selectedTopic.monthlyTopicId && outcome !== 'skipped') {
+  if (selectedTopic.monthlyTopicId && savedPostId) {
     await markClientMonthlyTopicUsed(db, selectedTopic.monthlyTopicId, savedPostId);
   }
 
@@ -1285,7 +2028,15 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         if (p) pkg = p;
       }
 
-      const clientPlatforms = withImplicitBlogPlatform(await getClientPlatforms(db, client.id), client);
+      const [storedClientPlatforms, gbpLocations] = await Promise.all([
+        getClientPlatforms(db, client.id),
+        getClientGbpLocations(db, client.id),
+      ]);
+      const clientPlatforms = withImplicitGbpPlatform(
+        withImplicitBlogPlatform(storedClientPlatforms, client, true),
+        gbpLocations,
+        client.id,
+      );
       let packagePlatforms: string[] = [];
       try { packagePlatforms = JSON.parse(pkg.platforms_included); } catch { /* */ }
       const platformSelection = resolvePlatformSelection({
@@ -1307,47 +2058,68 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         slot.date,
         normalizeContentType(slot.content_type),
       );
-      const gbpLocations = await getClientGbpLocations(db, client.id);
       const overwriteExisting = run.overwrite_existing === 1;
 
-      if (existingPost && !overwriteExisting && isPostContentComplete(existingPost, gbpLocations)) {
-        await log('INFO', `${postKey}: existing post ${existingPost.id} already complete — skipping`);
+      if (existingPost?.status === 'posted') {
+        await log('INFO', `${postKey}: existing post ${existingPost.id} is already posted — immutable, skipping`);
         return await finishSlot(slot_idx + 1, 'skipped', clientName, slots);
       }
 
-      if (existingPost && !overwriteExisting && hasMaterializedSlotContent(existingPost)) {
-        await log('INFO', `${postKey}: existing post ${existingPost.id} already has generated content — reusing and advancing`);
+      if (existingPost && !overwriteExisting && isPostContentComplete(existingPost, gbpLocations, platforms)) {
+        await log('INFO', `${postKey}: existing post ${existingPost.id} already complete — skipping`);
         return await finishSlot(slot_idx + 1, 'skipped', clientName, slots);
       }
 
       const isHighQuality = slot.high_quality ?? false;
 
       // Parallel fetch: intelligence, feedback, recent posts, service areas, service names
-      const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows, topicHistory] = await Promise.all([
+      const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows, topicHistory, restrictions] = await Promise.all([
         db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then(r => r ?? null),
         db.prepare('SELECT sentiment, message AS note FROM client_feedback WHERE client_id = ? ORDER BY created_at DESC LIMIT 10').bind(client.id).all<FeedbackRow>(),
-        db.prepare(`SELECT title, master_caption, content_type FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`).bind(client.id).all<{title:string|null;master_caption:string|null;content_type:string|null}>(),
+        db.prepare(`SELECT id, title, master_caption, content_type FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`).bind(client.id).all<{id:string;title:string|null;master_caption:string|null;content_type:string|null}>(),
         db.prepare('SELECT city FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 8').bind(client.id).all<{city:string}>(),
         db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC LIMIT 12').bind(client.id).all<{name:string}>(),
         getClientGenerationTopicHistory(db, client.id, 24),
+        getClientRestrictions(db, client.id),
       ]);
 
-      const recentTitles  = recRows.results.map(r => r.title ?? r.master_caption?.slice(0, 80) ?? '').filter(Boolean) as string[];
+      const recentRows = recRows.results.filter((row) => row.id !== existingPost?.id);
+      const recentTitles  = recentRows.map(r => r.title ?? r.master_caption?.slice(0, 80) ?? '').filter(Boolean) as string[];
       const serviceAreas  = svcAreaRows.results.map(r => r.city);
-      const serviceNames  = svcNameRows.results.map(r => r.name);
+      const serviceNames  = svcNameRows.results
+        .map(r => r.name)
+        .filter((service) => !findRestrictedContentPhrase(service, restrictions));
       const monthlyPlan = await getClientMonthlyContentPlan(db, client.id, planMonth(slot.date));
       const intel = applyMonthlyPlanToIntelligence(intelBase, monthlyPlan);
-      const recentFormats = recRows.results
+      const recentFormats = recentRows
         .map(r => detectFormatFromTitle(r.title ?? r.master_caption ?? ''))
         .filter((f): f is ContentFormat => f !== null);
 
       // Topic research — directs this post to a specific, non-repetitive, SEO-aware topic
-      let topicResearch: TopicResearch | null = null;
-      let topicSelection: SlotTopicSelection | null = null;
+      let topicSelection = existingPost && !overwriteExisting
+        ? existingPostTopicSelection(existingPost, slot.content_type)
+        : null;
+      let topicResearch: TopicResearch | null = topicSelection
+        ? getTopicResearchFromSelection(topicSelection, serviceAreas)
+        : null;
       const skippedTopicIds: string[] = [];
-      for (let attempt = 0; attempt < 12; attempt++) {
+      const usedWeeklyServices = weeklyUsedServiceCategories(topicHistory, slot.date);
+      for (let attempt = 0; !topicSelection && attempt < 12; attempt++) {
         const candidate = await buildMonthlyTopicSelection(db, client.id, slot.date, slot.content_type, platforms, serviceAreas, skippedTopicIds);
         if (!candidate) break;
+        if (candidate.serviceCategory && usedWeeklyServices.has(normalizeWeeklyServiceFamily(candidate.serviceCategory))) {
+          if (!candidate.monthlyTopicId) break;
+          skippedTopicIds.push(candidate.monthlyTopicId);
+          continue;
+        }
+        const restrictedPhrase = findRestrictedContentPhrase(
+          [candidate.topicTitle, candidate.targetKeyword, candidate.serviceCategory].filter(Boolean).join(' '),
+          restrictions,
+        );
+        if (restrictedPhrase) {
+          if (candidate.monthlyTopicId) skippedTopicIds.push(candidate.monthlyTopicId);
+          continue;
+        }
         const conflict = await findRecentTopicConflict(db, {
           clientId: client.id,
           candidateTitle: candidate.topicTitle,
@@ -1407,6 +2179,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
           monthlyTopicId: null,
           topicTitle: topicResearch.topic,
           targetKeyword: topicResearch.targetKeyword,
+          targetLocality: topicResearch.localModifier || null,
           serviceCategory: null,
           topicFingerprint: buildTopicFingerprint({
             topic: topicResearch.topic,
@@ -1415,6 +2188,13 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
           }),
           source: 'research',
         };
+      }
+      if (topicResearch && findRestrictedContentPhrase(
+        [topicResearch.topic, topicResearch.targetKeyword, topicResearch.searchQuestion].join(' '),
+        restrictions,
+      )) {
+        topicResearch = null;
+        topicSelection = null;
       }
 
       const [latestResearch, latestStrategy] = await Promise.all([
@@ -1464,6 +2244,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         topicResearch,
         serviceAreas,
         serviceNames,
+        restrictions,
         recentFormats,
         highQuality: isHighQuality,
         strategicContext,
@@ -1481,6 +2262,15 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         clearTimeout(timer);
       }
       await log('AI', `${getProviderDisplayName(provider)} done: ${postKey} (${genResult.meta.elapsedMs}ms, attempts=${genResult.meta.attempts}, model=${genResult.meta.model})`);
+
+      normalizeGeneratedMarketingCliches(genResult.post, client.industry);
+      normalizeGeneratedUnverifiedClaims(genResult.post, [
+        client.notes,
+        client.brand_json,
+        client.cta_text,
+        intel?.approved_ctas,
+      ].filter(Boolean).join(' '));
+      canonicalizeGeneratedPhoneNumbers(genResult.post, client.phone);
 
       // Quality validation — soft check, log warnings but never block saves
       const qualityResult = validateGeneratedContent(genResult.post, ctx);
@@ -1509,10 +2299,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         publishDate: `${slot.date}T${postTime}`,
         excludePostId: existingPost?.id ?? null,
       });
-      const duplicateDraftPost = duplicateConflict && ['draft', 'pending_approval', 'approved', 'ready'].includes(duplicateConflict.post.status ?? '')
-        ? duplicateConflict.post
-        : null;
-      const targetPost = existingPost ?? duplicateDraftPost;
+      const targetPost = existingPost;
 
       if (targetPost) {
         const nextPlatforms = targetPost.platform_manual_override === 1 && parsePlatforms(targetPost.platforms).length > 0
@@ -1542,7 +2329,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         if (topicSelection?.monthlyTopicId) {
           await markClientMonthlyTopicSkipped(db, topicSelection.monthlyTopicId, duplicateConflict.reason);
         }
-        await log('WARN', `${postKey}: skipped because ${duplicateConflict.reason} (post ${duplicateConflict.post.id})`);
+        throw new Error(`Generated slot duplicates existing post ${duplicateConflict.post.id}: ${duplicateConflict.reason}`);
       } else {
         const createdPost = await createPost(db, {
           client_id:           client.id,

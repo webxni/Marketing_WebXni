@@ -20,8 +20,10 @@ import type {
   ClientTopicRow,
   ClientMonthlyTopicRow,
   ClientMonthlyContentPlanRow,
+  ContentReviewNoteRow,
 } from '../types';
 import { redactSecrets } from '../modules/redaction';
+import { classifyKeywordCandidate, type KeywordCandidate } from '../modules/keyword-quality';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CLIENTS
@@ -146,11 +148,49 @@ export interface ContentHistoryRow extends PostRow {
 }
 
 export interface ClientGenerationTopicHistoryRow {
+  id: string;
   title: string;
   target_keyword: string | null;
+  topic_service_category: string | null;
   content_type: string | null;
   publish_date: string | null;
   platforms: string[];
+}
+
+interface RawClientGenerationTopicHistoryRow {
+  id: string;
+  title: string | null;
+  target_keyword: string | null;
+  topic_service_category: string | null;
+  content_type: string | null;
+  publish_date: string | null;
+  platforms: string | null;
+}
+
+function mapClientGenerationTopicHistoryRows(rows: RawClientGenerationTopicHistoryRow[]): ClientGenerationTopicHistoryRow[] {
+  return rows
+    .filter((row): row is RawClientGenerationTopicHistoryRow & { title: string } =>
+      typeof row.title === 'string' && row.title.trim().length > 0)
+    .map((row) => {
+      let platforms: string[] = [];
+      try {
+        const parsed = JSON.parse(row.platforms ?? '[]') as unknown;
+        if (Array.isArray(parsed)) {
+          platforms = parsed.map((item) => String(item).trim()).filter(Boolean);
+        }
+      } catch {
+        platforms = [];
+      }
+      return {
+        id: row.id,
+        title: row.title.trim(),
+        target_keyword: row.target_keyword,
+        topic_service_category: row.topic_service_category,
+        content_type: row.content_type,
+        publish_date: row.publish_date,
+        platforms,
+      };
+    });
 }
 
 export interface ListClientContentHistoryParams {
@@ -232,7 +272,7 @@ export async function getClientGenerationTopicHistory(
 ): Promise<ClientGenerationTopicHistoryRow[]> {
   const rows = await db
     .prepare(
-      `SELECT title, target_keyword, content_type, publish_date, platforms
+      `SELECT id, title, target_keyword, topic_service_category, content_type, publish_date, platforms
        FROM posts
        WHERE client_id = ?
          AND status NOT IN ('cancelled')
@@ -242,40 +282,33 @@ export async function getClientGenerationTopicHistory(
        LIMIT ?`,
     )
     .bind(clientId, Math.max(1, Math.min(limit, 60)))
-    .all<{
-      title: string | null;
-      target_keyword: string | null;
-      content_type: string | null;
-      publish_date: string | null;
-      platforms: string | null;
-    }>();
+    .all<RawClientGenerationTopicHistoryRow>();
 
-  return rows.results
-    .filter((row): row is {
-      title: string;
-      target_keyword: string | null;
-      content_type: string | null;
-      publish_date: string | null;
-      platforms: string | null;
-    } => typeof row.title === 'string' && row.title.trim().length > 0)
-    .map((row) => {
-      let platforms: string[] = [];
-      try {
-        const parsed = JSON.parse(row.platforms ?? '[]') as unknown;
-        if (Array.isArray(parsed)) {
-          platforms = parsed.map((item) => String(item).trim()).filter(Boolean);
-        }
-      } catch {
-        platforms = [];
-      }
-      return {
-        title: row.title.trim(),
-        target_keyword: row.target_keyword,
-        content_type: row.content_type,
-        publish_date: row.publish_date,
-        platforms,
-      };
-    });
+  return mapClientGenerationTopicHistoryRows(rows.results);
+}
+
+export async function getClientGenerationTopicHistoryForPeriod(
+  db: D1Database,
+  clientId: string,
+  dateFrom: string,
+  dateTo: string,
+): Promise<ClientGenerationTopicHistoryRow[]> {
+  const rows = await db
+    .prepare(
+      `SELECT id, title, target_keyword, topic_service_category, content_type, publish_date, platforms
+       FROM posts
+       WHERE client_id = ?
+         AND status NOT IN ('cancelled')
+         AND substr(publish_date, 1, 10) >= ?
+         AND substr(publish_date, 1, 10) <= ?
+         AND title IS NOT NULL
+         AND trim(title) != ''
+       ORDER BY publish_date ASC, created_at ASC`,
+    )
+    .bind(clientId, dateFrom, dateTo)
+    .all<RawClientGenerationTopicHistoryRow>();
+
+  return mapClientGenerationTopicHistoryRows(rows.results);
 }
 
 export async function listClientContentHistory(
@@ -507,7 +540,7 @@ export async function getPostByAutomationSlot(
   contentType: string,
 ): Promise<PostRow | null> {
   const bySlot = await db
-    .prepare('SELECT * FROM posts WHERE client_id = ? AND automation_slot_key = ? LIMIT 1')
+    .prepare("SELECT * FROM posts WHERE client_id = ? AND automation_slot_key = ? AND status != 'cancelled' LIMIT 1")
     .bind(clientId, automationSlotKey)
     .first<PostRow>();
   if (bySlot) return bySlot;
@@ -518,6 +551,7 @@ export async function getPostByAutomationSlot(
                 AND substr(publish_date, 1, 10) = ?
                 AND content_type = ?
                 AND scheduled_by_automation = 1
+                AND status != 'cancelled'
               ORDER BY updated_at DESC
               LIMIT 1`)
     .bind(clientId, publishDate, contentType)
@@ -970,7 +1004,7 @@ export async function finalizeGenerationRun(
   await db
     .prepare(`UPDATE generation_runs
               SET status = ?, posts_created = ?, error_log = ?, completed_at = ?, last_activity_at = ?
-              WHERE id = ?`)
+              WHERE id = ? AND status != 'cancelled'`)
     .bind(status, postsCreated, errorLog, now, now, id)
     .run();
 }
@@ -1324,31 +1358,102 @@ export async function getClientKeywords(db: D1Database, clientId: string): Promi
   return rows.results ?? [];
 }
 
+export async function reclassifyActiveClientKeywords(
+  db: D1Database,
+  clientId: string,
+): Promise<{ checked: number; quarantined: number }> {
+  const [client, services, areas, keywords] = await Promise.all([
+    db.prepare('SELECT industry, state FROM clients WHERE id = ?').bind(clientId).first<{ industry: string | null; state: string | null }>(),
+    db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC')
+      .bind(clientId).all<{ name: string }>(),
+    db.prepare('SELECT city FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC')
+      .bind(clientId).all<{ city: string }>(),
+    db.prepare(
+      `SELECT id, keyword, kw_type, locality, source, confidence
+       FROM client_keywords
+       WHERE client_id = ? AND status = 'active' AND COALESCE(source, '') != 'manual'`,
+    ).bind(clientId).all<ClientKeywordRow>(),
+  ]);
+  const profile = {
+    industry: client?.industry ?? null,
+    state: client?.state ?? null,
+    services: services.results.map((row) => row.name).filter(Boolean),
+    serviceAreas: areas.results.map((row) => row.city).filter(Boolean),
+  };
+  const updates: D1PreparedStatement[] = [];
+  for (const keyword of keywords.results) {
+    const classification = classifyKeywordCandidate(keyword, profile);
+    if (classification.status === 'active') continue;
+    const note = `Quarantined: ${classification.reason ?? 'profile_mismatch'}`;
+    updates.push(db.prepare(
+      `UPDATE client_keywords
+       SET status = 'proposed',
+           opportunity_notes = CASE
+             WHEN COALESCE(opportunity_notes, '') LIKE '%' || ? || '%' THEN opportunity_notes
+             WHEN TRIM(COALESCE(opportunity_notes, '')) = '' THEN ?
+             ELSE opportunity_notes || ' | ' || ?
+           END,
+           updated_at = unixepoch()
+       WHERE id = ? AND status = 'active'`,
+    ).bind(note, note, note, keyword.id));
+  }
+  for (let index = 0; index < updates.length; index += 100) {
+    await db.batch(updates.slice(index, index + 100));
+  }
+  return { checked: keywords.results.length, quarantined: updates.length };
+}
+
 // Upsert keeps the unique (client_id, keyword) row fresh without ever deleting —
 // curated/manual keywords survive. Dedup via the uq_client_keyword index.
 export async function upsertClientKeywords(
   db: D1Database,
   clientId: string,
-  keywords: Array<{ keyword: string; kw_type?: string; search_intent?: string | null; difficulty?: string | null; opportunity_notes?: string | null; locality?: string | null; source?: string | null; confidence?: string | null }>,
-): Promise<number> {
-  let n = 0;
+  keywords: Array<KeywordCandidate & { search_intent?: string | null; difficulty?: string | null; opportunity_notes?: string | null }>,
+): Promise<{ saved: number; active: number; proposed: number }> {
+  const [client, services, areas] = await Promise.all([
+    db.prepare('SELECT industry, state FROM clients WHERE id = ?').bind(clientId).first<{ industry: string | null; state: string | null }>(),
+    db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC')
+      .bind(clientId).all<{ name: string }>(),
+    db.prepare('SELECT city FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC')
+      .bind(clientId).all<{ city: string }>(),
+  ]);
+  const profile = {
+    industry: client?.industry ?? null,
+    state: client?.state ?? null,
+    services: services.results.map((row) => row.name).filter(Boolean),
+    serviceAreas: areas.results.map((row) => row.city).filter(Boolean),
+  };
+  let saved = 0;
+  let active = 0;
+  let proposed = 0;
   for (const k of keywords) {
     const keyword = (k.keyword || '').trim();
     if (!keyword) continue;
+    const classification = classifyKeywordCandidate({ ...k, keyword }, profile);
+    const opportunityNotes = [
+      k.opportunity_notes ?? null,
+      classification.reason ? `Quarantined: ${classification.reason}` : null,
+    ].filter(Boolean).join(' | ') || null;
     await db.prepare(
-      `INSERT INTO client_keywords (client_id, keyword, kw_type, search_intent, difficulty, opportunity_notes, locality, source, confidence, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+      `INSERT INTO client_keywords (client_id, keyword, kw_type, search_intent, difficulty, opportunity_notes, locality, source, confidence, status, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
        ON CONFLICT(client_id, keyword) DO UPDATE SET
          kw_type=excluded.kw_type, search_intent=excluded.search_intent, difficulty=excluded.difficulty,
          opportunity_notes=excluded.opportunity_notes, locality=excluded.locality,
-         source=excluded.source, confidence=excluded.confidence, status='active', updated_at=unixepoch()`,
+         source=excluded.source, confidence=excluded.confidence,
+         status=CASE
+           WHEN client_keywords.status IN ('inactive', 'archived', 'rejected') THEN client_keywords.status
+           ELSE excluded.status
+         END,
+         updated_at=unixepoch()`,
     ).bind(
       clientId, keyword, k.kw_type ?? 'secondary', k.search_intent ?? null, k.difficulty ?? null,
-      k.opportunity_notes ?? null, k.locality ?? null, k.source ?? 'research', k.confidence ?? 'medium',
+      opportunityNotes, k.locality ?? null, k.source ?? 'research', k.confidence ?? 'medium', classification.status,
     ).run();
-    n++;
+    saved++;
+    if (classification.status === 'active') active++; else proposed++;
   }
-  return n;
+  return { saved, active, proposed };
 }
 
 // ── Client internal links (auto-pulled from each site's WordPress pages/posts) ──
@@ -1495,6 +1600,15 @@ export interface AgencyOverviewSnapshot {
   research_completed_this_week: number;
   posts_generated_this_week: number;
   blogs_generated_this_week: number;
+  quality_scorecard: {
+    current_reviews: number;
+    blocked_reviews: number;
+    automated_drafts: number;
+    keyword_coverage_percent: number;
+    package_violations: number;
+    profile_complete_clients: number;
+    active_clients: number;
+  };
   approval_pipeline: {
     research_complete_clients: number;
     active_clients: number;
@@ -1514,6 +1628,11 @@ export interface AgencyClientCoverageRow {
   client_name: string;
   package: string | null;
   weekly_schedule: string | null;
+  platforms_included: string | null;
+  images_per_month: number;
+  videos_per_month: number;
+  reels_per_month: number;
+  blog_posts_per_month: number;
   last_research_date: string | null;
   research_freshness: string;
   current_strategy_status: string;
@@ -1525,6 +1644,8 @@ export interface AgencyClientCoverageRow {
   blogs_drafted: number;
   next_agent_action: string;
   risk_issues: string | null;
+  profile_complete: boolean;
+  profile_gaps: string[];
 }
 
 function unixWeekStart(): number {
@@ -1555,6 +1676,11 @@ export async function listAgencyOverview(db: D1Database): Promise<AgencyOverview
     strategyCompleteClients,
     generatedDrafts,
     editorialReviewsWeek,
+    blockedReviewsWeek,
+    automatedDraftsWeek,
+    keywordDraftsWeek,
+    packageViolationsWeek,
+    profileCompleteClients,
     readyForAutomation,
     scheduledOrPostedWeek,
   ] = await Promise.all([
@@ -1588,6 +1714,30 @@ export async function listAgencyOverview(db: D1Database): Promise<AgencyOverview
     ).first<{ n: number }>(),
     db.prepare("SELECT COUNT(*) AS n FROM posts WHERE scheduled_by_automation = 1 AND status = 'draft'").first<{ n: number }>(),
     db.prepare('SELECT COUNT(*) AS n FROM content_review_notes WHERE created_at >= ?').bind(weekStart).first<{ n: number }>(),
+    db.prepare("SELECT COUNT(*) AS n FROM content_review_notes WHERE created_at >= ? AND disposition = 'blocked'").bind(weekStart).first<{ n: number }>(),
+    db.prepare("SELECT COUNT(*) AS n FROM posts WHERE scheduled_by_automation = 1 AND created_at >= ? AND status != 'cancelled'").bind(weekStart).first<{ n: number }>(),
+    db.prepare("SELECT COUNT(*) AS n FROM posts WHERE scheduled_by_automation = 1 AND created_at >= ? AND status != 'cancelled' AND TRIM(COALESCE(target_keyword, '')) != ''").bind(weekStart).first<{ n: number }>(),
+    db.prepare(
+      `SELECT COUNT(*) AS n
+       FROM posts p
+       JOIN clients c ON c.id = p.client_id
+       LEFT JOIN packages pkg ON pkg.slug = c.package
+       WHERE p.scheduled_by_automation = 1 AND p.created_at >= ? AND p.status != 'cancelled'
+         AND ((p.content_type = 'image' AND COALESCE(pkg.images_per_month, 0) = 0)
+           OR (p.content_type = 'video' AND COALESCE(pkg.videos_per_month, 0) = 0)
+           OR (p.content_type = 'reel' AND COALESCE(pkg.reels_per_month, 0) = 0)
+           OR (p.content_type = 'blog' AND COALESCE(pkg.blog_posts_per_month, 0) = 0))`,
+    ).bind(weekStart).first<{ n: number }>(),
+    db.prepare(
+      `SELECT COUNT(*) AS n FROM clients c
+       WHERE c.status = 'active'
+         AND EXISTS (SELECT 1 FROM client_services s WHERE s.client_id = c.id AND s.active = 1)
+         AND EXISTS (SELECT 1 FROM client_service_areas a WHERE a.client_id = c.id)
+         AND EXISTS (
+           SELECT 1 FROM client_intelligence i WHERE i.client_id = c.id
+             AND (TRIM(COALESCE(i.brand_voice, '')) != '' OR TRIM(COALESCE(i.service_priorities, '')) != '')
+         )`,
+    ).first<{ n: number }>(),
     db.prepare("SELECT COUNT(*) AS n FROM posts WHERE status IN ('ready', 'approved') AND ready_for_automation = 1 AND asset_delivered = 1").first<{ n: number }>(),
     db.prepare(
       `SELECT COUNT(*) AS n
@@ -1607,6 +1757,17 @@ export async function listAgencyOverview(db: D1Database): Promise<AgencyOverview
     research_completed_this_week: researchWeek?.n ?? 0,
     posts_generated_this_week: postsWeek?.n ?? 0,
     blogs_generated_this_week: blogsWeek?.n ?? 0,
+    quality_scorecard: {
+      current_reviews: editorialReviewsWeek?.n ?? 0,
+      blocked_reviews: blockedReviewsWeek?.n ?? 0,
+      automated_drafts: automatedDraftsWeek?.n ?? 0,
+      keyword_coverage_percent: (automatedDraftsWeek?.n ?? 0) > 0
+        ? Math.round(((keywordDraftsWeek?.n ?? 0) / (automatedDraftsWeek?.n ?? 1)) * 100)
+        : 100,
+      package_violations: packageViolationsWeek?.n ?? 0,
+      profile_complete_clients: profileCompleteClients?.n ?? 0,
+      active_clients: activeClients?.n ?? 0,
+    },
     approval_pipeline: {
       research_complete_clients: researchCompleteClients?.n ?? 0,
       active_clients: activeClients?.n ?? 0,
@@ -1642,13 +1803,17 @@ export async function updateAgentHeartbeat(
       `UPDATE agent_definitions
        SET heartbeat_status            = ?,
            heartbeat_message           = ?,
-           last_error                  = CASE WHEN ? IS NOT NULL THEN ? ELSE last_error END,
+           last_error                  = CASE
+                                           WHEN ? IN ('healthy', 'idle') THEN NULL
+                                           WHEN ? IS NOT NULL THEN ?
+                                           ELSE last_error
+                                         END,
            last_heartbeat_at           = ?,
            next_expected_heartbeat_at  = CASE WHEN ? THEN unixepoch() + (stale_after_minutes * 60) ELSE NULL END,
            updated_at                  = ?
        WHERE slug = ?`,
     )
-    .bind(status, message, error, error, now, active ? 1 : 0, now, slug)
+    .bind(status, message, status, error, error, now, active ? 1 : 0, now, slug)
     .run();
 }
 
@@ -1967,6 +2132,41 @@ export async function saveClientStrategy(
   ).bind(clientId, periodStart, periodEnd, redactSecrets(strategyJson), status, now, now).run();
 }
 
+export interface AgencyStrategyPlanRow {
+  id: string;
+  client_id: string;
+  client_name: string;
+  client_slug: string;
+  period_start: string;
+  period_end: string;
+  strategy_json: string;
+  status: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export async function listAgencyStrategyPlans(db: D1Database, limit = 30): Promise<AgencyStrategyPlanRow[]> {
+  const rows = await db.prepare(
+    `SELECT s.*, c.canonical_name AS client_name, c.slug AS client_slug
+     FROM client_strategy_plans s
+     JOIN clients c ON c.id = s.client_id
+     ORDER BY CASE s.status WHEN 'draft' THEN 0 WHEN 'needs_review' THEN 1 ELSE 2 END, s.created_at DESC
+     LIMIT ?`,
+  ).bind(Math.max(1, Math.min(limit, 100))).all<AgencyStrategyPlanRow>();
+  return rows.results ?? [];
+}
+
+export async function approveAgencyStrategyPlan(db: D1Database, id: string): Promise<AgencyStrategyPlanRow | null> {
+  const existing = await db.prepare('SELECT client_id FROM client_strategy_plans WHERE id = ?').bind(id).first<{ client_id: string }>();
+  if (!existing) return null;
+  await db.prepare("UPDATE client_strategy_plans SET status = 'archived', updated_at = unixepoch() WHERE client_id = ? AND status = 'approved' AND id != ?")
+    .bind(existing.client_id, id).run();
+  await db.prepare("UPDATE client_strategy_plans SET status = 'approved', updated_at = unixepoch() WHERE id = ?")
+    .bind(id).run();
+  const rows = await listAgencyStrategyPlans(db, 100);
+  return rows.find((row) => row.id === id) ?? null;
+}
+
 // Most recent autonomous research note (raw research_json) for a client, or null.
 // Read by weekly generation so the client-research agent's output actually feeds
 // content creation instead of sitting unused in the table.
@@ -1977,26 +2177,149 @@ export async function getLatestClientResearch(db: D1Database, clientId: string):
   return row?.research_json ?? null;
 }
 
-// Most recent autonomous strategy plan (raw strategy_json) for a client, or null.
+// Most recent approved autonomous strategy plan (raw strategy_json), or null.
+// Draft strategy is review material and must not silently steer production copy.
 export async function getLatestClientStrategy(db: D1Database, clientId: string): Promise<string | null> {
   const row = await db.prepare(
-    `SELECT strategy_json FROM client_strategy_plans WHERE client_id = ? ORDER BY created_at DESC LIMIT 1`,
+    `SELECT strategy_json FROM client_strategy_plans WHERE client_id = ? AND status = 'approved' ORDER BY created_at DESC LIMIT 1`,
   ).bind(clientId).first<{ strategy_json: string }>();
   return row?.strategy_json ?? null;
 }
 
 export async function saveContentReview(
   db: D1Database,
-  data: { post_id?: string | null; blog_id?: string | null; agent_task_id?: string | null; severity: string; notes_json: string },
+  data: {
+    post_id?: string | null;
+    blog_id?: string | null;
+    agent_task_id?: string | null;
+    severity: string;
+    notes_json: string;
+    post_updated_at?: number | null;
+    content_hash?: string | null;
+    disposition?: string;
+  },
 ): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
   await db.prepare(
-    `INSERT INTO content_review_notes (post_id, blog_id, agent_task_id, severity, notes_json, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).bind(data.post_id ?? null, data.blog_id ?? null, data.agent_task_id ?? null, data.severity, redactSecrets(data.notes_json), now).run();
+    `INSERT INTO content_review_notes
+       (post_id, blog_id, agent_task_id, severity, notes_json, post_updated_at, content_hash, disposition, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(
+    data.post_id ?? null,
+    data.blog_id ?? null,
+    data.agent_task_id ?? null,
+    data.severity,
+    redactSecrets(data.notes_json),
+    data.post_updated_at ?? null,
+    data.content_hash ?? null,
+    data.disposition ?? 'reviewed',
+    now,
+  ).run();
+}
+
+export async function getLatestContentReview(
+  db: D1Database,
+  postId: string,
+): Promise<ContentReviewNoteRow | null> {
+  const row = await db.prepare(
+    'SELECT * FROM content_review_notes WHERE post_id = ? ORDER BY created_at DESC LIMIT 1',
+  ).bind(postId).first<ContentReviewNoteRow>();
+  return row ?? null;
+}
+
+export async function preserveEditorialFeedbackBeforePostDelete(
+  db: D1Database,
+  post: Pick<PostRow, 'id' | 'client_id' | 'publish_date'>,
+): Promise<boolean> {
+  const review = await getLatestContentReview(db, post.id);
+  if (!review || !['medium', 'high', 'critical'].includes(review.severity)) return false;
+
+  let summary = '';
+  let issues: string[] = [];
+  try {
+    const parsed = JSON.parse(review.notes_json) as { summary?: unknown; issues?: unknown };
+    summary = typeof parsed.summary === 'string' ? parsed.summary.trim() : '';
+    issues = Array.isArray(parsed.issues)
+      ? parsed.issues.filter((issue): issue is string => typeof issue === 'string' && issue.trim().length > 0)
+      : [];
+  } catch { /* retain the severity-only fallback */ }
+
+  const details = [summary, ...issues.slice(0, 3)].filter(Boolean).join(' ');
+  const message = redactSecrets(
+    `Editorial ${review.severity}: ${details || 'Replace this draft and avoid repeating its editorial quality failures.'}`,
+  ).slice(0, 3000);
+  const duplicate = await db.prepare(
+    `SELECT id FROM client_feedback
+     WHERE client_id = ? AND category = 'editorial_review' AND message = ?
+     LIMIT 1`,
+  ).bind(post.client_id, message).first<{ id: string }>();
+  if (duplicate) return false;
+
+  const now = Math.floor(Date.now() / 1000);
+  const month = post.publish_date?.slice(0, 7) || new Date(now * 1000).toISOString().slice(0, 7);
+  await db.prepare(
+    `INSERT INTO client_feedback
+       (id, client_id, month, post_id, category, sentiment, message, admin_reviewed, applied_to_intelligence, created_at)
+     VALUES (?, ?, ?, NULL, 'editorial_review', 'negative', ?, 0, 0, ?)`,
+  ).bind(crypto.randomUUID().replace(/-/g, ''), post.client_id, month, message, now).run();
+  return true;
+}
+
+export interface AgencyBackendHealthRow {
+  backend: string;
+  status: string;
+  failure_count: number;
+  last_failure_at: number | null;
+  cooldown_until: number | null;
+  last_error: string | null;
+  last_success_at: number | null;
+  updated_at: number;
+}
+
+export async function listAgencyBackendHealth(db: D1Database): Promise<AgencyBackendHealthRow[]> {
+  const rows = await db.prepare('SELECT * FROM agency_backend_health ORDER BY backend').all<AgencyBackendHealthRow>();
+  return rows.results ?? [];
+}
+
+export async function recordAgencyBackendHealth(
+  db: D1Database,
+  data: { backend: string; status: 'completed' | 'failed'; error?: string | null; cooldownSeconds?: number },
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  const failed = data.status === 'failed';
+  const cooldownUntil = failed ? now + Math.max(60, data.cooldownSeconds ?? 900) : null;
+  await db.prepare(
+    `INSERT INTO agency_backend_health
+       (backend, status, failure_count, last_failure_at, cooldown_until, last_error, last_success_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(backend) DO UPDATE SET
+       status=excluded.status,
+       failure_count=CASE WHEN excluded.status = 'failed' THEN agency_backend_health.failure_count + 1 ELSE 0 END,
+       last_failure_at=CASE WHEN excluded.status = 'failed' THEN excluded.last_failure_at ELSE agency_backend_health.last_failure_at END,
+       cooldown_until=excluded.cooldown_until,
+       last_error=CASE WHEN excluded.status = 'failed' THEN excluded.last_error ELSE NULL END,
+       last_success_at=CASE WHEN excluded.status = 'healthy' THEN excluded.last_success_at ELSE agency_backend_health.last_success_at END,
+       updated_at=excluded.updated_at`,
+  ).bind(
+    data.backend,
+    failed ? 'failed' : 'healthy',
+    failed ? 1 : 0,
+    failed ? now : null,
+    cooldownUntil,
+    failed ? redactSecrets(data.error ?? '').slice(0, 1000) : null,
+    failed ? null : now,
+    now,
+  ).run();
 }
 
 export async function getAgencyClientCoverage(db: D1Database): Promise<AgencyClientCoverageRow[]> {
+  const now = new Date();
+  const dayOffset = now.getUTCDay() === 0 ? 6 : now.getUTCDay() - 1;
+  const weekStartDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - dayOffset));
+  const weekEndDate = new Date(weekStartDate);
+  weekEndDate.setUTCDate(weekEndDate.getUTCDate() + 6);
+  const weekStart = weekStartDate.toISOString().slice(0, 10);
+  const weekEnd = weekEndDate.toISOString().slice(0, 10);
   const rows = await db.prepare(
     `SELECT
        c.id AS client_id,
@@ -2004,25 +2327,49 @@ export async function getAgencyClientCoverage(db: D1Database): Promise<AgencyCli
        c.canonical_name AS client_name,
        c.package AS package,
        pkg.weekly_schedule AS weekly_schedule,
+       pkg.platforms_included AS platforms_included,
+       COALESCE(pkg.images_per_month, 0) AS images_per_month,
+       COALESCE(pkg.videos_per_month, 0) AS videos_per_month,
+       COALESCE(pkg.reels_per_month, 0) AS reels_per_month,
+       COALESCE(pkg.blog_posts_per_month, 0) AS blog_posts_per_month,
        (SELECT MAX(r.freshness_date) FROM client_research_notes r WHERE r.client_id = c.id) AS last_research_date,
        COALESCE((SELECT s.status FROM client_strategy_plans s WHERE s.client_id = c.id ORDER BY s.created_at DESC LIMIT 1), 'none') AS current_strategy_status,
-       (SELECT COUNT(*) FROM client_monthly_topics mt WHERE mt.client_id = c.id AND COALESCE(mt.content_type_preference, '') != 'blog') AS posts_planned,
-       (SELECT COUNT(*) FROM posts p WHERE p.client_id = c.id AND p.content_type != 'blog' AND p.scheduled_by_automation = 1) AS posts_generated,
+       (SELECT COUNT(*) FROM posts p WHERE p.client_id = c.id AND p.content_type != 'blog' AND p.scheduled_by_automation = 1 AND substr(COALESCE(p.publish_date, ''), 1, 10) BETWEEN ? AND ? AND p.status != 'cancelled') AS posts_generated,
        (SELECT COUNT(*) FROM posts p WHERE p.client_id = c.id AND p.status = 'pending_approval') AS posts_waiting_approval,
        (SELECT COUNT(*) FROM posts p WHERE p.client_id = c.id AND p.status IN ('approved', 'ready') AND COALESCE(p.asset_delivered, 0) = 0 AND p.content_type != 'blog') AS posts_waiting_designer,
-       (SELECT COUNT(*) FROM client_monthly_topics mt WHERE mt.client_id = c.id AND mt.content_type_preference = 'blog') AS blogs_planned,
-       (SELECT COUNT(*) FROM posts p WHERE p.client_id = c.id AND p.content_type = 'blog' AND p.status IN ('draft', 'pending_approval')) AS blogs_drafted
+       (SELECT COUNT(*) FROM posts p WHERE p.client_id = c.id AND p.content_type = 'blog' AND substr(COALESCE(p.publish_date, ''), 1, 10) BETWEEN ? AND ? AND p.status != 'cancelled') AS blogs_drafted,
+       (SELECT COUNT(*) FROM client_services s WHERE s.client_id = c.id AND s.active = 1) AS service_count,
+       (SELECT COUNT(*) FROM client_service_areas a WHERE a.client_id = c.id) AS service_area_count,
+       CASE WHEN EXISTS (
+         SELECT 1 FROM client_intelligence i WHERE i.client_id = c.id
+           AND (TRIM(COALESCE(i.brand_voice, '')) != '' OR TRIM(COALESCE(i.service_priorities, '')) != '')
+       ) THEN 1 ELSE 0 END AS has_brand_guidance
      FROM clients c
      LEFT JOIN packages pkg ON pkg.slug = c.package
      WHERE c.status = 'active'
      ORDER BY c.canonical_name ASC`,
-  ).all<AgencyClientCoverageRow & { last_research_date: string | null }>();
+  ).bind(weekStart, weekEnd, weekStart, weekEnd).all<AgencyClientCoverageRow & {
+    last_research_date: string | null;
+    service_count: number;
+    service_area_count: number;
+    has_brand_guidance: number;
+  }>();
 
   return rows.results.map((row) => {
     const researchFreshness = row.last_research_date
       ? 'recorded'
       : 'not started';
-    const nextAction = !row.last_research_date
+    let schedule: Record<string, string[]> = {};
+    try { schedule = row.weekly_schedule ? JSON.parse(row.weekly_schedule) as Record<string, string[]> : {}; } catch { schedule = {}; }
+    const scheduledTypes = Object.values(schedule).flat().map((type) => String(type).toLowerCase());
+    const profileGaps = [
+      row.service_count > 0 ? null : 'services',
+      row.service_area_count > 0 ? null : 'service areas',
+      row.has_brand_guidance === 1 ? null : 'brand guidance',
+    ].filter((gap): gap is string => Boolean(gap));
+    const nextAction = profileGaps.length > 0
+      ? `Complete profile: ${profileGaps.join(', ')}`
+      : !row.last_research_date
       ? 'Run client research'
       : row.current_strategy_status === 'none'
         ? 'Create strategy'
@@ -2033,18 +2380,87 @@ export async function getAgencyClientCoverage(db: D1Database): Promise<AgencyCli
             : 'Monitor';
     return {
       ...row,
-      posts_planned: row.posts_planned ?? 0,
+      posts_planned: scheduledTypes.filter((type) => type !== 'blog').length,
       posts_generated: row.posts_generated ?? 0,
       posts_waiting_approval: row.posts_waiting_approval ?? 0,
       posts_waiting_designer: row.posts_waiting_designer ?? 0,
-      blogs_planned: row.blogs_planned ?? 0,
+      blogs_planned: scheduledTypes.filter((type) => type === 'blog').length,
       blogs_drafted: row.blogs_drafted ?? 0,
+      images_per_month: row.images_per_month ?? 0,
+      videos_per_month: row.videos_per_month ?? 0,
+      reels_per_month: row.reels_per_month ?? 0,
+      blog_posts_per_month: row.blog_posts_per_month ?? 0,
       research_freshness: researchFreshness,
       weekly_schedule: row.weekly_schedule ?? null,
       next_agent_action: nextAction,
-      risk_issues: null,
+      risk_issues: profileGaps.length > 0 ? `Generation blocked: missing ${profileGaps.join(', ')}` : null,
+      profile_complete: profileGaps.length === 0,
+      profile_gaps: profileGaps,
     };
   });
+}
+
+export interface ClientProfileCompleteness {
+  complete: boolean;
+  gaps: string[];
+}
+
+export async function getClientProfileCompleteness(db: D1Database, clientId: string): Promise<ClientProfileCompleteness> {
+  const row = await db.prepare(
+    `SELECT
+       (SELECT COUNT(*) FROM client_services s WHERE s.client_id = c.id AND s.active = 1) AS service_count,
+       (SELECT COUNT(*) FROM client_service_areas a WHERE a.client_id = c.id) AS service_area_count,
+       CASE WHEN EXISTS (
+         SELECT 1 FROM client_intelligence i WHERE i.client_id = c.id
+           AND (TRIM(COALESCE(i.brand_voice, '')) != '' OR TRIM(COALESCE(i.service_priorities, '')) != '')
+       ) THEN 1 ELSE 0 END AS has_brand_guidance
+     FROM clients c WHERE c.id = ?`,
+  ).bind(clientId).first<{ service_count: number; service_area_count: number; has_brand_guidance: number }>();
+  const gaps = [
+    (row?.service_count ?? 0) > 0 ? null : 'services',
+    (row?.service_area_count ?? 0) > 0 ? null : 'service areas',
+    row?.has_brand_guidance === 1 ? null : 'brand guidance',
+  ].filter((gap): gap is string => Boolean(gap));
+  return { complete: gaps.length === 0, gaps };
+}
+
+export type AgencyReviewQueueCandidate = PostRow & {
+  client_slug: string;
+  client_name: string;
+  package: string | null;
+  package_violation: string | null;
+  latest_review_hash: string | null;
+  latest_review_created_at: number | null;
+};
+
+export async function listAgencyReviewQueueCandidates(db: D1Database, limit = 100): Promise<AgencyReviewQueueCandidate[]> {
+  const rows = await db.prepare(
+    `SELECT p.*, c.slug AS client_slug, c.canonical_name AS client_name, c.package,
+       CASE
+         WHEN p.content_type = 'image' AND COALESCE(pkg.images_per_month, 0) = 0 THEN 'image_not_in_package'
+         WHEN p.content_type = 'video' AND COALESCE(pkg.videos_per_month, 0) = 0 THEN 'video_not_in_package'
+         WHEN p.content_type = 'reel' AND COALESCE(pkg.reels_per_month, 0) = 0 THEN 'reel_not_in_package'
+         WHEN p.content_type = 'blog' AND COALESCE(pkg.blog_posts_per_month, 0) = 0 THEN 'blog_not_in_package'
+         ELSE NULL
+       END AS package_violation,
+       (SELECT r.content_hash FROM content_review_notes r WHERE r.post_id = p.id ORDER BY r.created_at DESC LIMIT 1) AS latest_review_hash,
+       (SELECT r.created_at FROM content_review_notes r WHERE r.post_id = p.id ORDER BY r.created_at DESC LIMIT 1) AS latest_review_created_at
+     FROM posts p
+     JOIN clients c ON c.id = p.client_id
+     LEFT JOIN packages pkg ON pkg.slug = c.package
+     WHERE p.status IN ('draft', 'pending_approval', 'generated', 'ready', 'approved')
+       AND p.scheduled_by_automation = 1
+       AND p.created_at >= unixepoch() - 1209600
+     ORDER BY
+       CASE
+         WHEN substr(p.publish_date, 1, 10) BETWEEN date('now', '-' || strftime('%w', 'now') || ' days')
+           AND date('now', '+' || (6 - CAST(strftime('%w', 'now') AS INTEGER)) || ' days')
+         THEN 0 ELSE 1
+       END,
+       p.updated_at DESC
+     LIMIT ?`,
+  ).bind(Math.max(1, Math.min(limit, 200))).all<AgencyReviewQueueCandidate>();
+  return rows.results ?? [];
 }
 
 /**
@@ -2057,10 +2473,11 @@ export async function getAgencyClientCoverage(db: D1Database): Promise<AgencyCli
 export async function getAgencyClientContentBrief(
   db: D1Database,
   clientId: string,
-): Promise<{ brief: string; hasBrief: boolean; gbp_locations: Array<{ label: string; caption_field: string | null; upload_post_profile: string | null; location_id: string; paused: number }> }> {
-  const [client, intel, areas, services, restrictions, keywords, gbpRows, latestResearch, latestStrategy] = await Promise.all([
-    db.prepare('SELECT canonical_name, industry, state, cta_text, notes FROM clients WHERE id = ?')
-      .bind(clientId).first<{ canonical_name: string | null; industry: string | null; state: string | null; cta_text: string | null; notes: string | null }>(),
+  options: { includeRecentTopics?: boolean } = {},
+): Promise<{ brief: string; hasBrief: boolean; profile_gaps: string[]; active_platforms: string[]; gbp_locations: Array<{ label: string; caption_field: string | null; upload_post_profile: string | null; location_id: string; paused: number }> }> {
+  const [client, intel, areas, services, restrictions, keywords, gbpRows, platforms, recentTopics, latestResearch, latestStrategy] = await Promise.all([
+    db.prepare('SELECT canonical_name, industry, state, phone, cta_text, notes FROM clients WHERE id = ?')
+      .bind(clientId).first<{ canonical_name: string | null; industry: string | null; state: string | null; phone: string | null; cta_text: string | null; notes: string | null }>(),
     db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?')
       .bind(clientId).first<Record<string, string | null>>(),
     db.prepare('SELECT city FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 8')
@@ -2070,10 +2487,18 @@ export async function getAgencyClientContentBrief(
     getClientRestrictions(db, clientId),
     getClientKeywords(db, clientId),
     getClientGbpLocations(db, clientId),
+    getClientPlatforms(db, clientId),
+    options.includeRecentTopics === false ? Promise.resolve([]) : getClientGenerationTopicHistory(db, clientId, 24),
     getLatestClientResearch(db, clientId),
     getLatestClientStrategy(db, clientId),
   ]);
-  const gbp_locations = gbpRows.map((g) => ({
+  const seenGbpLocations = new Set<string>();
+  const gbp_locations = gbpRows.filter((g) => {
+    const key = `${g.location_id}|${g.upload_post_profile ?? ''}|${g.caption_field ?? ''}`;
+    if (seenGbpLocations.has(key)) return false;
+    seenGbpLocations.add(key);
+    return true;
+  }).map((g) => ({
     label: g.label,
     caption_field: g.caption_field,
     upload_post_profile: g.upload_post_profile,
@@ -2091,6 +2516,7 @@ export async function getAgencyClientContentBrief(
   add('Business', client?.canonical_name);
   add('Industry', client?.industry);
   add('Location', client?.state);
+  add('Verified phone', client?.phone);
   if (serviceAreas.length) lines.push(`- Service areas: ${serviceAreas.join(', ')}`);
   if (serviceNames.length) lines.push(`- Specific services: ${serviceNames.join(', ')}`);
   add('Key services', i.service_priorities);
@@ -2123,15 +2549,18 @@ export async function getAgencyClientContentBrief(
     if (longTail.length) kwLines.push(`  long-tail: ${longTail.slice(0, 12).join(', ')}`);
     if (kwLines.length) lines.push(`- TARGET KEYWORDS (use naturally, no stuffing; include correct local/service-area terms):\n${kwLines.join('\n')}`);
   }
+  if (recentTopics.length) {
+    lines.push(`- RECENT TOPICS (do not repeat these titles, hooks, or angles):\n${recentTopics.map((topic) => `  ${topic.publish_date ?? 'undated'}: ${topic.title}${topic.target_keyword ? ` [${topic.target_keyword}]` : ''}`).join('\n')}`);
+  }
 
   // A brief is "real" when it carries brand voice, services, or service areas —
   // not just the business name. Without that, drafts would be generic/empty.
-  const hasBrief = Boolean(
-    (i.brand_voice && i.brand_voice.trim()) ||
-    (i.service_priorities && i.service_priorities.trim()) ||
-    serviceNames.length ||
-    serviceAreas.length,
-  );
+  const profile_gaps = [
+    serviceNames.length > 0 ? null : 'services',
+    serviceAreas.length > 0 ? null : 'service areas',
+    ((i.brand_voice && i.brand_voice.trim()) || (i.service_priorities && i.service_priorities.trim())) ? null : 'brand guidance',
+  ].filter((gap): gap is string => Boolean(gap));
+  const hasBrief = profile_gaps.length === 0;
   // Autonomous research + strategy signals (supplementary — refine angles with
   // these; curated brand memory + approved CTAs always win). This is what makes
   // the weekend social/blog/GMB agents actually USE research and strategy.
@@ -2162,7 +2591,15 @@ export async function getAgencyClientContentBrief(
     } catch { /* ignore malformed strategy */ }
   }
 
-  return { brief: lines.join('\n'), hasBrief, gbp_locations };
+  return {
+    brief: lines.join('\n'),
+    hasBrief,
+    profile_gaps,
+    active_platforms: [...new Set(platforms
+      .filter((platform) => platform.paused !== 1 && platform.connection_status !== 'failed')
+      .map((platform) => platform.platform))],
+    gbp_locations,
+  };
 }
 
 export async function appendAgencyLog(
@@ -2281,7 +2718,7 @@ export async function getAgentSystemHealthSnapshot(
     db.prepare("SELECT COUNT(*) AS n FROM clients WHERE status = 'active'").first<{ n: number }>(),
     db.prepare("SELECT COUNT(*) AS n FROM generation_runs WHERE status = 'running'").first<{ n: number }>(),
     db.prepare(
-      `SELECT id, status, triggered_by, last_activity_at, error_log
+      `SELECT id, status, triggered_by, last_activity_at, SUBSTR(error_log, 1, 1200) AS error_log
        FROM generation_runs
        WHERE created_at >= ?
          AND status IN ('failed', 'timed_out', 'completed_with_errors')
@@ -3048,6 +3485,13 @@ export async function findRecentTopicConflict(
   const candidateKeyword = params.candidateKeyword ?? '';
   const candidateCaption = params.candidateCaption ?? '';
   const candidateServiceCategory = params.candidateServiceCategory ?? '';
+  const candidatePublishDate = (params.publishDate ?? '').slice(0, 10);
+  const candidateWeekStart = candidatePublishDate
+    ? new Date(`${candidatePublishDate}T00:00:00Z`)
+    : null;
+  if (candidateWeekStart && !Number.isNaN(candidateWeekStart.getTime())) {
+    candidateWeekStart.setUTCDate(candidateWeekStart.getUTCDate() - candidateWeekStart.getUTCDay());
+  }
   const candidateFingerprint = params.topicFingerprint
     ? normalizeTopicFingerprint(params.topicFingerprint)
     : buildTopicFingerprint({
@@ -3060,6 +3504,22 @@ export async function findRecentTopicConflict(
   for (const row of rows.results) {
     if (params.excludePostId && row.id === params.excludePostId) continue;
 
+    const rowPublishDate = (row.publish_date ?? '').slice(0, 10);
+    const rowWeekStart = rowPublishDate ? new Date(`${rowPublishDate}T00:00:00Z`) : null;
+    if (rowWeekStart && !Number.isNaN(rowWeekStart.getTime())) {
+      rowWeekStart.setUTCDate(rowWeekStart.getUTCDate() - rowWeekStart.getUTCDay());
+    }
+    if (
+      candidateKeyword &&
+      row.target_keyword &&
+      normalizeTopicFingerprint(candidateKeyword) === normalizeTopicFingerprint(row.target_keyword) &&
+      candidateWeekStart &&
+      rowWeekStart &&
+      candidateWeekStart.getTime() === rowWeekStart.getTime()
+    ) {
+      return { post: row, reason: 'target keyword already used in this content week' };
+    }
+
     const rowFingerprint = normalizeTopicFingerprint(
       row.topic_fingerprint || buildTopicFingerprint({
         title: row.title,
@@ -3070,10 +3530,6 @@ export async function findRecentTopicConflict(
     );
     if (candidateFingerprint && rowFingerprint && candidateFingerprint === rowFingerprint) {
       return { post: row, reason: 'topic fingerprint matched recent post' };
-    }
-
-    if (candidateKeyword && row.target_keyword && normalizeTopicFingerprint(candidateKeyword) === normalizeTopicFingerprint(row.target_keyword)) {
-      return { post: row, reason: 'target keyword matched recent post' };
     }
 
     if (candidateTitle && row.title && topicSimilarity(candidateTitle, row.title) >= 0.74) {

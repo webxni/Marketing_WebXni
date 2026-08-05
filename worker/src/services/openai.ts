@@ -35,12 +35,166 @@ export interface GeneratedPost {
   seo_title?:          string;
   meta_description?:   string;
   target_keyword?:     string;
+  target_locality?:    string;
   secondary_keywords?: string;
   slug?:               string;  // URL slug suggestion
   video_script?:       string;
   // Designer prompts (always generated in Spanish)
   ai_image_prompt?:    string;
   ai_video_prompt?:    string;
+}
+
+const GENERATED_CAPTION_FIELDS = new Set([
+  'master_caption',
+  'cap_facebook',
+  'cap_instagram',
+  'cap_linkedin',
+  'cap_x',
+  'cap_threads',
+  'cap_tiktok',
+  'cap_pinterest',
+  'cap_bluesky',
+  'cap_google_business',
+  'cap_gbp_la',
+  'cap_gbp_wa',
+  'cap_gbp_or',
+]);
+
+const STRUCTURED_CAPTION_TEXT_KEYS = ['body', 'caption', 'description', 'text', 'content'];
+
+export function isGeneratedCaptionField(key: string): boolean {
+  return GENERATED_CAPTION_FIELDS.has(key);
+}
+
+export function normalizeGeneratedCaptionValue(raw: unknown): string | undefined {
+  if (raw == null) return undefined;
+
+  if (typeof raw === 'object' && !Array.isArray(raw)) {
+    const record = raw as Record<string, unknown>;
+    for (const key of STRUCTURED_CAPTION_TEXT_KEYS) {
+      const value = record[key];
+      if (typeof value === 'string' && value.trim()) return value.trim();
+    }
+    return undefined;
+  }
+
+  if (typeof raw !== 'string') return undefined;
+  const clean = raw.trim();
+  if (!clean) return undefined;
+
+  if (clean.startsWith('{')) {
+    try {
+      return normalizeGeneratedCaptionValue(JSON.parse(clean)) ?? clean;
+    } catch {
+      return clean;
+    }
+  }
+
+  return clean;
+}
+
+const GENERATED_PHONE_FIELDS: Array<keyof GeneratedPost> = [
+  'master_caption',
+  'cap_facebook',
+  'cap_instagram',
+  'cap_linkedin',
+  'cap_x',
+  'cap_threads',
+  'cap_tiktok',
+  'cap_pinterest',
+  'cap_bluesky',
+  'cap_google_business',
+  'cap_gbp_la',
+  'cap_gbp_wa',
+  'cap_gbp_or',
+  'youtube_description',
+  'blog_content',
+  'blog_excerpt',
+  'meta_description',
+  'video_script',
+  'ai_image_prompt',
+  'ai_video_prompt',
+];
+
+export function canonicalizeGeneratedPhoneNumbers(post: GeneratedPost, clientPhone?: string | null): void {
+  const canonical = clientPhone?.trim();
+  if (!canonical) return;
+
+  for (const field of GENERATED_PHONE_FIELDS) {
+    const value = post[field];
+    if (typeof value !== 'string') continue;
+    post[field] = value.replace(/(^|[^\d])((?:\+?1[\s.\-]*)?\(*\s*\d{3}\s*\)?[\s.\-]*\d{3}[\s.\-]*\d{4})(?!\d)/g, (_match, prefix: string, candidate: string) => {
+      const digits = candidate.replace(/\D/g, '');
+      return digits.length === 10 || (digits.length === 11 && digits.startsWith('1'))
+        ? `${prefix}${canonical}`
+        : `${prefix}${candidate}`;
+    });
+  }
+}
+
+const GENERATED_CUSTOMER_COPY_FIELDS: Array<keyof GeneratedPost> = [
+  'title',
+  'master_caption',
+  'cap_facebook',
+  'cap_instagram',
+  'cap_linkedin',
+  'cap_x',
+  'cap_threads',
+  'cap_tiktok',
+  'cap_pinterest',
+  'cap_bluesky',
+  'cap_google_business',
+  'cap_gbp_la',
+  'cap_gbp_wa',
+  'cap_gbp_or',
+  'youtube_title',
+  'youtube_description',
+  'blog_content',
+  'blog_excerpt',
+  'seo_title',
+  'meta_description',
+  'video_script',
+];
+
+export function normalizeGeneratedMarketingCliches(post: GeneratedPost, industry?: string | null): void {
+  const immediateReplacement = /locksmith/i.test(industry ?? '')
+    ? 'locksmith assistance'
+    : 'service-specific guidance';
+  const replacements: Array<[RegExp, string]> = [
+    [/\btrusted service\b/gi, 'professional service'],
+    [/\bexpert answers?\b/gi, 'clear answers'],
+    [/\bexpert guidance\b/gi, 'practical guidance'],
+    [/\bexpert help\b/gi, 'professional support'],
+    [/\bexpert service\b/gi, 'professional service'],
+    [/\bexpert solutions?\b/gi, 'service-specific options'],
+    [/\byour safety is our priority\b/gi, 'the work starts with a careful safety check'],
+    [/\bseamless integration\b/gi, 'careful coordination'],
+    [/\btailored plan\b/gi, 'project-specific plan'],
+    [/\btailored plans\b/gi, 'project-specific plans'],
+    [/\bimmediate help\b/gi, immediateReplacement],
+  ];
+
+  for (const field of GENERATED_CUSTOMER_COPY_FIELDS) {
+    const value = post[field];
+    if (typeof value !== 'string') continue;
+    post[field] = replacements.reduce((copy, [pattern, replacement]) => copy.replace(pattern, (match) => (
+      /^[A-Z]/.test(match)
+        ? `${replacement.charAt(0).toUpperCase()}${replacement.slice(1)}`
+        : replacement
+    )), value);
+  }
+}
+
+export function normalizeGeneratedUnverifiedClaims(post: GeneratedPost, verifiedClaims: string): void {
+  if (/\blicen[sc]/i.test(verifiedClaims)) return;
+
+  for (const field of GENERATED_CUSTOMER_COPY_FIELDS) {
+    const value = post[field];
+    if (typeof value !== 'string') continue;
+    post[field] = value.replace(/\blicen[sc]ed\b/gi, (match) => (
+      /^[A-Z]/.test(match) ? 'Professional' : 'professional'
+    ));
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -88,6 +242,7 @@ export interface TopicResearchParams {
   recentFormats:  ContentFormat[];
   serviceAreas:   string[];
   serviceNames:   string[];
+  targetKeywords?: string[];
 }
 
 export interface ContentQualityResult {
@@ -152,12 +307,67 @@ export interface GenerationContext {
   // Service areas and names for SEO-aware, locally relevant generation
   serviceAreas?:   string[];
   serviceNames?:   string[];
+  targetKeywords?: string[];
+  restrictions?:   string[];
   // Derived format history — drives format rotation
   recentFormats?:  ContentFormat[];
   // High-quality mode — uses better model + larger token budget
   highQuality?:    boolean;
   strategicContext?: string | null;
   sourceCaption?: string | null;
+}
+
+function restrictionPhraseCandidates(restrictions: string[]): string[] {
+  const phrases: string[] = [];
+  for (const raw of restrictions) {
+    const term = raw.trim();
+    if (!term) continue;
+    const lower = term.toLowerCase();
+    const neverMention = term.match(/^never mention\s+(.+)$/i);
+    const underAnyCircumstance = term.match(/^(.+?)\s+under any circumstance(?:\s+ever)?$/i);
+    const noMention = term.match(/^no mention of\s+(.+)$/i);
+    const neverMix = term.match(/^never mix with\s+(.+)$/i);
+    const separateBrand = term.match(/^(.+?)\s+is a separate subdomain/i);
+    const doNotPromote = term.match(/^do not promote\s+(.+?)(?:\s*\(|$)/i);
+
+    if (neverMention) {
+      phrases.push(neverMention[1]);
+      if (/\bcar\s+key\s+fob\b/i.test(neverMention[1])) phrases.push('key fob');
+    }
+    else if (underAnyCircumstance) phrases.push(underAnyCircumstance[1]);
+    else if (noMention) phrases.push(noMention[1]);
+    else if (neverMix) phrases.push(neverMix[1]);
+    else if (separateBrand) phrases.push(separateBrand[1]);
+    else if (doNotPromote) phrases.push(...doNotPromote[1].split(/\s+or\s+/i));
+    else if (lower === 'duplicate keys') phrases.push(term);
+    else if (lower.includes('financing')) phrases.push('financing');
+    else if (lower.includes('mixing solar')) phrases.push('solar');
+  }
+  return [...new Set(phrases.map((phrase) => phrase.trim()).filter(Boolean))];
+}
+
+function comparableRestrictionTokens(value: string): string[] {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((token) => {
+      if (/^(?:re)?programm(?:e|ed|ing)?$/.test(token)) return 'program';
+      if (token.endsWith('ies') && token.length > 4) return `${token.slice(0, -3)}y`;
+      if (token.endsWith('s') && !token.endsWith('ss') && token.length > 4) return token.slice(0, -1);
+      return token;
+    });
+}
+
+export function findRestrictedContentPhrase(value: string, restrictions: string[]): string | null {
+  const contentTokens = new Set(comparableRestrictionTokens(value));
+  for (const phrase of restrictionPhraseCandidates(restrictions)) {
+    const phraseTokens = comparableRestrictionTokens(phrase);
+    if (phraseTokens.length > 0 && phraseTokens.every((token) => contentTokens.has(token))) return phrase;
+  }
+  return null;
 }
 
 function line(condition: unknown, text: string): string {
@@ -282,6 +492,11 @@ function getBrandColors(ctx: GenerationContext): string {
   }
 }
 
+function compactFeedbackNote(note: string): string {
+  const normalized = note.replace(/\s+/g, ' ').trim();
+  return normalized.length > 800 ? `${normalized.slice(0, 797)}...` : normalized;
+}
+
 function buildSharedContext(ctx: GenerationContext, mode: 'social' | 'blog'): string {
   const { client, intelligence: i, recentTitles, feedback, contentIntent } = ctx;
   const lang = getLanguage(ctx);
@@ -294,8 +509,11 @@ function buildSharedContext(ctx: GenerationContext, mode: 'social' | 'blog'): st
 
   const serviceAreasStr = (ctx.serviceAreas ?? []).slice(0, 8).join(', ');
   const serviceNamesStr = (ctx.serviceNames ?? []).slice(0, 10).join(', ');
+  const targetKeywordsStr = (ctx.targetKeywords ?? []).slice(0, 14).join(', ');
+  const restrictionsStr = (ctx.restrictions ?? []).map((term) => term.trim()).filter(Boolean).join('; ');
 
-  let block = `BUSINESS CONTEXT:${line(client.industry, `- Industry: ${client.industry}`)}${line(client.state, `- Location: ${client.state}`)}${line(serviceAreasStr, `- Service areas: ${serviceAreasStr}`)}${line(i?.service_priorities, `- Key services: ${i?.service_priorities}`)}${line(serviceNamesStr, `- Specific services: ${serviceNamesStr}`)}${line(i?.brand_voice, `- Brand voice: ${i?.brand_voice}`)}${line(i?.tone_keywords, `- Tone: ${i?.tone_keywords}`)}${line(i?.audience_notes, `- Audience: ${i?.audience_notes}`)}${line(i?.content_goals, `- Goals: ${i?.content_goals}`)}${line(i?.content_angles, `- Preferred angles: ${i?.content_angles}`)}${line(client.cta_text, `- Preferred CTA: ${client.cta_text}`)}${line(i?.approved_ctas, `- Approved CTAs: ${i?.approved_ctas}`)}${line(i?.prohibited_terms, `- NEVER USE: ${i?.prohibited_terms}`)}${line(i?.seasonal_notes, `- Seasonal notes: ${i?.seasonal_notes}`)}${line(client.notes, `- Additional context: ${client.notes}`)}${line(i?.humanization_style, `- Humanization style: ${i?.humanization_style}`)}`;
+  let block = `BUSINESS CONTEXT:${line(client.industry, `- Industry: ${client.industry}`)}${line(client.state, `- Location: ${client.state}`)}${line(serviceAreasStr, `- Service areas: ${serviceAreasStr}`)}${line(i?.service_priorities, `- Key services: ${i?.service_priorities}`)}${line(serviceNamesStr, `- Specific services: ${serviceNamesStr}`)}${line(i?.brand_voice, `- Brand voice: ${i?.brand_voice}`)}${line(i?.tone_keywords, `- Tone: ${i?.tone_keywords}`)}${line(i?.audience_notes, `- Audience: ${i?.audience_notes}`)}${line(i?.content_goals, `- Goals: ${i?.content_goals}`)}${line(i?.content_angles, `- Preferred angles: ${i?.content_angles}`)}${line(client.cta_text, `- Preferred CTA: ${client.cta_text}`)}${line(i?.approved_ctas, `- Approved CTAs: ${i?.approved_ctas}`)}${line(i?.prohibited_terms, `- NEVER USE: ${i?.prohibited_terms}`)}${line(restrictionsStr, `- CLIENT RESTRICTIONS (mandatory): ${restrictionsStr}`)}${line(i?.seasonal_notes, `- Seasonal notes: ${i?.seasonal_notes}`)}${line(client.notes, `- Additional context: ${client.notes}`)}${line(i?.humanization_style, `- Humanization style: ${i?.humanization_style}`)}`;
+  if (targetKeywordsStr) block += `\n- Required keyword pool: ${targetKeywordsStr}`;
 
   if (mode === 'blog') {
     block += `${line(i?.local_seo_themes, `\n- Local SEO themes: ${i?.local_seo_themes}`)}${line(i?.primary_keyword, `\n- Primary keyword: ${i?.primary_keyword}`)}${line(i?.secondary_keywords, `\n- Secondary keywords: ${i?.secondary_keywords}`)}`;
@@ -323,9 +541,12 @@ function buildSharedContext(ctx: GenerationContext, mode: 'social' | 'blog'): st
 
   block += '\n\nCONTENT SAFETY:';
   block += '\n- NEVER include exact prices, dollar amounts, percentages, or invented statistics.';
+  block += '\n- NEVER invent response-time or arrival-time promises. If the client phone is used, reproduce only the exact phone from the client profile.';
   block += '\n- Keep claims specific to services, expertise, process, and value.';
+  block += '\n- Stay inside the service list, service areas, and required keyword pool. Do not introduce unrelated industries, cities, services, or themes.';
   block += '\n- Write naturally. Avoid filler openers and generic marketing language.';
-  if (lang !== 'en') block += `\n- Write all customer-facing copy in ${lang}.`;
+  block += '\n- Use concrete evidence and service-specific calls to action. Do not use canned authority claims, generic urgency, slogans, or recycled marketing cliches.';
+  block += `\n- Write all customer-facing copy in ${lang === 'en' ? 'English' : lang}. Only designer fields (ai_image_prompt and ai_video_prompt) are written in Spanish.`;
 
   if (recentTitles.length > 0) {
     const limit = mode === 'blog' ? 8 : 12;
@@ -336,8 +557,8 @@ function buildSharedContext(ctx: GenerationContext, mode: 'social' | 'blog'): st
     const uniqueFormats = [...new Set(recentFormats.slice(0, 6))];
     block += `\n\nRECENT FORMATS USED (pick a different one):\n${uniqueFormats.map(f => `- ${f.replace(/_/g, ' ')}`).join('\n')}`;
   }
-  if (positives.length > 0) block += `\n\nWHAT HAS WORKED WELL:\n${positives.map(f => `- ${f.note}`).join('\n')}`;
-  if (negatives.length > 0) block += `\n\nAVOID THESE PATTERNS:\n${negatives.map(f => `- ${f.note}`).join('\n')}`;
+  if (positives.length > 0) block += `\n\nWHAT HAS WORKED WELL:\n${positives.map(f => `- ${compactFeedbackNote(f.note)}`).join('\n')}`;
+  if (negatives.length > 0) block += `\n\nAVOID THESE PATTERNS:\n${negatives.map(f => `- ${compactFeedbackNote(f.note)}`).join('\n')}`;
 
   return block;
 }
@@ -348,18 +569,20 @@ function buildSocialPrompt(ctx: GenerationContext): string {
   const isVideo = contentType === 'video' || contentType === 'reel';
   const isYoutube = platforms.includes('youtube');
   const brandColors = getBrandColors(ctx);
+  const instagramOnly = platforms.length === 1 && platforms[0] === 'instagram';
+  const pinterestOnly = platforms.length === 1 && platforms[0] === 'pinterest';
 
   let assetSpec = '';
   if (contentType === 'reel') {
     assetSpec = 'Tipo de archivo: VIDEO VERTICAL. Dimensiones: 1080x1920 (9:16).';
   } else if (contentType === 'video') {
     assetSpec = 'Tipo de archivo: VIDEO HORIZONTAL. Dimensiones: 1920x1080 (16:9).';
-  } else if (platforms.includes('pinterest') && !platforms.includes('instagram') && !platforms.includes('facebook')) {
+  } else if (pinterestOnly) {
     assetSpec = 'Tipo de archivo: IMAGEN VERTICAL. Dimensiones: 1000x1500 (2:3).';
-  } else if (platforms.includes('instagram') && !platforms.includes('facebook') && !platforms.includes('pinterest')) {
+  } else if (instagramOnly) {
     assetSpec = 'Tipo de archivo: IMAGEN CUADRADA. Dimensiones: 1080x1080 (1:1).';
   } else {
-    assetSpec = 'Tipo de archivo: IMAGEN VERTICAL/CUADRADA. Dimensiones base: 1080x1350 (4:5).';
+    assetSpec = 'Tipo de archivo: IMAGEN HORIZONTAL. Dimensiones: 1200x628.';
   }
 
   const topicDirective = ctx.topicResearch
@@ -384,13 +607,16 @@ Return ONLY JSON matching the requested schema. Keep captions concise and platfo
 - "title": short descriptive title, 5-10 words. Make it specific to the service, customer situation, or city. Do NOT use generic listicle titles like "Top 5 Benefits..." unless that exact format was requested.
 - "master_caption": fallback caption, 120-260 chars. Mention one concrete service, area, process detail, or homeowner scenario.`;
 
+  prompt += `\n- "target_keyword": use the exact selected target keyword from the content directive.`;
+  prompt += `\n- "target_locality": use the exact confirmed local modifier from the content directive.`;
+
   if (platforms.includes('facebook'))  prompt += '\n- "cap_facebook": Facebook caption, 140-320 chars';
   if (platforms.includes('instagram')) prompt += '\n- "cap_instagram": Instagram caption, 120-260 chars plus 8-12 hashtags';
   if (platforms.includes('linkedin'))  prompt += '\n- "cap_linkedin": LinkedIn caption, 180-420 chars, professional and insight-driven';
   if (platforms.includes('x'))         prompt += '\n- "cap_x": X post, max 280 chars';
   if (platforms.includes('threads'))   prompt += '\n- "cap_threads": Threads caption, 100-220 chars';
-  if (platforms.includes('tiktok'))    prompt += '\n- "cap_tiktok": TikTok caption, 120-220 chars plus 5-8 hashtags';
-  if (platforms.includes('pinterest')) prompt += '\n- "cap_pinterest": Pinterest description, 100-200 chars plus 4-6 hashtags';
+  if (platforms.includes('tiktok'))    prompt += '\n- "cap_tiktok": complete TikTok caption, max 90 characters including hashtags; never rely on truncation';
+  if (platforms.includes('pinterest')) prompt += '\n- "cap_pinterest": complete Pinterest title, max 100 characters including hashtags; never rely on truncation';
   if (platforms.includes('bluesky'))   prompt += '\n- "cap_bluesky": Bluesky caption, max 280 chars';
   if (platforms.includes('google_business')) {
     let gbpInstruction = '\n- "cap_google_business": Google Business caption, 90-220 chars, factual, local, no hashtags';
@@ -410,17 +636,19 @@ Return ONLY JSON matching the requested schema. Keep captions concise and platfo
     prompt += '\n- "youtube_title": YouTube title, 60-70 chars';
     prompt += '\n- "youtube_description": YouTube description, 180-320 chars';
   }
-  if (isVideo) prompt += '\n- "video_script": 30-60 second script with hook, 3 beats, CTA';
+  if (isVideo) prompt += '\n- "video_script": 30-60 second script with hook, 3 beats, CTA. Its final timestamp must not exceed the duration stated in ai_video_prompt.';
 
   prompt += `\n
 QUALITY BAR FOR THIS SOCIAL POST:
 - Write like a premium agency strategist who knows this client, not a generic social template.
 - The opening line must name a specific homeowner problem, decision, room, service, or local context.
-- Include at least one concrete credibility/process detail from the client memory when available: dedicated project managers, transparent communication, 15+ years of experience, high-end remodeling, or service-area context.
+- Include a concrete credibility or process detail only when that exact detail is present in the supplied client memory or topic directive. Otherwise explain customer decisions and risk factors without presenting a diagnostic step as the company's universal procedure.
 - Do not write vague benefit stacks such as "enhance comfort, boost value, enjoy your space" unless paired with a specific remodeling decision or example.
 - Facebook and Google Business captions should read like expert guidance, not ad copy.
 - Instagram can be warmer, but still must include a specific service/local angle before hashtags.
 - If the topic is broad, narrow it to one useful homeowner decision instead of making a generic list.`;
+  prompt += `\n- Titles must use plain customer language. Replace technician shorthand, unexplained jargon, and ambiguous fragments with the concrete decision or outcome being taught.`;
+  prompt += `\n- Do not use recycled title frames such as "before you hire," "what to know," "questions answered," "things to check," "expert insights," "trusted solutions," "addressing concerns," "top tips," "choosing the right," "key criteria," or generic checklists. Name the concrete decision, risk, material, mechanism, or process the post teaches.`;
 
   prompt += `\n- "ai_image_prompt": MUST BE IN SPANISH. Designer brief with ${assetSpec}${brandColors ? ` Colores de marca: ${brandColors}.` : ''} Include style, composition, mood, visual elements, overlay text, and recommended tool in 3-4 sentences.`;
   if (isVideo) {
@@ -509,6 +737,7 @@ Return ONLY JSON matching the requested schema:
 - "seo_title": 50-60 chars — optimized differently from title (can include city or service variation)
 - "meta_description": 148-155 chars — benefit-driven, includes keyword and local context, ends with light CTA
 - "target_keyword": primary keyword phrase${ctx.topicResearch?.targetKeyword ? ` (use: "${ctx.topicResearch.targetKeyword}")` : ''}
+- "target_locality": confirmed locality${ctx.topicResearch?.localModifier ? ` (use exactly: "${ctx.topicResearch.localModifier}")` : ''}
 - "secondary_keywords": 5-8 comma-separated phrases — local variants, related searches, service+location combos
 - "intro": 150-200 words plain text — open with a specific problem, question, or fact; include keyword within first 80 words; set the reader's expectations; do NOT repeat the title
 - "sections": array of 4-6 objects, each with:
@@ -521,8 +750,6 @@ Return ONLY JSON matching the requested schema:
 - "cta_button_label": 2-5 words
 - Distribution captions must be short, platform-native, and based on the published blog. Include the exact "[blog_url]" placeholder in every generated distribution caption:
 ${distributionCaptionRules.join('\n')}
-- "ai_image_prompt": MUST BE IN SPANISH — featured image brief, 1080×628px, include brand color context if known
-
 CONTENT RULES:
 - Every section must cover a distinct, specific aspect — no padding, no repeat themes across sections
 - Each FAQ question must look like something a real customer types into Google
@@ -547,6 +774,8 @@ function buildResponseSchema(ctx: GenerationContext): GenerationRequestSchema {
   const properties: Record<string, JsonSchema> = {
     title: { type: 'string' },
     master_caption: { type: 'string' },
+    target_keyword: { type: 'string' },
+    target_locality: { type: 'string' },
   };
   const required = ['title', 'master_caption'];
 
@@ -555,7 +784,6 @@ function buildResponseSchema(ctx: GenerationContext): GenerationRequestSchema {
     properties.slug = { type: 'string' };
     properties.seo_title = { type: 'string' };
     properties.meta_description = { type: 'string' };
-    properties.target_keyword = { type: 'string' };
     properties.secondary_keywords = { type: 'string' };
     properties.intro = { type: 'string' };
     properties.sections = {
@@ -586,7 +814,6 @@ function buildResponseSchema(ctx: GenerationContext): GenerationRequestSchema {
     properties.cta_heading = { type: 'string' };
     properties.cta_body = { type: 'string' };
     properties.cta_button_label = { type: 'string' };
-    properties.ai_image_prompt = { type: 'string' };
     required.push(
       'blog_excerpt',
       'slug',
@@ -601,7 +828,6 @@ function buildResponseSchema(ctx: GenerationContext): GenerationRequestSchema {
       'cta_heading',
       'cta_body',
       'cta_button_label',
-      'ai_image_prompt',
     );
     if (platforms.includes('google_business')) {
       properties.cap_google_business = { type: 'string' };
@@ -620,30 +846,30 @@ function buildResponseSchema(ctx: GenerationContext): GenerationRequestSchema {
       required.push('cap_linkedin');
     }
     if (platforms.includes('x')) {
-      properties.cap_x = { type: 'string' };
+      properties.cap_x = { type: 'string', maxLength: 280 };
       required.push('cap_x');
     }
     if (platforms.includes('threads')) {
-      properties.cap_threads = { type: 'string' };
+      properties.cap_threads = { type: 'string', maxLength: 500 };
       required.push('cap_threads');
     }
     if (platforms.includes('pinterest')) {
-      properties.cap_pinterest = { type: 'string' };
+      properties.cap_pinterest = { type: 'string', maxLength: 100 };
       required.push('cap_pinterest');
     }
     if (platforms.includes('bluesky')) {
-      properties.cap_bluesky = { type: 'string' };
+      properties.cap_bluesky = { type: 'string', maxLength: 300 };
       required.push('cap_bluesky');
     }
   } else {
     if (platforms.includes('facebook')) properties.cap_facebook = { type: 'string' };
     if (platforms.includes('instagram')) properties.cap_instagram = { type: 'string' };
     if (platforms.includes('linkedin')) properties.cap_linkedin = { type: 'string' };
-    if (platforms.includes('x')) properties.cap_x = { type: 'string' };
-    if (platforms.includes('threads')) properties.cap_threads = { type: 'string' };
-    if (platforms.includes('tiktok')) properties.cap_tiktok = { type: 'string' };
-    if (platforms.includes('pinterest')) properties.cap_pinterest = { type: 'string' };
-    if (platforms.includes('bluesky')) properties.cap_bluesky = { type: 'string' };
+    if (platforms.includes('x')) properties.cap_x = { type: 'string', maxLength: 280 };
+    if (platforms.includes('threads')) properties.cap_threads = { type: 'string', maxLength: 500 };
+    if (platforms.includes('tiktok')) properties.cap_tiktok = { type: 'string', maxLength: 90 };
+    if (platforms.includes('pinterest')) properties.cap_pinterest = { type: 'string', maxLength: 100 };
+    if (platforms.includes('bluesky')) properties.cap_bluesky = { type: 'string', maxLength: 300 };
     if (platforms.includes('google_business')) properties.cap_google_business = { type: 'string' };
     for (const location of ctx.gbpLocations ?? []) {
       if (location.captionField) properties[location.captionField] = { type: 'string' };
@@ -746,7 +972,7 @@ export function buildBlogContentHtml(
     ctaHeading: str('cta_heading') || (client.cta_text ?? 'Talk To Our Team'),
     ctaBody: str('cta_body') || 'Get expert guidance tailored to your situation and goals.',
     ctaButtonLabel: str('cta_button_label') || (client.cta_text ?? 'Contact Us Today'),
-    imagePrompt: str('ai_image_prompt') || undefined,
+    imagePrompt: undefined,
   };
   const structured = sanitizeStructuredBlogContent(structuredDraft).blog;
   const templateConfig = resolveBlogTemplateConfig({
@@ -789,6 +1015,11 @@ export function normalizeGeneratedPost(value: unknown, ctx: GenerationContext): 
   };
 
   for (const [key, raw] of Object.entries(parsed)) {
+    if (isGeneratedCaptionField(key)) {
+      const clean = normalizeGeneratedCaptionValue(raw);
+      if (clean) (normalized as unknown as Record<string, string>)[key] = clean;
+      continue;
+    }
     if (typeof raw !== 'string') continue;
     const clean = raw.trim();
     if (!clean) continue;
@@ -815,7 +1046,7 @@ export function normalizeGeneratedPost(value: unknown, ctx: GenerationContext): 
         answer: typeof (item as Record<string, unknown>)['answer'] === 'string' ? String((item as Record<string, unknown>)['answer']).trim() : '',
       }))
       .filter((item) => item.question && item.answer);
-    const requiredBlogKeys = ['blog_excerpt', 'slug', 'seo_title', 'meta_description', 'target_keyword', 'secondary_keywords', 'ai_image_prompt'] as const;
+    const requiredBlogKeys = ['blog_excerpt', 'slug', 'seo_title', 'meta_description', 'target_keyword', 'secondary_keywords'] as const;
     for (const key of requiredBlogKeys) {
       if (!normalized[key]) throw new Error(`Generation missing ${key}`);
     }
@@ -837,7 +1068,7 @@ export function normalizeGeneratedPost(value: unknown, ctx: GenerationContext): 
       ctaHeading: typeof parsed['cta_heading'] === 'string' ? String(parsed['cta_heading']).trim() : (ctx.client.cta_text ?? 'Talk To Our Team'),
       ctaBody: typeof parsed['cta_body'] === 'string' ? String(parsed['cta_body']).trim() : 'Get expert guidance tailored to your situation and goals.',
       ctaButtonLabel: typeof parsed['cta_button_label'] === 'string' ? String(parsed['cta_button_label']).trim() : (ctx.client.cta_text ?? 'Contact Us Today'),
-      imagePrompt: normalized.ai_image_prompt,
+      imagePrompt: undefined,
     };
     const structured = sanitizeStructuredBlogContent(structuredDraft).blog;
     const templateConfig = resolveBlogTemplateConfig({
@@ -1065,7 +1296,7 @@ export function validateGeneratedContent(
   const warnings: string[] = [];
   const title = post.title ?? '';
   const caption = post.master_caption ?? '';
-  const allText = [
+  const customerText = [
     post.title,
     post.master_caption,
     post.cap_facebook,
@@ -1086,25 +1317,74 @@ export function validateGeneratedContent(
     post.blog_excerpt,
     post.seo_title,
     post.meta_description,
-    post.target_keyword,
-    post.secondary_keywords,
-    post.slug,
     post.video_script,
-    post.ai_image_prompt,
-    post.ai_video_prompt,
   ].filter(Boolean).join(' ');
-  const normalizedAll = allText.toLowerCase();
+  const normalizedAll = customerText.toLowerCase();
   const normalizeDigits = (value: string): string => value.replace(/\D/g, '');
   const clientPhoneDigits = normalizeDigits(ctx.client.phone ?? '');
   const serviceAreas = (ctx.serviceAreas ?? [])
     .map((area) => area.trim())
     .filter(Boolean);
+  const serviceNames = (ctx.serviceNames ?? [])
+    .map((service) => service.trim())
+    .filter(Boolean);
+  const targetKeywords = (ctx.targetKeywords ?? [])
+    .map((keyword) => keyword.trim())
+    .filter(Boolean);
+
+  const captionLimits: Array<[keyof GeneratedPost, number]> = [
+    ['cap_tiktok', 90],
+    ['cap_x', 280],
+    ['cap_threads', 500],
+    ['cap_pinterest', 100],
+    ['cap_bluesky', 300],
+  ];
+  for (const [field, maxLength] of captionLimits) {
+    const value = post[field];
+    if (typeof value === 'string' && value.length > maxLength) {
+      warnings.push(`${field} exceeds ${maxLength} characters`);
+    }
+  }
+
+  if ((ctx.contentType === 'reel' || ctx.contentType === 'video') && post.ai_video_prompt && post.video_script) {
+    const durationMatch = post.ai_video_prompt.match(/duraci[oó]n\s*:?\s*(\d{1,3})\s*segundos?/i);
+    const timestamps = [...post.video_script.matchAll(/\b(\d{1,3})(?:\s*[-–]\s*(\d{1,3}))?\s*s\b/gi)];
+    const finalScriptSecond = timestamps.reduce((max, match) => Math.max(max, Number(match[2] ?? match[1])), 0);
+    if (durationMatch && finalScriptSecond > Number(durationMatch[1])) {
+      warnings.push(`video script ends at ${finalScriptSecond}s but designer prompt duration is ${durationMatch[1]}s`);
+    }
+  }
 
   const BANNED = ['delve', 'tapestry', 'vibrant', 'unleash', 'elevate', 'embark', 'transformative', 'paramount', 'journey'];
   for (const w of BANNED) {
     if (title.toLowerCase().includes(w) || caption.toLowerCase().includes(w)) {
       warnings.push(`banned word: "${w}"`);
     }
+  }
+  const GENERIC_COPY: RegExp[] = [
+    /\btrusted service\b/i,
+    /\bexpert (?:answers?|guidance|help|service|solutions?|advice|team)\b/i,
+    /\byour safety is our priority\b/i,
+    /\bseamless integration\b/i,
+    /\btailored plans?\b/i,
+    /\bimmediate help\b/i,
+  ];
+  for (const pattern of GENERIC_COPY) {
+    if (pattern.test(customerText)) warnings.push(`generic pattern: "${pattern.source}"`);
+  }
+
+  const restrictions = ctx.restrictions ?? [];
+  const restrictedPhrase = findRestrictedContentPhrase(customerText, restrictions);
+  if (restrictedPhrase) warnings.push(`restricted client content: "${restrictedPhrase}"`);
+
+  if (restrictions.some((term) => /no phone number in images/i.test(term)) && clientPhoneDigits) {
+    const visualPromptDigits = normalizeDigits([post.ai_image_prompt, post.ai_video_prompt].filter(Boolean).join(' '));
+    if (visualPromptDigits.includes(clientPhoneDigits)) warnings.push('restricted client content: phone number in visual prompt');
+  }
+
+  if (restrictions.some((term) => /no hashtags on google/i.test(term))) {
+    const googleCopy = [post.cap_google_business, post.cap_gbp_la, post.cap_gbp_wa, post.cap_gbp_or].filter(Boolean).join(' ');
+    if (googleCopy.includes('#')) warnings.push('restricted client content: hashtag in Google Business caption');
   }
 
   const GENERIC: RegExp[] = [
@@ -1117,11 +1397,97 @@ export function validateGeneratedContent(
     /at the end of the day/i,
     /game.?changer/i,
     /level up your/i,
+    /\bbefore (?:you )?hire\b/i,
+    /\bwhat to (?:know|check)\b/i,
+    /\bquestions? (?:to ask|answered)\b/i,
+    /\b(?:top|your top) questions?\b/i,
+    /\b\d+\s+(?:things?|steps?|tips?)\b/i,
+    /\bexpert (?:insights?|tips?)\b/i,
+    /\bessentials? of\b/i,
   ];
   for (const p of GENERIC) {
     if (p.test(title) || p.test(caption)) {
       warnings.push(`generic pattern: "${p.source}"`);
     }
+  }
+
+  const GENERIC_TITLE: RegExp[] = [
+    /^expert\b/i,
+    /^trusted\b/i,
+    /^precision\b/i,
+    /^professional .+ solutions\b/i,
+    /^choosing the right\b/i,
+    /^top tips?\b/i,
+    /\bsmart tips?\b/i,
+    /^addressing .+ concerns\b/i,
+    /^addressing concerns\b/i,
+    /\bkey criteria\b/i,
+    /^effective .+ steps\b/i,
+    /\bexpert answers\b/i,
+    /^choosing .+:\s*(?:three|\d+)\b/i,
+    /^(?:three|\d+) (?:key )?criteria\b/i,
+    /^(?:three|\d+) (?:key |site )?(?:details|checks|questions|things|tips)\b/i,
+    /\b(?:three|\d+)\b.*\bcriteria\b/i,
+    /:\s*(?:three|\d+) (?:key )?(?:criteria|details|checks)\b/i,
+    /\bkey project criteria\b/i,
+    /^key decisions?\b/i,
+    /^ensuring quality\b/i,
+    /^q&a\s*:/i,
+    /^mastering\b/i,
+    /^crafting effective\b/i,
+    /^solving .+ challenges\b/i,
+  ];
+  for (const p of GENERIC_TITLE) {
+    if (p.test(title)) warnings.push(`generic pattern: "${p.source}"`);
+  }
+
+  const unsupportedExactClaims: Array<[RegExp, string]> = [
+    [/\$\s?\d[\d,]*(?:\.\d{2})?/i, 'exact price'],
+    [/\b\d{1,3}\s*[-–]\s*\d{1,3}\s*(?:minute|min)\b/i, 'arrival-time window'],
+    [/\b\d(?:\.\d)?\s*stars?\b/i, 'star-rating claim'],
+    [/\b(?:nearly|over|more than|almost)?\s*\d{2,5}\s+reviews?\b/i, 'review-count claim'],
+  ];
+  for (const [pattern, label] of unsupportedExactClaims) {
+    if (pattern.test(customerText)) warnings.push(`unsupported exact claim: ${label}`);
+  }
+
+  const verifiedClaims = [
+    ctx.client.canonical_name,
+    ctx.client.notes,
+    ctx.client.brand_json,
+    ctx.client.cta_text,
+    ctx.intelligence?.approved_ctas,
+  ].filter(Boolean).join(' ').toLowerCase();
+  const conditionalClaims: Array<[RegExp, RegExp, string]> = [
+    [/\blicen[sc]ed\b/i, /\blicen[sc]/i, 'license'],
+    [/\bcertified\b/i, /\bcertif/i, 'certification'],
+    [/\b(?:guaranteed|guarantee|warranty)\b/i, /\b(?:guarantee|warrant)/i, 'guarantee or warranty'],
+    [/\bfree (?:estimate|consultation|audit|inspection)\b/i, /\bfree (?:estimate|consultation|audit|inspection)\b/i, 'free offer'],
+    [/\b(?:same-day|24\/7|immediate assistance|immediate response)\b/i, /\b(?:same-day|24\/7|immediate)/i, 'availability or response time'],
+  ];
+  for (const [claimPattern, verifiedPattern, label] of conditionalClaims) {
+    if (claimPattern.test(customerText) && !verifiedPattern.test(verifiedClaims)) {
+      warnings.push(`unsupported claim: ${label}`);
+    }
+  }
+
+  const deliveryPlatforms = ctx.platforms.filter((platform) => platform !== 'website_blog');
+  const normalizedDesignerPrompt = String(
+    ctx.contentType === 'reel' || ctx.contentType === 'video'
+      ? post.ai_video_prompt ?? ''
+      : post.ai_image_prompt ?? '',
+  ).toLowerCase().replace(/[\s×]/g, '');
+  const expectedDimensions = ctx.contentType === 'reel'
+    ? '1080x1920'
+    : ctx.contentType === 'video'
+      ? '1920x1080'
+      : deliveryPlatforms.length === 1 && deliveryPlatforms[0] === 'instagram'
+        ? '1080x1080'
+        : deliveryPlatforms.length === 1 && deliveryPlatforms[0] === 'pinterest'
+          ? '1000x1500'
+          : '1200x628';
+  if (ctx.contentType !== 'blog' && !normalizedDesignerPrompt.includes(expectedDimensions)) {
+    warnings.push(`designer prompt must specify ${expectedDimensions} for ${ctx.contentType}`);
   }
 
   const titleWords = new Set(
@@ -1138,28 +1504,63 @@ export function validateGeneratedContent(
     }
   }
 
-  if (ctx.topicResearch && title) {
+  if (ctx.topicResearch) {
     const topicWords = ctx.topicResearch.topic.toLowerCase().split(/\s+/).filter(w => w.length > 3);
-    const titleLower = title.toLowerCase();
-    const matched = topicWords.filter(w => titleLower.includes(w));
-    if (topicWords.length >= 3 && matched.length < 2) {
-      warnings.push(`title may not reflect researched topic: "${ctx.topicResearch.topic}"`);
+    const matched = topicWords.filter(w => normalizedAll.includes(w));
+    if (topicWords.length >= 4 && matched.length < 2) {
+      warnings.push(`content may not reflect selected topic: "${ctx.topicResearch.topic}"`);
+    }
+  }
+
+  if (ctx.topicResearch?.targetKeyword) {
+    if (post.target_keyword?.trim().toLowerCase() !== ctx.topicResearch.targetKeyword.trim().toLowerCase()) {
+      warnings.push(`target_keyword must exactly match selected keyword: "${ctx.topicResearch.targetKeyword}"`);
+    }
+    const keywordTokens = ctx.topicResearch.targetKeyword.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
+    const matchedKeywordTokens = keywordTokens.filter((token) => normalizedAll.includes(token));
+    if (keywordTokens.length >= 2 && matchedKeywordTokens.length < Math.min(2, keywordTokens.length)) {
+      warnings.push(`missing selected target keyword: "${ctx.topicResearch.targetKeyword}"`);
+    }
+  } else if (targetKeywords.length > 0) {
+    const keywordHit = targetKeywords.slice(0, 8).some((keyword) => {
+      const tokens = keyword.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
+      return tokens.length > 0 && tokens.some((token) => normalizedAll.includes(token));
+    });
+    if (!keywordHit) warnings.push(`missing target keyword pool usage: use one of ${targetKeywords.slice(0, 4).join(', ')}`);
+  }
+
+  if (serviceNames.length > 0) {
+    const serviceHit = serviceNames.some((service) => {
+      const tokens = service.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
+      return tokens.length > 0 && tokens.some((token) => normalizedAll.includes(token));
+    });
+    if (!serviceHit) {
+      warnings.push(`missing confirmed service: must reference one of ${serviceNames.slice(0, 5).join(', ')}`);
     }
   }
 
   if (clientPhoneDigits) {
-    const phoneMatches = [...normalizedAll.matchAll(/(?:\+?\d[\d().\-\s]{7,}\d)/g)].map((m) => normalizeDigits(m[0])).filter(Boolean);
+    const phoneMatches = [...customerText.matchAll(/(?:\+?\d[\d().\-\s]{7,}\d)/g)]
+      .map((match) => normalizeDigits(match[0]))
+      .filter((digits) => digits.length === 10 || (digits.length === 11 && digits.startsWith('1')));
     if (phoneMatches.some((digits) => digits !== clientPhoneDigits)) {
       warnings.push(`phone mismatch: only the exact client phone ${ctx.client.phone} is allowed`);
     }
-    const phoneMentioned = normalizedAll.includes(clientPhoneDigits.slice(-7)) || normalizedAll.includes(clientPhoneDigits);
-    const ctaMentions = /\b(call|text|phone|contact|reach|book|schedule|dial)\b/i.test(normalizedAll);
-    if (ctaMentions && !phoneMentioned) {
-      warnings.push(`missing client phone in CTA: use ${ctx.client.phone}`);
+    const generatedText = [customerText, post.ai_image_prompt, post.ai_video_prompt].filter(Boolean).join(' ');
+    if (/\(\s*\(\s*\d{3}\s*\)/.test(generatedText)) {
+      warnings.push(`malformed phone: use the exact client phone ${ctx.client.phone}`);
     }
   }
 
   if (serviceAreas.length > 0) {
+    const selectedLocality = post.target_locality?.trim() ?? '';
+    const exactLocality = serviceAreas.find((area) => area.toLowerCase() === selectedLocality.toLowerCase());
+    if (!exactLocality) {
+      warnings.push(`target_locality must exactly match one confirmed area: ${serviceAreas.slice(0, 5).join(', ')}`);
+    }
+    if (ctx.topicResearch?.localModifier && selectedLocality.toLowerCase() !== ctx.topicResearch.localModifier.trim().toLowerCase()) {
+      warnings.push(`target_locality must exactly match selected locality: "${ctx.topicResearch.localModifier}"`);
+    }
     const locationMentioned = serviceAreas.some((area) => {
       const tokens = area.toLowerCase().split(/\s+/).filter(Boolean);
       return tokens.length > 0 && tokens.every((token) => normalizedAll.includes(token));

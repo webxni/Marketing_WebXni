@@ -528,6 +528,10 @@ export async function createContentWithImage(
     asset_r2_bucket:         r2Key ? 'MEDIA' : null,
     asset_type:              r2Key ? 'image' : null,
     asset_delivered:         assetDelivered,
+    // r2Key here comes from the built-in image generator; tag it so the MCP gate
+    // can auto-publish AI-generated media for opted-in clients. No image yet ⇒ null
+    // (a designer delivery will stamp 'designer').
+    asset_source:            r2Key ? 'ai_generated' : null,
     ready_for_automation:    0,
     gbp_cta_type:            contentType === 'blog' ? 'LEARN_MORE' : null,
     gbp_topic_type:          contentType === 'blog' ? 'STANDARD' : null,

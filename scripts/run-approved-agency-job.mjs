@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { redactSecrets } from './lib/agency-redaction.mjs';
 import { AGENCY_SCHEMAS, buildAgencyPrompt } from './lib/agency-agent-prompts.mjs';
+import { normalizeEvidenceBackedReview, shouldPersistAgentFinding } from './lib/agency-review-evidence.mjs';
 import { runTerminalJsonAgent } from './lib/terminal-json-agent.mjs';
 import { pick_executor, executorLead, taskTypeForAgent } from './lib/executor-router.mjs';
+import { automationSlotKey, deliveryPlatforms, packageBlogSlots, packageSlots, packageSocialSlots } from './lib/agency-package-slots.mjs';
 
 function arg(name) {
   const idx = process.argv.indexOf(name);
@@ -14,6 +16,7 @@ const apiBaseUrl = arg('--api-base-url') || process.env.API_BASE_URL || 'https:/
 const botSecret = arg('--bot-secret') || process.env.DISCORD_BOT_SECRET || '';
 const EXECUTE_AI = process.env.AGENCY_EXECUTE_AI === '1';
 const ALLOW_DRAFT_POSTS = process.env.AGENCY_ALLOW_DRAFT_POSTS === '1';
+const notifiedFallbacks = new Set();
 
 if (!jobId) {
   console.error('Missing --job-id');
@@ -345,15 +348,54 @@ function isoDate(offsetDays = 0) {
   return date.toISOString().slice(0, 10);
 }
 
-function nextScheduledDate(dayName) {
-  const dayIdx = { monday: 0, tuesday: 1, wednesday: 2, thursday: 3, friday: 4, saturday: 5, sunday: 6 };
-  const now = new Date();
-  const utcDay = now.getUTCDay();
-  const daysToMonday = utcDay === 0 ? 1 : (8 - utcDay) % 7 || 7;
-  const offset = dayIdx[String(dayName).toLowerCase()] ?? 0;
-  const date = new Date(now);
-  date.setUTCDate(now.getUTCDate() + daysToMonday + offset);
-  return date.toISOString().slice(0, 10);
+function collectDraftText(value) {
+  if (!value || typeof value !== 'object') return '';
+  const parts = [];
+  for (const [key, raw] of Object.entries(value)) {
+    if (typeof raw === 'string') parts.push(raw);
+    else if (raw && typeof raw === 'object' && /caption|captions|platform/i.test(key)) {
+      for (const nested of Object.values(raw)) {
+        if (typeof nested === 'string') parts.push(nested);
+      }
+    }
+  }
+  return parts.join('\n');
+}
+
+function draftOpening(value) {
+  return collectDraftText(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 8)
+    .join(' ');
+}
+
+function repeatedBatchAngle(draft, accepted) {
+  const opening = draftOpening(draft);
+  if (opening && accepted.some((prior) => draftOpening(prior) === opening)) return 'repeated opening';
+  const family = String(draft.hook_family || '');
+  if (family && accepted.filter((prior) => prior.hook_family === family).length >= 2) return `hook family ${family} already used twice`;
+  return null;
+}
+
+function assertNoUnsupportedExactClaims(draft, contentBrief, label) {
+  const text = collectDraftText(draft);
+  const brief = String(contentBrief || '').toLowerCase();
+  const risky = [
+    { pattern: /\$\s?\d[\d,]*(?:\.\d{2})?/i, label: 'exact price' },
+    { pattern: /\b\d{1,3}\s*[-–]\s*\d{1,3}\s*(?:minute|min)\b/i, label: 'arrival-time window' },
+    { pattern: /\b\d(?:\.\d)?\s*stars?\b/i, label: 'star-rating claim' },
+    { pattern: /\b(?:nearly|over|more than|almost)?\s*\d{2,5}\s+reviews?\b/i, label: 'review-count claim' },
+  ];
+  const failures = risky
+    .filter((item) => item.pattern.test(text))
+    .filter((item) => !item.pattern.test(brief))
+    .map((item) => item.label);
+  if (failures.length) {
+    throw new Error(`${label} blocked unsupported exact claim(s): ${failures.join(', ')}. Add the claim to the client brief or remove it.`);
+  }
 }
 
 /**
@@ -456,6 +498,53 @@ async function isAgentOverBudget(agentSlug) {
   }
 }
 
+function normalizedBackendName(value) {
+  const name = String(value || '').toLowerCase();
+  if (name === 'claude_code' || name === 'anthropic') return 'claude';
+  if (name === 'gemini_cli' || name === 'google') return 'gemini';
+  return name;
+}
+
+async function availableBackendChain(chain) {
+  try {
+    const health = await request('/internal/agency/backend-health');
+    const now = Number(health.now || Math.floor(Date.now() / 1000));
+    const cooling = new Set((health.backends || [])
+      .filter((row) => Number(row.cooldown_until || 0) > now)
+      .map((row) => normalizedBackendName(row.backend)));
+    const available = chain.filter((backend) => !cooling.has(normalizedBackendName(backend)));
+    return available.length
+      ? { chain: available, excludedBackends: [...cooling] }
+      : { chain: chain.slice(-1), excludedBackends: [] };
+  } catch {
+    return { chain, excludedBackends: [] };
+  }
+}
+
+async function runAgentWithBackendHealth(options) {
+  const { chain, excludedBackends } = await availableBackendChain(options.preferredBackend);
+  try {
+    const result = await runTerminalJsonAgent({ ...options, preferredBackend: chain, excludedBackends });
+    for (const attempt of result.attempts || []) {
+      await post('/internal/agency/backend-health', {
+        backend: attempt.backend,
+        status: attempt.status,
+        error: attempt.error || null,
+      }).catch(() => {});
+    }
+    return result;
+  } catch (err) {
+    for (const attempt of err?.attempts || []) {
+      await post('/internal/agency/backend-health', {
+        backend: attempt.backend,
+        status: 'failed',
+        error: attempt.error || String(err),
+      }).catch(() => {});
+    }
+    throw err;
+  }
+}
+
 async function runStructuredAgent(kind, agentSlug, backend, client, snapshot, task, modeOverride, executorChainOverride) {
   const prompt = buildAgencyPrompt(kind, { client, snapshot, task });
   const schema = AGENCY_SCHEMAS[kind];
@@ -465,7 +554,7 @@ async function runStructuredAgent(kind, agentSlug, backend, client, snapshot, ta
   // routing + budget downgrade — the caller already encoded budget/quality into
   // the chain (used by the quality gate's validate/revision passes).
   if (Array.isArray(executorChainOverride) && executorChainOverride.length) {
-    const result = await runTerminalJsonAgent({
+    const result = await runAgentWithBackendHealth({
       prompt,
       schema,
       preferredBackend: executorChainOverride,
@@ -498,7 +587,7 @@ async function runStructuredAgent(kind, agentSlug, backend, client, snapshot, ta
     }).catch(() => {});
   }
 
-  const result = await runTerminalJsonAgent({
+  const result = await runAgentWithBackendHealth({
     prompt,
     schema,
     preferredBackend: chain,
@@ -518,6 +607,9 @@ async function runStructuredAgent(kind, agentSlug, backend, client, snapshot, ta
   }).catch(() => {});
 
   if (result.fallback_used) {
+    const fallbackKey = `${agentSlug}:${result.primary_backend || chain[0] || 'unknown'}:${result.backend || 'unknown'}`;
+    if (notifiedFallbacks.has(fallbackKey)) return result;
+    notifiedFallbacks.add(fallbackKey);
     await post('/internal/agency/notify-discord', {
       title: 'Agency backend fallback used',
       body: `${agentSlug} primary backend failed; completed with ${result.backend}.`,
@@ -536,15 +628,22 @@ async function runStructuredAgent(kind, agentSlug, backend, client, snapshot, ta
 // Quality gate (§1/§7). Scores a single generated draft against the rubric and,
 // if it fails, runs ONE Claude-routed revision then re-scores. Returns the
 // (possibly revised) draft with the verdict appended to review_notes so
-// Editorial Review and Marvin see it. Enabled by AGENCY_QUALITY_GATE=1.
+// Editorial Review and Marvin see it. Enabled by default; set
+// AGENCY_QUALITY_GATE=0 only for emergency bypass.
 // Never approves/publishes — content-quality only; gates stay intact.
 async function qualityGateDraft(agentSlug, backend, client, snapshot, baseTask, draft, revisionKind) {
-  if (process.env.AGENCY_QUALITY_GATE !== '1' || !draft || typeof draft !== 'object') {
+  if (process.env.AGENCY_QUALITY_GATE === '0' || !draft || typeof draft !== 'object') {
     return { output: draft, verdict: null };
   }
   const budget_state = (await isAgentOverBudget(agentSlug)) ? 'over' : 'ok';
   const validateChain = pick_executor({ task_type: 'validate', budget_state });
   const reviseChain = pick_executor({ task_type: 'revision', quality_target: 'high', budget_state });
+  const minScore = Number(process.env.AGENCY_QUALITY_MIN_SCORE || 85);
+  const verdictFails = (v) => {
+    if (!v || typeof v !== 'object') return true;
+    const checks = ['relevance', 'accuracy', 'brand_fit', 'keyword_usage', 'no_fluff', 'cta_present'];
+    return v.pass !== true || Number(v.score || 0) < minScore || checks.some((key) => v[key] !== true);
+  };
 
   let current = draft;
   let verdict = {};
@@ -553,7 +652,7 @@ async function qualityGateDraft(agentSlug, backend, client, snapshot, baseTask, 
       { ...baseTask, draft: current }, 'default', validateChain);
     verdict = check.output || {};
 
-    if (verdict.pass === false) {
+    if (verdictFails(verdict)) {
       const revised = await runStructuredAgent(revisionKind, agentSlug, backend, client, snapshot,
         { ...baseTask, draft: current, revision_required: true, quality_issues: verdict.issues ?? [], required_fixes: verdict.required_fixes ?? [] },
         undefined, reviseChain);
@@ -565,9 +664,16 @@ async function qualityGateDraft(agentSlug, backend, client, snapshot, baseTask, 
       verdict = check.output || {};
     }
   } catch (err) {
-    // A gate failure must never drop the draft — Marvin still reviews it.
-    console.warn(`[quality-gate] ${agentSlug} check failed (keeping draft): ${redactSecrets(err instanceof Error ? err.message : String(err)).slice(0, 160)}`);
-    return { output: current, verdict: null };
+    const message = redactSecrets(err instanceof Error ? err.message : String(err)).slice(0, 240);
+    console.warn(`[quality-gate] ${agentSlug} check failed: ${message}`);
+    throw new Error(`Quality gate unavailable; draft was not saved: ${message}`);
+  }
+
+  if (verdictFails(verdict)) {
+    const issues = Array.isArray(verdict.issues) && verdict.issues.length
+      ? verdict.issues.slice(0, 4).join('; ')
+      : 'quality gate failed';
+    throw new Error(`Quality gate blocked ${revisionKind}: score ${verdict.score ?? '?'} below ${minScore} or rubric failed — ${issues}`);
   }
 
   const note = `Quality gate: ${verdict.pass ? 'PASS' : 'NEEDS REVIEW'} (score ${verdict.score ?? '?'})`
@@ -620,12 +726,22 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
   }
 
   if (agentSlug === 'system-reliability' || agentSlug === 'security-sentinel') {
-    const result = await runStructuredAgent('operationalReview', agentSlug, backend, snapshot.system_health || snapshot.overview, snapshot, taskInput);
+    const reviewKind = agentSlug === 'system-reliability' ? 'reliabilityReview' : 'securityReview';
+    const healthContext = {
+      ...(snapshot.system_health || snapshot.overview),
+      backend_health: snapshot.backend_health ?? [],
+    };
+    const result = await runStructuredAgent(reviewKind, agentSlug, backend, healthContext, snapshot, taskInput);
+    const reviewedOutput = normalizeEvidenceBackedReview(
+      result.output,
+      snapshot,
+      agentSlug === 'system-reliability' ? 'reliability' : 'security',
+    );
 
     // Code-fix PROPOSALS (system-reliability only) — post each to Discord for a
     // human to act on. Never applied automatically; this preserves the
     // "no arbitrary shell / no auto-deploy" invariant.
-    const proposals = Array.isArray(result.output.code_proposals) ? result.output.code_proposals : [];
+    const proposals = Array.isArray(reviewedOutput.code_proposals) ? reviewedOutput.code_proposals : [];
     for (const p of proposals.slice(0, 5)) {
       if (!p || typeof p !== 'object' || !p.title) continue;
       const riskColor = { low: 0x22c55e, medium: 0xf59e0b, high: 0xef4444 }[p.risk] ?? 0x6366f1;
@@ -645,12 +761,12 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
     }
 
     return {
-      summary: result.output.summary,
+      summary: reviewedOutput.summary,
       agent_slug: agentSlug,
       command_name: commandName,
-      risk_level: result.output.severity,
-      findings: result.output.findings,
-      recommended_actions: result.output.recommended_actions,
+      risk_level: reviewedOutput.severity,
+      findings: reviewedOutput.findings,
+      recommended_actions: reviewedOutput.recommended_actions,
       code_proposals: proposals,
       backend: result.backend,
       safety: { no_arbitrary_shell: true, preserve_marvin_approval: true, preserve_designer_gate: true, no_auto_publish: true, code_proposals_applied: false },
@@ -658,8 +774,12 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
   }
 
   if (agentSlug === 'agency-orchestrator') {
-    const result = await runStructuredAgent('operationalReview', agentSlug, backend, snapshot.system_health || snapshot.overview, snapshot, taskInput);
-    const out = result.output;
+    const healthContext = {
+      ...(snapshot.system_health || snapshot.overview),
+      backend_health: snapshot.backend_health ?? [],
+    };
+    const result = await runStructuredAgent('orchestratorReview', agentSlug, backend, healthContext, snapshot, taskInput);
+    const out = normalizeEvidenceBackedReview(result.output, snapshot, 'agency operations');
 
     // Build Discord report from today's findings + orchestrator output
     const todayFindings = snapshot.findings.filter((f) => {
@@ -710,6 +830,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
       risk_level: out.severity,
       findings: out.findings,
       recommended_actions: out.recommended_actions,
+      assignments: out.assignments,
       backend: result.backend,
       discord_notified: true,
       safety: { no_arbitrary_shell: true, preserve_marvin_approval: true, preserve_designer_gate: true, no_auto_publish: true },
@@ -835,35 +956,30 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
     for (const client of clients) {
       try {
         await pingLease(`social-copy: ${client.client_name}`);
-        // Parse package weekly_schedule from coverage
-        let weeklySchedule = {};
-        try { weeklySchedule = JSON.parse(client.weekly_schedule || '{}'); } catch { /* ignore */ }
-
-        // Collect social (non-blog) slots
-        const socialSlots = [];
-        for (const [day, types] of Object.entries(weeklySchedule)) {
-          for (const type of (Array.isArray(types) ? types : [])) {
-            if (type !== 'blog') socialSlots.push({ day, type });
-          }
-        }
-
-        // Fallback: Mon/Wed/Fri image if no schedule found
+        const socialSlots = packageSocialSlots(client);
         if (!socialSlots.length) {
-          socialSlots.push({ day: 'monday', type: 'image' }, { day: 'wednesday', type: 'image' }, { day: 'friday', type: 'image' });
+          errors.push({ client: client.client_name, error: 'No social package slot is due next week.' });
+          continue;
         }
 
-        const scheduleText = socialSlots.map((s) => `${s.day}: ${s.type}`).join('\n');
+        const scheduleText = socialSlots.map((s) => `${s.date} ${s.day}: ${s.type} [slot ${s.dailyIndex}]`).join('\n');
 
         // Pull the client's content brief (brand voice, services, areas, restrictions)
         // so drafts use the per-client "template" instead of generic copy.
         let brief = { brief: '', hasBrief: false };
         try { brief = await request(`/internal/agency/client-brief/${client.client_id}`); } catch { /* fall back to no brief */ }
         if (!brief.hasBrief) {
-          console.warn(`[social-copy] ${client.client_name} skipped — no brand brief (run client research/strategy first)`);
-          errors.push({ client: client.client_name, error: 'No brand brief — needs client research/intelligence before drafting.' });
+          const gaps = Array.isArray(brief.profile_gaps) ? brief.profile_gaps.join(', ') : 'client profile';
+          console.warn(`[social-copy] ${client.client_name} skipped — missing ${gaps}`);
+          errors.push({ client: client.client_name, error: `Generation blocked — missing ${gaps}.` });
           continue;
         }
-        const clientWithSchedule = { ...client, weekly_schedule_text: scheduleText, content_brief: brief.brief };
+        const clientWithSchedule = {
+          ...client,
+          weekly_schedule_text: scheduleText,
+          content_brief: brief.brief,
+          active_delivery_platforms: deliveryPlatforms(client, brief, 'image'),
+        };
 
         // Re-check OpenAI availability (key may need refresh between clients)
         if (!process.env.OPENAI_API_KEY) await loadAiConfig();
@@ -872,6 +988,8 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
         const result = await runStructuredAgent('socialWeeklyBatch', agentSlug, backend, clientWithSchedule, snapshot, taskInput, 'batch');
         const posts = Array.isArray(result.output?.posts) ? result.output.posts : [];
 
+        const usedSlotKeys = new Set();
+        const acceptedDrafts = [];
         for (const draft of posts) {
           // Skip empty AI output so we never persist a contentless draft.
           const draftHasContent = Boolean(
@@ -881,34 +999,62 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
           if (!draftHasContent) continue;
 
           // Quality gate before save (no post leaves the agent below the bar).
-          const gated = await qualityGateDraft(agentSlug, backend, clientWithSchedule, snapshot, taskInput, draft, 'socialDraft');
+          const gated = await qualityGateDraft(
+            agentSlug,
+            backend,
+            clientWithSchedule,
+            snapshot,
+            { ...taskInput, prior_batch_angles: acceptedDrafts.map((item) => ({ title: item.title, hook_family: item.hook_family, opening: draftOpening(item) })) },
+            draft,
+            'socialDraft',
+          );
           const finalDraft = gated.output;
+          assertNoUnsupportedExactClaims(finalDraft, brief.brief, 'social draft');
+          const repeatedAngle = repeatedBatchAngle(finalDraft, acceptedDrafts);
+          if (repeatedAngle) {
+            errors.push({ client: client.client_name, error: `Draft rejected for repetition: ${repeatedAngle}.` });
+            continue;
+          }
 
           const matchedSlot = socialSlots.find(
-            (s) => s.day.toLowerCase() === (finalDraft.day_of_week || '').toLowerCase() && s.type === finalDraft.content_type,
-          ) || socialSlots.find((s) => s.day.toLowerCase() === (finalDraft.day_of_week || '').toLowerCase())
-            || { day: finalDraft.day_of_week || 'monday', type: finalDraft.content_type || 'image' };
+            (s) => !usedSlotKeys.has(automationSlotKey(client.client_id, s))
+              && s.day.toLowerCase() === (finalDraft.day_of_week || '').toLowerCase()
+              && s.type === finalDraft.content_type,
+          ) || socialSlots.find((s) => !usedSlotKeys.has(automationSlotKey(client.client_id, s))
+            && s.day.toLowerCase() === (finalDraft.day_of_week || '').toLowerCase());
+          if (!matchedSlot) {
+            errors.push({ client: client.client_name, error: `AI returned an unmatched package slot: ${finalDraft.day_of_week}/${finalDraft.content_type}.` });
+            continue;
+          }
+          usedSlotKeys.add(automationSlotKey(client.client_id, matchedSlot));
 
-          const publishDate = `${nextScheduledDate(matchedSlot.day)}T09:00`;
+          const publishDate = `${matchedSlot.date}T09:00`;
+          const platforms = deliveryPlatforms(client, brief, matchedSlot.type, finalDraft.platform_captions || {});
           const saved = await post('/internal/agency/draft-post', {
             agent_slug: agentSlug,
             task_id: taskId,
             client_id: client.client_id,
             title: finalDraft.title,
-            content_type: finalDraft.content_type || 'image',
-            platforms: ['facebook', 'instagram'],
+            content_type: matchedSlot.type,
+            platforms,
             master_caption: finalDraft.master_caption,
             platform_captions: finalDraft.platform_captions,
             ai_image_prompt: finalDraft.content_type === 'image' ? finalDraft.designer_prompt_es : null,
             ai_video_prompt: finalDraft.content_type !== 'image' ? finalDraft.designer_prompt_es : null,
+            target_keyword: finalDraft.target_keyword || null,
+            target_locality: finalDraft.target_locality || null,
+            youtube_title: platforms.includes('youtube') ? finalDraft.title : null,
+            youtube_description: platforms.includes('youtube') ? (finalDraft.platform_captions?.youtube || finalDraft.master_caption) : null,
             skarleth_notes: finalDraft.review_notes?.join('\n') || null,
             publish_date: publishDate,
+            automation_slot_key: automationSlotKey(client.client_id, matchedSlot),
           });
           if (!saved.post_id) continue; // server skipped (empty/dedupe) — nothing persisted
+          acceptedDrafts.push(finalDraft);
           savedDrafts.push({
             client_name: client.client_name,
             post_id: saved.post_id,
-            content_type: draft.content_type,
+            content_type: matchedSlot.type,
             day: matchedSlot.day,
             publish_date: publishDate,
             backend: result.backend,
@@ -925,8 +1071,10 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
     const summary = savedDrafts.length
       ? `${savedDrafts.length} post(s) for ${clientNames.length} client(s)${errors.length ? ` (${errors.length} skipped)` : ''}.`
       : `No drafts created${errors.length ? ` — ${errors.length} client(s) failed` : ''}.`;
-    if (!savedDrafts.length && errors.length) {
-      throw new Error(`${summary}; first error: ${errors[0].error}`);
+    const expectedSkip = (entry) => /no social package slot is due|generation blocked/i.test(entry.error || '');
+    const realErrors = errors.filter((entry) => !expectedSkip(entry));
+    if (!savedDrafts.length && realErrors.length) {
+      throw new Error(`${summary}; first error: ${realErrors[0].error}`);
     }
     return {
       summary,
@@ -981,23 +1129,21 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
     for (const client of clients) {
       try {
         await pingLease(`blog-writer: ${client.client_name}`);
-        // Parse blog slots from package weekly_schedule
-        let weeklySchedule = {};
-        try { weeklySchedule = JSON.parse(client.weekly_schedule || '{}'); } catch { /* ignore */ }
-        const blogSlots = [];
-        for (const [day, types] of Object.entries(weeklySchedule)) {
-          if (Array.isArray(types) && types.includes('blog')) blogSlots.push(day);
+        const blogSlots = packageBlogSlots(client);
+        if (!blogSlots.length) {
+          blogErrors.push({ client: client.client_name, error: 'No blog package slot is due next week.' });
+          continue;
         }
-        if (!blogSlots.length) blogSlots.push('thursday'); // fallback
 
-        const blogScheduleText = blogSlots.map((d) => `${d}: blog`).join('\n');
+        const blogScheduleText = blogSlots.map((slot) => `${slot.date} ${slot.day}: blog [slot ${slot.dailyIndex}]`).join('\n');
 
         // Same per-client brief (brand voice / services / areas) the social path uses.
         let brief = { brief: '', hasBrief: false };
         try { brief = await request(`/internal/agency/client-brief/${client.client_id}`); } catch { /* fall back to no brief */ }
         if (!brief.hasBrief) {
-          console.warn(`[blog-writer] ${client.client_name} skipped — no brand brief (run client research/strategy first)`);
-          blogErrors.push({ client: client.client_name, error: 'No brand brief — needs client research/intelligence before drafting.' });
+          const gaps = Array.isArray(brief.profile_gaps) ? brief.profile_gaps.join(', ') : 'client profile';
+          console.warn(`[blog-writer] ${client.client_name} skipped — missing ${gaps}`);
+          blogErrors.push({ client: client.client_name, error: `Generation blocked — missing ${gaps}.` });
           continue;
         }
         const clientWithSchedule = { ...client, blog_schedule_text: blogScheduleText, content_brief: brief.brief };
@@ -1006,15 +1152,25 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
         const result = await runStructuredAgent('blogWeeklyBatch', agentSlug, backend, clientWithSchedule, snapshot, taskInput, 'batch');
         const blogs = Array.isArray(result.output?.blogs) ? result.output.blogs : [];
 
+        const usedSlotKeys = new Set();
         for (const draft of blogs) {
           if (!(draft.html || '').trim()) continue; // skip empty blog output
 
           // Quality gate before save (no blog leaves the agent below the bar).
           const gated = await qualityGateDraft(agentSlug, backend, clientWithSchedule, snapshot, taskInput, draft, 'blogDraft');
           const finalDraft = gated.output;
+          assertNoUnsupportedExactClaims(finalDraft, brief.brief, 'blog draft');
 
-          const blogDay = String(finalDraft.day_of_week || blogSlots[0] || 'thursday');
-          const publishDate = `${nextScheduledDate(blogDay)}T09:00`;
+          const matchedSlot = blogSlots.find((slot) => !usedSlotKeys.has(automationSlotKey(client.client_id, slot))
+            && slot.day.toLowerCase() === String(finalDraft.day_of_week || '').toLowerCase())
+            || blogSlots.find((slot) => !usedSlotKeys.has(automationSlotKey(client.client_id, slot)));
+          if (!matchedSlot) {
+            blogErrors.push({ client: client.client_name, error: `AI returned an unmatched blog package slot: ${finalDraft.day_of_week || 'unknown day'}.` });
+            continue;
+          }
+          usedSlotKeys.add(automationSlotKey(client.client_id, matchedSlot));
+          const blogDay = matchedSlot.day;
+          const publishDate = `${matchedSlot.date}T09:00`;
           const saved = await post('/internal/agency/draft-post', {
             agent_slug: agentSlug,
             task_id: taskId,
@@ -1030,6 +1186,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
             target_keyword: finalDraft.target_keyword,
             skarleth_notes: finalDraft.review_notes?.join('\n') || null,
             publish_date: publishDate,
+            automation_slot_key: automationSlotKey(client.client_id, matchedSlot),
           });
           if (!saved.skipped) {
             savedBlogs.push({ client_name: client.client_name, post_id: saved.post_id, day: blogDay, publish_date: publishDate, backend: result.backend });
@@ -1046,7 +1203,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
     // Distinguish non-transient skips (missing brand brief — retrying won't help)
     // from real errors (backend failure — worth a retry). Only hard-fail on the
     // latter so the queue's retry/dead-letter isn't burned on known config gaps.
-    const isSkip = (e) => /no brand brief|needs client research/i.test(e.error || '');
+    const isSkip = (e) => /generation blocked|no blog package slot is due/i.test(e.error || '');
     const realErrors = blogErrors.filter((e) => !isSkip(e));
     if (!savedBlogs.length && realErrors.length) {
       throw new Error(`${summary}; first error: ${realErrors[0].error}`);
@@ -1093,9 +1250,17 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
         let brief = { brief: '', hasBrief: false };
         try { brief = await request(`/internal/agency/client-brief/${client.client_id}`); } catch { /* no brief */ }
         if (!brief.hasBrief) {
-          gmbErrors.push({ client: client.client_name, error: 'No brand brief — needs client research/intelligence before drafting.' });
+          const gaps = Array.isArray(brief.profile_gaps) ? brief.profile_gaps.join(', ') : 'client profile';
+          gmbErrors.push({ client: client.client_name, error: `Generation blocked — missing ${gaps}.` });
           continue;
         }
+        const gmbSlot = packageSlots(client).find((slot) => slot.type === 'image');
+        if (!gmbSlot) {
+          gmbErrors.push({ client: client.client_name, error: 'No package image slot is due next week for Google Business enrichment.' });
+          continue;
+        }
+        const gmbPublishDate = `${gmbSlot.date}T09:00`;
+        const gmbSlotKey = automationSlotKey(client.client_id, gmbSlot);
         const clientWithBrief = { ...client, content_brief: brief.brief };
         if (!process.env.OPENAI_API_KEY) await loadAiConfig();
 
@@ -1118,6 +1283,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
           let d = r.output;
           if (!d || !(d.body || '').trim()) return null;
           const g = await qualityGateDraft(agentSlug, backend, clientWithBrief, snapshot, locTask, d, 'gmbPost');
+          assertNoUnsupportedExactClaims(g.output, brief.brief, 'gmb draft');
           return { draft: g.output, backend: r.backend };
         };
 
@@ -1149,6 +1315,10 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
             target_keyword: primary.target_keyword || null, target_locality: primary.locality || null,
             ai_image_prompt: primary.designer_prompt_es || null,
             skarleth_notes: `${Array.isArray(primary.review_notes) ? primary.review_notes.join('\n') : ''}\nMulti-location GBP (${labels.join(', ')}) — posts per profile via upload-post after approval.`.trim(),
+            publish_date: gmbPublishDate,
+            automation_slot_key: gmbSlotKey,
+            merge_existing: true,
+            require_existing_slot: true,
             ...gbpFields(primary),
           });
           detail = { post_type: primary.post_type, locations: labels };
@@ -1164,6 +1334,10 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
             target_keyword: draft.target_keyword || null, target_locality: draft.locality || null,
             ai_image_prompt: draft.designer_prompt_es || null,
             skarleth_notes: `${Array.isArray(draft.review_notes) ? draft.review_notes.join('\n') : ''}\nGBP ${draft.post_type} — posts to google_business via upload-post after approval.`.trim(),
+            publish_date: gmbPublishDate,
+            automation_slot_key: gmbSlotKey,
+            merge_existing: true,
+            require_existing_slot: true,
             ...gbpFields(draft),
           });
           detail = { post_type: draft.post_type, locality: draft.locality };
@@ -1205,7 +1379,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
         gmbErrors.push({ client: client.client_name, error: redactSecrets(err instanceof Error ? err.message : String(err)).slice(0, 200) });
       }
     }
-    const isSkip = (e) => /no brand brief|needs client research/i.test(e.error || '');
+    const isSkip = (e) => /generation blocked|no package image slot is due|package_slot_not_generated/i.test(e.error || '');
     const realErrors = gmbErrors.filter((e) => !isSkip(e));
     if (!savedGmb.length && realErrors.length) throw new Error(`GMB drafts failed; first error: ${realErrors[0].error}`);
     return {
@@ -1251,39 +1425,57 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
     // review the ACTUAL content of each, saving a per-post note. This is what
     // makes Hermes "review blog posts and posts" instead of a placeholder task.
     let queue = { items: [] };
-    try { queue = await request(`/internal/agency/review-queue?limit=${process.env.AGENCY_EDITORIAL_LIMIT || 8}`); } catch { /* fall back below */ }
+    const forceReviewBefore = Number(taskInput.force_review_before || 0);
+    const forceReview = forceReviewBefore > 0 ? `&force_before=${Math.floor(forceReviewBefore)}` : '';
+    try { queue = await request(`/internal/agency/review-queue?limit=${process.env.AGENCY_EDITORIAL_LIMIT || 8}${forceReview}`); } catch { /* fall back below */ }
     const items = Array.isArray(queue.items) ? queue.items : [];
     if (!items.length) {
-      const target = selectEditorialTarget(snapshot.tasks);
-      const result = await runStructuredAgent('editorialReview', agentSlug, backend, target, snapshot, taskInput);
-      await post('/internal/agency/content-review', { agent_slug: agentSlug, task_id: taskId, post_id: null, severity: result.output.severity, notes_json: result.output });
-      return { summary: `No new drafts to review. Saved general note (${result.output.severity}).`, agent_slug: agentSlug, command_name: commandName, backend: result.backend, safety: { approval_status_changed: false, no_auto_publish: true } };
+      return {
+        summary: 'No new drafts to review. All current content hashes already have editorial notes.',
+        agent_slug: agentSlug,
+        command_name: commandName,
+        reviewed: [],
+        highest_severity: 'info',
+        backend: 'internal',
+        safety: { approval_status_changed: false, no_auto_publish: true },
+      };
     }
 
     const reviewed = [];
     const severityRank = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
     let worst = 'info';
-    for (const item of items) {
-      try {
-        const target = {
-          id: item.id,
-          title: `${item.content_type} review: ${item.title || item.client_name}`,
-          status: 'pending_approval',
-          post_id: item.id,
-          content: item,
-        };
-        const result = await runStructuredAgent('editorialReview', agentSlug, backend, target, snapshot, taskInput);
-        await post('/internal/agency/content-review', {
-          agent_slug: agentSlug,
-          task_id: taskId,
-          post_id: item.id,
-          severity: result.output.severity,
-          notes_json: result.output,
-        });
-        if ((severityRank[result.output.severity] ?? 0) > (severityRank[worst] ?? 0)) worst = result.output.severity;
-        reviewed.push({ post_id: item.id, client: item.client_name, content_type: item.content_type, severity: result.output.severity, backend: result.backend });
-      } catch (err) {
-        console.warn(`[editorial-review] ${item.id} failed: ${redactSecrets(err instanceof Error ? err.message : String(err)).slice(0, 160)}`);
+    const reviewConcurrency = Math.max(1, Math.min(Number(process.env.AGENCY_EDITORIAL_CONCURRENCY || 4), 6));
+    for (let i = 0; i < items.length; i += reviewConcurrency) {
+      const batch = items.slice(i, i + reviewConcurrency);
+      await pingLease(`editorial review: ${i + 1}-${Math.min(i + batch.length, items.length)} of ${items.length}`);
+      const results = await Promise.all(batch.map(async (item) => {
+        try {
+          const target = {
+            id: item.id,
+            title: `${item.content_type} review: ${item.title || item.client_name}`,
+            status: 'pending_approval',
+            post_id: item.id,
+            content_brief: item.content_brief,
+            content: item,
+          };
+          const result = await runStructuredAgent('editorialReview', agentSlug, backend, target, snapshot, taskInput);
+          await post('/internal/agency/content-review', {
+            agent_slug: agentSlug,
+            task_id: taskId,
+            post_id: item.id,
+            severity: result.output.severity,
+            notes_json: result.output,
+          });
+          return { post_id: item.id, client: item.client_name, content_type: item.content_type, severity: result.output.severity, backend: result.backend };
+        } catch (err) {
+          console.warn(`[editorial-review] ${item.id} failed: ${redactSecrets(err instanceof Error ? err.message : String(err)).slice(0, 160)}`);
+          return null;
+        }
+      }));
+      for (const result of results) {
+        if (!result) continue;
+        if ((severityRank[result.severity] ?? 0) > (severityRank[worst] ?? 0)) worst = result.severity;
+        reviewed.push(result);
       }
     }
     return {
@@ -1303,6 +1495,7 @@ async function createFindingsForResult(agentSlug, taskId, result) {
   const findings = Array.isArray(result.findings) ? result.findings : Array.isArray(result.bottlenecks) ? result.bottlenecks : [];
   for (const finding of findings.slice(0, 5)) {
     if (!finding || typeof finding !== 'object') continue;
+    if (!shouldPersistAgentFinding(finding)) continue;
     const severity = ['info', 'low', 'medium', 'high', 'critical'].includes(finding.severity) ? finding.severity : 'info';
     await post('/internal/agency/finding', {
       agent_slug: agentSlug,

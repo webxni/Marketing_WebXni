@@ -191,7 +191,7 @@
       toast.success('Approved ✓');
       if (wasPending) await goToNextPending(currentId);
       else load();
-    } catch { toast.error('Failed to approve'); }
+    } catch (e) { toast.error(e instanceof Error ? e.message : 'Failed to approve'); }
   }
 
   async function reject() {
