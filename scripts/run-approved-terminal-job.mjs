@@ -463,7 +463,7 @@ async function processSlot(summary, args, total, backend) {
 
     if (saveResult?.result?.persisted === 'skipped') {
       console.warn(`[${displayPosition}/${total}] ${prefix} skipped by save policy`);
-      return { ok: true, persisted: false, slot_idx: summary.slot_idx, prefix };
+      return { ok: true, persisted: false, backend: generatedResult.backend, slot_idx: summary.slot_idx, prefix };
     }
 
     // Progress log is cosmetic — best-effort so a logging hiccup never
@@ -475,7 +475,7 @@ async function processSlot(summary, args, total, backend) {
     });
 
     console.log(`[${displayPosition}/${total}] ${prefix} [${generatedResult.backend}]`);
-    return { ok: true, persisted: true, slot_idx: summary.slot_idx, prefix };
+    return { ok: true, persisted: true, backend: generatedResult.backend, slot_idx: summary.slot_idx, prefix };
   } catch (err) {
     const message = `Slot ${displayPosition} processing failed: ${err instanceof Error ? err.message : String(err)}`;
     await postBestEffort(`/internal/discord/approved-jobs/${jobId}/error`, {
@@ -502,9 +502,14 @@ async function runBatch(batch, args, total, backend) {
   );
   let batchCompleted = 0;
   const failed = [];
+  const backendCounts = {};
   results.forEach((r, i) => {
     if (r.status === 'fulfilled' && r.value.ok) {
-      if (r.value.persisted !== false) batchCompleted++;
+      if (r.value.persisted !== false) {
+        batchCompleted++;
+        const usedBackend = r.value.backend || 'unknown';
+        backendCounts[usedBackend] = (backendCounts[usedBackend] || 0) + 1;
+      }
     }
     else {
       if (r.status === 'rejected') {
@@ -518,21 +523,29 @@ async function runBatch(batch, args, total, backend) {
       });
     }
   });
-  return { batchCompleted, failed };
+  return { batchCompleted, failed, backendCounts };
+}
+
+function mergeBackendCounts(target, source) {
+  for (const [backend, count] of Object.entries(source || {})) {
+    target[backend] = (target[backend] || 0) + Number(count || 0);
+  }
 }
 
 // Run all slots in concurrency-limited batches; collect every slot that failed.
 async function runAllBatches(slots, args, total, backend, onProgress) {
   let completed = 0;
   const failed = [];
+  const backendCounts = {};
   for (let i = 0; i < slots.length; i += CONCURRENCY) {
     const batch = slots.slice(i, i + CONCURRENCY);
     const res = await runBatch(batch, args, total, backend);
     completed += res.batchCompleted;
     failed.push(...res.failed);
+    mergeBackendCounts(backendCounts, res.backendCounts);
     if (onProgress) await onProgress(completed);
   }
-  return { completed, failed };
+  return { completed, failed, backendCounts };
 }
 
 async function main() {
@@ -558,9 +571,9 @@ async function main() {
   setHeartbeatMessage(`Terminal AI heartbeat — preparing weekly job for ${total} slots`);
 
   try {
-    console.log(`Starting terminal content job: ${total} slots | concurrency: ${CONCURRENCY} | backend: ${backend}`);
+    console.log(`Starting terminal content job: ${total} slots | concurrency: ${CONCURRENCY} | preferred backend: ${backend}`);
     await postBestEffort('/internal/discord/notify', {
-      content: `🧠 Terminal AI started weekly content job\nRun ID: \`${args.run_id}\`\nRunner: \`${runnerId}\`\nBackend: \`${backend}\`\nSlots: ${total} | Concurrency: ${CONCURRENCY}`,
+      content: `🧠 Terminal AI started weekly content job\nRun ID: \`${args.run_id}\`\nRunner: \`${runnerId}\`\nPreferred backend: \`${backend}\`\nSlots: ${total} | Concurrency: ${CONCURRENCY}`,
     });
 
     await postBestEffort(`/internal/discord/approved-jobs/${jobId}/log`, {
@@ -572,7 +585,7 @@ async function main() {
     const reportProgress = async (done) => {
       console.log(`Batch done: ${done}/${total} total saved`);
       await postBestEffort('/internal/discord/notify', {
-        content: `⏳ Terminal AI (${backend}): ${done}/${total} slots — run \`${args.run_id}\``,
+        content: `⏳ Terminal AI: ${done}/${total} slots — run \`${args.run_id}\``,
       });
     };
 
@@ -580,6 +593,7 @@ async function main() {
     const first = await runAllBatches(slotSummaries, args, total, backend, reportProgress);
     let completed = first.completed;
     let failed = first.failed;
+    const backendCounts = { ...first.backendCounts };
 
     // Retry failed slots with the rejection reason so transient errors and
     // correctable quality failures do not leave silent holes in the plan.
@@ -594,6 +608,7 @@ async function main() {
       const retry = await runAllBatches(failed, args, total, backend, null);
       completed += retry.completed;
       failed = retry.failed;
+      mergeBackendCounts(backendCounts, retry.backendCounts);
       await reportProgress(completed);
     }
 
@@ -609,13 +624,20 @@ async function main() {
       throw new Error(error);
     }
 
+    const actualBackend = Object.entries(backendCounts)
+      .sort((a, b) => b[1] - a[1])[0]?.[0] ?? backend;
+    const backendSummary = Object.entries(backendCounts)
+      .map(([name, count]) => `${name}: ${count}`)
+      .join(', ');
+
     await post(`/internal/discord/approved-jobs/${jobId}/complete`, {
       result_json: {
         run_id: args.run_id,
         completed_slots: completed,
         requested_slots: total,
         provider: 'terminal',
-        backend,
+        backend: actualBackend,
+        backend_counts: backendCounts,
         runner_id: runnerId,
       },
     });
@@ -623,7 +645,7 @@ async function main() {
     // Milestone summary — best-effort so it never affects job status.
     const summaryEmoji = completed >= total ? '✅' : '⚠️';
     await postBestEffort('/internal/discord/notify', {
-      content: `${summaryEmoji} Terminal AI weekly job done: saved ${completed}/${total} slot(s)\nRun ID: \`${args.run_id}\`\nBackend: \`${backend}\``,
+      content: `${summaryEmoji} Terminal AI weekly job done: saved ${completed}/${total} slot(s)\nRun ID: \`${args.run_id}\`\nBackends: \`${backendSummary || actualBackend}\``,
     });
 
     console.log(`Done: ${completed}/${total} slots completed`);
