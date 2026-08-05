@@ -193,6 +193,7 @@ describe('generated caption normalization', () => {
     const post = {
       title: 'Hollywood Rekeying With Expert Guidance',
       master_caption: 'Call for immediate help from a trusted service.',
+      blog_content: '<p>For immediate help, describe the lock and location.</p>',
       target_keyword: 'residential locksmith Hollywood',
       target_locality: 'Hollywood',
     };
@@ -201,6 +202,7 @@ describe('generated caption normalization', () => {
 
     expect(post.title).toContain('Practical guidance');
     expect(post.master_caption).toBe('Call for locksmith assistance from a professional service.');
+    expect(post.blog_content).toContain('For locksmith assistance');
     expect(validateGeneratedContent(post, socialContext).warnings.some((warning) => warning.startsWith('generic pattern:'))).toBe(false);
   });
 

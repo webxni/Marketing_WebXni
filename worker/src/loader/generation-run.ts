@@ -1621,6 +1621,7 @@ export async function saveGeneratedSlotResult(
       }, slot.date);
       if (assembled) src.blog_content = assembled;
     }
+    normalizeGeneratedMarketingCliches(generatedPost, client.industry);
     canonicalizeGeneratedPhoneNumbers(generatedPost, client.phone);
   }
 
