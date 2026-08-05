@@ -4,6 +4,7 @@ import {
   buildBlogContentHtml,
   canonicalizeGeneratedPhoneNumbers,
   normalizeGeneratedMarketingCliches,
+  normalizeGeneratedUnverifiedClaims,
   findRestrictedContentPhrase,
   isGeneratedCaptionField,
   normalizeGeneratedCaptionValue,
@@ -227,6 +228,23 @@ describe('generated caption normalization', () => {
     }, socialContext);
 
     expect(quality.warnings.some((warning) => warning.startsWith('phone mismatch:'))).toBe(false);
+  });
+
+  it('rewrites license claims only when the client profile does not verify them', () => {
+    const unverified = {
+      title: 'Licensed Contractor Planning in Hollywood',
+      master_caption: 'A licensed contractor can explain the permit sequence.',
+    };
+    normalizeGeneratedUnverifiedClaims(unverified, 'Professional construction and permit planning.');
+    expect(unverified.title).toBe('Professional Contractor Planning in Hollywood');
+    expect(unverified.master_caption).toContain('A professional contractor');
+
+    const verified = {
+      title: 'Licensed Contractor Planning in Hollywood',
+      master_caption: 'Verified client profile copy.',
+    };
+    normalizeGeneratedUnverifiedClaims(verified, 'California license number 123456.');
+    expect(verified.title).toContain('Licensed Contractor');
   });
 
   it('matches restricted service language across reprogramming variants', () => {

@@ -67,6 +67,7 @@ import {
   buildBlogContentHtml,
   canonicalizeGeneratedPhoneNumbers,
   normalizeGeneratedMarketingCliches,
+  normalizeGeneratedUnverifiedClaims,
   findRestrictedContentPhrase,
   isGeneratedCaptionField,
   normalizeGeneratedCaptionValue,
@@ -1641,6 +1642,12 @@ export async function saveGeneratedSlotResult(
   ]);
   const validationServiceAreas = validationAreaRows.results.map((row) => row.city);
   const validationServiceNames = validationServiceRows.results.map((row) => row.name);
+  normalizeGeneratedUnverifiedClaims(generatedPost, [
+    client.notes,
+    client.brand_json,
+    client.cta_text,
+    validationIntel?.approved_ctas,
+  ].filter(Boolean).join(' '));
   const validationTargetKeywords = keywordPoolFromContext(
     validationIntel,
     validationKeywordRows,
@@ -2113,6 +2120,12 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
       await log('AI', `${getProviderDisplayName(provider)} done: ${postKey} (${genResult.meta.elapsedMs}ms, attempts=${genResult.meta.attempts}, model=${genResult.meta.model})`);
 
       normalizeGeneratedMarketingCliches(genResult.post, client.industry);
+      normalizeGeneratedUnverifiedClaims(genResult.post, [
+        client.notes,
+        client.brand_json,
+        client.cta_text,
+        intel?.approved_ctas,
+      ].filter(Boolean).join(' '));
       canonicalizeGeneratedPhoneNumbers(genResult.post, client.phone);
 
       // Quality validation — soft check, log warnings but never block saves

@@ -185,6 +185,18 @@ export function normalizeGeneratedMarketingCliches(post: GeneratedPost, industry
   }
 }
 
+export function normalizeGeneratedUnverifiedClaims(post: GeneratedPost, verifiedClaims: string): void {
+  if (/\blicen[sc]/i.test(verifiedClaims)) return;
+
+  for (const field of GENERATED_CUSTOMER_COPY_FIELDS) {
+    const value = post[field];
+    if (typeof value !== 'string') continue;
+    post[field] = value.replace(/\blicen[sc]ed\b/gi, (match) => (
+      /^[A-Z]/.test(match) ? 'Professional' : 'professional'
+    ));
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Content format rotation + topic research types
 // ─────────────────────────────────────────────────────────────────────────────
