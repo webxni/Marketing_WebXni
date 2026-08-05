@@ -1409,7 +1409,8 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
     // review the ACTUAL content of each, saving a per-post note. This is what
     // makes Hermes "review blog posts and posts" instead of a placeholder task.
     let queue = { items: [] };
-    const forceReview = taskInput.force_review === true ? '&force=1' : '';
+    const forceReviewBefore = Number(taskInput.force_review_before || 0);
+    const forceReview = forceReviewBefore > 0 ? `&force_before=${Math.floor(forceReviewBefore)}` : '';
     try { queue = await request(`/internal/agency/review-queue?limit=${process.env.AGENCY_EDITORIAL_LIMIT || 8}${forceReview}`); } catch { /* fall back below */ }
     const items = Array.isArray(queue.items) ? queue.items : [];
     if (!items.length) {

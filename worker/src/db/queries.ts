@@ -2403,6 +2403,7 @@ export type AgencyReviewQueueCandidate = PostRow & {
   package: string | null;
   package_violation: string | null;
   latest_review_hash: string | null;
+  latest_review_created_at: number | null;
 };
 
 export async function listAgencyReviewQueueCandidates(db: D1Database, limit = 100): Promise<AgencyReviewQueueCandidate[]> {
@@ -2415,7 +2416,8 @@ export async function listAgencyReviewQueueCandidates(db: D1Database, limit = 10
          WHEN p.content_type = 'blog' AND COALESCE(pkg.blog_posts_per_month, 0) = 0 THEN 'blog_not_in_package'
          ELSE NULL
        END AS package_violation,
-       (SELECT r.content_hash FROM content_review_notes r WHERE r.post_id = p.id ORDER BY r.created_at DESC LIMIT 1) AS latest_review_hash
+       (SELECT r.content_hash FROM content_review_notes r WHERE r.post_id = p.id ORDER BY r.created_at DESC LIMIT 1) AS latest_review_hash,
+       (SELECT r.created_at FROM content_review_notes r WHERE r.post_id = p.id ORDER BY r.created_at DESC LIMIT 1) AS latest_review_created_at
      FROM posts p
      JOIN clients c ON c.id = p.client_id
      LEFT JOIN packages pkg ON pkg.slug = c.package

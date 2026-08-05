@@ -233,12 +233,21 @@ async function enqueueAgent(c: Context<{ Bindings: Env; Variables: { user: Sessi
     });
   if (!task) return c.json({ error: 'Task not found' }, 404);
 
+  let taskInput: Record<string, unknown> = {};
+  try {
+    const parsedInput = JSON.parse(task.input_json ?? '{}') as unknown;
+    if (parsedInput && typeof parsedInput === 'object' && !Array.isArray(parsedInput)) {
+      taskInput = parsedInput as Record<string, unknown>;
+    }
+  } catch { /* retain empty task input */ }
+
   const job = await createApprovedCommandJob(c.env.DB, {
     generation_run_id: null,
     command_name: commandName,
     provider: agent.default_backend,
     requested_by: c.get('user').userId,
     args_json: JSON.stringify({
+      ...taskInput,
       agent_slug: agentSlug,
       task_id: task.id,
       source: 'agency_dashboard',
@@ -687,14 +696,16 @@ agencyInternalRoutes.post('/strategy-plan', async (c) => {
 agencyInternalRoutes.get('/review-queue', async (c) => {
   if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
   const limit = Math.min(Math.max(Number(c.req.query('limit') ?? '8'), 1), 25);
-  const forceReview = c.req.query('force') === '1';
+  const forceReviewBefore = Math.max(0, Number(c.req.query('force_before') ?? 0) || 0);
   const candidates = await listAgencyReviewQueueCandidates(c.env.DB, 150);
   const items: Array<Record<string, unknown>> = [];
   const clientBriefs = new Map<string, Awaited<ReturnType<typeof getAgencyClientContentBrief>>>();
   const clientRecentTopics = new Map<string, Awaited<ReturnType<typeof getClientGenerationTopicHistory>>>();
   for (const post of candidates) {
     const contentHash = await buildPostContentHash(post);
-    if (!forceReview && post.latest_review_hash === contentHash) continue;
+    const hasCurrentReview = post.latest_review_hash === contentHash;
+    const reviewIsNewEnough = (post.latest_review_created_at ?? 0) >= forceReviewBefore;
+    if (hasCurrentReview && (forceReviewBefore === 0 || reviewIsNewEnough)) continue;
     let clientBrief = clientBriefs.get(post.client_id);
     if (!clientBrief) {
       clientBrief = await getAgencyClientContentBrief(c.env.DB, post.client_id, { includeRecentTopics: false });
