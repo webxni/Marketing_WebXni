@@ -7,20 +7,29 @@ function snapshotContainsEvidence(snapshotText, evidenceId) {
 
 export function normalizeEvidenceBackedReview(output, snapshot, reviewLabel = 'operational') {
   const snapshotText = JSON.stringify(snapshot ?? {}).toLowerCase();
+  const terminalIncidentIds = new Set(
+    (snapshot?.system_health?.recent_generation_failures ?? [])
+      .map((run) => String(run?.id ?? '').toLowerCase())
+      .filter(Boolean),
+  );
   const findings = (Array.isArray(output?.findings) ? output.findings : [])
     .filter((finding) => finding && typeof finding === 'object')
     .filter((finding) => Array.isArray(finding.evidence_ids)
       && finding.evidence_ids.some((id) => snapshotContainsEvidence(snapshotText, id)))
-    .map((finding) => ({
-      ...finding,
-      severity: finding.state === 'active' ? finding.severity : 'info',
-    }));
-  const activeFindings = findings.filter((finding) => finding.state === 'active');
+    .map((finding) => {
+      const evidenceIds = finding.evidence_ids.map((id) => String(id).toLowerCase());
+      const terminalIncidentOnly = evidenceIds.length > 0 && evidenceIds.every((id) => terminalIncidentIds.has(id));
+      const state = terminalIncidentOnly ? 'historical' : finding.state;
+      return { ...finding, state, severity: state === 'active' ? finding.severity : 'info' };
+    });
+  const actionableActiveFindings = findings.filter((finding) => (
+    finding.state === 'active' && (SEVERITY_RANK[finding.severity] ?? 0) > SEVERITY_RANK.info
+  ));
   const severity = findings.reduce((worst, finding) => (
     (SEVERITY_RANK[finding.severity] ?? 0) > (SEVERITY_RANK[worst] ?? 0) ? finding.severity : worst
   ), 'info');
 
-  if (activeFindings.length === 0) {
+  if (actionableActiveFindings.length === 0) {
     return {
       ...output,
       severity: 'info',
