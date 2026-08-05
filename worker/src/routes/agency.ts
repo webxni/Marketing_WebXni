@@ -4,6 +4,7 @@ import type { ClientRow, Env, SessionData } from '../types';
 import {
   appendAgencyLog,
   getAgencyClientContentBrief,
+  getClientGenerationTopicHistory,
   createAgentFinding,
   createAgentRun,
   createAgentTask,
@@ -686,22 +687,30 @@ agencyInternalRoutes.post('/strategy-plan', async (c) => {
 agencyInternalRoutes.get('/review-queue', async (c) => {
   if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
   const limit = Math.min(Math.max(Number(c.req.query('limit') ?? '8'), 1), 25);
+  const forceReview = c.req.query('force') === '1';
   const candidates = await listAgencyReviewQueueCandidates(c.env.DB, 150);
   const items: Array<Record<string, unknown>> = [];
   const clientBriefs = new Map<string, Awaited<ReturnType<typeof getAgencyClientContentBrief>>>();
+  const clientRecentTopics = new Map<string, Awaited<ReturnType<typeof getClientGenerationTopicHistory>>>();
   for (const post of candidates) {
     const contentHash = await buildPostContentHash(post);
-    if (post.latest_review_hash === contentHash) continue;
+    if (!forceReview && post.latest_review_hash === contentHash) continue;
     let clientBrief = clientBriefs.get(post.client_id);
     if (!clientBrief) {
-      clientBrief = await getAgencyClientContentBrief(c.env.DB, post.client_id);
+      clientBrief = await getAgencyClientContentBrief(c.env.DB, post.client_id, { includeRecentTopics: false });
       clientBriefs.set(post.client_id, clientBrief);
+    }
+    let recentTopics = clientRecentTopics.get(post.client_id);
+    if (!recentTopics) {
+      recentTopics = await getClientGenerationTopicHistory(c.env.DB, post.client_id, 60);
+      clientRecentTopics.set(post.client_id, recentTopics);
     }
     items.push({
       id: post.id,
       client_slug: post.client_slug,
       client_name: post.client_name,
       content_brief: clientBrief.brief,
+      recent_topics: recentTopics.filter((topic) => topic.id !== post.id).slice(0, 24),
       package: post.package,
       package_violation: post.package_violation,
       content_type: post.content_type,

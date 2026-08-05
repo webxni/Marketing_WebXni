@@ -148,6 +148,7 @@ export interface ContentHistoryRow extends PostRow {
 }
 
 export interface ClientGenerationTopicHistoryRow {
+  id: string;
   title: string;
   target_keyword: string | null;
   content_type: string | null;
@@ -234,7 +235,7 @@ export async function getClientGenerationTopicHistory(
 ): Promise<ClientGenerationTopicHistoryRow[]> {
   const rows = await db
     .prepare(
-      `SELECT title, target_keyword, content_type, publish_date, platforms
+      `SELECT id, title, target_keyword, content_type, publish_date, platforms
        FROM posts
        WHERE client_id = ?
          AND status NOT IN ('cancelled')
@@ -245,6 +246,7 @@ export async function getClientGenerationTopicHistory(
     )
     .bind(clientId, Math.max(1, Math.min(limit, 60)))
     .all<{
+      id: string;
       title: string | null;
       target_keyword: string | null;
       content_type: string | null;
@@ -254,6 +256,7 @@ export async function getClientGenerationTopicHistory(
 
   return rows.results
     .filter((row): row is {
+      id: string;
       title: string;
       target_keyword: string | null;
       content_type: string | null;
@@ -271,6 +274,7 @@ export async function getClientGenerationTopicHistory(
         platforms = [];
       }
       return {
+        id: row.id,
         title: row.title.trim(),
         target_keyword: row.target_keyword,
         content_type: row.content_type,
@@ -2440,6 +2444,7 @@ export async function listAgencyReviewQueueCandidates(db: D1Database, limit = 10
 export async function getAgencyClientContentBrief(
   db: D1Database,
   clientId: string,
+  options: { includeRecentTopics?: boolean } = {},
 ): Promise<{ brief: string; hasBrief: boolean; profile_gaps: string[]; active_platforms: string[]; gbp_locations: Array<{ label: string; caption_field: string | null; upload_post_profile: string | null; location_id: string; paused: number }> }> {
   const [client, intel, areas, services, restrictions, keywords, gbpRows, platforms, recentTopics, latestResearch, latestStrategy] = await Promise.all([
     db.prepare('SELECT canonical_name, industry, state, cta_text, notes FROM clients WHERE id = ?')
@@ -2454,7 +2459,7 @@ export async function getAgencyClientContentBrief(
     getClientKeywords(db, clientId),
     getClientGbpLocations(db, clientId),
     getClientPlatforms(db, clientId),
-    getClientGenerationTopicHistory(db, clientId, 24),
+    options.includeRecentTopics === false ? Promise.resolve([]) : getClientGenerationTopicHistory(db, clientId, 24),
     getLatestClientResearch(db, clientId),
     getLatestClientStrategy(db, clientId),
   ]);
