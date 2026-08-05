@@ -1449,7 +1449,9 @@ export function validateGeneratedContent(
   }
 
   if (clientPhoneDigits) {
-    const phoneMatches = [...customerText.matchAll(/(?:\+?\d[\d().\-\s]{7,}\d)/g)].map((m) => normalizeDigits(m[0])).filter(Boolean);
+    const phoneMatches = [...customerText.matchAll(/(?:\+?\d[\d().\-\s]{7,}\d)/g)]
+      .map((match) => normalizeDigits(match[0]))
+      .filter((digits) => digits.length === 10 || (digits.length === 11 && digits.startsWith('1')));
     if (phoneMatches.some((digits) => digits !== clientPhoneDigits)) {
       warnings.push(`phone mismatch: only the exact client phone ${ctx.client.phone} is allowed`);
     }

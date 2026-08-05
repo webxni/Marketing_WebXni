@@ -199,6 +199,17 @@ describe('generated caption normalization', () => {
     expect(quality.warnings).toContain('malformed phone: use the exact client phone (323) 555-0100');
   });
 
+  it('does not treat dates and other shorter numeric references as phone mismatches', () => {
+    const quality = validateGeneratedContent({
+      title: 'Hollywood Rekeying After a Move',
+      master_caption: 'A residential locksmith Hollywood homeowners call can explain rekeying after a move-in inspection dated 2026-08-03.',
+      target_keyword: 'residential locksmith Hollywood',
+      target_locality: 'Hollywood',
+    }, socialContext);
+
+    expect(quality.warnings.some((warning) => warning.startsWith('phone mismatch:'))).toBe(false);
+  });
+
   it('matches restricted service language across reprogramming variants', () => {
     expect(findRestrictedContentPhrase(
       'Car digital and remote key reprogramming in Hollywood',
