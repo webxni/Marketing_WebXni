@@ -93,7 +93,7 @@ to invoke an available terminal AI backend per slot.
 
 | Schedule | Trigger |
 |----------|---------|
-| `0 7 * * SUN` | Sunday 7AM — weekly AI generation (stub: wire to `runGeneration`) |
+| `0 7 * * SUN` | Sunday 7AM — package-driven weekly terminal generation, then GMB/editorial agents |
 | `0 2 * * *` | Daily 2AM — fetch real URLs from Upload-Post history |
 | `0 */6 * * *` | Every 6h — automated posting check (calls recurring GBP run first, then main posting loop) |
 
@@ -543,12 +543,11 @@ Never `#000000` — invisible on dark background.
 
 ## What is NOT yet implemented (do not remove the stubs)
 
-1. **Sunday generation cron** — `0 7 * * SUN` triggers but doesn't yet call `runGeneration` for all active clients.
-2. **WordPress blog auto-post during posting runs** — `wp_post_url` field exists, service is ready, posting loop doesn't create WP drafts yet.
-3. **Approval workflow notifications** — no email/Slack on submit-for-approval.
-4. **Canva API** — links stored as reference only.
-5. **PDF monthly reports** — data available, export not built.
-6. **Notion auto-sync on cron** — manual via API only.
-7. **Real-time posting status** — currently requires page refresh.
-8. **`R2_MEDIA_PUBLIC_URL`** — not configured; uploads work but preview URLs are null.
-9. **Offer/Event image upload** — `asset_r2_key` column exists, upload UI not yet wired.
+1. **WordPress blog auto-post during posting runs** — `wp_post_url` field exists, service is ready, posting loop doesn't create WP drafts yet.
+2. **Approval workflow notifications** — no email/Slack on submit-for-approval.
+3. **Canva API** — links stored as reference only.
+4. **PDF monthly reports** — data available, export not built.
+5. **Notion auto-sync on cron** — manual via API only.
+6. **Real-time posting status** — currently requires page refresh.
+7. **`R2_MEDIA_PUBLIC_URL`** — not configured; uploads work but preview URLs are null.
+8. **Offer/Event image upload** — `asset_r2_key` column exists, upload UI not yet wired.
