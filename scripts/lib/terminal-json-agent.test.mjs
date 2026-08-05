@@ -47,4 +47,11 @@ ok('explicit agent priorities still try every available terminal before OpenAI',
   );
 });
 
+ok('cooling backends are not added back into the fallback chain', () => {
+  assert.deepEqual(
+    completePriority(['codex', 'openai'], ['codex', 'hermes']),
+    ['gemini', 'claude', 'openai'],
+  );
+});
+
 console.log(`\n${passed} terminal JSON agent tests passed`);

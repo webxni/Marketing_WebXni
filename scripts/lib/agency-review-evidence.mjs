@@ -6,7 +6,16 @@ function snapshotContainsEvidence(snapshotText, evidenceId) {
 }
 
 export function normalizeEvidenceBackedReview(output, snapshot, reviewLabel = 'operational') {
-  const snapshotText = JSON.stringify(snapshot ?? {}).toLowerCase();
+  const evidenceSnapshot = {
+    generated_at: snapshot?.generated_at,
+    overview: snapshot?.overview,
+    system_health: snapshot?.system_health,
+    approved_jobs: snapshot?.approved_jobs,
+    backend_health: snapshot?.backend_health,
+    agents: snapshot?.agents,
+    coverage: snapshot?.coverage,
+  };
+  const snapshotText = JSON.stringify(evidenceSnapshot).toLowerCase();
   const terminalIncidentIds = new Set(
     (snapshot?.system_health?.recent_generation_failures ?? [])
       .map((run) => String(run?.id ?? '').toLowerCase())
@@ -42,4 +51,10 @@ export function normalizeEvidenceBackedReview(output, snapshot, reviewLabel = 'o
   }
 
   return { ...output, severity, findings };
+}
+
+export function shouldPersistAgentFinding(finding) {
+  if (!finding || typeof finding !== 'object') return false;
+  if (!finding.state) return true;
+  return finding.state === 'active' && (SEVERITY_RANK[finding.severity] ?? 0) > SEVERITY_RANK.info;
 }

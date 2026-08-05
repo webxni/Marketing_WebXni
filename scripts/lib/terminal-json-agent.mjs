@@ -68,8 +68,9 @@ function isBackendAvailable(backend) {
  * Expand a priority list into an ordered list of available backends.
  * 'auto' expands to all available backends in default order.
  */
-function completePriority(backends) {
+function completePriority(backends, excludedBackends = []) {
   const AUTO_ORDER = ['codex', 'gemini', 'claude', 'hermes', 'openai'];
+  const excluded = new Set(excludedBackends.map(normalizeBackendName));
   const requested = backends.flatMap((backend) => {
     const normalized = normalizeBackendName(backend);
     return normalized === 'auto' ? AUTO_ORDER : [normalized];
@@ -78,11 +79,11 @@ function completePriority(backends) {
     ...requested.filter((backend) => backend && backend !== 'openai'),
     ...AUTO_ORDER.filter((backend) => backend !== 'openai'),
     'openai',
-  ])];
+  ])].filter((backend) => !excluded.has(backend));
 }
 
-function expandPriority(backends) {
-  const completeOrder = completePriority(backends);
+function expandPriority(backends, excludedBackends = []) {
+  const completeOrder = completePriority(backends, excludedBackends);
   const seen = new Set();
   const result = [];
   for (const backend of completeOrder) {
@@ -489,12 +490,12 @@ function classifyBackendFailure(command, text) {
  * @param {string|string[]} opts.preferredBackend - single name, array, or 'auto'
  * @param {string} [opts.mode] - 'default' | 'blog'
  */
-export async function runTerminalJsonAgent({ prompt, schema, preferredBackend, mode = 'default', skills = [] }) {
+export async function runTerminalJsonAgent({ prompt, schema, preferredBackend, mode = 'default', skills = [], excludedBackends = [] }) {
   const rawPriority = Array.isArray(preferredBackend)
     ? preferredBackend
     : [preferredBackend || 'auto'];
 
-  const priority = expandPriority(rawPriority);
+  const priority = expandPriority(rawPriority, excludedBackends);
   const errors = [];
   const attempts = [];
 
