@@ -768,7 +768,8 @@ discordInternalRoute.get('/approved-jobs/:id/slot-request/:slotIdx', async (c) =
   const slotIdx = Number.parseInt(c.req.param('slotIdx'), 10);
   if (!Number.isInteger(slotIdx) || slotIdx < 0) return c.json({ error: 'Invalid slot index' }, 400);
   try {
-    const cached = Array.isArray(args.prepared_slots)
+    const refresh = c.req.query('refresh') === '1';
+    const cached = !refresh && Array.isArray(args.prepared_slots)
       ? args.prepared_slots.find((slot) => slot.slot_idx === slotIdx)
       : null;
     if (cached) {

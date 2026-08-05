@@ -427,7 +427,8 @@ async function processSlot(summary, args, total, backend) {
   setHeartbeatMessage(`Terminal AI heartbeat — working on slot ${displayPosition}/${total}: ${prefix}`);
   let slotReq;
   try {
-    slotReq = await get(`/internal/discord/approved-jobs/${jobId}/slot-request/${summary.slot_idx}`);
+    const refreshQuery = summary.retry_feedback ? '?refresh=1' : '';
+    slotReq = await get(`/internal/discord/approved-jobs/${jobId}/slot-request/${summary.slot_idx}${refreshQuery}`);
   } catch (err) {
     const message = `Slot ${displayPosition} prompt build failed: ${err instanceof Error ? err.message : String(err)}`;
     await postBestEffort(`/internal/discord/approved-jobs/${jobId}/error`, {
