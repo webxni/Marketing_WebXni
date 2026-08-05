@@ -91,6 +91,7 @@ import {
   parsePlatforms,
   resolvePlatformSelection,
   withImplicitBlogPlatform,
+  withImplicitGbpPlatform,
 } from '../modules/platform-compatibility';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1130,7 +1131,15 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
   }
   if (!packageAllowsContentType(pkg, slot.content_type)) return null;
 
-  const clientPlatforms = withImplicitBlogPlatform(await getClientPlatforms(db, client.id), client);
+  const [storedClientPlatforms, gbpLocations] = await Promise.all([
+    getClientPlatforms(db, client.id),
+    getClientGbpLocations(db, client.id),
+  ]);
+  const clientPlatforms = withImplicitGbpPlatform(
+    withImplicitBlogPlatform(storedClientPlatforms, client),
+    gbpLocations,
+    client.id,
+  );
   let packagePlatforms: string[] = [];
   try { packagePlatforms = JSON.parse(pkg.platforms_included); } catch { /* */ }
   const platformSelection = resolvePlatformSelection({
@@ -1162,21 +1171,20 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
   );
   if (existingPost?.status === 'posted') return null;
 
-  const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows, keywordRows, gbpLocations, topicHistory] = await Promise.all([
+  const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows, keywordRows, topicHistory] = await Promise.all([
     db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then((row) => row ?? null),
     db.prepare('SELECT sentiment, message AS note FROM client_feedback WHERE client_id = ? ORDER BY created_at DESC LIMIT 10').bind(client.id).all<FeedbackRow>(),
     db.prepare(`SELECT title, master_caption, content_type FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`).bind(client.id).all<{title:string|null;master_caption:string|null;content_type:string|null}>(),
     db.prepare('SELECT city FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 8').bind(client.id).all<{city:string}>(),
     db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC LIMIT 12').bind(client.id).all<{name:string}>(),
     getClientKeywords(db, client.id),
-    getClientGbpLocations(db, client.id),
     getClientGenerationTopicHistory(db, client.id, 24),
   ]);
 
   const recentTitles  = recRows.results.map((row) => row.title ?? row.master_caption?.slice(0, 80) ?? '').filter(Boolean) as string[];
   const serviceAreas  = svcAreaRows.results.map((row) => row.city);
   const serviceNames  = svcNameRows.results.map((row) => row.name);
-  if (existingPost && run.overwrite_existing !== 1 && isPostContentComplete(existingPost, gbpLocations)) return null;
+  if (existingPost && run.overwrite_existing !== 1 && isPostContentComplete(existingPost, gbpLocations, platforms)) return null;
   const monthlyPlan = await getClientMonthlyContentPlan(db, client.id, planMonth(slot.date));
   const intel = applyMonthlyPlanToIntelligence(intelBase, monthlyPlan);
   let targetKeywords = keywordPoolFromContext(intel, keywordRows, serviceNames, serviceAreas);
@@ -1463,7 +1471,15 @@ export async function saveGeneratedSlotResult(
   const client = await db.prepare('SELECT * FROM clients WHERE id = ?').bind(slot.client_id).first<ClientRow>();
   if (!client) throw new Error(`Client not found: ${slot.client_slug}`);
 
-  const clientPlatforms = withImplicitBlogPlatform(await getClientPlatforms(db, client.id), client);
+  const [storedClientPlatforms, gbpLocations] = await Promise.all([
+    getClientPlatforms(db, client.id),
+    getClientGbpLocations(db, client.id),
+  ]);
+  const clientPlatforms = withImplicitGbpPlatform(
+    withImplicitBlogPlatform(storedClientPlatforms, client),
+    gbpLocations,
+    client.id,
+  );
   let pkg = DEFAULT_PACKAGE;
   if (client.package) {
     const row = await db.prepare('SELECT * FROM packages WHERE slug = ? AND active = 1').bind(client.package).first<PackageRow>();
@@ -1566,6 +1582,10 @@ export async function saveGeneratedSlotResult(
     contentType: normalizeContentType(slot.content_type),
     platforms,
     contentIntent: slot.content_intent,
+    gbpLocations: gbpLocations
+      .filter((location) => location.paused !== 1)
+      .map((location) => ({ label: location.label, captionField: getGbpCaptionField(location) }))
+      .filter((location) => Boolean(location.captionField)),
     topicResearch: validationTopicResearch,
     serviceAreas: validationServiceAreas,
     serviceNames: validationServiceNames,
@@ -1768,7 +1788,15 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         if (p) pkg = p;
       }
 
-      const clientPlatforms = withImplicitBlogPlatform(await getClientPlatforms(db, client.id), client);
+      const [storedClientPlatforms, gbpLocations] = await Promise.all([
+        getClientPlatforms(db, client.id),
+        getClientGbpLocations(db, client.id),
+      ]);
+      const clientPlatforms = withImplicitGbpPlatform(
+        withImplicitBlogPlatform(storedClientPlatforms, client),
+        gbpLocations,
+        client.id,
+      );
       let packagePlatforms: string[] = [];
       try { packagePlatforms = JSON.parse(pkg.platforms_included); } catch { /* */ }
       const platformSelection = resolvePlatformSelection({
@@ -1790,7 +1818,6 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         slot.date,
         normalizeContentType(slot.content_type),
       );
-      const gbpLocations = await getClientGbpLocations(db, client.id);
       const overwriteExisting = run.overwrite_existing === 1;
 
       if (existingPost?.status === 'posted') {
@@ -1798,7 +1825,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         return await finishSlot(slot_idx + 1, 'skipped', clientName, slots);
       }
 
-      if (existingPost && !overwriteExisting && isPostContentComplete(existingPost, gbpLocations)) {
+      if (existingPost && !overwriteExisting && isPostContentComplete(existingPost, gbpLocations, platforms)) {
         await log('INFO', `${postKey}: existing post ${existingPost.id} already complete — skipping`);
         return await finishSlot(slot_idx + 1, 'skipped', clientName, slots);
       }

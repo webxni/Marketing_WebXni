@@ -172,6 +172,41 @@ export function withImplicitBlogPlatform<T extends Pick<ClientRow, 'id' | 'wp_ba
   ];
 }
 
+export function withImplicitGbpPlatform(
+  clientPlatforms: ClientPlatformRow[],
+  gbpLocations: ClientGbpLocationRow[],
+  clientId: string,
+): ClientPlatformRow[] {
+  if (!gbpLocations.some((location) => location.paused !== 1)) return clientPlatforms;
+  if (clientPlatforms.some((platform) => normalizePlatform(platform.platform) === 'google_business')) return clientPlatforms;
+
+  const primaryLocation = gbpLocations.find((location) => location.paused !== 1)!;
+  return [
+    ...clientPlatforms,
+    {
+      id: `implicit_google_business_${clientId}`,
+      client_id: clientId,
+      platform: 'google_business',
+      account_id: null,
+      username: primaryLocation.upload_post_profile,
+      page_id: null,
+      upload_post_board_id: null,
+      upload_post_location_id: primaryLocation.location_id,
+      privacy_level: null,
+      privacy_status: null,
+      profile_url: null,
+      profile_username: primaryLocation.upload_post_profile,
+      connection_status: 'connected',
+      yt_channel_id: null,
+      linkedin_urn: null,
+      paused: 0,
+      paused_reason: null,
+      paused_since: null,
+      notes: 'Implicit google_business platform from active GBP locations',
+    },
+  ];
+}
+
 export function resolvePlatformSelection(input: {
   contentType: string | null | undefined;
   requestedPlatforms?: Array<string | null | undefined>;
@@ -275,9 +310,13 @@ export function getGbpPostedKey(location: Pick<ClientGbpLocationRow, 'label' | '
   return byKey[normalized] ?? `gbp_${normalizePlatform(location.label)}`;
 }
 
-export function isPostContentComplete(post: PostRow, clientGbpLocations: ClientGbpLocationRow[] = []): boolean {
+export function isPostContentComplete(
+  post: PostRow,
+  clientGbpLocations: ClientGbpLocationRow[] = [],
+  expectedPlatforms?: string[],
+): boolean {
   const contentType = normalizeContentType(post.content_type, post.asset_type);
-  const selectedPlatforms = parsePlatforms(post.platforms);
+  const selectedPlatforms = expectedPlatforms ? uniquePlatforms(expectedPlatforms) : parsePlatforms(post.platforms);
   if (!String(post.master_caption ?? '').trim()) return false;
 
   if (contentType === 'blog') {
