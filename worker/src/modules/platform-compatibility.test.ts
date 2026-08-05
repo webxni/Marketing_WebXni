@@ -50,6 +50,45 @@ describe('implicit Google Business platform', () => {
     expect(platforms).toEqual([]);
   });
 
+  it('adds active location-backed Google Business when the legacy platform row failed', () => {
+    const failedPlatform = {
+      id: 'platform-1',
+      client_id: 'client-1',
+      platform: 'google_business',
+      account_id: null,
+      username: null,
+      page_id: null,
+      upload_post_board_id: null,
+      upload_post_location_id: null,
+      privacy_level: null,
+      privacy_status: null,
+      profile_url: null,
+      profile_username: null,
+      connection_status: 'failed',
+      yt_channel_id: null,
+      linkedin_urn: null,
+      paused: 0,
+      paused_reason: null,
+      paused_since: null,
+      notes: null,
+    };
+    const platforms = withImplicitGbpPlatform([failedPlatform], [{
+      id: 'loc-1',
+      client_id: 'client-1',
+      label: 'LA',
+      location_id: 'locations/123',
+      upload_post_profile: 'client-la',
+      caption_field: 'cap_gbp_la',
+      posted_field: null,
+      paused: 0,
+      paused_reason: null,
+      sort_order: 0,
+    }], 'client-1');
+
+    expect(platforms.filter((platform) => platform.platform === 'google_business')).toHaveLength(2);
+    expect(platforms.some((platform) => platform.platform === 'google_business' && platform.connection_status === 'connected')).toBe(true);
+  });
+
   it('treats an existing image as incomplete when its expected GBP captions are missing', () => {
     const locations = ['LA', 'WA'].map((label, index) => ({
       id: `loc-${index}`,

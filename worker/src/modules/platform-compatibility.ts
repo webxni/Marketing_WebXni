@@ -181,7 +181,11 @@ export function withImplicitGbpPlatform(
   clientId: string,
 ): ClientPlatformRow[] {
   if (!gbpLocations.some((location) => location.paused !== 1)) return clientPlatforms;
-  if (clientPlatforms.some((platform) => normalizePlatform(platform.platform) === 'google_business')) return clientPlatforms;
+  if (clientPlatforms.some((platform) => (
+    normalizePlatform(platform.platform) === 'google_business'
+    && platform.paused !== 1
+    && platform.connection_status !== 'failed'
+  ))) return clientPlatforms;
 
   const primaryLocation = gbpLocations.find((location) => location.paused !== 1)!;
   return [
