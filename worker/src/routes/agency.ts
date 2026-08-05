@@ -688,13 +688,20 @@ agencyInternalRoutes.get('/review-queue', async (c) => {
   const limit = Math.min(Math.max(Number(c.req.query('limit') ?? '8'), 1), 25);
   const candidates = await listAgencyReviewQueueCandidates(c.env.DB, 150);
   const items: Array<Record<string, unknown>> = [];
+  const clientBriefs = new Map<string, Awaited<ReturnType<typeof getAgencyClientContentBrief>>>();
   for (const post of candidates) {
     const contentHash = await buildPostContentHash(post);
     if (post.latest_review_hash === contentHash) continue;
+    let clientBrief = clientBriefs.get(post.client_id);
+    if (!clientBrief) {
+      clientBrief = await getAgencyClientContentBrief(c.env.DB, post.client_id);
+      clientBriefs.set(post.client_id, clientBrief);
+    }
     items.push({
       id: post.id,
       client_slug: post.client_slug,
       client_name: post.client_name,
+      content_brief: clientBrief.brief,
       package: post.package,
       package_violation: post.package_violation,
       content_type: post.content_type,
@@ -720,7 +727,7 @@ agencyInternalRoutes.get('/review-queue', async (c) => {
       video_script: post.video_script,
       ai_image_prompt: post.ai_image_prompt,
       ai_video_prompt: post.ai_video_prompt,
-      blog_content: post.blog_content?.slice(0, 4000) ?? null,
+      blog_content: post.blog_content?.slice(0, 16000) ?? null,
       content_hash: contentHash,
       post_updated_at: post.updated_at,
     });

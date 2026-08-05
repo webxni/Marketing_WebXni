@@ -1428,6 +1428,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
           title: `${item.content_type} review: ${item.title || item.client_name}`,
           status: 'pending_approval',
           post_id: item.id,
+          content_brief: item.content_brief,
           content: item,
         };
         const result = await runStructuredAgent('editorialReview', agentSlug, backend, target, snapshot, taskInput);

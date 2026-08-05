@@ -51,12 +51,12 @@ export const PLATFORM_RULES: Record<SupportedContentType, PlatformCompatibilityR
     excluded: ['tiktok', 'youtube', 'website_blog'],
   },
   reel: {
-    allowed: ['instagram', 'facebook', 'tiktok', 'youtube', 'threads', 'google_business'],
-    excluded: ['website_blog', 'pinterest', 'linkedin', 'x', 'bluesky'],
+    allowed: ['instagram', 'facebook', 'tiktok', 'youtube', 'threads'],
+    excluded: ['website_blog', 'pinterest', 'linkedin', 'x', 'bluesky', 'google_business'],
   },
   video: {
-    allowed: ['facebook', 'instagram', 'youtube', 'linkedin', 'x', 'google_business'],
-    excluded: ['website_blog', 'tiktok', 'pinterest', 'bluesky', 'threads'],
+    allowed: ['facebook', 'instagram', 'youtube', 'linkedin', 'x'],
+    excluded: ['website_blog', 'tiktok', 'pinterest', 'bluesky', 'threads', 'google_business'],
   },
   blog: {
     allowed: ['website_blog'],

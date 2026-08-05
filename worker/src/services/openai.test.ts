@@ -67,6 +67,22 @@ describe('generated caption normalization', () => {
     expect(schema.required).toContain('target_locality');
   });
 
+  it('uses the documented horizontal format for multi-platform images', () => {
+    expect(buildGenerationRequest(socialContext).prompt).toContain('1200x628');
+  });
+
+  it('rejects a designer prompt with the wrong asset dimensions', () => {
+    const quality = validateGeneratedContent({
+      title: 'How Rekeying Changes Access After a Hollywood Move',
+      master_caption: 'A residential locksmith Hollywood homeowners call can rekey a home so old keys no longer control access.',
+      target_keyword: 'residential locksmith Hollywood',
+      target_locality: 'Hollywood',
+      ai_image_prompt: 'Crear una imagen cuadrada de 1080x1080 para redes sociales.',
+    }, socialContext);
+    expect(quality.passed).toBe(false);
+    expect(quality.warnings).toContain('designer prompt must specify 1200x628 for image');
+  });
+
   it('rejects recycled titles and missing exact SEO metadata', () => {
     const quality = validateGeneratedContent({
       title: 'Before You Hire a Residential Locksmith',

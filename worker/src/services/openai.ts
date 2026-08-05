@@ -443,18 +443,20 @@ function buildSocialPrompt(ctx: GenerationContext): string {
   const isVideo = contentType === 'video' || contentType === 'reel';
   const isYoutube = platforms.includes('youtube');
   const brandColors = getBrandColors(ctx);
+  const instagramOnly = platforms.length === 1 && platforms[0] === 'instagram';
+  const pinterestOnly = platforms.length === 1 && platforms[0] === 'pinterest';
 
   let assetSpec = '';
   if (contentType === 'reel') {
     assetSpec = 'Tipo de archivo: VIDEO VERTICAL. Dimensiones: 1080x1920 (9:16).';
   } else if (contentType === 'video') {
     assetSpec = 'Tipo de archivo: VIDEO HORIZONTAL. Dimensiones: 1920x1080 (16:9).';
-  } else if (platforms.includes('pinterest') && !platforms.includes('instagram') && !platforms.includes('facebook')) {
+  } else if (pinterestOnly) {
     assetSpec = 'Tipo de archivo: IMAGEN VERTICAL. Dimensiones: 1000x1500 (2:3).';
-  } else if (platforms.includes('instagram') && !platforms.includes('facebook') && !platforms.includes('pinterest')) {
+  } else if (instagramOnly) {
     assetSpec = 'Tipo de archivo: IMAGEN CUADRADA. Dimensiones: 1080x1080 (1:1).';
   } else {
-    assetSpec = 'Tipo de archivo: IMAGEN VERTICAL/CUADRADA. Dimensiones base: 1080x1350 (4:5).';
+    assetSpec = 'Tipo de archivo: IMAGEN HORIZONTAL. Dimensiones: 1200x628.';
   }
 
   const topicDirective = ctx.topicResearch
@@ -1307,6 +1309,25 @@ export function validateGeneratedContent(
     if (claimPattern.test(customerText) && !verifiedPattern.test(verifiedClaims)) {
       warnings.push(`unsupported claim: ${label}`);
     }
+  }
+
+  const deliveryPlatforms = ctx.platforms.filter((platform) => platform !== 'website_blog');
+  const normalizedDesignerPrompt = String(
+    ctx.contentType === 'reel' || ctx.contentType === 'video'
+      ? post.ai_video_prompt ?? ''
+      : post.ai_image_prompt ?? '',
+  ).toLowerCase().replace(/[\s×]/g, '');
+  const expectedDimensions = ctx.contentType === 'reel'
+    ? '1080x1920'
+    : ctx.contentType === 'video'
+      ? '1920x1080'
+      : deliveryPlatforms.length === 1 && deliveryPlatforms[0] === 'instagram'
+        ? '1080x1080'
+        : deliveryPlatforms.length === 1 && deliveryPlatforms[0] === 'pinterest'
+          ? '1000x1500'
+          : '1200x628';
+  if (ctx.contentType !== 'blog' && !normalizedDesignerPrompt.includes(expectedDimensions)) {
+    warnings.push(`designer prompt must specify ${expectedDimensions} for ${ctx.contentType}`);
   }
 
   const titleWords = new Set(
