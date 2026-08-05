@@ -58,6 +58,7 @@ import {
   reclassifyActiveClientKeywords,
   type GenerationProgress,
   buildTopicFingerprint,
+  createGenerationRun,
 } from '../db/queries';
 import {
   buildGenerationRequest,
@@ -1365,6 +1366,84 @@ export async function prebuildApprovedTerminalSlotRequests(
   }
 
   return prepared;
+}
+
+export interface ApprovedTerminalGenerationInput {
+  client_slugs: string[];
+  period_start: string;
+  period_end: string;
+  triggered_by: string;
+  publish_time?: string | null;
+  overwrite_existing?: boolean;
+  requested_in: string;
+}
+
+export async function queueApprovedTerminalGeneration(
+  env: Env,
+  input: ApprovedTerminalGenerationInput,
+): Promise<{ run_id: string; job_id: string; total_slots: number }> {
+  const publishTime = input.publish_time ?? null;
+  const run = await createGenerationRun(env.DB, {
+    triggered_by: input.triggered_by,
+    date_range: `${input.period_start}:${input.period_end}`,
+    client_filter: input.client_slugs.length > 0 ? JSON.stringify(input.client_slugs) : null,
+    overwrite_existing: input.overwrite_existing === true,
+  });
+
+  try {
+    const params: GenerationParams = {
+      run_id: run.id,
+      client_slugs: input.client_slugs,
+      period_start: input.period_start,
+      period_end: input.period_end,
+      triggered_by: input.triggered_by,
+      publish_time: publishTime,
+      overwrite_existing: input.overwrite_existing === true,
+      high_quality: true,
+      provider: 'terminal',
+    };
+    const { slots, clients } = await prepareGenerationPlan(env, params);
+    await storeGenerationPlan(env.DB, run.id, slots, publishTime);
+    await updateGenerationProgress(env.DB, run.id, {
+      current_client: clients[0]?.canonical_name ?? '',
+      current_post: slots[0] ? `${slots[0].date} / ${slots[0].content_type}` : '',
+      completed: 0,
+      total_estimated: slots.length,
+      errors: 0,
+      clients_done: 0,
+      clients_total: clients.length,
+    });
+    await appendGenerationLog(
+      env.DB,
+      run.id,
+      'START',
+      `Terminal AI job queued from ${input.requested_in} - ${input.period_start} to ${input.period_end}`,
+    );
+    const preparedSlots = await prebuildApprovedTerminalSlotRequests(env, run.id);
+    const job = await createApprovedCommandJob(env.DB, {
+      generation_run_id: run.id,
+      command_name: 'weekly_content_terminal',
+      provider: 'terminal',
+      requested_by: input.triggered_by,
+      args_json: JSON.stringify({
+        run_id: run.id,
+        client_slugs: input.client_slugs,
+        period_start: input.period_start,
+        period_end: input.period_end,
+        content_only: true,
+        generate_images: false,
+        provider: 'terminal',
+        requested_in: input.requested_in,
+        prepared_slots: preparedSlots,
+      }),
+    });
+    return { run_id: run.id, job_id: job.id, total_slots: slots.length };
+  } catch (err) {
+    const message = `Terminal generation queue failed: ${str(err)}`;
+    await appendGenerationError(env.DB, run.id, message).catch(() => undefined);
+    await finalizeGenerationRun(env.DB, run.id, 'failed', 0, message).catch(() => undefined);
+    throw err;
+  }
 }
 
 export async function saveGeneratedSlotResult(

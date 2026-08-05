@@ -94,7 +94,7 @@ app.all('/*', async (c) => {
 import { runPosting } from './loader/posting-run';
 import { runRecurringGbp } from './loader/recurring-gbp-run';
 import { runContentRequests } from './loader/content-request-run';
-import { runAgencyScheduler, runAgentStaleSweep, enqueueEditorialSweep } from './loader/agency-scheduler';
+import { runAgencyScheduler, runAgentStaleSweep, enqueueEditorialSweep, enqueueWeeklyPackageGeneration } from './loader/agency-scheduler';
 import { runFetchUrls } from './routes/run';
 import { notifyPostingComplete, discordDM, discordSend, DISCORD_COLORS } from './services/discord';
 import { runPlatformHealthCheck, buildHealthDiscordMessage } from './modules/platform-health';
@@ -120,8 +120,19 @@ export default {
 
     async function runSchedulerWithAlert() {
       try {
+        let weeklyGeneration: Awaited<ReturnType<typeof enqueueWeeklyPackageGeneration>> | null = null;
+        if (event.cron === '0 7 * * SUN') {
+          try {
+            weeklyGeneration = await enqueueWeeklyPackageGeneration(env, new Date(event.scheduledTime));
+          } catch (err) {
+            console.error('Weekly package generation cron error:', err);
+          }
+        }
         const stats = await runAgencyScheduler(env);
-        if (stats.queued > 0 || stats.stale_marked.length > 0) {
+        if (weeklyGeneration?.queued) {
+          console.log(`Weekly package generation queued: run=${weeklyGeneration.run_id} slots=${weeklyGeneration.total_slots}`);
+        }
+        if (stats.queued > 0 || stats.stale_marked.length > 0 || weeklyGeneration?.queued) {
           console.log(`Agency scheduler: queued=${stats.queued} skipped=${stats.skipped} stale=${stats.stale_marked.length}`);
         }
         if (stats.stale_marked.length > 0 && env.DISCORD_BOT_TOKEN && env.DISCORD_CHANNEL_ID) {
@@ -131,10 +142,13 @@ export default {
             embeds: [{ title: '⚠️ Agency Heartbeat Alert', description: `${stats.stale_marked.length} agent(s) marked stale:\n${staleList}`, color: 0xf59e0b }],
           }).catch(() => { /* non-critical */ });
         }
-        if (stats.queued > 0 && env.DISCORD_BOT_TOKEN && env.DISCORD_CHANNEL_ID) {
+        if ((stats.queued > 0 || weeklyGeneration?.queued) && env.DISCORD_BOT_TOKEN && env.DISCORD_CHANNEL_ID) {
+          const generationLine = weeklyGeneration?.queued
+            ? `\nWeekly package run: \`${weeklyGeneration.run_id}\` (${weeklyGeneration.total_slots} slots)`
+            : '';
           await discordSend({
             channelId: env.DISCORD_CHANNEL_ID, token: env.DISCORD_BOT_TOKEN,
-            embeds: [{ title: '🤖 Agency Jobs Queued', description: `${stats.queued} agent job(s) queued from scheduler.\nSchedule window: \`${event.cron}\``, color: 0x6366f1 }],
+            embeds: [{ title: '🤖 Agency Jobs Queued', description: `${stats.queued} specialist job(s) queued from scheduler.${generationLine}\nSchedule window: \`${event.cron}\``, color: 0x6366f1 }],
           }).catch(() => { /* non-critical */ });
         }
       } catch (err) {
