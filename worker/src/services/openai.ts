@@ -546,7 +546,7 @@ function buildSharedContext(ctx: GenerationContext, mode: 'social' | 'blog'): st
   block += '\n- Stay inside the service list, service areas, and required keyword pool. Do not introduce unrelated industries, cities, services, or themes.';
   block += '\n- Write naturally. Avoid filler openers and generic marketing language.';
   block += '\n- Use concrete evidence and service-specific calls to action. Do not use canned authority claims, generic urgency, slogans, or recycled marketing cliches.';
-  if (lang !== 'en') block += `\n- Write all customer-facing copy in ${lang}.`;
+  block += `\n- Write all customer-facing copy in ${lang === 'en' ? 'English' : lang}. Only designer fields (ai_image_prompt and ai_video_prompt) are written in Spanish.`;
 
   if (recentTitles.length > 0) {
     const limit = mode === 'blog' ? 8 : 12;
@@ -615,8 +615,8 @@ Return ONLY JSON matching the requested schema. Keep captions concise and platfo
   if (platforms.includes('linkedin'))  prompt += '\n- "cap_linkedin": LinkedIn caption, 180-420 chars, professional and insight-driven';
   if (platforms.includes('x'))         prompt += '\n- "cap_x": X post, max 280 chars';
   if (platforms.includes('threads'))   prompt += '\n- "cap_threads": Threads caption, 100-220 chars';
-  if (platforms.includes('tiktok'))    prompt += '\n- "cap_tiktok": TikTok caption, 120-220 chars plus 5-8 hashtags';
-  if (platforms.includes('pinterest')) prompt += '\n- "cap_pinterest": Pinterest description, 100-200 chars plus 4-6 hashtags';
+  if (platforms.includes('tiktok'))    prompt += '\n- "cap_tiktok": complete TikTok caption, max 90 characters including hashtags; never rely on truncation';
+  if (platforms.includes('pinterest')) prompt += '\n- "cap_pinterest": complete Pinterest title, max 100 characters including hashtags; never rely on truncation';
   if (platforms.includes('bluesky'))   prompt += '\n- "cap_bluesky": Bluesky caption, max 280 chars';
   if (platforms.includes('google_business')) {
     let gbpInstruction = '\n- "cap_google_business": Google Business caption, 90-220 chars, factual, local, no hashtags';
@@ -636,7 +636,7 @@ Return ONLY JSON matching the requested schema. Keep captions concise and platfo
     prompt += '\n- "youtube_title": YouTube title, 60-70 chars';
     prompt += '\n- "youtube_description": YouTube description, 180-320 chars';
   }
-  if (isVideo) prompt += '\n- "video_script": 30-60 second script with hook, 3 beats, CTA';
+  if (isVideo) prompt += '\n- "video_script": 30-60 second script with hook, 3 beats, CTA. Its final timestamp must not exceed the duration stated in ai_video_prompt.';
 
   prompt += `\n
 QUALITY BAR FOR THIS SOCIAL POST:
@@ -846,30 +846,30 @@ function buildResponseSchema(ctx: GenerationContext): GenerationRequestSchema {
       required.push('cap_linkedin');
     }
     if (platforms.includes('x')) {
-      properties.cap_x = { type: 'string' };
+      properties.cap_x = { type: 'string', maxLength: 280 };
       required.push('cap_x');
     }
     if (platforms.includes('threads')) {
-      properties.cap_threads = { type: 'string' };
+      properties.cap_threads = { type: 'string', maxLength: 500 };
       required.push('cap_threads');
     }
     if (platforms.includes('pinterest')) {
-      properties.cap_pinterest = { type: 'string' };
+      properties.cap_pinterest = { type: 'string', maxLength: 100 };
       required.push('cap_pinterest');
     }
     if (platforms.includes('bluesky')) {
-      properties.cap_bluesky = { type: 'string' };
+      properties.cap_bluesky = { type: 'string', maxLength: 300 };
       required.push('cap_bluesky');
     }
   } else {
     if (platforms.includes('facebook')) properties.cap_facebook = { type: 'string' };
     if (platforms.includes('instagram')) properties.cap_instagram = { type: 'string' };
     if (platforms.includes('linkedin')) properties.cap_linkedin = { type: 'string' };
-    if (platforms.includes('x')) properties.cap_x = { type: 'string' };
-    if (platforms.includes('threads')) properties.cap_threads = { type: 'string' };
-    if (platforms.includes('tiktok')) properties.cap_tiktok = { type: 'string' };
-    if (platforms.includes('pinterest')) properties.cap_pinterest = { type: 'string' };
-    if (platforms.includes('bluesky')) properties.cap_bluesky = { type: 'string' };
+    if (platforms.includes('x')) properties.cap_x = { type: 'string', maxLength: 280 };
+    if (platforms.includes('threads')) properties.cap_threads = { type: 'string', maxLength: 500 };
+    if (platforms.includes('tiktok')) properties.cap_tiktok = { type: 'string', maxLength: 90 };
+    if (platforms.includes('pinterest')) properties.cap_pinterest = { type: 'string', maxLength: 100 };
+    if (platforms.includes('bluesky')) properties.cap_bluesky = { type: 'string', maxLength: 300 };
     if (platforms.includes('google_business')) properties.cap_google_business = { type: 'string' };
     for (const location of ctx.gbpLocations ?? []) {
       if (location.captionField) properties[location.captionField] = { type: 'string' };
@@ -1331,6 +1331,29 @@ export function validateGeneratedContent(
   const targetKeywords = (ctx.targetKeywords ?? [])
     .map((keyword) => keyword.trim())
     .filter(Boolean);
+
+  const captionLimits: Array<[keyof GeneratedPost, number]> = [
+    ['cap_tiktok', 90],
+    ['cap_x', 280],
+    ['cap_threads', 500],
+    ['cap_pinterest', 100],
+    ['cap_bluesky', 300],
+  ];
+  for (const [field, maxLength] of captionLimits) {
+    const value = post[field];
+    if (typeof value === 'string' && value.length > maxLength) {
+      warnings.push(`${field} exceeds ${maxLength} characters`);
+    }
+  }
+
+  if ((ctx.contentType === 'reel' || ctx.contentType === 'video') && post.ai_video_prompt && post.video_script) {
+    const durationMatch = post.ai_video_prompt.match(/duraci[oó]n\s*:?\s*(\d{1,3})\s*segundos?/i);
+    const timestamps = [...post.video_script.matchAll(/\b(\d{1,3})(?:\s*[-–]\s*(\d{1,3}))?\s*s\b/gi)];
+    const finalScriptSecond = timestamps.reduce((max, match) => Math.max(max, Number(match[2] ?? match[1])), 0);
+    if (durationMatch && finalScriptSecond > Number(durationMatch[1])) {
+      warnings.push(`video script ends at ${finalScriptSecond}s but designer prompt duration is ${durationMatch[1]}s`);
+    }
+  }
 
   const BANNED = ['delve', 'tapestry', 'vibrant', 'unleash', 'elevate', 'embark', 'transformative', 'paramount', 'journey'];
   for (const w of BANNED) {

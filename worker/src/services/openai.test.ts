@@ -80,9 +80,40 @@ describe('generated caption normalization', () => {
   it('uses the documented horizontal format for multi-platform images', () => {
     const prompt = buildGenerationRequest(socialContext).prompt;
     expect(prompt).toContain('1200x628');
+    expect(prompt).toContain('customer-facing copy in English');
     expect(prompt).toContain('service-specific calls to action');
     expect(prompt).not.toContain('immediate help');
     expect(prompt).toContain('universal procedure');
+  });
+
+  it('keeps generated captions within delivery limits', () => {
+    const context: GenerationContext = {
+      ...socialContext,
+      contentType: 'reel',
+      platforms: ['tiktok', 'pinterest'],
+    };
+    const request = buildGenerationRequest(context);
+    const schema = request.schema.schema as { properties: Record<string, { maxLength?: number }> };
+
+    expect(request.prompt).toContain('TikTok caption, max 90 characters');
+    expect(request.prompt).toContain('Pinterest title, max 100 characters');
+    expect(schema.properties.cap_tiktok.maxLength).toBe(90);
+    expect(schema.properties.cap_pinterest.maxLength).toBe(100);
+
+    const quality = validateGeneratedContent({
+      title: 'Rekeying Decisions for a Hollywood Move',
+      master_caption: 'Residential rekeying changes which keys control a Hollywood home after a move.',
+      target_keyword: 'residential locksmith Hollywood',
+      target_locality: 'Hollywood',
+      cap_tiktok: 'x'.repeat(91),
+      cap_pinterest: 'x'.repeat(101),
+      ai_video_prompt: 'FORMATO: 9:16 vertical, 1080x1920. DURACIÓN: 30 segundos.',
+      video_script: 'HOOK (0-5s). CTA (25-35s).',
+    }, context);
+
+    expect(quality.warnings).toContain('cap_tiktok exceeds 90 characters');
+    expect(quality.warnings).toContain('cap_pinterest exceeds 100 characters');
+    expect(quality.warnings).toContain('video script ends at 35s but designer prompt duration is 30s');
   });
 
   it('places client restrictions in the generation brief', () => {
