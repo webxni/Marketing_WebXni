@@ -1004,7 +1004,7 @@ export async function finalizeGenerationRun(
   await db
     .prepare(`UPDATE generation_runs
               SET status = ?, posts_created = ?, error_log = ?, completed_at = ?, last_activity_at = ?
-              WHERE id = ?`)
+              WHERE id = ? AND status != 'cancelled'`)
     .bind(status, postsCreated, errorLog, now, now, id)
     .run();
 }
