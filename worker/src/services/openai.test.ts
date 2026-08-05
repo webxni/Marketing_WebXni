@@ -82,6 +82,15 @@ describe('generated caption normalization', () => {
     expect(prompt).toContain('universal procedure');
   });
 
+  it('places client restrictions in the generation brief', () => {
+    const prompt = buildGenerationRequest({
+      ...socialContext,
+      restrictions: ['NEVER mention car key fob', 'car key programming under any circumstance ever'],
+    }).prompt;
+    expect(prompt).toContain('CLIENT RESTRICTIONS (mandatory)');
+    expect(prompt).toContain('NEVER mention car key fob');
+  });
+
   it('does not request or render a designer asset for blog slots', () => {
     const request = buildGenerationRequest(blogContext);
     const schema = request.schema.schema as { properties: Record<string, unknown> };
