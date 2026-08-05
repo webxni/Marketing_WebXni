@@ -1230,7 +1230,7 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
   const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows, keywordRows, topicHistory, restrictions] = await Promise.all([
     db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then((row) => row ?? null),
     db.prepare('SELECT sentiment, message AS note FROM client_feedback WHERE client_id = ? ORDER BY created_at DESC LIMIT 10').bind(client.id).all<FeedbackRow>(),
-    db.prepare(`SELECT title, master_caption, content_type FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`).bind(client.id).all<{title:string|null;master_caption:string|null;content_type:string|null}>(),
+    db.prepare(`SELECT id, title, master_caption, content_type FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`).bind(client.id).all<{id:string;title:string|null;master_caption:string|null;content_type:string|null}>(),
     db.prepare('SELECT city FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 8').bind(client.id).all<{city:string}>(),
     db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC LIMIT 12').bind(client.id).all<{name:string}>(),
     getClientKeywords(db, client.id),
@@ -1238,7 +1238,8 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
     getClientRestrictions(db, client.id),
   ]);
 
-  const recentTitles  = recRows.results.map((row) => row.title ?? row.master_caption?.slice(0, 80) ?? '').filter(Boolean) as string[];
+  const recentRows = recRows.results.filter((row) => row.id !== existingPost?.id);
+  const recentTitles  = recentRows.map((row) => row.title ?? row.master_caption?.slice(0, 80) ?? '').filter(Boolean) as string[];
   const serviceAreas  = svcAreaRows.results.map((row) => row.city);
   const serviceNames  = svcNameRows.results
     .map((row) => row.name)
@@ -1247,7 +1248,7 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
   const monthlyPlan = await getClientMonthlyContentPlan(db, client.id, planMonth(slot.date));
   const intel = applyMonthlyPlanToIntelligence(intelBase, monthlyPlan);
   let targetKeywords = keywordPoolFromContext(intel, keywordRows, serviceNames, serviceAreas, restrictions);
-  const recentFormats = recRows.results
+  const recentFormats = recentRows
     .map((row) => detectFormatFromTitle(row.title ?? row.master_caption ?? ''))
     .filter((format): format is ContentFormat => format !== null);
 
@@ -1622,9 +1623,9 @@ export async function saveGeneratedSlotResult(
   }
 
   const [validationRecentRows, validationAreaRows, validationServiceRows, validationKeywordRows, validationIntel, validationRestrictions] = await Promise.all([
-    db.prepare(`SELECT title, master_caption FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`)
+    db.prepare(`SELECT id, title, master_caption FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`)
       .bind(client.id)
-      .all<{ title: string | null; master_caption: string | null }>(),
+      .all<{ id: string; title: string | null; master_caption: string | null }>(),
     db.prepare('SELECT city FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 8')
       .bind(client.id)
       .all<{ city: string }>(),
@@ -1663,7 +1664,10 @@ export async function saveGeneratedSlotResult(
       wp_template_key: client.wp_template_key ?? client.wp_template ?? null,
     },
     intelligence: validationIntel,
-    recentTitles: validationRecentRows.results.map((row) => row.title ?? row.master_caption?.slice(0, 80) ?? '').filter(Boolean) as string[],
+    recentTitles: validationRecentRows.results
+      .filter((row) => row.id !== existingPost?.id)
+      .map((row) => row.title ?? row.master_caption?.slice(0, 80) ?? '')
+      .filter(Boolean) as string[],
     feedback: [],
     publishDate: slot.date,
     contentType: normalizeContentType(slot.content_type),
@@ -1924,29 +1928,34 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
       const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows, topicHistory, restrictions] = await Promise.all([
         db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then(r => r ?? null),
         db.prepare('SELECT sentiment, message AS note FROM client_feedback WHERE client_id = ? ORDER BY created_at DESC LIMIT 10').bind(client.id).all<FeedbackRow>(),
-        db.prepare(`SELECT title, master_caption, content_type FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`).bind(client.id).all<{title:string|null;master_caption:string|null;content_type:string|null}>(),
+        db.prepare(`SELECT id, title, master_caption, content_type FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`).bind(client.id).all<{id:string;title:string|null;master_caption:string|null;content_type:string|null}>(),
         db.prepare('SELECT city FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 8').bind(client.id).all<{city:string}>(),
         db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC LIMIT 12').bind(client.id).all<{name:string}>(),
         getClientGenerationTopicHistory(db, client.id, 24),
         getClientRestrictions(db, client.id),
       ]);
 
-      const recentTitles  = recRows.results.map(r => r.title ?? r.master_caption?.slice(0, 80) ?? '').filter(Boolean) as string[];
+      const recentRows = recRows.results.filter((row) => row.id !== existingPost?.id);
+      const recentTitles  = recentRows.map(r => r.title ?? r.master_caption?.slice(0, 80) ?? '').filter(Boolean) as string[];
       const serviceAreas  = svcAreaRows.results.map(r => r.city);
       const serviceNames  = svcNameRows.results
         .map(r => r.name)
         .filter((service) => !findRestrictedContentPhrase(service, restrictions));
       const monthlyPlan = await getClientMonthlyContentPlan(db, client.id, planMonth(slot.date));
       const intel = applyMonthlyPlanToIntelligence(intelBase, monthlyPlan);
-      const recentFormats = recRows.results
+      const recentFormats = recentRows
         .map(r => detectFormatFromTitle(r.title ?? r.master_caption ?? ''))
         .filter((f): f is ContentFormat => f !== null);
 
       // Topic research — directs this post to a specific, non-repetitive, SEO-aware topic
-      let topicResearch: TopicResearch | null = null;
-      let topicSelection: SlotTopicSelection | null = null;
+      let topicSelection = existingPost && !overwriteExisting
+        ? existingPostTopicSelection(existingPost, slot.content_type)
+        : null;
+      let topicResearch: TopicResearch | null = topicSelection
+        ? getTopicResearchFromSelection(topicSelection, serviceAreas)
+        : null;
       const skippedTopicIds: string[] = [];
-      for (let attempt = 0; attempt < 12; attempt++) {
+      for (let attempt = 0; !topicSelection && attempt < 12; attempt++) {
         const candidate = await buildMonthlyTopicSelection(db, client.id, slot.date, slot.content_type, platforms, serviceAreas, skippedTopicIds);
         if (!candidate) break;
         const restrictedPhrase = findRestrictedContentPhrase(
