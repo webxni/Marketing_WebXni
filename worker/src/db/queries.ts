@@ -151,6 +151,7 @@ export interface ClientGenerationTopicHistoryRow {
   id: string;
   title: string;
   target_keyword: string | null;
+  topic_service_category: string | null;
   content_type: string | null;
   publish_date: string | null;
   platforms: string[];
@@ -235,7 +236,7 @@ export async function getClientGenerationTopicHistory(
 ): Promise<ClientGenerationTopicHistoryRow[]> {
   const rows = await db
     .prepare(
-      `SELECT id, title, target_keyword, content_type, publish_date, platforms
+      `SELECT id, title, target_keyword, topic_service_category, content_type, publish_date, platforms
        FROM posts
        WHERE client_id = ?
          AND status NOT IN ('cancelled')
@@ -249,6 +250,7 @@ export async function getClientGenerationTopicHistory(
       id: string;
       title: string | null;
       target_keyword: string | null;
+      topic_service_category: string | null;
       content_type: string | null;
       publish_date: string | null;
       platforms: string | null;
@@ -259,6 +261,7 @@ export async function getClientGenerationTopicHistory(
       id: string;
       title: string;
       target_keyword: string | null;
+      topic_service_category: string | null;
       content_type: string | null;
       publish_date: string | null;
       platforms: string | null;
@@ -277,6 +280,7 @@ export async function getClientGenerationTopicHistory(
         id: row.id,
         title: row.title.trim(),
         target_keyword: row.target_keyword,
+        topic_service_category: row.topic_service_category,
         content_type: row.content_type,
         publish_date: row.publish_date,
         platforms,

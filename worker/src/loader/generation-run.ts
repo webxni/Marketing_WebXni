@@ -211,6 +211,7 @@ function mapTopicHistoryForContext(rows: ClientGenerationTopicHistoryItem[]): Cl
   return rows.map((row) => ({
     title: row.title,
     target_keyword: row.target_keyword,
+    topic_service_category: row.topic_service_category,
     content_type: row.content_type,
     publish_date: row.publish_date,
     platforms: row.platforms,
@@ -673,6 +674,28 @@ export function weeklyUsedTargetKeywords(
     .filter(Boolean));
 }
 
+export function weeklyUsedServiceCategories(
+  topicHistory: ClientGenerationTopicHistoryItem[],
+  slotDate: string,
+): Set<string> {
+  const date = new Date(`${slotDate.slice(0, 10)}T12:00:00Z`);
+  const weekday = date.getUTCDay();
+  const mondayOffset = weekday === 0 ? 6 : weekday - 1;
+  const weekStart = new Date(date);
+  weekStart.setUTCDate(date.getUTCDate() - mondayOffset);
+  const weekEnd = new Date(weekStart);
+  weekEnd.setUTCDate(weekStart.getUTCDate() + 6);
+  const from = weekStart.toISOString().slice(0, 10);
+  const to = weekEnd.toISOString().slice(0, 10);
+  return new Set(topicHistory
+    .filter((item) => {
+      const publishDate = item.publish_date?.slice(0, 10) ?? '';
+      return publishDate >= from && publishDate <= to;
+    })
+    .map((item) => item.topic_service_category?.trim().toLowerCase() ?? '')
+    .filter(Boolean));
+}
+
 function selectFallbackTopic(
   client: ClientRow,
   slot: PostSlot,
@@ -702,47 +725,51 @@ function selectFallbackTopic(
       .filter(Boolean),
   );
   const usedWeeklyKeywords = weeklyUsedTargetKeywords(topicHistory, slot.date);
+  const usedWeeklyServices = weeklyUsedServiceCategories(topicHistory, slot.date);
   const recentFormatSet = new Set(recentFormats.slice(0, 6));
   const preferredFormats = FALLBACK_FORMATS.filter((format) => !recentFormatSet.has(format));
   const formats = preferredFormats.length ? preferredFormats : FALLBACK_FORMATS;
   const dateSeed = new Date(`${slot.date}T12:00:00Z`).getUTCDate() + stableSlotSeed(slot);
 
-  for (let i = 0; i < keywordPool.length; i++) {
-    const keyword = keywordPool[(dateSeed + i) % keywordPool.length];
-    if (usedWeeklyKeywords.has(keyword.toLowerCase())) continue;
-    const service = resolveKeywordService(services, keyword, dateSeed + i);
-    const locality = resolveKeywordLocality(keyword, areas, dateSeed + i);
-    const format = formats[(dateSeed + i) % formats.length];
-    const fallback = fallbackTopicForFormat(format, service, locality || client.state || '');
-    const topic = slot.content_type === 'blog'
-      ? `${keyword}: ${fallback.topic}`
-      : fallback.topic;
-    const fingerprint = buildTopicFingerprint({
-      topic,
-      serviceCategory: service,
-      contentType: slot.content_type,
-      targetKeyword: keyword,
-    });
-    if (fingerprint && historyFingerprints.has(fingerprint)) continue;
-    const selection: SlotTopicSelection = {
-      monthlyTopicId: null,
-      topicTitle: topic,
-      targetKeyword: keyword,
-      targetLocality: locality || null,
-      serviceCategory: service,
-      topicFingerprint: fingerprint,
-      notes: `Deterministic package fallback from client services, service areas, and target keyword set. Keep this ${slot.content_type} educational and on-company.`,
-      source: 'research',
-    };
-    const research: TopicResearch = {
-      topic,
-      angle: `Answer a practical customer question about ${service}${locality ? ` in ${locality}` : ''}; stay inside confirmed company services.`,
-      format,
-      targetKeyword: keyword,
-      localModifier: locality,
-      searchQuestion: fallback.question,
-    };
-    return { selection, research, keywords: keywordPool };
+  for (const requireUnusedService of [true, false]) {
+    for (let i = 0; i < keywordPool.length; i++) {
+      const keyword = keywordPool[(dateSeed + i) % keywordPool.length];
+      if (usedWeeklyKeywords.has(keyword.toLowerCase())) continue;
+      const service = resolveKeywordService(services, keyword, dateSeed + i);
+      if (requireUnusedService && usedWeeklyServices.has(service.toLowerCase())) continue;
+      const locality = resolveKeywordLocality(keyword, areas, dateSeed + i);
+      const format = formats[(dateSeed + i) % formats.length];
+      const fallback = fallbackTopicForFormat(format, service, locality || client.state || '');
+      const topic = slot.content_type === 'blog'
+        ? `${keyword}: ${fallback.topic}`
+        : fallback.topic;
+      const fingerprint = buildTopicFingerprint({
+        topic,
+        serviceCategory: service,
+        contentType: slot.content_type,
+        targetKeyword: keyword,
+      });
+      if (fingerprint && historyFingerprints.has(fingerprint)) continue;
+      const selection: SlotTopicSelection = {
+        monthlyTopicId: null,
+        topicTitle: topic,
+        targetKeyword: keyword,
+        targetLocality: locality || null,
+        serviceCategory: service,
+        topicFingerprint: fingerprint,
+        notes: `Deterministic package fallback from client services, service areas, and target keyword set. Keep this ${slot.content_type} educational and on-company.`,
+        source: 'research',
+      };
+      const research: TopicResearch = {
+        topic,
+        angle: `Answer a practical customer question about ${service}${locality ? ` in ${locality}` : ''}; stay inside confirmed company services.`,
+        format,
+        targetKeyword: keyword,
+        localModifier: locality,
+        searchQuestion: fallback.question,
+      };
+      return { selection, research, keywords: keywordPool };
+    }
   }
   return null;
 }
@@ -1290,9 +1317,15 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
     ? getTopicResearchFromSelection(topicSelection, serviceAreas)
     : null;
   const skippedTopicIds: string[] = [];
+  const usedWeeklyServices = weeklyUsedServiceCategories(topicHistory, slot.date);
   for (let attempt = 0; !topicSelection && attempt < 12; attempt++) {
     const candidate = await buildMonthlyTopicSelection(db, client.id, slot.date, slot.content_type, platforms, serviceAreas, skippedTopicIds);
     if (!candidate) break;
+    if (candidate.serviceCategory && usedWeeklyServices.has(candidate.serviceCategory.trim().toLowerCase())) {
+      if (!candidate.monthlyTopicId) break;
+      skippedTopicIds.push(candidate.monthlyTopicId);
+      continue;
+    }
     const restrictedPhrase = findRestrictedContentPhrase(
       [candidate.topicTitle, candidate.targetKeyword, candidate.serviceCategory].filter(Boolean).join(' '),
       restrictions,
@@ -1965,9 +1998,15 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         ? getTopicResearchFromSelection(topicSelection, serviceAreas)
         : null;
       const skippedTopicIds: string[] = [];
+      const usedWeeklyServices = weeklyUsedServiceCategories(topicHistory, slot.date);
       for (let attempt = 0; !topicSelection && attempt < 12; attempt++) {
         const candidate = await buildMonthlyTopicSelection(db, client.id, slot.date, slot.content_type, platforms, serviceAreas, skippedTopicIds);
         if (!candidate) break;
+        if (candidate.serviceCategory && usedWeeklyServices.has(candidate.serviceCategory.trim().toLowerCase())) {
+          if (!candidate.monthlyTopicId) break;
+          skippedTopicIds.push(candidate.monthlyTopicId);
+          continue;
+        }
         const restrictedPhrase = findRestrictedContentPhrase(
           [candidate.topicTitle, candidate.targetKeyword, candidate.serviceCategory].filter(Boolean).join(' '),
           restrictions,
