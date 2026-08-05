@@ -66,6 +66,7 @@ import {
   detectFormatFromTitle,
   buildBlogContentHtml,
   canonicalizeGeneratedPhoneNumbers,
+  normalizeGeneratedMarketingCliches,
   findRestrictedContentPhrase,
   isGeneratedCaptionField,
   normalizeGeneratedCaptionValue,
@@ -1594,6 +1595,7 @@ export async function saveGeneratedSlotResult(
   const overwriteExisting = run.overwrite_existing === 1;
   if (topicSelection?.targetKeyword) generatedPost.target_keyword = topicSelection.targetKeyword;
   if (topicSelection?.targetLocality) generatedPost.target_locality = topicSelection.targetLocality;
+  normalizeGeneratedMarketingCliches(generatedPost, client.industry);
   canonicalizeGeneratedPhoneNumbers(generatedPost, client.phone);
 
   // Terminal-generated blogs return structured fields (intro/sections/faq), not a
@@ -2108,6 +2110,9 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         clearTimeout(timer);
       }
       await log('AI', `${getProviderDisplayName(provider)} done: ${postKey} (${genResult.meta.elapsedMs}ms, attempts=${genResult.meta.attempts}, model=${genResult.meta.model})`);
+
+      normalizeGeneratedMarketingCliches(genResult.post, client.industry);
+      canonicalizeGeneratedPhoneNumbers(genResult.post, client.phone);
 
       // Quality validation — soft check, log warnings but never block saves
       const qualityResult = validateGeneratedContent(genResult.post, ctx);

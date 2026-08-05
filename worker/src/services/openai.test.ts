@@ -3,6 +3,7 @@ import {
   buildGenerationRequest,
   buildBlogContentHtml,
   canonicalizeGeneratedPhoneNumbers,
+  normalizeGeneratedMarketingCliches,
   findRestrictedContentPhrase,
   isGeneratedCaptionField,
   normalizeGeneratedCaptionValue,
@@ -186,6 +187,21 @@ describe('generated caption normalization', () => {
     expect(post.cap_instagram).toBe('Call (323) 555-0100 for help.');
     expect(post.ai_image_prompt).toContain('(323) 555-0100');
     expect(post.ai_image_prompt).not.toContain('((');
+  });
+
+  it('rewrites canned marketing phrases before quality validation', () => {
+    const post = {
+      title: 'Hollywood Rekeying With Expert Guidance',
+      master_caption: 'Call for immediate help from a trusted service.',
+      target_keyword: 'residential locksmith Hollywood',
+      target_locality: 'Hollywood',
+    };
+
+    normalizeGeneratedMarketingCliches(post, 'Locksmith');
+
+    expect(post.title).toContain('Practical guidance');
+    expect(post.master_caption).toBe('Call for locksmith assistance from a professional service.');
+    expect(validateGeneratedContent(post, socialContext).warnings.some((warning) => warning.startsWith('generic pattern:'))).toBe(false);
   });
 
   it('rejects malformed verified phone formatting', () => {

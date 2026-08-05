@@ -132,6 +132,59 @@ export function canonicalizeGeneratedPhoneNumbers(post: GeneratedPost, clientPho
   }
 }
 
+const GENERATED_CUSTOMER_COPY_FIELDS: Array<keyof GeneratedPost> = [
+  'title',
+  'master_caption',
+  'cap_facebook',
+  'cap_instagram',
+  'cap_linkedin',
+  'cap_x',
+  'cap_threads',
+  'cap_tiktok',
+  'cap_pinterest',
+  'cap_bluesky',
+  'cap_google_business',
+  'cap_gbp_la',
+  'cap_gbp_wa',
+  'cap_gbp_or',
+  'youtube_title',
+  'youtube_description',
+  'blog_content',
+  'blog_excerpt',
+  'seo_title',
+  'meta_description',
+  'video_script',
+];
+
+export function normalizeGeneratedMarketingCliches(post: GeneratedPost, industry?: string | null): void {
+  const immediateReplacement = /locksmith/i.test(industry ?? '')
+    ? 'locksmith assistance'
+    : 'service-specific guidance';
+  const replacements: Array<[RegExp, string]> = [
+    [/\btrusted service\b/gi, 'professional service'],
+    [/\bexpert answers?\b/gi, 'clear answers'],
+    [/\bexpert guidance\b/gi, 'practical guidance'],
+    [/\bexpert help\b/gi, 'professional support'],
+    [/\bexpert service\b/gi, 'professional service'],
+    [/\bexpert solutions?\b/gi, 'service-specific options'],
+    [/\byour safety is our priority\b/gi, 'the work starts with a careful safety check'],
+    [/\bseamless integration\b/gi, 'careful coordination'],
+    [/\btailored plan\b/gi, 'project-specific plan'],
+    [/\btailored plans\b/gi, 'project-specific plans'],
+    [/\bimmediate help\b/gi, immediateReplacement],
+  ];
+
+  for (const field of GENERATED_CUSTOMER_COPY_FIELDS) {
+    const value = post[field];
+    if (typeof value !== 'string') continue;
+    post[field] = replacements.reduce((copy, [pattern, replacement]) => copy.replace(pattern, (match) => (
+      /^[A-Z]/.test(match)
+        ? `${replacement.charAt(0).toUpperCase()}${replacement.slice(1)}`
+        : replacement
+    )), value);
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Content format rotation + topic research types
 // ─────────────────────────────────────────────────────────────────────────────
