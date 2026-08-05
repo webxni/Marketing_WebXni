@@ -1197,7 +1197,12 @@ export async function planGeneration(env: Env, params: GenerationParams, baseUrl
   }
 }
 
-export async function buildSlotGenerationRequest(env: Env, runId: string, slotIdx: number): Promise<SlotGenerationRequest | null> {
+export async function buildSlotGenerationRequest(
+  env: Env,
+  runId: string,
+  slotIdx: number,
+  reservedTopicHistory: ClientGenerationTopicHistoryItem[] = [],
+): Promise<SlotGenerationRequest | null> {
   const db = env.DB;
   const run = await getGenerationRunById(db, runId);
   if (!run) throw new Error('Generation run not found');
@@ -1268,7 +1273,11 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
   ]);
 
   const recentRows = recRows.results.filter((row) => row.id !== existingPost?.id);
-  const recentTitles  = recentRows.map((row) => row.title ?? row.master_caption?.slice(0, 80) ?? '').filter(Boolean) as string[];
+  const combinedTopicHistory = [...topicHistory, ...reservedTopicHistory];
+  const recentTitles = uniqueClean([
+    ...recentRows.map((row) => row.title ?? row.master_caption?.slice(0, 80) ?? ''),
+    ...reservedTopicHistory.map((item) => item.title),
+  ]);
   const serviceAreas  = svcAreaRows.results.map((row) => row.city);
   const serviceNames  = svcNameRows.results
     .map((row) => row.name)
@@ -1317,7 +1326,7 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
     ? getTopicResearchFromSelection(topicSelection, serviceAreas)
     : null;
   const skippedTopicIds: string[] = [];
-  const usedWeeklyServices = weeklyUsedServiceCategories(topicHistory, slot.date);
+  const usedWeeklyServices = weeklyUsedServiceCategories(combinedTopicHistory, slot.date);
   for (let attempt = 0; !topicSelection && attempt < 12; attempt++) {
     const candidate = await buildMonthlyTopicSelection(db, client.id, slot.date, slot.content_type, platforms, serviceAreas, skippedTopicIds);
     if (!candidate) break;
@@ -1378,7 +1387,7 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
     topicSelection = null;
   }
   if (!topicResearch || !topicSelection) {
-    const fallback = selectFallbackTopic(client, slot, intel, serviceNames, serviceAreas, keywordRows, topicHistory, recentFormats, restrictions);
+    const fallback = selectFallbackTopic(client, slot, intel, serviceNames, serviceAreas, keywordRows, combinedTopicHistory, recentFormats, restrictions);
     if (fallback) {
       topicResearch = fallback.research;
       topicSelection = fallback.selection;
@@ -1397,7 +1406,7 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
       industry: client.industry,
       language: client.language,
     },
-    topicHistory: mapTopicHistoryForContext(topicHistory),
+    topicHistory: mapTopicHistoryForContext(combinedTopicHistory),
     autonomousSignals: buildAutonomousResearchSignals(latestResearch, latestStrategy),
   });
 
@@ -1472,10 +1481,21 @@ export async function prebuildApprovedTerminalSlotRequests(
 
   const slots = JSON.parse(run.post_slots ?? '[]') as PostSlot[];
   const prepared: PreparedApprovedSlotRequest[] = [];
+  const reservedByClient = new Map<string, ClientGenerationTopicHistoryItem[]>();
 
   for (let slotIdx = 0; slotIdx < slots.length; slotIdx++) {
-    const built = await buildSlotGenerationRequest(env, runId, slotIdx);
+    const clientReserved = reservedByClient.get(slots[slotIdx].client_slug) ?? [];
+    const built = await buildSlotGenerationRequest(env, runId, slotIdx, clientReserved);
     if (!built) continue;
+    clientReserved.push({
+      title: built.topicSelection.topicTitle ?? '',
+      target_keyword: built.topicSelection.targetKeyword,
+      topic_service_category: built.topicSelection.serviceCategory,
+      content_type: built.slot.content_type,
+      publish_date: built.slot.date,
+      platforms: [],
+    });
+    reservedByClient.set(built.slot.client_slug, clientReserved);
     prepared.push({
       slot_idx: slotIdx,
       client_slug: built.slot.client_slug,
