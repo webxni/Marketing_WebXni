@@ -15,6 +15,8 @@ test('editorial review follows weekly blog and GBP package rules', () => {
   assert.match(prompt, /Weekly blogs intentionally have null ai_image_prompt\/ai_video_prompt/);
   assert.match(prompt, /website_blog is the only required platform for a blog/);
   assert.match(prompt, /Location-specific captions take precedence/);
+  assert.match(prompt, /TikTok is hard-capped at 90 characters and Pinterest at 100 characters/);
+  assert.match(prompt, /Do not criticize either field merely for being concise/);
 });
 
 test('operational reviews separate current state from incident history', () => {
