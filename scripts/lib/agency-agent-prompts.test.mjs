@@ -34,6 +34,7 @@ test('operational reviews separate current state from incident history', () => {
   assert.match(security, /current unresolved security boundary failure/);
   assert.match(security, /internal bot-only snapshot is not user-facing evidence/);
   assert.match(orchestrator, /must not create assignments/);
+  assert.match(orchestrator, /terminal incident record, not an active run/);
   assert.match(orchestrator, /intentional human workflow gates/);
 
   for (const kind of ['reliabilityReview', 'securityReview', 'orchestratorReview']) {

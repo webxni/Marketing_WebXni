@@ -38,3 +38,24 @@ test('preserves an active finding whose evidence exists in the snapshot', () => 
   assert.equal(result.findings.length, 1);
   assert.deepEqual(result.recommended_actions, ['Reauthenticate Hermes.']);
 });
+
+test('does not treat a terminal generation incident or info-only gate as actionable', () => {
+  const result = normalizeEvidenceBackedReview({
+    severity: 'medium',
+    summary: 'A partial run still needs work.',
+    findings: [
+      { severity: 'medium', state: 'active', evidence_ids: ['run-partial'], title: 'Partial run', description: 'Completed with errors.' },
+      { severity: 'info', state: 'active', evidence_ids: ['task-current'], title: 'Approval gate', description: 'Operating normally.' },
+    ],
+    recommended_actions: ['Regenerate a slot.'],
+    assignments: [{ agent_slug: 'agency-orchestrator', action: 'Regenerate it.' }],
+  }, {
+    system_health: { recent_generation_failures: [{ id: 'run-partial', status: 'completed_with_errors' }] },
+    tasks: [{ id: 'task-current', status: 'running' }],
+  }, 'agency operations');
+
+  assert.equal(result.severity, 'info');
+  assert.equal(result.findings[0].state, 'historical');
+  assert.deepEqual(result.recommended_actions, []);
+  assert.deepEqual(result.assignments, []);
+});
