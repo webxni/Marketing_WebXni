@@ -16,6 +16,9 @@ test('editorial review follows weekly blog and GBP package rules', () => {
   assert.match(prompt, /website_blog is the only required platform for a blog/);
   assert.match(prompt, /Location-specific captions take precedence/);
   assert.match(prompt, /TikTok is hard-capped at 90 characters and Pinterest at 100 characters/);
+  assert.match(prompt, /caption_lengths values are authoritative/);
+  assert.match(prompt, /current package week is an operational follow-up, not a content defect/);
+  assert.match(prompt, /phone numbers/);
   assert.match(prompt, /Do not criticize either field merely for being concise/);
 });
 

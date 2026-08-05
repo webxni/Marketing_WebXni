@@ -2476,8 +2476,8 @@ export async function getAgencyClientContentBrief(
   options: { includeRecentTopics?: boolean } = {},
 ): Promise<{ brief: string; hasBrief: boolean; profile_gaps: string[]; active_platforms: string[]; gbp_locations: Array<{ label: string; caption_field: string | null; upload_post_profile: string | null; location_id: string; paused: number }> }> {
   const [client, intel, areas, services, restrictions, keywords, gbpRows, platforms, recentTopics, latestResearch, latestStrategy] = await Promise.all([
-    db.prepare('SELECT canonical_name, industry, state, cta_text, notes FROM clients WHERE id = ?')
-      .bind(clientId).first<{ canonical_name: string | null; industry: string | null; state: string | null; cta_text: string | null; notes: string | null }>(),
+    db.prepare('SELECT canonical_name, industry, state, phone, cta_text, notes FROM clients WHERE id = ?')
+      .bind(clientId).first<{ canonical_name: string | null; industry: string | null; state: string | null; phone: string | null; cta_text: string | null; notes: string | null }>(),
     db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?')
       .bind(clientId).first<Record<string, string | null>>(),
     db.prepare('SELECT city FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 8')
@@ -2516,6 +2516,7 @@ export async function getAgencyClientContentBrief(
   add('Business', client?.canonical_name);
   add('Industry', client?.industry);
   add('Location', client?.state);
+  add('Verified phone', client?.phone);
   if (serviceAreas.length) lines.push(`- Service areas: ${serviceAreas.join(', ')}`);
   if (serviceNames.length) lines.push(`- Specific services: ${serviceNames.join(', ')}`);
   add('Key services', i.service_priorities);
