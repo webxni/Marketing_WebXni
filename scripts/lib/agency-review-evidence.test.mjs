@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { normalizeEvidenceBackedReview } from './agency-review-evidence.mjs';
+import { normalizeEvidenceBackedReview, shouldPersistAgentFinding } from './agency-review-evidence.mjs';
 
 test('drops unsupported findings and downgrades recovered incidents', () => {
   const result = normalizeEvidenceBackedReview({
@@ -13,7 +13,10 @@ test('drops unsupported findings and downgrades recovered incidents', () => {
     ],
     recommended_actions: ['Change production.'],
     code_proposals: [{ title: 'Unneeded proposal' }],
-  }, { incident_history: [{ id: 'run-old', status: 'failed' }], latest_run: { id: 'run-new', status: 'completed' } }, 'reliability');
+  }, {
+    system_health: { recent_generation_failures: [{ id: 'run-old', status: 'failed' }] },
+    approved_jobs: [{ id: 'run-new', status: 'completed' }],
+  }, 'reliability');
 
   assert.equal(result.severity, 'info');
   assert.equal(result.findings.length, 1);
@@ -58,4 +61,11 @@ test('does not treat a terminal generation incident or info-only gate as actiona
   assert.equal(result.findings[0].state, 'historical');
   assert.deepEqual(result.recommended_actions, []);
   assert.deepEqual(result.assignments, []);
+});
+
+test('persists only active actionable operational findings', () => {
+  assert.equal(shouldPersistAgentFinding({ severity: 'medium', state: 'active' }), true);
+  assert.equal(shouldPersistAgentFinding({ severity: 'info', state: 'active' }), false);
+  assert.equal(shouldPersistAgentFinding({ severity: 'high', state: 'historical' }), false);
+  assert.equal(shouldPersistAgentFinding({ severity: 'medium' }), true);
 });

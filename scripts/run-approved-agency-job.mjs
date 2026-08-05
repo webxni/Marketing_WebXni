@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { redactSecrets } from './lib/agency-redaction.mjs';
 import { AGENCY_SCHEMAS, buildAgencyPrompt } from './lib/agency-agent-prompts.mjs';
-import { normalizeEvidenceBackedReview } from './lib/agency-review-evidence.mjs';
+import { normalizeEvidenceBackedReview, shouldPersistAgentFinding } from './lib/agency-review-evidence.mjs';
 import { runTerminalJsonAgent } from './lib/terminal-json-agent.mjs';
 import { pick_executor, executorLead, taskTypeForAgent } from './lib/executor-router.mjs';
 import { automationSlotKey, deliveryPlatforms, packageBlogSlots, packageSlots, packageSocialSlots } from './lib/agency-package-slots.mjs';
@@ -513,16 +513,18 @@ async function availableBackendChain(chain) {
       .filter((row) => Number(row.cooldown_until || 0) > now)
       .map((row) => normalizedBackendName(row.backend)));
     const available = chain.filter((backend) => !cooling.has(normalizedBackendName(backend)));
-    return available.length ? available : chain.slice(-1);
+    return available.length
+      ? { chain: available, excludedBackends: [...cooling] }
+      : { chain: chain.slice(-1), excludedBackends: [] };
   } catch {
-    return chain;
+    return { chain, excludedBackends: [] };
   }
 }
 
 async function runAgentWithBackendHealth(options) {
-  const chain = await availableBackendChain(options.preferredBackend);
+  const { chain, excludedBackends } = await availableBackendChain(options.preferredBackend);
   try {
-    const result = await runTerminalJsonAgent({ ...options, preferredBackend: chain });
+    const result = await runTerminalJsonAgent({ ...options, preferredBackend: chain, excludedBackends });
     for (const attempt of result.attempts || []) {
       await post('/internal/agency/backend-health', {
         backend: attempt.backend,
@@ -725,7 +727,11 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
 
   if (agentSlug === 'system-reliability' || agentSlug === 'security-sentinel') {
     const reviewKind = agentSlug === 'system-reliability' ? 'reliabilityReview' : 'securityReview';
-    const result = await runStructuredAgent(reviewKind, agentSlug, backend, snapshot.system_health || snapshot.overview, snapshot, taskInput);
+    const healthContext = {
+      ...(snapshot.system_health || snapshot.overview),
+      backend_health: snapshot.backend_health ?? [],
+    };
+    const result = await runStructuredAgent(reviewKind, agentSlug, backend, healthContext, snapshot, taskInput);
     const reviewedOutput = normalizeEvidenceBackedReview(
       result.output,
       snapshot,
@@ -768,7 +774,11 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
   }
 
   if (agentSlug === 'agency-orchestrator') {
-    const result = await runStructuredAgent('orchestratorReview', agentSlug, backend, snapshot.system_health || snapshot.overview, snapshot, taskInput);
+    const healthContext = {
+      ...(snapshot.system_health || snapshot.overview),
+      backend_health: snapshot.backend_health ?? [],
+    };
+    const result = await runStructuredAgent('orchestratorReview', agentSlug, backend, healthContext, snapshot, taskInput);
     const out = normalizeEvidenceBackedReview(result.output, snapshot, 'agency operations');
 
     // Build Discord report from today's findings + orchestrator output
@@ -1485,6 +1495,7 @@ async function createFindingsForResult(agentSlug, taskId, result) {
   const findings = Array.isArray(result.findings) ? result.findings : Array.isArray(result.bottlenecks) ? result.bottlenecks : [];
   for (const finding of findings.slice(0, 5)) {
     if (!finding || typeof finding !== 'object') continue;
+    if (!shouldPersistAgentFinding(finding)) continue;
     const severity = ['info', 'low', 'medium', 'high', 'critical'].includes(finding.severity) ? finding.severity : 'info';
     await post('/internal/agency/finding', {
       agent_slug: agentSlug,

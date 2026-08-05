@@ -564,7 +564,7 @@ agencyInternalRoutes.post('/enqueue', async (c) => {
 
 agencyInternalRoutes.post('/snapshot', async (c) => {
   if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
-  const [overview, agents, tasks, findings, coverage, logs, approved_jobs, system_health] = await Promise.all([
+  const [overview, agents, tasks, findings, coverage, logs, approved_jobs, system_health, backend_health] = await Promise.all([
     listAgencyOverview(c.env.DB),
     listAgentDefinitions(c.env.DB),
     listAgentTasks(c.env.DB, 50),
@@ -573,6 +573,7 @@ agencyInternalRoutes.post('/snapshot', async (c) => {
     getAgencyLogs(c.env.DB, 40),
     listApprovedCommandJobs(c.env.DB, 30),
     getAgentSystemHealthSnapshot(c.env.DB, { lookbackHours: 168 }),
+    listAgencyBackendHealth(c.env.DB),
   ]);
   return c.json({
     ok: true,
@@ -597,6 +598,7 @@ agencyInternalRoutes.post('/snapshot', async (c) => {
           error_log: job.error_log ? redactSecrets(job.error_log) : null,
         })),
       system_health,
+      backend_health,
     },
   });
 });
