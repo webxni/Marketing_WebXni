@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getCompatiblePlatforms, isPostContentComplete, withImplicitGbpPlatform } from './platform-compatibility';
+import { getCompatiblePlatforms, isPostContentComplete, withImplicitBlogPlatform, withImplicitGbpPlatform } from './platform-compatibility';
 
 describe('platform content compatibility', () => {
   it('does not route reels to Google Business', () => {
@@ -75,5 +75,26 @@ describe('implicit Google Business platform', () => {
     };
 
     expect(isPostContentComplete(post as never, locations, ['facebook', 'google_business'])).toBe(false);
+  });
+});
+
+describe('implicit website blog platform', () => {
+  it('adds website_blog for package draft generation without WordPress credentials', () => {
+    const platforms = withImplicitBlogPlatform([], {
+      id: 'client-1',
+      wp_base_url: null,
+      wp_url: null,
+    }, true);
+
+    expect(platforms.map((platform) => platform.platform)).toContain('website_blog');
+    expect(platforms[0]?.notes).toContain('package draft generation');
+  });
+
+  it('does not imply publishing connectivity without WordPress or package draft context', () => {
+    expect(withImplicitBlogPlatform([], {
+      id: 'client-1',
+      wp_base_url: null,
+      wp_url: null,
+    })).toEqual([]);
   });
 });

@@ -141,9 +141,10 @@ export function getClientActivePlatforms(clientPlatforms: ClientPlatformRow[]): 
 export function withImplicitBlogPlatform<T extends Pick<ClientRow, 'id' | 'wp_base_url' | 'wp_url'> | null | undefined>(
   clientPlatforms: ClientPlatformRow[],
   client: T,
+  allowPackageDraft = false,
 ): ClientPlatformRow[] {
   const hasWordPress = Boolean(String(client?.wp_base_url ?? client?.wp_url ?? '').trim());
-  if (!hasWordPress) return clientPlatforms;
+  if (!hasWordPress && !allowPackageDraft) return clientPlatforms;
   if (clientPlatforms.some((platform) => normalizePlatform(platform.platform) === 'website_blog')) return clientPlatforms;
 
   return [
@@ -167,7 +168,9 @@ export function withImplicitBlogPlatform<T extends Pick<ClientRow, 'id' | 'wp_ba
       paused: 0,
       paused_reason: null,
       paused_since: null,
-      notes: 'Implicit website_blog platform from WordPress configuration',
+      notes: hasWordPress
+        ? 'Implicit website_blog platform from WordPress configuration'
+        : 'Implicit website_blog platform for package draft generation',
     },
   ];
 }

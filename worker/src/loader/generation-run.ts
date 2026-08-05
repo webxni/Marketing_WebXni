@@ -1136,7 +1136,7 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
     getClientGbpLocations(db, client.id),
   ]);
   const clientPlatforms = withImplicitGbpPlatform(
-    withImplicitBlogPlatform(storedClientPlatforms, client),
+    withImplicitBlogPlatform(storedClientPlatforms, client, true),
     gbpLocations,
     client.id,
   );
@@ -1476,7 +1476,7 @@ export async function saveGeneratedSlotResult(
     getClientGbpLocations(db, client.id),
   ]);
   const clientPlatforms = withImplicitGbpPlatform(
-    withImplicitBlogPlatform(storedClientPlatforms, client),
+    withImplicitBlogPlatform(storedClientPlatforms, client, true),
     gbpLocations,
     client.id,
   );
@@ -1793,7 +1793,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         getClientGbpLocations(db, client.id),
       ]);
       const clientPlatforms = withImplicitGbpPlatform(
-        withImplicitBlogPlatform(storedClientPlatforms, client),
+        withImplicitBlogPlatform(storedClientPlatforms, client, true),
         gbpLocations,
         client.id,
       );
