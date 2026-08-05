@@ -591,7 +591,6 @@ async function buildPublishHtml(
         primary_color: getPrimaryColor(client),
       };
       htmlContent = renderTemplate(tpl.html_template, tokens);
-      if (tpl.css) htmlContent = `<style>\n${tpl.css}\n</style>\n${htmlContent}`;
       htmlContent = withWordPressBlogChrome(htmlContent);
       appliedCustomTemplate = true;
     }

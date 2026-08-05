@@ -625,8 +625,6 @@ Return ONLY JSON matching the requested schema:
 - "cta_button_label": 2-5 words
 - Distribution captions must be short, platform-native, and based on the published blog. Include the exact "[blog_url]" placeholder in every generated distribution caption:
 ${distributionCaptionRules.join('\n')}
-- "ai_image_prompt": MUST BE IN SPANISH — featured image brief, 1080×628px, include brand color context if known
-
 CONTENT RULES:
 - Every section must cover a distinct, specific aspect — no padding, no repeat themes across sections
 - Each FAQ question must look like something a real customer types into Google
@@ -691,7 +689,6 @@ function buildResponseSchema(ctx: GenerationContext): GenerationRequestSchema {
     properties.cta_heading = { type: 'string' };
     properties.cta_body = { type: 'string' };
     properties.cta_button_label = { type: 'string' };
-    properties.ai_image_prompt = { type: 'string' };
     required.push(
       'blog_excerpt',
       'slug',
@@ -706,7 +703,6 @@ function buildResponseSchema(ctx: GenerationContext): GenerationRequestSchema {
       'cta_heading',
       'cta_body',
       'cta_button_label',
-      'ai_image_prompt',
     );
     if (platforms.includes('google_business')) {
       properties.cap_google_business = { type: 'string' };
@@ -851,7 +847,7 @@ export function buildBlogContentHtml(
     ctaHeading: str('cta_heading') || (client.cta_text ?? 'Talk To Our Team'),
     ctaBody: str('cta_body') || 'Get expert guidance tailored to your situation and goals.',
     ctaButtonLabel: str('cta_button_label') || (client.cta_text ?? 'Contact Us Today'),
-    imagePrompt: str('ai_image_prompt') || undefined,
+    imagePrompt: undefined,
   };
   const structured = sanitizeStructuredBlogContent(structuredDraft).blog;
   const templateConfig = resolveBlogTemplateConfig({
@@ -925,7 +921,7 @@ export function normalizeGeneratedPost(value: unknown, ctx: GenerationContext): 
         answer: typeof (item as Record<string, unknown>)['answer'] === 'string' ? String((item as Record<string, unknown>)['answer']).trim() : '',
       }))
       .filter((item) => item.question && item.answer);
-    const requiredBlogKeys = ['blog_excerpt', 'slug', 'seo_title', 'meta_description', 'target_keyword', 'secondary_keywords', 'ai_image_prompt'] as const;
+    const requiredBlogKeys = ['blog_excerpt', 'slug', 'seo_title', 'meta_description', 'target_keyword', 'secondary_keywords'] as const;
     for (const key of requiredBlogKeys) {
       if (!normalized[key]) throw new Error(`Generation missing ${key}`);
     }
@@ -947,7 +943,7 @@ export function normalizeGeneratedPost(value: unknown, ctx: GenerationContext): 
       ctaHeading: typeof parsed['cta_heading'] === 'string' ? String(parsed['cta_heading']).trim() : (ctx.client.cta_text ?? 'Talk To Our Team'),
       ctaBody: typeof parsed['cta_body'] === 'string' ? String(parsed['cta_body']).trim() : 'Get expert guidance tailored to your situation and goals.',
       ctaButtonLabel: typeof parsed['cta_button_label'] === 'string' ? String(parsed['cta_button_label']).trim() : (ctx.client.cta_text ?? 'Contact Us Today'),
-      imagePrompt: normalized.ai_image_prompt,
+      imagePrompt: undefined,
     };
     const structured = sanitizeStructuredBlogContent(structuredDraft).blog;
     const templateConfig = resolveBlogTemplateConfig({

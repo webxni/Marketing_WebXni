@@ -1583,6 +1583,10 @@ export async function saveGeneratedSlotResult(
   }
 
   const merged = mergeGeneratedContent(existingPost as unknown as Record<string, string | null | undefined>, generatedPost as unknown as Record<string, string | undefined>, overwriteExisting);
+  if (normalizeContentType(slot.content_type) === 'blog') {
+    merged.ai_image_prompt = null;
+    merged.ai_video_prompt = null;
+  }
   const selectedTopic = topicSelection ?? {
     monthlyTopicId: null,
     topicTitle: generatedPost.title ?? merged.title ?? null,

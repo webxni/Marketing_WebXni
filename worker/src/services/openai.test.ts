@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildGenerationRequest,
+  buildBlogContentHtml,
   canonicalizeGeneratedPhoneNumbers,
   isGeneratedCaptionField,
   normalizeGeneratedCaptionValue,
@@ -28,6 +29,12 @@ const socialContext: GenerationContext = {
     searchQuestion: 'How does residential rekeying work after moving in Hollywood?',
   },
   highQuality: true,
+};
+
+const blogContext: GenerationContext = {
+  ...socialContext,
+  contentType: 'blog',
+  platforms: ['website_blog'],
 };
 
 describe('generated caption normalization', () => {
@@ -72,6 +79,29 @@ describe('generated caption normalization', () => {
     expect(prompt).toContain('1200x628');
     expect(prompt).toContain('immediate help');
     expect(prompt).toContain('universal procedure');
+  });
+
+  it('does not request or render a designer asset for blog slots', () => {
+    const request = buildGenerationRequest(blogContext);
+    const schema = request.schema.schema as { properties: Record<string, unknown> };
+    expect(schema.properties).not.toHaveProperty('ai_image_prompt');
+    expect(request.prompt).not.toContain('featured image brief');
+
+    const html = buildBlogContentHtml({
+      title: 'Residential Locksmith Hollywood Access Guide',
+      blog_excerpt: 'A practical guide to residential access decisions in Hollywood.',
+      target_keyword: 'residential locksmith Hollywood',
+      intro: 'Moving into a Hollywood home changes who may still have working keys and which doors need attention.',
+      sections: [
+        { heading: 'Residential locksmith Hollywood access review', html: '<p>Start by identifying every exterior entry point.</p>' },
+        { heading: 'Decide which keys should keep working', html: '<p>Separate household access from vendor or temporary access.</p>' },
+        { heading: 'Document the final access plan', html: '<p>Record who receives each new key after the work is complete.</p>' },
+      ],
+      faq: [],
+    }, blogContext.client, blogContext.publishDate);
+
+    expect(html).not.toBeNull();
+    expect(html).not.toContain('<style');
   });
 
   it('rejects a designer prompt with the wrong asset dimensions', () => {
