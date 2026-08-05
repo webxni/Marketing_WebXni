@@ -330,7 +330,10 @@ function restrictionPhraseCandidates(restrictions: string[]): string[] {
     const separateBrand = term.match(/^(.+?)\s+is a separate subdomain/i);
     const doNotPromote = term.match(/^do not promote\s+(.+?)(?:\s*\(|$)/i);
 
-    if (neverMention) phrases.push(neverMention[1]);
+    if (neverMention) {
+      phrases.push(neverMention[1]);
+      if (/\bcar\s+key\s+fob\b/i.test(neverMention[1])) phrases.push('key fob');
+    }
     else if (underAnyCircumstance) phrases.push(underAnyCircumstance[1]);
     else if (noMention) phrases.push(noMention[1]);
     else if (neverMix) phrases.push(neverMix[1]);

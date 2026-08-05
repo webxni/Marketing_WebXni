@@ -254,6 +254,13 @@ describe('generated caption normalization', () => {
     )).toBe('car key programming');
   });
 
+  it('blocks ambiguous key-fob topics when automotive fobs are forbidden', () => {
+    expect(findRestrictedContentPhrase(
+      'New key fob creation Pasadena',
+      ['NEVER mention car key fob'],
+    )).toBe('key fob');
+  });
+
   it('rejects client-restricted copy and visual phone overlays', () => {
     const quality = validateGeneratedContent({
       title: 'Car Remote Reprogramming in Hollywood',
