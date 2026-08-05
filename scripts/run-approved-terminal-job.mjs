@@ -163,8 +163,11 @@ function resolveTerminalBackend() {
 
 function preferredTerminalBackends() {
   const requested = TERMINAL_AGENT === 'auto' ? '' : TERMINAL_AGENT;
-  if (requested) return [requested, 'hermes', 'openai'];
-  return ['hermes', 'claude', 'gemini', 'openai'];
+  const terminalBackends = ['codex', 'gemini', 'claude', 'hermes'];
+  if (requested) {
+    return [requested, ...terminalBackends.filter((backend) => backend !== requested), 'openai'];
+  }
+  return [...terminalBackends, 'openai'];
 }
 
 function buildWrappedPrompt(prompt, schema) {
@@ -373,8 +376,8 @@ function runCodex(prompt, schema, plan = null) {
 
 async function runTerminalAgent(prompt, schema, plan = null) {
   const isBlog = plan?.mode === 'blog';
-  // Complex (blog) slots lead with Claude; social slots keep the default chain
-  // (Hermes-first). Honors an explicit --terminal-agent override either way.
+  // Complex blog slots lead with Claude; explicit overrides remain primary.
+  // Every chain still tries all authenticated terminal backends before API fallback.
   const backendChain = (isBlog && TERMINAL_AGENT === 'auto')
     ? ['claude', ...preferredTerminalBackends()]
     : preferredTerminalBackends();

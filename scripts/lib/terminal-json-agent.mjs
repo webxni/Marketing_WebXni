@@ -68,7 +68,7 @@ function isBackendAvailable(backend) {
  * 'auto' expands to all available backends in default order.
  */
 function expandPriority(backends) {
-  const AUTO_ORDER = ['hermes', 'claude', 'openai'];
+  const AUTO_ORDER = ['codex', 'gemini', 'claude', 'hermes', 'openai'];
   const seen = new Set();
   const result = [];
   for (const b of backends) {
