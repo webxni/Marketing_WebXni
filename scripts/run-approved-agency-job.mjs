@@ -1414,10 +1414,15 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
     try { queue = await request(`/internal/agency/review-queue?limit=${process.env.AGENCY_EDITORIAL_LIMIT || 8}${forceReview}`); } catch { /* fall back below */ }
     const items = Array.isArray(queue.items) ? queue.items : [];
     if (!items.length) {
-      const target = selectEditorialTarget(snapshot.tasks);
-      const result = await runStructuredAgent('editorialReview', agentSlug, backend, target, snapshot, taskInput);
-      await post('/internal/agency/content-review', { agent_slug: agentSlug, task_id: taskId, post_id: null, severity: result.output.severity, notes_json: result.output });
-      return { summary: `No new drafts to review. Saved general note (${result.output.severity}).`, agent_slug: agentSlug, command_name: commandName, backend: result.backend, safety: { approval_status_changed: false, no_auto_publish: true } };
+      return {
+        summary: 'No new drafts to review. All current content hashes already have editorial notes.',
+        agent_slug: agentSlug,
+        command_name: commandName,
+        reviewed: [],
+        highest_severity: 'info',
+        backend: 'internal',
+        safety: { approval_status_changed: false, no_auto_publish: true },
+      };
     }
 
     const reviewed = [];
