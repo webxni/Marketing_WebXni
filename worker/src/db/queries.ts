@@ -2418,7 +2418,13 @@ export async function listAgencyReviewQueueCandidates(db: D1Database, limit = 10
      WHERE p.status IN ('draft', 'pending_approval', 'generated', 'ready', 'approved')
        AND p.scheduled_by_automation = 1
        AND p.created_at >= unixepoch() - 1209600
-     ORDER BY p.updated_at DESC
+     ORDER BY
+       CASE
+         WHEN substr(p.publish_date, 1, 10) BETWEEN date('now', '-' || strftime('%w', 'now') || ' days')
+           AND date('now', '+' || (6 - CAST(strftime('%w', 'now') AS INTEGER)) || ' days')
+         THEN 0 ELSE 1
+       END,
+       p.updated_at DESC
      LIMIT ?`,
   ).bind(Math.max(1, Math.min(limit, 200))).all<AgencyReviewQueueCandidate>();
   return rows.results ?? [];
