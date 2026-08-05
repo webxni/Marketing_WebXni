@@ -674,6 +674,26 @@ export function weeklyUsedTargetKeywords(
     .filter(Boolean));
 }
 
+export function normalizeWeeklyServiceFamily(serviceCategory: string): string {
+  const normalized = serviceCategory.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  if (!normalized) return '';
+  if (/\b(key|keys)\b.*\b(copy|copying|duplicate|duplication)\b|\b(copy|copying|duplicate|duplication)\b.*\b(key|keys)\b/.test(normalized)) {
+    return 'key copying';
+  }
+  if (/\b(lockout|lockouts)\b|\blocked out\b/.test(normalized)) {
+    return /\b(car|auto|automotive|vehicle)\b/.test(normalized) ? 'automotive lockouts' : 'building lockouts';
+  }
+  if (/\brekey|rekeying\b/.test(normalized)) return 'lock rekeying';
+  if (/\bsafe\b/.test(normalized)) return 'safe services';
+  if (/\binstall|installation\b/.test(normalized) && /\b(lock|locks|bolt|hardware)\b/.test(normalized)) {
+    return 'lock installation';
+  }
+  if (/\brepair|repairs\b/.test(normalized) && /\b(lock|locks|bolt|hardware)\b/.test(normalized)) {
+    return 'lock repair';
+  }
+  return normalized;
+}
+
 export function weeklyUsedServiceCategories(
   topicHistory: ClientGenerationTopicHistoryItem[],
   slotDate: string,
@@ -692,7 +712,7 @@ export function weeklyUsedServiceCategories(
       const publishDate = item.publish_date?.slice(0, 10) ?? '';
       return publishDate >= from && publishDate <= to;
     })
-    .map((item) => item.topic_service_category?.trim().toLowerCase() ?? '')
+    .map((item) => normalizeWeeklyServiceFamily(item.topic_service_category ?? ''))
     .filter(Boolean));
 }
 
@@ -736,7 +756,7 @@ function selectFallbackTopic(
       const keyword = keywordPool[(dateSeed + i) % keywordPool.length];
       if (usedWeeklyKeywords.has(keyword.toLowerCase())) continue;
       const service = resolveKeywordService(services, keyword, dateSeed + i);
-      if (requireUnusedService && usedWeeklyServices.has(service.toLowerCase())) continue;
+      if (requireUnusedService && usedWeeklyServices.has(normalizeWeeklyServiceFamily(service))) continue;
       const locality = resolveKeywordLocality(keyword, areas, dateSeed + i);
       const format = formats[(dateSeed + i) % formats.length];
       const fallback = fallbackTopicForFormat(format, service, locality || client.state || '');
@@ -1330,7 +1350,7 @@ export async function buildSlotGenerationRequest(
   for (let attempt = 0; !topicSelection && attempt < 12; attempt++) {
     const candidate = await buildMonthlyTopicSelection(db, client.id, slot.date, slot.content_type, platforms, serviceAreas, skippedTopicIds);
     if (!candidate) break;
-    if (candidate.serviceCategory && usedWeeklyServices.has(candidate.serviceCategory.trim().toLowerCase())) {
+    if (candidate.serviceCategory && usedWeeklyServices.has(normalizeWeeklyServiceFamily(candidate.serviceCategory))) {
       if (!candidate.monthlyTopicId) break;
       skippedTopicIds.push(candidate.monthlyTopicId);
       continue;
@@ -2022,7 +2042,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
       for (let attempt = 0; !topicSelection && attempt < 12; attempt++) {
         const candidate = await buildMonthlyTopicSelection(db, client.id, slot.date, slot.content_type, platforms, serviceAreas, skippedTopicIds);
         if (!candidate) break;
-        if (candidate.serviceCategory && usedWeeklyServices.has(candidate.serviceCategory.trim().toLowerCase())) {
+        if (candidate.serviceCategory && usedWeeklyServices.has(normalizeWeeklyServiceFamily(candidate.serviceCategory))) {
           if (!candidate.monthlyTopicId) break;
           skippedTopicIds.push(candidate.monthlyTopicId);
           continue;
