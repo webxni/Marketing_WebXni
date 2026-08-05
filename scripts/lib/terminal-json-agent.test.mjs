@@ -30,6 +30,16 @@ ok('codex exec keeps the prompt as the final positional argument', () => {
   assert.ok(!args.includes('-m'));
 });
 
+ok('codex exec can read oversized prompts from stdin', () => {
+  const args = buildCodexExecArgs({
+    prompt: '-',
+    schemaPath: '/tmp/schema.json',
+    outputPath: '/tmp/last-message.txt',
+    model: '',
+  });
+  assert.equal(args.at(-1), '-');
+});
+
 ok('explicit agent priorities still try every available terminal before OpenAI', () => {
   assert.deepEqual(
     completePriority(['claude_code', 'hermes', 'openai']),

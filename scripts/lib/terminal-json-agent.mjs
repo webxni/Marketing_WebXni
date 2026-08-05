@@ -191,7 +191,6 @@ function runClaude(prompt, schema, mode) {
     '--no-session-persistence',
     '--append-system-prompt', JSON_ONLY_SYSTEM,
     '--json-schema', schemaStr,
-    wrappedPrompt,
   ];
   if (process.env.AGENCY_CLAUDE_BARE === '1') {
     args.splice(1, 0, '--bare');
@@ -205,7 +204,7 @@ function runClaude(prompt, schema, mode) {
       ? wrapper.structured_output
       : parseJsonFromText(wrapper?.result || stdout);
     return { output, cost_usd };
-  }, { env });
+  }, { env, input: wrappedPrompt });
 }
 
 // Rough per-1M-token USD prices (input, output) for cost estimation.
@@ -287,14 +286,18 @@ async function runGemini(prompt, schema, mode) {
   }
 
   // Legacy fallback: the gemini CLI (only works if its OAuth is still valid).
-  return runSpawnJson('gemini', ['-p', wrappedPrompt, '-o', 'json', '-m', model],
-    (stdout) => ({ output: parseJsonFromText(stdout), cost_usd: null }));
+  return runSpawnJson('gemini', ['-p', '', '-o', 'json', '-m', model],
+    (stdout) => ({ output: parseJsonFromText(stdout), cost_usd: null }),
+    { input: wrappedPrompt });
 }
 
 function runHermes(prompt, schema, mode, skills = []) {
   const hermesCmd = resolveHermesCommand();
   if (!hermesCmd) throw new Error('Hermes CLI not found. Run the installer or set HERMES_CLI_PATH.');
   const { wrappedPrompt } = buildWrappedPrompt(prompt, schema);
+  if (Buffer.byteLength(wrappedPrompt, 'utf8') > 120000) {
+    throw new Error('Hermes prompt exceeds the safe CLI argument limit');
+  }
   const args = ['-z', wrappedPrompt];
   if (skills.length) args.push('--skills', skills.join(','));
   // Only override provider/model when explicitly configured via HERMES_* env.
@@ -337,9 +340,10 @@ function runCodex(prompt, schema, mode) {
   const model = (process.env.CODEX_BLOG_MODEL || process.env.CODEX_SOCIAL_MODEL || process.env.CODEX_MODEL)
     ? (process.env.CODEX_MODEL || configuredModel)
     : '';
-  const args = buildCodexExecArgs({ prompt: wrappedPrompt, schemaPath, outputPath, model });
+  const args = buildCodexExecArgs({ prompt: '-', schemaPath, outputPath, model });
   return runSpawnJson('codex', args, () => ({ output: parseJsonFromText(readFileSync(outputPath, 'utf8')), cost_usd: null }), {
     cleanup: () => rmSync(workDir, { recursive: true, force: true }),
+    input: wrappedPrompt,
   });
 }
 
@@ -395,11 +399,12 @@ async function runOpenAI(prompt, schema, mode) {
 
 function runSpawnJson(command, args, parser, extra = {}) {
   return new Promise((resolve, reject) => {
+    const hasInput = typeof extra.input === 'string';
     const child = spawn(command, args, {
       cwd: process.cwd(),
       shell: false,
       env: extra.env || process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [hasInput ? 'pipe' : 'ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
     let stderr = '';
@@ -416,6 +421,10 @@ function runSpawnJson(command, args, parser, extra = {}) {
     timeout?.unref();
     child.stdout.on('data', (chunk) => { stdout += String(chunk); });
     child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+    if (hasInput && child.stdin) {
+      child.stdin.on('error', () => {});
+      child.stdin.end(extra.input);
+    }
     child.on('error', (err) => {
       if (timeout) clearTimeout(timeout);
       if (forceKillTimer) clearTimeout(forceKillTimer);

@@ -2718,7 +2718,7 @@ export async function getAgentSystemHealthSnapshot(
     db.prepare("SELECT COUNT(*) AS n FROM clients WHERE status = 'active'").first<{ n: number }>(),
     db.prepare("SELECT COUNT(*) AS n FROM generation_runs WHERE status = 'running'").first<{ n: number }>(),
     db.prepare(
-      `SELECT id, status, triggered_by, last_activity_at, error_log
+      `SELECT id, status, triggered_by, last_activity_at, SUBSTR(error_log, 1, 1200) AS error_log
        FROM generation_runs
        WHERE created_at >= ?
          AND status IN ('failed', 'timed_out', 'completed_with_errors')
