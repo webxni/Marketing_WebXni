@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildPackageSlots, existingPostTopicSelection, normalizeWeeklyServiceFamily, resolveKeywordLocality, resolveKeywordService, weeklyUsedServiceCategories, weeklyUsedTargetKeywords } from './generation-run';
+import { buildPackageSlots, existingPostTopicSelection, normalizeWeeklyServiceFamily, relevantGbpLocationsForTarget, resolveKeywordLocality, resolveKeywordService, weeklyUsedServiceCategories, weeklyUsedTargetKeywords } from './generation-run';
 
 function pkg(overrides: Record<string, unknown>) {
   return {
@@ -170,5 +170,27 @@ describe('existingPostTopicSelection', () => {
       topicFingerprint: 'existing-fingerprint',
       serviceCategory: 'Kitchen Remodeling',
     });
+  });
+});
+
+describe('relevantGbpLocationsForTarget', () => {
+  const locations = [
+    { id: 'la', label: 'LA', caption_field: 'cap_gbp_la', paused: 0 },
+    { id: 'wa', label: 'WA', caption_field: 'cap_gbp_wa', paused: 0 },
+    { id: 'or', label: 'OR', caption_field: 'cap_gbp_or', paused: 1 },
+  ] as never;
+  const areas = [
+    { city: 'Los Angeles', state: 'CA' },
+    { city: 'Seattle', state: 'WA' },
+    { city: 'Portland', state: 'OR' },
+  ];
+
+  it('keeps only active GBP locations serving the selected topic locality', () => {
+    expect(relevantGbpLocationsForTarget(locations, 'Los Angeles', areas).map((location) => location.id)).toEqual(['la']);
+    expect(relevantGbpLocationsForTarget(locations, 'Seattle', areas).map((location) => location.id)).toEqual(['wa']);
+  });
+
+  it('does not route a paused-location topic to unrelated active GBP profiles', () => {
+    expect(relevantGbpLocationsForTarget(locations, 'Portland', areas)).toEqual([]);
   });
 });

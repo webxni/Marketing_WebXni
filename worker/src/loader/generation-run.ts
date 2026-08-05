@@ -24,7 +24,7 @@
  *                 ...
  */
 
-import type { ClientRow, Env, PostRow } from '../types';
+import type { ClientGbpLocationRow, ClientRow, Env, PostRow } from '../types';
 import {
   buildWeeklyMarketingStrategicContext,
   buildAutonomousResearchSignals,
@@ -112,6 +112,27 @@ export interface GenerationParams {
   overwrite_existing?: boolean;
   high_quality?: boolean;
   provider?: ContentProviderName;
+}
+
+export function relevantGbpLocationsForTarget(
+  locations: ClientGbpLocationRow[],
+  targetLocality: string | null | undefined,
+  serviceAreas: Array<{ city: string; state: string | null }>,
+): ClientGbpLocationRow[] {
+  const active = locations.filter((location) => location.paused !== 1);
+  const target = targetLocality?.trim().toLowerCase();
+  if (!target) return active;
+
+  const targetArea = serviceAreas.find((area) => area.city.trim().toLowerCase() === target);
+  const targetState = targetArea?.state?.trim().toUpperCase() ?? '';
+  return active.filter((location) => {
+    const label = location.label.trim().toLowerCase();
+    if (label === target) return true;
+
+    const fieldRegion = getGbpCaptionField(location)?.match(/^cap_gbp_([a-z]{2})$/i)?.[1].toUpperCase() ?? '';
+    if (fieldRegion === 'LA') return targetState === 'CA';
+    return Boolean(targetState && (location.label.trim().toUpperCase() === targetState || fieldRegion === targetState));
+  });
 }
 
 interface PostSlot {
@@ -1265,7 +1286,7 @@ export async function buildSlotGenerationRequest(
     clientPlatforms,
     allowIncompatibleOverride: true,
   });
-  const platforms = platformSelection.selected.length > 0 ? platformSelection.selected : fallbackSelection.selected;
+  let platforms = platformSelection.selected.length > 0 ? platformSelection.selected : fallbackSelection.selected;
   if (platformSelection.selected.length === 0 && platforms.length > 0) {
     console.warn(`[gen:${runId.slice(0, 8)}] falling back to unconnected platforms for slot ${slotIdx + 1}/${slots.length} (${slot.client_slug} ${slot.date} ${slot.content_type}) -> ${platforms.join(', ')}`);
   }
@@ -1288,7 +1309,7 @@ export async function buildSlotGenerationRequest(
     db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then((row) => row ?? null),
     db.prepare('SELECT sentiment, message AS note FROM client_feedback WHERE client_id = ? ORDER BY created_at DESC LIMIT 10').bind(client.id).all<FeedbackRow>(),
     db.prepare(`SELECT id, title, master_caption, content_type FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`).bind(client.id).all<{id:string;title:string|null;master_caption:string|null;content_type:string|null}>(),
-    db.prepare('SELECT city FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 8').bind(client.id).all<{city:string}>(),
+    db.prepare('SELECT city, state FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 8').bind(client.id).all<{city:string;state:string|null}>(),
     db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC LIMIT 12').bind(client.id).all<{name:string}>(),
     getClientKeywords(db, client.id),
     getClientGenerationTopicHistory(db, client.id, 24),
@@ -1313,7 +1334,6 @@ export async function buildSlotGenerationRequest(
   const serviceNames  = svcNameRows.results
     .map((row) => row.name)
     .filter((service) => !findRestrictedContentPhrase(service, restrictions));
-  if (existingPost && run.overwrite_existing !== 1 && isPostContentComplete(existingPost, gbpLocations, platforms)) return null;
   const monthlyPlan = await getClientMonthlyContentPlan(db, client.id, planMonth(slot.date));
   const intel = applyMonthlyPlanToIntelligence(intelBase, monthlyPlan);
   let targetKeywords = keywordPoolFromContext(intel, keywordRows, serviceNames, serviceAreas, restrictions);
@@ -1426,6 +1446,17 @@ export async function buildSlotGenerationRequest(
     }
   }
 
+  const topicGbpLocations = relevantGbpLocationsForTarget(
+    gbpLocations,
+    topicSelection?.targetLocality ?? topicResearch?.localModifier,
+    svcAreaRows.results,
+  );
+  if (gbpLocations.length > 0 && platforms.includes('google_business') && topicGbpLocations.length === 0) {
+    platforms = platforms.filter((platform) => platform !== 'google_business');
+  }
+  if (platforms.length === 0) return null;
+  if (existingPost && run.overwrite_existing !== 1 && isPostContentComplete(existingPost, topicGbpLocations, platforms)) return null;
+
   const [latestResearch, latestStrategy] = await Promise.all([
     getLatestClientResearch(db, client.id),
     getLatestClientStrategy(db, client.id),
@@ -1463,8 +1494,7 @@ export async function buildSlotGenerationRequest(
     contentType: slot.content_type,
     platforms,
     contentIntent: slot.content_intent,
-    gbpLocations: gbpLocations
-      .filter((location) => location.paused !== 1)
+    gbpLocations: topicGbpLocations
       .map((location) => ({ label: location.label, captionField: getGbpCaptionField(location) }))
       .filter((location) => Boolean(location.captionField)),
     topicResearch,
@@ -1663,7 +1693,7 @@ export async function saveGeneratedSlotResult(
     packagePlatforms,
     clientPlatforms,
   });
-  const platforms = platformSelection.selected;
+  let platforms = platformSelection.selected;
   if (platforms.length === 0) {
     return finalizeSlotProgress(db, env, runId, slotIdx + 1, 'skipped', client.canonical_name, slots, async () => undefined);
   }
@@ -1715,9 +1745,9 @@ export async function saveGeneratedSlotResult(
     db.prepare(`SELECT id, title, master_caption FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`)
       .bind(client.id)
       .all<{ id: string; title: string | null; master_caption: string | null }>(),
-    db.prepare('SELECT city FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 8')
+    db.prepare('SELECT city, state FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 8')
       .bind(client.id)
-      .all<{ city: string }>(),
+      .all<{ city: string; state: string | null }>(),
     db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC LIMIT 12')
       .bind(client.id)
       .all<{ name: string }>(),
@@ -1726,6 +1756,17 @@ export async function saveGeneratedSlotResult(
     getClientRestrictions(db, client.id),
   ]);
   const validationServiceAreas = validationAreaRows.results.map((row) => row.city);
+  const topicGbpLocations = relevantGbpLocationsForTarget(
+    gbpLocations,
+    topicSelection?.targetLocality ?? generatedPost.target_locality,
+    validationAreaRows.results,
+  );
+  if (gbpLocations.length > 0 && platforms.includes('google_business') && topicGbpLocations.length === 0) {
+    platforms = platforms.filter((platform) => platform !== 'google_business');
+  }
+  if (platforms.length === 0) {
+    return finalizeSlotProgress(db, env, runId, slotIdx + 1, 'skipped', client.canonical_name, slots, async () => undefined);
+  }
   const validationServiceNames = validationServiceRows.results.map((row) => row.name);
   normalizeGeneratedUnverifiedClaims(generatedPost, [
     client.notes,
@@ -1768,8 +1809,7 @@ export async function saveGeneratedSlotResult(
     contentType: normalizeContentType(slot.content_type),
     platforms,
     contentIntent: slot.content_intent,
-    gbpLocations: gbpLocations
-      .filter((location) => location.paused !== 1)
+    gbpLocations: topicGbpLocations
       .map((location) => ({ label: location.label, captionField: getGbpCaptionField(location) }))
       .filter((location) => Boolean(location.captionField)),
     topicResearch: validationTopicResearch,
@@ -1790,6 +1830,12 @@ export async function saveGeneratedSlotResult(
   }
 
   const merged = mergeGeneratedContent(existingPost as unknown as Record<string, string | null | undefined>, generatedPost as unknown as Record<string, string | undefined>, overwriteExisting);
+  const topicGbpFields = new Set(topicGbpLocations.map((location) => getGbpCaptionField(location)).filter(Boolean));
+  for (const location of gbpLocations) {
+    const field = getGbpCaptionField(location);
+    if (field && !topicGbpFields.has(field)) merged[field] = null;
+  }
+  if (!platforms.includes('google_business')) merged.cap_google_business = null;
   if (normalizeContentType(slot.content_type) === 'blog') {
     merged.ai_image_prompt = null;
     merged.ai_video_prompt = null;
