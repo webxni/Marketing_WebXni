@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildAgencyPrompt } from './agency-agent-prompts.mjs';
+import { AGENCY_SCHEMAS, buildAgencyPrompt } from './agency-agent-prompts.mjs';
 
 const input = {
   client: {},
@@ -28,7 +28,17 @@ test('operational reviews separate current state from incident history', () => {
   const orchestrator = buildAgencyPrompt('orchestratorReview', input);
 
   assert.match(reliability, /168-hour INCIDENT HISTORY/);
+  assert.match(reliability, /state to active, recovered, or historical/);
+  assert.match(reliability, /evidence_ids copied exactly/);
   assert.match(reliability, /Never invent filenames/);
+  assert.match(security, /current unresolved security boundary failure/);
   assert.match(security, /internal bot-only snapshot is not user-facing evidence/);
+  assert.match(orchestrator, /must not create assignments/);
   assert.match(orchestrator, /intentional human workflow gates/);
+
+  for (const kind of ['reliabilityReview', 'securityReview', 'orchestratorReview']) {
+    const finding = AGENCY_SCHEMAS[kind].properties.findings.items;
+    assert.deepEqual(finding.required, ['severity', 'state', 'evidence_ids', 'title', 'description']);
+    assert.equal(finding.properties.evidence_ids.minItems, 1);
+  }
 });
