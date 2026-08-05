@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildPackageSlots, resolveKeywordLocality, resolveKeywordService } from './generation-run';
+import { buildPackageSlots, resolveKeywordLocality, resolveKeywordService, weeklyUsedTargetKeywords } from './generation-run';
 
 function pkg(overrides: Record<string, unknown>) {
   return {
@@ -118,5 +118,17 @@ describe('resolveKeywordService', () => {
       'Car locksmith Pasadena',
       0,
     )).toBe('Car lockouts');
+  });
+});
+
+describe('weeklyUsedTargetKeywords', () => {
+  it('excludes only keywords already used in the active package week', () => {
+    const keywords = weeklyUsedTargetKeywords([
+      { title: 'Current', target_keyword: 'Kitchen Remodeling Los Angeles', content_type: 'image', publish_date: '2026-08-03T10:00', platforms: [] },
+      { title: 'Previous', target_keyword: 'Bathroom Remodeling Los Angeles', content_type: 'image', publish_date: '2026-07-31T10:00', platforms: [] },
+      { title: 'Current Friday', target_keyword: 'ADU Builder Pasadena', content_type: 'reel', publish_date: '2026-08-07T10:00', platforms: [] },
+    ], '2026-08-06');
+
+    expect([...keywords]).toEqual(['kitchen remodeling los angeles', 'adu builder pasadena']);
   });
 });

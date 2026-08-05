@@ -626,6 +626,28 @@ export function resolveKeywordLocality(keyword: string, areas: string[], fallbac
   return embeddedArea ?? areas[fallbackIndex % areas.length] ?? '';
 }
 
+export function weeklyUsedTargetKeywords(
+  topicHistory: ClientGenerationTopicHistoryItem[],
+  slotDate: string,
+): Set<string> {
+  const date = new Date(`${slotDate.slice(0, 10)}T12:00:00Z`);
+  const weekday = date.getUTCDay();
+  const mondayOffset = weekday === 0 ? 6 : weekday - 1;
+  const weekStart = new Date(date);
+  weekStart.setUTCDate(date.getUTCDate() - mondayOffset);
+  const weekEnd = new Date(weekStart);
+  weekEnd.setUTCDate(weekStart.getUTCDate() + 6);
+  const from = weekStart.toISOString().slice(0, 10);
+  const to = weekEnd.toISOString().slice(0, 10);
+  return new Set(topicHistory
+    .filter((item) => {
+      const publishDate = item.publish_date?.slice(0, 10) ?? '';
+      return publishDate >= from && publishDate <= to;
+    })
+    .map((item) => item.target_keyword?.trim().toLowerCase() ?? '')
+    .filter(Boolean));
+}
+
 function selectFallbackTopic(
   client: ClientRow,
   slot: PostSlot,
@@ -654,6 +676,7 @@ function selectFallbackTopic(
       }))
       .filter(Boolean),
   );
+  const usedWeeklyKeywords = weeklyUsedTargetKeywords(topicHistory, slot.date);
   const recentFormatSet = new Set(recentFormats.slice(0, 6));
   const preferredFormats = FALLBACK_FORMATS.filter((format) => !recentFormatSet.has(format));
   const formats = preferredFormats.length ? preferredFormats : FALLBACK_FORMATS;
@@ -661,6 +684,7 @@ function selectFallbackTopic(
 
   for (let i = 0; i < keywordPool.length; i++) {
     const keyword = keywordPool[(dateSeed + i) % keywordPool.length];
+    if (usedWeeklyKeywords.has(keyword.toLowerCase())) continue;
     const service = resolveKeywordService(services, keyword, dateSeed + i);
     const locality = resolveKeywordLocality(keyword, areas, dateSeed + i);
     const format = formats[(dateSeed + i) % formats.length];
@@ -1256,7 +1280,8 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
       topicFingerprint: candidate.topicFingerprint,
       publishDate: slot.date,
     });
-    if (conflict && candidate.monthlyTopicId) {
+    if (conflict) {
+      if (!candidate.monthlyTopicId) break;
       skippedTopicIds.push(candidate.monthlyTopicId);
       continue;
     }
