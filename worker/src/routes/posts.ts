@@ -728,6 +728,11 @@ postRoutes.post('/:id/generate-caption', async (c) => {
 
   let instrText = platformInstructions[platform] ?? 'concise social media caption (100-250 chars)';
   const lang = client.language && client.language !== 'en' ? client.language : 'en';
+  const topicConstraint = platform === 'pinterest'
+    ? `Begin with the exact target keyword "${post.target_keyword ?? ''}". Use no emoji, exclamation mark, or generic hashtag.`
+    : platform === 'tiktok'
+      ? 'Name the specific service or customer decision and target locality before any optional hashtag.'
+      : 'Lead with the specific service, customer decision, or local detail from the source.';
 
   // For GBP, inject CTA and topic type context into the instruction
   if (platform === 'google_business') {
@@ -754,8 +759,19 @@ Target locality: ${post.target_locality ?? ''}
 
 Write a ${platform} caption: ${instrText}.
 Keep the concrete service, educational point, and target locality from the source. Use the target keyword naturally when it fits the platform limit. Do not replace the topic with generic marketing language, slogans, filler, or broad promises. Do not invent a process, offer, credential, result, or business fact that is not present above.
+${topicConstraint}
+Never use canned openings such as "unlock your," "optimize your," "boost your," "elevate your," "transform your," "discover," or "ready to."
 
 Return JSON: { "caption": "..." }`;
+
+  let model = 'gpt-4o-mini';
+  try {
+    const rawSettings = await c.env.KV_BINDING.get('settings:system');
+    const configured = rawSettings ? JSON.parse(rawSettings) as Record<string, unknown> : {};
+    if (typeof configured['ai_model'] === 'string' && /^gpt-[a-z0-9.-]+$/i.test(configured['ai_model'])) {
+      model = configured['ai_model'];
+    }
+  } catch { /* retain default model */ }
 
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -764,7 +780,7 @@ Return JSON: { "caption": "..." }`;
       'Authorization': `Bearer ${c.env.OPENAI_API_KEY}`,
     },
     body: JSON.stringify({
-      model: 'gpt-4o-mini',
+      model,
       messages: [
         { role: 'system', content: buildGenerationSystemMessage('social') },
         { role: 'user', content: prompt },
@@ -788,6 +804,9 @@ Return JSON: { "caption": "..." }`;
     return c.json({ error: 'Failed to parse response' }, 502);
   }
   if (!caption) return c.json({ error: 'Generation returned an empty caption' }, 502);
+  if (/\b(?:unlock|optimize|boost|elevate|transform) your\b|\bdiscover\b|\bready to\b|game.?changer/i.test(caption)) {
+    return c.json({ error: 'Generated caption used generic marketing language' }, 502);
+  }
   const maxLength = CAPTION_MAX_LEN[platform];
   if (maxLength && caption.length > maxLength) {
     return c.json({ error: `Generated caption exceeds ${platform} limit of ${maxLength} characters` }, 502);
