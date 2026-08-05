@@ -24,8 +24,7 @@
  *                 ...
  */
 
-import type { Env } from '../types';
-import type { ClientRow } from '../types';
+import type { ClientRow, Env, PostRow } from '../types';
 import {
   buildWeeklyMarketingStrategicContext,
   buildAutonomousResearchSignals,
@@ -494,6 +493,30 @@ function getTopicResearchFromSelection(
     targetKeyword: selection.targetKeyword ?? selection.topicTitle ?? '',
     localModifier: selection.targetLocality ?? serviceAreas[0] ?? '',
     searchQuestion: selection.notes?.trim() || (selection.topicTitle ?? ''),
+  };
+}
+
+export function existingPostTopicSelection(
+  post: Pick<PostRow, 'title' | 'target_keyword' | 'target_locality' | 'monthly_topic_id' | 'topic_fingerprint' | 'topic_service_category'>,
+  contentType: string,
+): SlotTopicSelection | null {
+  const topicTitle = post.title?.trim() || null;
+  const targetKeyword = post.target_keyword?.trim() || null;
+  if (!topicTitle && !targetKeyword) return null;
+
+  return {
+    monthlyTopicId: post.monthly_topic_id ?? null,
+    topicTitle,
+    targetKeyword,
+    targetLocality: post.target_locality?.trim() || null,
+    serviceCategory: post.topic_service_category?.trim() || null,
+    topicFingerprint: post.topic_fingerprint?.trim() || buildTopicFingerprint({
+      topic: topicTitle,
+      serviceCategory: post.topic_service_category,
+      contentType,
+      targetKeyword,
+    }),
+    source: 'research',
   };
 }
 
@@ -1257,10 +1280,14 @@ export async function buildSlotGenerationRequest(env: Env, runId: string, slotId
   // terminal-only, so if there is no monthly topic selection and no API-backed
   // research provider, the prompt falls back to the client context alone.
   const primaryKey = resolveProviderApiKey(env, settings, provider);
-  let topicResearch: TopicResearch | null = null;
-  let topicSelection: SlotTopicSelection | null = null;
+  let topicSelection = existingPost && run.overwrite_existing !== 1
+    ? existingPostTopicSelection(existingPost, slot.content_type)
+    : null;
+  let topicResearch: TopicResearch | null = topicSelection
+    ? getTopicResearchFromSelection(topicSelection, serviceAreas)
+    : null;
   const skippedTopicIds: string[] = [];
-  for (let attempt = 0; attempt < 12; attempt++) {
+  for (let attempt = 0; !topicSelection && attempt < 12; attempt++) {
     const candidate = await buildMonthlyTopicSelection(db, client.id, slot.date, slot.content_type, platforms, serviceAreas, skippedTopicIds);
     if (!candidate) break;
     const restrictedPhrase = findRestrictedContentPhrase(

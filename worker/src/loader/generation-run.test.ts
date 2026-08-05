@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildPackageSlots, resolveKeywordLocality, resolveKeywordService, weeklyUsedTargetKeywords } from './generation-run';
+import { buildPackageSlots, existingPostTopicSelection, resolveKeywordLocality, resolveKeywordService, weeklyUsedTargetKeywords } from './generation-run';
 
 function pkg(overrides: Record<string, unknown>) {
   return {
@@ -130,5 +130,26 @@ describe('weeklyUsedTargetKeywords', () => {
     ], '2026-08-06');
 
     expect([...keywords]).toEqual(['kitchen remodeling los angeles', 'adu builder pasadena']);
+  });
+});
+
+describe('existingPostTopicSelection', () => {
+  it('keeps incomplete-field retries on the existing post topic', () => {
+    const selection = existingPostTopicSelection({
+      title: 'Kitchen Remodel Lighting Plan for Los Angeles',
+      target_keyword: 'kitchen remodel lighting Los Angeles',
+      target_locality: 'Los Angeles',
+      monthly_topic_id: null,
+      topic_fingerprint: 'existing-fingerprint',
+      topic_service_category: 'Kitchen Remodeling',
+    }, 'image');
+
+    expect(selection).toMatchObject({
+      topicTitle: 'Kitchen Remodel Lighting Plan for Los Angeles',
+      targetKeyword: 'kitchen remodel lighting Los Angeles',
+      targetLocality: 'Los Angeles',
+      topicFingerprint: 'existing-fingerprint',
+      serviceCategory: 'Kitchen Remodeling',
+    });
   });
 });
