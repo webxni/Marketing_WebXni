@@ -12,6 +12,7 @@ const JSON_ONLY_SYSTEM =
   'webxni-editorial-reviewer) apply equally to every backend.';
 
 const BROKEN_BACKEND_TTL_MS = Number(process.env.AGENCY_BACKEND_FAILURE_TTL_MS || 15 * 60 * 1000);
+const TERMINAL_PROCESS_TIMEOUT_MS = Number(process.env.AGENCY_TERMINAL_TIMEOUT_MS || 15 * 60 * 1000);
 const brokenBackends = new Map();
 
 // ── Backend availability ─────────────────────────────────────────────────────
@@ -184,7 +185,7 @@ function runClaude(prompt, schema, mode) {
     '--output-format', 'json',
     '--effort', mode === 'blog' ? 'medium' : 'low',
     '--model', process.env.CLAUDE_CODE_MODEL || 'sonnet',
-    '--max-turns', process.env.CLAUDE_CODE_MAX_TURNS || '3',
+    '--max-turns', process.env.CLAUDE_CODE_MAX_TURNS || '6',
     '--no-session-persistence',
     '--append-system-prompt', JSON_ONLY_SYSTEM,
     '--json-schema', schemaStr,
@@ -399,11 +400,31 @@ function runSpawnJson(command, args, parser, extra = {}) {
     });
     let stdout = '';
     let stderr = '';
+    let timedOut = false;
+    let forceKillTimer;
+    const timeout = TERMINAL_PROCESS_TIMEOUT_MS > 0
+      ? setTimeout(() => {
+        timedOut = true;
+        child.kill('SIGTERM');
+        forceKillTimer = setTimeout(() => child.kill('SIGKILL'), 5000);
+        forceKillTimer.unref();
+      }, TERMINAL_PROCESS_TIMEOUT_MS)
+      : null;
+    timeout?.unref();
     child.stdout.on('data', (chunk) => { stdout += String(chunk); });
     child.stderr.on('data', (chunk) => { stderr += String(chunk); });
-    child.on('error', reject);
+    child.on('error', (err) => {
+      if (timeout) clearTimeout(timeout);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
+      if (extra.cleanup) extra.cleanup();
+      reject(err);
+    });
     child.on('exit', (code) => {
       try {
+        if (timedOut) {
+          reject(new Error(`${command} timed out after ${TERMINAL_PROCESS_TIMEOUT_MS}ms`));
+          return;
+        }
         if (code !== 0) {
           const combined = `${stderr}\n${stdout}`;
           reject(new Error(
@@ -418,6 +439,8 @@ function runSpawnJson(command, args, parser, extra = {}) {
       } catch (err) {
         reject(err);
       } finally {
+        if (timeout) clearTimeout(timeout);
+        if (forceKillTimer) clearTimeout(forceKillTimer);
         if (extra.cleanup) extra.cleanup();
       }
     });
