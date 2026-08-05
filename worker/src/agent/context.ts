@@ -446,6 +446,7 @@ Use these playbooks to frame captions, blog topics, and recurring-content strate
 export interface ClientGenerationTopicHistoryItem {
   title: string;
   target_keyword: string | null;
+  topic_service_category: string | null;
   content_type: string | null;
   publish_date: string | null;
   platforms: string[];

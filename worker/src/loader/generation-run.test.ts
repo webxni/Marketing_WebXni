@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildPackageSlots, existingPostTopicSelection, resolveKeywordLocality, resolveKeywordService, weeklyUsedTargetKeywords } from './generation-run';
+import { buildPackageSlots, existingPostTopicSelection, resolveKeywordLocality, resolveKeywordService, weeklyUsedServiceCategories, weeklyUsedTargetKeywords } from './generation-run';
 
 function pkg(overrides: Record<string, unknown>) {
   return {
@@ -124,12 +124,22 @@ describe('resolveKeywordService', () => {
 describe('weeklyUsedTargetKeywords', () => {
   it('excludes only keywords already used in the active package week', () => {
     const keywords = weeklyUsedTargetKeywords([
-      { title: 'Current', target_keyword: 'Kitchen Remodeling Los Angeles', content_type: 'image', publish_date: '2026-08-03T10:00', platforms: [] },
-      { title: 'Previous', target_keyword: 'Bathroom Remodeling Los Angeles', content_type: 'image', publish_date: '2026-07-31T10:00', platforms: [] },
-      { title: 'Current Friday', target_keyword: 'ADU Builder Pasadena', content_type: 'reel', publish_date: '2026-08-07T10:00', platforms: [] },
+      { title: 'Current', target_keyword: 'Kitchen Remodeling Los Angeles', topic_service_category: 'Kitchen Remodeling', content_type: 'image', publish_date: '2026-08-03T10:00', platforms: [] },
+      { title: 'Previous', target_keyword: 'Bathroom Remodeling Los Angeles', topic_service_category: 'Bathroom Remodeling', content_type: 'image', publish_date: '2026-07-31T10:00', platforms: [] },
+      { title: 'Current Friday', target_keyword: 'ADU Builder Pasadena', topic_service_category: 'ADU Construction', content_type: 'reel', publish_date: '2026-08-07T10:00', platforms: [] },
     ], '2026-08-06');
 
     expect([...keywords]).toEqual(['kitchen remodeling los angeles', 'adu builder pasadena']);
+  });
+
+  it('tracks service categories used in the active package week', () => {
+    const services = weeklyUsedServiceCategories([
+      { title: 'Current', target_keyword: 'Lock installation Pasadena', topic_service_category: 'General lock installation', content_type: 'image', publish_date: '2026-08-04T10:00', platforms: [] },
+      { title: 'Previous', target_keyword: 'Lock rekeying Pasadena', topic_service_category: 'Lock rekeying', content_type: 'reel', publish_date: '2026-07-31T10:00', platforms: [] },
+      { title: 'Current Friday', target_keyword: 'Building lockout Pasadena', topic_service_category: 'Building lockouts', content_type: 'reel', publish_date: '2026-08-07T10:00', platforms: [] },
+    ], '2026-08-06');
+
+    expect([...services]).toEqual(['general lock installation', 'building lockouts']);
   });
 });
 
