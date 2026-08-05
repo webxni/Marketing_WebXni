@@ -123,11 +123,11 @@ export function canonicalizeGeneratedPhoneNumbers(post: GeneratedPost, clientPho
   for (const field of GENERATED_PHONE_FIELDS) {
     const value = post[field];
     if (typeof value !== 'string') continue;
-    post[field] = value.replace(/(?:\+?\d[\d().\-\s]{7,}\d)/g, (candidate) => {
+    post[field] = value.replace(/(^|[^\d])((?:\+?1[\s.\-]*)?\(*\s*\d{3}\s*\)?[\s.\-]*\d{3}[\s.\-]*\d{4})(?!\d)/g, (_match, prefix: string, candidate: string) => {
       const digits = candidate.replace(/\D/g, '');
       return digits.length === 10 || (digits.length === 11 && digits.startsWith('1'))
-        ? canonical
-        : candidate;
+        ? `${prefix}${canonical}`
+        : `${prefix}${candidate}`;
     });
   }
 }
@@ -1381,6 +1381,10 @@ export function validateGeneratedContent(
     const phoneMatches = [...customerText.matchAll(/(?:\+?\d[\d().\-\s]{7,}\d)/g)].map((m) => normalizeDigits(m[0])).filter(Boolean);
     if (phoneMatches.some((digits) => digits !== clientPhoneDigits)) {
       warnings.push(`phone mismatch: only the exact client phone ${ctx.client.phone} is allowed`);
+    }
+    const generatedText = [customerText, post.ai_image_prompt, post.ai_video_prompt].filter(Boolean).join(' ');
+    if (/\(\s*\(\s*\d{3}\s*\)/.test(generatedText)) {
+      warnings.push(`malformed phone: use the exact client phone ${ctx.client.phone}`);
     }
   }
 

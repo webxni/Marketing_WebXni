@@ -155,11 +155,26 @@ describe('generated caption normalization', () => {
     const post = {
       title: 'Hollywood Rekeying',
       master_caption: 'Call 818-555-0199 to discuss residential rekeying in Hollywood.',
-      ai_image_prompt: 'Texto: 818.555.0199',
+      cap_instagram: 'Call (818) 555-0199 for help.',
+      ai_image_prompt: 'Texto: ((818) 555-0199',
     };
     canonicalizeGeneratedPhoneNumbers(post, '(323) 555-0100');
     expect(post.master_caption).toContain('(323) 555-0100');
+    expect(post.cap_instagram).toBe('Call (323) 555-0100 for help.');
     expect(post.ai_image_prompt).toContain('(323) 555-0100');
+    expect(post.ai_image_prompt).not.toContain('((');
+  });
+
+  it('rejects malformed verified phone formatting', () => {
+    const quality = validateGeneratedContent({
+      title: 'Hollywood Rekeying After a Move',
+      master_caption: 'A residential locksmith Hollywood homeowners call can explain how rekeying changes access. Call ((323) 555-0100.',
+      target_keyword: 'residential locksmith Hollywood',
+      target_locality: 'Hollywood',
+      ai_image_prompt: 'IMAGE HORIZONTAL 1200x628. Texto: ((323) 555-0100.',
+    }, socialContext);
+    expect(quality.passed).toBe(false);
+    expect(quality.warnings).toContain('malformed phone: use the exact client phone (323) 555-0100');
   });
 
   it('rejects unverified licensing and generic expert-answer copy', () => {
