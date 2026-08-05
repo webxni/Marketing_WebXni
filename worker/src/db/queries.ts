@@ -3450,6 +3450,13 @@ export async function findRecentTopicConflict(
   const candidateKeyword = params.candidateKeyword ?? '';
   const candidateCaption = params.candidateCaption ?? '';
   const candidateServiceCategory = params.candidateServiceCategory ?? '';
+  const candidatePublishDate = (params.publishDate ?? '').slice(0, 10);
+  const candidateWeekStart = candidatePublishDate
+    ? new Date(`${candidatePublishDate}T00:00:00Z`)
+    : null;
+  if (candidateWeekStart && !Number.isNaN(candidateWeekStart.getTime())) {
+    candidateWeekStart.setUTCDate(candidateWeekStart.getUTCDate() - candidateWeekStart.getUTCDay());
+  }
   const candidateFingerprint = params.topicFingerprint
     ? normalizeTopicFingerprint(params.topicFingerprint)
     : buildTopicFingerprint({
@@ -3461,6 +3468,22 @@ export async function findRecentTopicConflict(
 
   for (const row of rows.results) {
     if (params.excludePostId && row.id === params.excludePostId) continue;
+
+    const rowPublishDate = (row.publish_date ?? '').slice(0, 10);
+    const rowWeekStart = rowPublishDate ? new Date(`${rowPublishDate}T00:00:00Z`) : null;
+    if (rowWeekStart && !Number.isNaN(rowWeekStart.getTime())) {
+      rowWeekStart.setUTCDate(rowWeekStart.getUTCDate() - rowWeekStart.getUTCDay());
+    }
+    if (
+      candidateKeyword &&
+      row.target_keyword &&
+      normalizeTopicFingerprint(candidateKeyword) === normalizeTopicFingerprint(row.target_keyword) &&
+      candidateWeekStart &&
+      rowWeekStart &&
+      candidateWeekStart.getTime() === rowWeekStart.getTime()
+    ) {
+      return { post: row, reason: 'target keyword already used in this content week' };
+    }
 
     const rowFingerprint = normalizeTopicFingerprint(
       row.topic_fingerprint || buildTopicFingerprint({
