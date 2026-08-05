@@ -742,6 +742,13 @@ agencyInternalRoutes.get('/review-queue', async (c) => {
       cap_tiktok: post.cap_tiktok,
       cap_pinterest: post.cap_pinterest,
       cap_bluesky: post.cap_bluesky,
+      caption_lengths: {
+        x: post.cap_x?.length ?? 0,
+        threads: post.cap_threads?.length ?? 0,
+        tiktok: post.cap_tiktok?.length ?? 0,
+        pinterest: post.cap_pinterest?.length ?? 0,
+        bluesky: post.cap_bluesky?.length ?? 0,
+      },
       youtube_title: post.youtube_title,
       youtube_description: post.youtube_description,
       video_script: post.video_script,
