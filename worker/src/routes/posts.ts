@@ -53,6 +53,36 @@ function generatedCaptionField(platform: string): keyof PostRow | null {
   }
 }
 
+export function generatedCaptionQualityIssue(
+  platform: string,
+  caption: string,
+  targetKeyword: string | null,
+  restrictions: string[],
+): string | null {
+  if (/\b(?:unlock|optimize|boost|elevate|transform) your\b|\bdiscover\b|\bready to\b|game.?changer/i.test(caption)) {
+    return 'used generic marketing language';
+  }
+  if (/\b(?:fix|improve|increase|grow)(?:s|ed|ing)?\s+(?:your\s+)?(?:reach|rankings?|sales|traffic|leads?)\b/i.test(caption)) {
+    return 'made an unsupported outcome claim';
+  }
+  const maxLength = CAPTION_MAX_LEN[platform];
+  if (maxLength && caption.length > maxLength) {
+    return `exceeds ${platform} limit of ${maxLength} characters`;
+  }
+  const restrictedPhrase = findRestrictedContentPhrase(caption, restrictions);
+  if (restrictedPhrase) return `violated a client restriction: ${restrictedPhrase}`;
+  if (platform === 'pinterest') {
+    const keyword = targetKeyword?.trim();
+    if (keyword && !caption.toLowerCase().startsWith(keyword.toLowerCase())) {
+      return 'does not begin with the exact target keyword';
+    }
+    if (/#(?:marketing|business|smallbusiness|viral|trending|fyp)\b/i.test(caption)) {
+      return 'used a generic Pinterest hashtag';
+    }
+  }
+  return null;
+}
+
 /** GET /api/posts */
 postRoutes.get('/', async (c) => {
   const q = c.req.query();
@@ -728,8 +758,10 @@ postRoutes.post('/:id/generate-caption', async (c) => {
 
   let instrText = platformInstructions[platform] ?? 'concise social media caption (100-250 chars)';
   const lang = client.language && client.language !== 'en' ? client.language : 'en';
-  const topicConstraint = platform === 'pinterest'
-    ? `Begin with the exact target keyword "${post.target_keyword ?? ''}". Use no emoji, exclamation mark, or generic hashtag.`
+  const topicConstraint = platform === 'pinterest' && post.target_keyword?.trim()
+    ? `Begin with the exact target keyword "${post.target_keyword.trim()}". Use no emoji, exclamation mark, or generic hashtag.`
+    : platform === 'pinterest'
+      ? 'Begin with a concrete service or customer decision from the source. Use no emoji, exclamation mark, or generic hashtag.'
     : platform === 'tiktok'
       ? 'Name the specific service or customer decision and target locality before any optional hashtag.'
       : 'Lead with the specific service, customer decision, or local detail from the source.';
@@ -773,48 +805,54 @@ Return JSON: { "caption": "..." }`;
     }
   } catch { /* retain default model */ }
 
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${c.env.OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: 'system', content: buildGenerationSystemMessage('social') },
-        { role: 'user', content: prompt },
-      ],
-      response_format: { type: 'json_object' },
-      temperature: 0.45,
-      max_tokens: 400,
-    }),
-  });
+  let caption = '';
+  let qualityIssue = '';
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const retryDirection = qualityIssue
+      ? `\nThe prior draft was rejected because it ${qualityIssue}. Rewrite it and correct that issue.`
+      : '';
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${c.env.OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: buildGenerationSystemMessage('social') },
+          { role: 'user', content: prompt + retryDirection },
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0.35,
+        max_tokens: 400,
+      }),
+    });
 
-  if (!res.ok) return c.json({ error: 'Generation service unavailable' }, 502);
+    if (!res.ok) return c.json({ error: 'Generation service unavailable' }, 502);
 
-  const data = await res.json() as { choices: Array<{ message: { content: string } }> };
-  const raw  = data.choices?.[0]?.message?.content;
-  if (!raw) return c.json({ error: 'Empty response' }, 502);
+    const data = await res.json() as { choices: Array<{ message: { content: string } }> };
+    const raw = data.choices?.[0]?.message?.content;
+    if (!raw) return c.json({ error: 'Empty response' }, 502);
 
-  let caption: string;
-  try {
-    caption = (JSON.parse(raw) as { caption: string }).caption?.trim();
-  } catch {
-    return c.json({ error: 'Failed to parse response' }, 502);
+    let candidate = '';
+    try {
+      candidate = (JSON.parse(raw) as { caption: string }).caption?.trim();
+    } catch {
+      qualityIssue = 'was not valid JSON';
+      continue;
+    }
+    if (!candidate) {
+      qualityIssue = 'was empty';
+      continue;
+    }
+    qualityIssue = generatedCaptionQualityIssue(platform, candidate, post.target_keyword, restrictions) ?? '';
+    if (!qualityIssue) {
+      caption = candidate;
+      break;
+    }
   }
-  if (!caption) return c.json({ error: 'Generation returned an empty caption' }, 502);
-  if (/\b(?:unlock|optimize|boost|elevate|transform) your\b|\bdiscover\b|\bready to\b|game.?changer/i.test(caption)) {
-    return c.json({ error: 'Generated caption used generic marketing language' }, 502);
-  }
-  const maxLength = CAPTION_MAX_LEN[platform];
-  if (maxLength && caption.length > maxLength) {
-    return c.json({ error: `Generated caption exceeds ${platform} limit of ${maxLength} characters` }, 502);
-  }
-  const restrictedPhrase = findRestrictedContentPhrase(caption, restrictions);
-  if (restrictedPhrase) {
-    return c.json({ error: `Generated caption violated a client restriction: ${restrictedPhrase}` }, 422);
-  }
+  if (!caption) return c.json({ error: `Generated caption failed quality review: ${qualityIssue}` }, 502);
 
   // Save caption to post and add platform to platforms list
   const existingPlatforms: string[] = JSON.parse(post.platforms ?? '[]');
