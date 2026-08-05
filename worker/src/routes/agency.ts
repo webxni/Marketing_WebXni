@@ -727,7 +727,7 @@ agencyInternalRoutes.get('/review-queue', async (c) => {
       video_script: post.video_script,
       ai_image_prompt: post.ai_image_prompt,
       ai_video_prompt: post.ai_video_prompt,
-      blog_content: post.blog_content?.slice(0, 16000) ?? null,
+      blog_content: post.blog_content?.slice(0, 40000) ?? null,
       content_hash: contentHash,
       post_updated_at: post.updated_at,
     });
