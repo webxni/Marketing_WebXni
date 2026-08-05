@@ -26,7 +26,7 @@ import { runPosting } from '../loader/posting-run';
 import { runFetchUrls } from './run';
 import { normalizeBlogDraftPayload } from '../modules/blog-publishing';
 import { requirePermission } from '../middleware/auth';
-import { findRestrictedContentPhrase } from '../services/openai';
+import { buildGenerationSystemMessage, findRestrictedContentPhrase } from '../services/openai';
 
 export const postRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -749,8 +749,11 @@ ${intel?.brand_voice ? `Brand voice: ${intel.brand_voice}.` : ''}${intel?.prohib
 
 Post title: ${post.title ?? ''}
 Master caption: ${post.master_caption ?? ''}
+Target keyword: ${post.target_keyword ?? ''}
+Target locality: ${post.target_locality ?? ''}
 
 Write a ${platform} caption: ${instrText}.
+Keep the concrete service, educational point, and target locality from the source. Use the target keyword naturally when it fits the platform limit. Do not replace the topic with generic marketing language, slogans, filler, or broad promises. Do not invent a process, offer, credential, result, or business fact that is not present above.
 
 Return JSON: { "caption": "..." }`;
 
@@ -763,11 +766,11 @@ Return JSON: { "caption": "..." }`;
     body: JSON.stringify({
       model: 'gpt-4o-mini',
       messages: [
-        { role: 'system', content: 'You are a social media content writer. Always respond with valid JSON only.' },
+        { role: 'system', content: buildGenerationSystemMessage('social') },
         { role: 'user', content: prompt },
       ],
       response_format: { type: 'json_object' },
-      temperature: 0.75,
+      temperature: 0.45,
       max_tokens: 400,
     }),
   });
