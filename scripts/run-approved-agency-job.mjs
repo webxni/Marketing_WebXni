@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { redactSecrets } from './lib/agency-redaction.mjs';
 import { AGENCY_SCHEMAS, buildAgencyPrompt } from './lib/agency-agent-prompts.mjs';
+import { normalizeEvidenceBackedReview } from './lib/agency-review-evidence.mjs';
 import { runTerminalJsonAgent } from './lib/terminal-json-agent.mjs';
 import { pick_executor, executorLead, taskTypeForAgent } from './lib/executor-router.mjs';
 import { automationSlotKey, deliveryPlatforms, packageBlogSlots, packageSlots, packageSocialSlots } from './lib/agency-package-slots.mjs';
@@ -725,11 +726,16 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
   if (agentSlug === 'system-reliability' || agentSlug === 'security-sentinel') {
     const reviewKind = agentSlug === 'system-reliability' ? 'reliabilityReview' : 'securityReview';
     const result = await runStructuredAgent(reviewKind, agentSlug, backend, snapshot.system_health || snapshot.overview, snapshot, taskInput);
+    const reviewedOutput = normalizeEvidenceBackedReview(
+      result.output,
+      snapshot,
+      agentSlug === 'system-reliability' ? 'reliability' : 'security',
+    );
 
     // Code-fix PROPOSALS (system-reliability only) — post each to Discord for a
     // human to act on. Never applied automatically; this preserves the
     // "no arbitrary shell / no auto-deploy" invariant.
-    const proposals = Array.isArray(result.output.code_proposals) ? result.output.code_proposals : [];
+    const proposals = Array.isArray(reviewedOutput.code_proposals) ? reviewedOutput.code_proposals : [];
     for (const p of proposals.slice(0, 5)) {
       if (!p || typeof p !== 'object' || !p.title) continue;
       const riskColor = { low: 0x22c55e, medium: 0xf59e0b, high: 0xef4444 }[p.risk] ?? 0x6366f1;
@@ -749,12 +755,12 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
     }
 
     return {
-      summary: result.output.summary,
+      summary: reviewedOutput.summary,
       agent_slug: agentSlug,
       command_name: commandName,
-      risk_level: result.output.severity,
-      findings: result.output.findings,
-      recommended_actions: result.output.recommended_actions,
+      risk_level: reviewedOutput.severity,
+      findings: reviewedOutput.findings,
+      recommended_actions: reviewedOutput.recommended_actions,
       code_proposals: proposals,
       backend: result.backend,
       safety: { no_arbitrary_shell: true, preserve_marvin_approval: true, preserve_designer_gate: true, no_auto_publish: true, code_proposals_applied: false },
@@ -763,7 +769,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
 
   if (agentSlug === 'agency-orchestrator') {
     const result = await runStructuredAgent('orchestratorReview', agentSlug, backend, snapshot.system_health || snapshot.overview, snapshot, taskInput);
-    const out = result.output;
+    const out = normalizeEvidenceBackedReview(result.output, snapshot, 'agency operations');
 
     // Build Discord report from today's findings + orchestrator output
     const todayFindings = snapshot.findings.filter((f) => {

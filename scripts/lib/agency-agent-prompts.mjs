@@ -1,3 +1,16 @@
+const EVIDENCE_FINDING_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['severity', 'state', 'evidence_ids', 'title', 'description'],
+  properties: {
+    severity: { type: 'string', enum: ['info', 'low', 'medium', 'high', 'critical'] },
+    state: { type: 'string', enum: ['active', 'recovered', 'historical'] },
+    evidence_ids: { type: 'array', minItems: 1, items: { type: 'string' } },
+    title: { type: 'string' },
+    description: { type: 'string' },
+  },
+};
+
 export const AGENCY_SCHEMAS = {
   research: {
     type: 'object',
@@ -281,7 +294,7 @@ export const AGENCY_SCHEMAS = {
     properties: {
       severity: { type: 'string', enum: ['info', 'low', 'medium', 'high', 'critical'] },
       summary: { type: 'string' },
-      findings: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['severity', 'title', 'description'], properties: { severity: { type: 'string', enum: ['info', 'low', 'medium', 'high', 'critical'] }, title: { type: 'string' }, description: { type: 'string' } } } },
+      findings: { type: 'array', items: EVIDENCE_FINDING_SCHEMA },
       recommended_actions: { type: 'array', items: { type: 'string' } },
       // Optional code-fix PROPOSALS (system-reliability only). These are never
       // applied automatically — they are posted to Discord for a human to act on.
@@ -311,7 +324,7 @@ export const AGENCY_SCHEMAS = {
     properties: {
       severity: { type: 'string', enum: ['info', 'low', 'medium', 'high', 'critical'] },
       summary: { type: 'string' },
-      findings: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['severity', 'title', 'description'], properties: { severity: { type: 'string', enum: ['info', 'low', 'medium', 'high', 'critical'] }, title: { type: 'string' }, description: { type: 'string' } } } },
+      findings: { type: 'array', items: EVIDENCE_FINDING_SCHEMA },
       recommended_actions: { type: 'array', items: { type: 'string' } },
       code_proposals: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['title', 'problem', 'suggested_fix', 'affected_files', 'risk'], properties: { title: { type: 'string' }, problem: { type: 'string' }, root_cause: { type: 'string' }, suggested_fix: { type: 'string' }, affected_files: { type: 'array', items: { type: 'string' } }, diff: { type: 'string' }, risk: { type: 'string', enum: ['low', 'medium', 'high'] } } } },
     },
@@ -323,7 +336,7 @@ export const AGENCY_SCHEMAS = {
     properties: {
       severity: { type: 'string', enum: ['info', 'low', 'medium', 'high', 'critical'] },
       summary: { type: 'string' },
-      findings: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['severity', 'title', 'description'], properties: { severity: { type: 'string', enum: ['info', 'low', 'medium', 'high', 'critical'] }, title: { type: 'string' }, description: { type: 'string' } } } },
+      findings: { type: 'array', items: EVIDENCE_FINDING_SCHEMA },
       recommended_actions: { type: 'array', items: { type: 'string' } },
     },
   },
@@ -334,7 +347,7 @@ export const AGENCY_SCHEMAS = {
     properties: {
       severity: { type: 'string', enum: ['info', 'low', 'medium', 'high', 'critical'] },
       summary: { type: 'string' },
-      findings: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['severity', 'title', 'description'], properties: { severity: { type: 'string', enum: ['info', 'low', 'medium', 'high', 'critical'] }, title: { type: 'string' }, description: { type: 'string' } } } },
+      findings: { type: 'array', items: EVIDENCE_FINDING_SCHEMA },
       recommended_actions: { type: 'array', items: { type: 'string' } },
       assignments: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['agent_slug', 'action', 'priority', 'reason'], properties: { agent_slug: { type: 'string' }, action: { type: 'string' }, priority: { type: 'string', enum: ['low', 'medium', 'high'] }, reason: { type: 'string' } } } },
     },
@@ -460,13 +473,13 @@ export function buildAgencyPrompt(kind, { client, snapshot, task }) {
     return base;
   }
   if (kind === 'reliabilityReview') {
-    return `${shared}\n\nAudit runtime reliability only: generation runs, approved jobs, backend attempts, leases, expected schedule timing, retries, and recorded errors. The health snapshot contains a 168-hour INCIDENT HISTORY: failed or completed_with_errors runs are historical evidence, not unresolved current failures. Prefer current running/queued counts, the newest run outcome, the task's expected package count, and current posts_generated_this_week. Do not call the system currently blocked or assign high severity solely because earlier attempts failed when a later run or current count shows recovery. A zero-output run is not a failure when no package slot was due. Tie every finding to a run, job, or backend identifier in the supplied snapshot. Do not discuss content strategy, local git state, or security unless it directly caused a runtime failure. Code proposals are advisory and must never be applied automatically. Name affected_files only when an exact repository path is present in supplied evidence; otherwise return an empty affected_files array. Never invent filenames.`;
+    return `${shared}\n\nAudit runtime reliability only: generation runs, approved jobs, backend attempts, leases, expected schedule timing, retries, and recorded errors. The health snapshot contains a 168-hour INCIDENT HISTORY: failed or completed_with_errors runs are historical evidence, not unresolved current failures. Prefer current running/queued counts, the newest run outcome, the task's expected package count, and current posts_generated_this_week. Do not call the system currently blocked or assign high severity solely because earlier attempts failed when a later run or current count shows recovery. A zero-output run is not a failure when no package slot was due. Every finding must set state to active, recovered, or historical and list evidence_ids copied exactly from the supplied snapshot. Active means the newest relevant record is still unresolved; recovered/historical findings must use info severity. If no active issue exists, return overall info severity, no recommended actions, and no code proposals. Do not discuss content strategy, local git state, or security unless it directly caused a runtime failure. Code proposals are advisory and must never be applied automatically. Name affected_files only when an exact repository path is present in supplied evidence; otherwise return an empty affected_files array. Never invent filenames.`;
   }
   if (kind === 'securityReview') {
-    return `${shared}\n\nAudit security only: authentication failures, authorization boundaries, role access, bot-secret protection, approved-command whitelisting, credential exposure, MCP permissions, and sensitive logging. An error_log included in this internal bot-only snapshot is not user-facing evidence by itself; report path or stack disclosure only when the snapshot proves it crossed a public or unauthorized boundary. Ordinary 500 errors are reliability findings unless they expose sensitive data or bypass a security control. Do not report content throughput, local git status, copy quality, or ordinary generation failures as security findings. Redact secrets and recommend human-reviewed remediation only.`;
+    return `${shared}\n\nAudit security only: authentication failures, authorization boundaries, role access, bot-secret protection, approved-command whitelisting, credential exposure, MCP permissions, and sensitive logging. Every finding must set state to active, recovered, or historical and list evidence_ids copied exactly from the supplied snapshot. Active means the snapshot proves a current unresolved security boundary failure; recovered/historical findings must use info severity. An error_log included in this internal bot-only snapshot is not user-facing evidence by itself; report path or stack disclosure only when the snapshot proves it crossed a public or unauthorized boundary. Ordinary 500 errors are reliability findings unless they expose sensitive data or bypass a security control. Do not report content throughput, local git status, copy quality, or ordinary generation failures as security findings. Redact secrets and recommend human-reviewed remediation only.`;
   }
   if (kind === 'orchestratorReview') {
-    return `${shared}\n\nAct as the agency operations coordinator. Prioritize only current, evidence-backed work. Historical generation failures are resolved incidents when current package counts and later successful runs show recovery. waiting_marvin_approval and waiting_designer_assets are intentional human workflow gates, not failures or bottlenecks unless supplied evidence includes an overdue age or breached SLA. Convert each actionable issue into an assignment naming the responsible existing agent, one concrete action, priority, and reason. Respect profile-completeness, editorial-review, Marvin approval, and designer gates. Do not duplicate reliability/security findings and do not claim an assignment was executed.`;
+    return `${shared}\n\nAct as the agency operations coordinator. Prioritize only current, evidence-backed work. Every finding must set state to active, recovered, or historical and list evidence_ids copied exactly from the supplied snapshot. Historical generation failures are resolved incidents when current package counts and later successful runs show recovery; recovered/historical findings must use info severity and must not create assignments. waiting_marvin_approval and waiting_designer_assets are intentional human workflow gates, not failures or bottlenecks unless supplied evidence includes an overdue age or breached SLA. Convert each active actionable issue into an assignment naming the responsible existing agent, one concrete action, priority, and reason. Respect profile-completeness, editorial-review, Marvin approval, and designer gates. Do not duplicate reliability/security findings and do not claim an assignment was executed.`;
   }
   return `${shared}\n\nReview the provided task/content context for factual risk, repetition, quality, and platform fit.`;
 }
