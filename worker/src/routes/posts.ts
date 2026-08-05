@@ -2,7 +2,7 @@
  * Post routes — CRUD + workflow actions
  */
 import { Hono } from 'hono';
-import type { Env, SessionData } from '../types';
+import type { Env, PostRow, SessionData } from '../types';
 import {
   listPosts,
   getPostById,
@@ -16,14 +16,17 @@ import {
   attachAssetsToPost,
   getLatestContentReview,
   preserveEditorialFeedbackBeforePostDelete,
+  getClientRestrictions,
 } from '../db/queries';
 import { buildPostContentHash, hasReviewAffectingUpdate } from '../modules/content-review';
+import { CAPTION_MAX_LEN } from '../modules/captions';
 import { normalizeContentType, parsePlatforms, resolvePlatformSelection, withImplicitBlogPlatform } from '../modules/platform-compatibility';
 import { cleanupLegacyInvalidPlatformAttempts, syncPublishedUrls } from '../modules/published-urls';
 import { runPosting } from '../loader/posting-run';
 import { runFetchUrls } from './run';
 import { normalizeBlogDraftPayload } from '../modules/blog-publishing';
 import { requirePermission } from '../middleware/auth';
+import { findRestrictedContentPhrase } from '../services/openai';
 
 export const postRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -31,6 +34,23 @@ function parseRequestedPlatforms(body: Record<string, unknown>): string[] {
   if (typeof body['platforms'] === 'string') return parsePlatforms(body['platforms'] as string);
   if (Array.isArray(body['platforms'])) return parsePlatforms(body['platforms'] as string[]);
   return [];
+}
+
+function generatedCaptionField(platform: string): keyof PostRow | null {
+  switch (platform) {
+    case 'facebook': return 'cap_facebook';
+    case 'instagram': return 'cap_instagram';
+    case 'linkedin': return 'cap_linkedin';
+    case 'x': return 'cap_x';
+    case 'threads': return 'cap_threads';
+    case 'tiktok': return 'cap_tiktok';
+    case 'pinterest': return 'cap_pinterest';
+    case 'bluesky': return 'cap_bluesky';
+    case 'google_business': return 'cap_google_business';
+    case 'youtube': return 'youtube_title';
+    case 'website_blog': return 'blog_excerpt';
+    default: return null;
+  }
 }
 
 /** GET /api/posts */
@@ -662,8 +682,8 @@ postRoutes.post('/:id/generate-caption', async (c) => {
   const { platform, allow_platform_override } = await c.req.json<{ platform: string; allow_platform_override?: boolean }>();
   if (!platform) return c.json({ error: 'platform required' }, 400);
 
-  // Map platform to caption field
-  const capField = platform === 'google_business' ? 'cap_google_business' : `cap_${platform}`;
+  const capField = generatedCaptionField(platform);
+  if (!capField) return c.json({ error: 'Unsupported platform' }, 400);
 
   const client = await getClientWithConfig(c.env.DB, post.client_id);
   if (!client) return c.json({ error: 'Client not found' }, 404);
@@ -683,10 +703,13 @@ postRoutes.post('/:id/generate-caption', async (c) => {
     }, 409);
   }
 
-  const intel = await c.env.DB
-    .prepare('SELECT * FROM client_intelligence WHERE client_id = ?')
-    .bind(post.client_id)
-    .first<{ brand_voice?: string | null; prohibited_terms?: string | null }>();
+  const [intel, restrictions] = await Promise.all([
+    c.env.DB
+      .prepare('SELECT * FROM client_intelligence WHERE client_id = ?')
+      .bind(post.client_id)
+      .first<{ brand_voice?: string | null; prohibited_terms?: string | null }>(),
+    getClientRestrictions(c.env.DB, post.client_id),
+  ]);
 
   // Build a focused prompt for one platform caption
   const platformInstructions: Record<string, string> = {
@@ -695,11 +718,11 @@ postRoutes.post('/:id/generate-caption', async (c) => {
     linkedin:        'professional LinkedIn caption, insight-driven, no hashtag spam (200-500 chars, 3-5 hashtags max)',
     x:               'X/Twitter post, punchy and direct, max 280 chars total',
     threads:         'casual Threads post, conversational, 100-250 chars',
-    tiktok:          'TikTok caption with trending hashtags (150-250 chars + 5-10 hashtags)',
-    pinterest:       'Pinterest description, keyword-rich, 100-200 chars + 5-8 hashtags',
+    tiktok:          'complete TikTok caption, maximum 90 characters total including hashtags; never rely on truncation',
+    pinterest:       'complete Pinterest title, maximum 100 characters total including hashtags; never rely on truncation',
     bluesky:         'Bluesky post, casual and direct, max 300 chars',
     google_business: 'Google Business post, factual and local, 100-250 chars, NO hashtags',
-    youtube:         'YouTube description with CTA (200-400 chars)',
+    youtube:         'YouTube title, 60-70 characters',
     website_blog:    'blog teaser/excerpt, compelling lead paragraph (100-200 chars)',
   };
 
@@ -721,8 +744,8 @@ postRoutes.post('/:id/generate-caption', async (c) => {
     if (post.gbp_cta_type && GBP_CTA_INTENT[post.gbp_cta_type]) instrText += ` ${GBP_CTA_INTENT[post.gbp_cta_type]}`;
   }
 
-  const prompt = `You are a social media writer for ${client.canonical_name}.${client.industry ? ` Industry: ${client.industry}.` : ''}${lang !== 'en' ? ` Write in ${lang}.` : ''}
-${intel?.brand_voice ? `Brand voice: ${intel.brand_voice}.` : ''}${intel?.prohibited_terms ? ` NEVER USE: ${intel.prohibited_terms}.` : ''}${client.cta_text ? ` Preferred CTA: ${client.cta_text}.` : ''}
+  const prompt = `You are a social media writer for ${client.canonical_name}.${client.industry ? ` Industry: ${client.industry}.` : ''} Write in ${lang === 'en' ? 'English' : lang}.
+${intel?.brand_voice ? `Brand voice: ${intel.brand_voice}.` : ''}${intel?.prohibited_terms ? ` NEVER USE: ${intel.prohibited_terms}.` : ''}${restrictions.length > 0 ? ` CLIENT RESTRICTIONS: ${restrictions.join('; ')}.` : ''}${client.cta_text ? ` Preferred CTA: ${client.cta_text}.` : ''}
 
 Post title: ${post.title ?? ''}
 Master caption: ${post.master_caption ?? ''}
@@ -757,9 +780,18 @@ Return JSON: { "caption": "..." }`;
 
   let caption: string;
   try {
-    caption = (JSON.parse(raw) as { caption: string }).caption;
+    caption = (JSON.parse(raw) as { caption: string }).caption?.trim();
   } catch {
     return c.json({ error: 'Failed to parse response' }, 502);
+  }
+  if (!caption) return c.json({ error: 'Generation returned an empty caption' }, 502);
+  const maxLength = CAPTION_MAX_LEN[platform];
+  if (maxLength && caption.length > maxLength) {
+    return c.json({ error: `Generated caption exceeds ${platform} limit of ${maxLength} characters` }, 502);
+  }
+  const restrictedPhrase = findRestrictedContentPhrase(caption, restrictions);
+  if (restrictedPhrase) {
+    return c.json({ error: `Generated caption violated a client restriction: ${restrictedPhrase}` }, 422);
   }
 
   // Save caption to post and add platform to platforms list
@@ -768,10 +800,11 @@ Return JSON: { "caption": "..." }`;
     ? existingPlatforms
     : [...existingPlatforms, platform];
 
-  await c.env.DB
-    .prepare(`UPDATE posts SET ${capField} = ?, platforms = ?, platform_manual_override = ?, updated_at = ? WHERE id = ?`)
-    .bind(caption, JSON.stringify(updatedPlatforms), allow_platform_override === true ? 1 : post.platform_manual_override, Math.floor(Date.now() / 1000), post.id)
-    .run();
+  await updatePost(c.env.DB, post.id, {
+    [capField]: caption,
+    platforms: JSON.stringify(updatedPlatforms),
+    platform_manual_override: allow_platform_override === true ? 1 : post.platform_manual_override,
+  } as Partial<PostRow>);
 
   await writeAuditLog(c.env.DB, {
     user_id: c.get('user').userId,
