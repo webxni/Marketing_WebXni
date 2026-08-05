@@ -182,6 +182,8 @@ function runClaude(prompt, schema, mode) {
   }
   const args = [
     '-p',
+    '--safe-mode',
+    '--tools', '',
     '--output-format', 'json',
     '--effort', mode === 'blog' ? 'medium' : 'low',
     '--model', process.env.CLAUDE_CODE_MODEL || 'sonnet',
@@ -313,6 +315,7 @@ export function buildCodexExecArgs({ prompt, schemaPath, outputPath, model }) {
     'exec',
     '--skip-git-repo-check',
     '--ephemeral',
+    '--ignore-user-config',
     '--output-schema', schemaPath,
     '--output-last-message', outputPath,
     '-C', process.cwd(),

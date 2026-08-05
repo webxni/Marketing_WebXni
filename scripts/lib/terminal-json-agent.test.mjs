@@ -14,6 +14,7 @@ ok('codex exec writes the last message with the current flag', () => {
   });
   assert.equal(args[0], 'exec');
   assert.ok(args.includes('--output-last-message'));
+  assert.ok(args.includes('--ignore-user-config'));
   assert.equal(args[args.indexOf('--output-last-message') + 1], '/tmp/last-message.txt');
   assert.ok(!args.includes('-o'));
 });
