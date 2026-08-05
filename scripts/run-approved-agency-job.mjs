@@ -1421,28 +1421,38 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
     const reviewed = [];
     const severityRank = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
     let worst = 'info';
-    for (const item of items) {
-      try {
-        const target = {
-          id: item.id,
-          title: `${item.content_type} review: ${item.title || item.client_name}`,
-          status: 'pending_approval',
-          post_id: item.id,
-          content_brief: item.content_brief,
-          content: item,
-        };
-        const result = await runStructuredAgent('editorialReview', agentSlug, backend, target, snapshot, taskInput);
-        await post('/internal/agency/content-review', {
-          agent_slug: agentSlug,
-          task_id: taskId,
-          post_id: item.id,
-          severity: result.output.severity,
-          notes_json: result.output,
-        });
-        if ((severityRank[result.output.severity] ?? 0) > (severityRank[worst] ?? 0)) worst = result.output.severity;
-        reviewed.push({ post_id: item.id, client: item.client_name, content_type: item.content_type, severity: result.output.severity, backend: result.backend });
-      } catch (err) {
-        console.warn(`[editorial-review] ${item.id} failed: ${redactSecrets(err instanceof Error ? err.message : String(err)).slice(0, 160)}`);
+    const reviewConcurrency = Math.max(1, Math.min(Number(process.env.AGENCY_EDITORIAL_CONCURRENCY || 4), 6));
+    for (let i = 0; i < items.length; i += reviewConcurrency) {
+      const batch = items.slice(i, i + reviewConcurrency);
+      await pingLease(`editorial review: ${i + 1}-${Math.min(i + batch.length, items.length)} of ${items.length}`);
+      const results = await Promise.all(batch.map(async (item) => {
+        try {
+          const target = {
+            id: item.id,
+            title: `${item.content_type} review: ${item.title || item.client_name}`,
+            status: 'pending_approval',
+            post_id: item.id,
+            content_brief: item.content_brief,
+            content: item,
+          };
+          const result = await runStructuredAgent('editorialReview', agentSlug, backend, target, snapshot, taskInput);
+          await post('/internal/agency/content-review', {
+            agent_slug: agentSlug,
+            task_id: taskId,
+            post_id: item.id,
+            severity: result.output.severity,
+            notes_json: result.output,
+          });
+          return { post_id: item.id, client: item.client_name, content_type: item.content_type, severity: result.output.severity, backend: result.backend };
+        } catch (err) {
+          console.warn(`[editorial-review] ${item.id} failed: ${redactSecrets(err instanceof Error ? err.message : String(err)).slice(0, 160)}`);
+          return null;
+        }
+      }));
+      for (const result of results) {
+        if (!result) continue;
+        if ((severityRank[result.severity] ?? 0) > (severityRank[worst] ?? 0)) worst = result.severity;
+        reviewed.push(result);
       }
     }
     return {
