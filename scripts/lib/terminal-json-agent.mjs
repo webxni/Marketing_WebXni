@@ -67,22 +67,28 @@ function isBackendAvailable(backend) {
  * Expand a priority list into an ordered list of available backends.
  * 'auto' expands to all available backends in default order.
  */
-function expandPriority(backends) {
+function completePriority(backends) {
   const AUTO_ORDER = ['codex', 'gemini', 'claude', 'hermes', 'openai'];
+  const requested = backends.flatMap((backend) => {
+    const normalized = normalizeBackendName(backend);
+    return normalized === 'auto' ? AUTO_ORDER : [normalized];
+  });
+  return [...new Set([
+    ...requested.filter((backend) => backend && backend !== 'openai'),
+    ...AUTO_ORDER.filter((backend) => backend !== 'openai'),
+    'openai',
+  ])];
+}
+
+function expandPriority(backends) {
+  const completeOrder = completePriority(backends);
   const seen = new Set();
   const result = [];
-  for (const b of backends) {
-    const normalized = normalizeBackendName(b);
-    const candidates = normalized === 'auto' ? AUTO_ORDER : [normalized];
-    for (const c of candidates) {
-      if (!seen.has(c) && isBackendAvailable(c)) {
-        seen.add(c);
-        result.push(c);
-      }
+  for (const backend of completeOrder) {
+    if (!seen.has(backend) && isBackendAvailable(backend)) {
+      seen.add(backend);
+      result.push(backend);
     }
-  }
-  if (!seen.has('openai') && isBackendAvailable('openai')) {
-    result.push('openai');
   }
   if (result.length === 0) {
     const tried = backends.join(', ');
@@ -491,4 +497,4 @@ export async function runTerminalJsonAgent({ prompt, schema, preferredBackend, m
   throw failure;
 }
 
-export { isBackendAvailable, expandPriority, normalizeBackendName };
+export { isBackendAvailable, expandPriority, completePriority, normalizeBackendName };

@@ -1,6 +1,6 @@
 // Run: node scripts/lib/terminal-json-agent.test.mjs
 import assert from 'node:assert/strict';
-import { buildCodexExecArgs } from './terminal-json-agent.mjs';
+import { buildCodexExecArgs, completePriority } from './terminal-json-agent.mjs';
 
 let passed = 0;
 const ok = (label, fn) => { fn(); passed++; console.log(`  ok  ${label}`); };
@@ -27,6 +27,13 @@ ok('codex exec keeps the prompt as the final positional argument', () => {
   });
   assert.equal(args.at(-1), 'Return only JSON');
   assert.ok(!args.includes('-m'));
+});
+
+ok('explicit agent priorities still try every available terminal before OpenAI', () => {
+  assert.deepEqual(
+    completePriority(['claude_code', 'hermes', 'openai']),
+    ['claude', 'hermes', 'codex', 'gemini', 'openai'],
+  );
 });
 
 console.log(`\n${passed} terminal JSON agent tests passed`);
