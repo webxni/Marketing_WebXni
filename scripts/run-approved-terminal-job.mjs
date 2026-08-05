@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { buildCodexExecArgs, expandPriority, runTerminalJsonAgent } from './lib/terminal-json-agent.mjs';
+import { buildRetryCorrection } from './lib/retry-feedback.mjs';
 
 function argValue(flag) {
   const idx = process.argv.indexOf(flag);
@@ -450,7 +451,7 @@ async function processSlot(summary, args, total, backend) {
 
   try {
     const generationPrompt = summary.retry_feedback
-      ? `${slotReq.prompt}\n\nRETRY CORRECTION\nThe previous attempt was rejected for the following reason. Correct it explicitly while preserving the assigned schema and brief:\n${summary.retry_feedback}`
+      ? `${slotReq.prompt}\n\nRETRY CORRECTION\nCorrect the previous attempt while preserving the assigned schema and refreshed brief:\n${buildRetryCorrection(summary.retry_feedback)}`
       : slotReq.prompt;
     const generatedResult = await runTerminalAgent(generationPrompt, slotReq.schema, slotReq.plan ?? null);
     const generated = generatedResult.output;
