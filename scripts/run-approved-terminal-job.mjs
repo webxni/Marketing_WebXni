@@ -399,6 +399,8 @@ MANDATORY REVIEW CHECKS:
 - Preserve the assigned client, content type, topic, exact target_keyword, and exact target_locality from the original brief.
 - Replace recycled title frames such as "before you hire," "what to know," "questions answered," "things to check," "expert insights," "trusted solutions," "addressing concerns," "top tips," "choosing the right," "key criteria," and generic checklists with a title that names the concrete decision, risk, material, mechanism, or process being taught.
 - Remove invented prices, statistics, ratings, review counts, response times, arrival windows, guarantees, certifications, and offers.
+- Present unverified workflows as educational factors a technician may evaluate, not as an established company-wide policy, mandatory step, or universal procedure.
+- Make the title clear to an ordinary customer. Replace technician shorthand, unexplained jargon, and ambiguous fragments with the concrete decision, risk, or outcome being taught.
 - If a phone appears, use only the exact client phone supplied in the original brief; otherwise omit it.
 - Keep every service and location inside the confirmed client profile. Remove unrelated industries, products, cities, and keyword phrases.
 - Make platform captions meaningfully distinct and useful on their channel; keep designer prompts in Spanish.

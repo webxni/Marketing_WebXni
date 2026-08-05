@@ -71,6 +71,7 @@ describe('generated caption normalization', () => {
     const prompt = buildGenerationRequest(socialContext).prompt;
     expect(prompt).toContain('1200x628');
     expect(prompt).toContain('immediate help');
+    expect(prompt).toContain('universal procedure');
   });
 
   it('rejects a designer prompt with the wrong asset dimensions', () => {

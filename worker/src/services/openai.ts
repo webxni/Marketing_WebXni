@@ -517,11 +517,12 @@ Return ONLY JSON matching the requested schema. Keep captions concise and platfo
 QUALITY BAR FOR THIS SOCIAL POST:
 - Write like a premium agency strategist who knows this client, not a generic social template.
 - The opening line must name a specific homeowner problem, decision, room, service, or local context.
-- Include at least one concrete credibility/process detail from the client memory when available: dedicated project managers, transparent communication, 15+ years of experience, high-end remodeling, or service-area context.
+- Include a concrete credibility or process detail only when that exact detail is present in the supplied client memory or topic directive. Otherwise explain customer decisions and risk factors without presenting a diagnostic step as the company's universal procedure.
 - Do not write vague benefit stacks such as "enhance comfort, boost value, enjoy your space" unless paired with a specific remodeling decision or example.
 - Facebook and Google Business captions should read like expert guidance, not ad copy.
 - Instagram can be warmer, but still must include a specific service/local angle before hashtags.
 - If the topic is broad, narrow it to one useful homeowner decision instead of making a generic list.`;
+  prompt += `\n- Titles must use plain customer language. Replace technician shorthand, unexplained jargon, and ambiguous fragments with the concrete decision or outcome being taught.`;
   prompt += `\n- Do not use recycled title frames such as "before you hire," "what to know," "questions answered," "things to check," "expert insights," "trusted solutions," "addressing concerns," "top tips," "choosing the right," "key criteria," or generic checklists. Name the concrete decision, risk, material, mechanism, or process the post teaches.`;
 
   prompt += `\n- "ai_image_prompt": MUST BE IN SPANISH. Designer brief with ${assetSpec}${brandColors ? ` Colores de marca: ${brandColors}.` : ''} Include style, composition, mood, visual elements, overlay text, and recommended tool in 3-4 sentences.`;
