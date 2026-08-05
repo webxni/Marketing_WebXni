@@ -420,6 +420,7 @@ function buildSharedContext(ctx: GenerationContext, mode: 'social' | 'blog'): st
   block += '\n- Keep claims specific to services, expertise, process, and value.';
   block += '\n- Stay inside the service list, service areas, and required keyword pool. Do not introduce unrelated industries, cities, services, or themes.';
   block += '\n- Write naturally. Avoid filler openers and generic marketing language.';
+  block += '\n- Do not use generic authority or urgency phrases such as trusted service, expert answers, expert guidance, expert help, expert service, expert solutions, your safety is our priority, seamless integration, tailored plan, or immediate help.';
   if (lang !== 'en') block += `\n- Write all customer-facing copy in ${lang}.`;
 
   if (recentTitles.length > 0) {

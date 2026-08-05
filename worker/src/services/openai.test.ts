@@ -68,7 +68,9 @@ describe('generated caption normalization', () => {
   });
 
   it('uses the documented horizontal format for multi-platform images', () => {
-    expect(buildGenerationRequest(socialContext).prompt).toContain('1200x628');
+    const prompt = buildGenerationRequest(socialContext).prompt;
+    expect(prompt).toContain('1200x628');
+    expect(prompt).toContain('immediate help');
   });
 
   it('rejects a designer prompt with the wrong asset dimensions', () => {
