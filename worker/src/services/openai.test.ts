@@ -3,6 +3,7 @@ import {
   buildGenerationRequest,
   buildBlogContentHtml,
   canonicalizeGeneratedPhoneNumbers,
+  findRestrictedContentPhrase,
   isGeneratedCaptionField,
   normalizeGeneratedCaptionValue,
   validateGeneratedContent,
@@ -175,6 +176,44 @@ describe('generated caption normalization', () => {
     }, socialContext);
     expect(quality.passed).toBe(false);
     expect(quality.warnings).toContain('malformed phone: use the exact client phone (323) 555-0100');
+  });
+
+  it('matches restricted service language across reprogramming variants', () => {
+    expect(findRestrictedContentPhrase(
+      'Car digital and remote key reprogramming in Hollywood',
+      ['car key programming under any circumstance ever'],
+    )).toBe('car key programming');
+  });
+
+  it('rejects client-restricted copy and visual phone overlays', () => {
+    const quality = validateGeneratedContent({
+      title: 'Car Remote Reprogramming in Hollywood',
+      master_caption: 'Car digital key reprogramming in Hollywood requires a vehicle-specific check.',
+      target_keyword: 'car key programming Hollywood',
+      target_locality: 'Hollywood',
+      ai_image_prompt: 'IMAGE HORIZONTAL 1200x628. Texto: (323) 555-0100.',
+    }, {
+      ...socialContext,
+      restrictions: ['car key programming under any circumstance ever', 'No phone number in images'],
+    });
+    expect(quality.warnings).toContain('restricted client content: "car key programming"');
+    expect(quality.warnings).toContain('restricted client content: phone number in visual prompt');
+  });
+
+  it('rejects hashtags in restricted Google Business captions', () => {
+    const quality = validateGeneratedContent({
+      title: 'Hollywood Rekeying After a Move',
+      master_caption: 'A residential locksmith Hollywood homeowners call can explain how rekeying changes access.',
+      cap_google_business: 'Residential rekeying in Hollywood. #Locksmith',
+      target_keyword: 'residential locksmith Hollywood',
+      target_locality: 'Hollywood',
+      ai_image_prompt: 'IMAGE HORIZONTAL 1200x628.',
+    }, {
+      ...socialContext,
+      platforms: ['google_business'],
+      restrictions: ['No hashtags on Google'],
+    });
+    expect(quality.warnings).toContain('restricted client content: hashtag in Google Business caption');
   });
 
   it('rejects unverified licensing and generic expert-answer copy', () => {

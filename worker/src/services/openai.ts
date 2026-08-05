@@ -243,12 +243,63 @@ export interface GenerationContext {
   serviceAreas?:   string[];
   serviceNames?:   string[];
   targetKeywords?: string[];
+  restrictions?:   string[];
   // Derived format history — drives format rotation
   recentFormats?:  ContentFormat[];
   // High-quality mode — uses better model + larger token budget
   highQuality?:    boolean;
   strategicContext?: string | null;
   sourceCaption?: string | null;
+}
+
+function restrictionPhraseCandidates(restrictions: string[]): string[] {
+  const phrases: string[] = [];
+  for (const raw of restrictions) {
+    const term = raw.trim();
+    if (!term) continue;
+    const lower = term.toLowerCase();
+    const neverMention = term.match(/^never mention\s+(.+)$/i);
+    const underAnyCircumstance = term.match(/^(.+?)\s+under any circumstance(?:\s+ever)?$/i);
+    const noMention = term.match(/^no mention of\s+(.+)$/i);
+    const neverMix = term.match(/^never mix with\s+(.+)$/i);
+    const separateBrand = term.match(/^(.+?)\s+is a separate subdomain/i);
+    const doNotPromote = term.match(/^do not promote\s+(.+?)(?:\s*\(|$)/i);
+
+    if (neverMention) phrases.push(neverMention[1]);
+    else if (underAnyCircumstance) phrases.push(underAnyCircumstance[1]);
+    else if (noMention) phrases.push(noMention[1]);
+    else if (neverMix) phrases.push(neverMix[1]);
+    else if (separateBrand) phrases.push(separateBrand[1]);
+    else if (doNotPromote) phrases.push(...doNotPromote[1].split(/\s+or\s+/i));
+    else if (lower === 'duplicate keys') phrases.push(term);
+    else if (lower.includes('financing')) phrases.push('financing');
+    else if (lower.includes('mixing solar')) phrases.push('solar');
+  }
+  return [...new Set(phrases.map((phrase) => phrase.trim()).filter(Boolean))];
+}
+
+function comparableRestrictionTokens(value: string): string[] {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((token) => {
+      if (/^(?:re)?programm(?:e|ed|ing)?$/.test(token)) return 'program';
+      if (token.endsWith('ies') && token.length > 4) return `${token.slice(0, -3)}y`;
+      if (token.endsWith('s') && !token.endsWith('ss') && token.length > 4) return token.slice(0, -1);
+      return token;
+    });
+}
+
+export function findRestrictedContentPhrase(value: string, restrictions: string[]): string | null {
+  const contentTokens = new Set(comparableRestrictionTokens(value));
+  for (const phrase of restrictionPhraseCandidates(restrictions)) {
+    const phraseTokens = comparableRestrictionTokens(phrase);
+    if (phraseTokens.length > 0 && phraseTokens.every((token) => contentTokens.has(token))) return phrase;
+  }
+  return null;
 }
 
 function line(condition: unknown, text: string): string {
@@ -1223,6 +1274,20 @@ export function validateGeneratedContent(
   ];
   for (const pattern of GENERIC_COPY) {
     if (pattern.test(customerText)) warnings.push(`generic pattern: "${pattern.source}"`);
+  }
+
+  const restrictions = ctx.restrictions ?? [];
+  const restrictedPhrase = findRestrictedContentPhrase(customerText, restrictions);
+  if (restrictedPhrase) warnings.push(`restricted client content: "${restrictedPhrase}"`);
+
+  if (restrictions.some((term) => /no phone number in images/i.test(term)) && clientPhoneDigits) {
+    const visualPromptDigits = normalizeDigits([post.ai_image_prompt, post.ai_video_prompt].filter(Boolean).join(' '));
+    if (visualPromptDigits.includes(clientPhoneDigits)) warnings.push('restricted client content: phone number in visual prompt');
+  }
+
+  if (restrictions.some((term) => /no hashtags on google/i.test(term))) {
+    const googleCopy = [post.cap_google_business, post.cap_gbp_la, post.cap_gbp_wa, post.cap_gbp_or].filter(Boolean).join(' ');
+    if (googleCopy.includes('#')) warnings.push('restricted client content: hashtag in Google Business caption');
   }
 
   const GENERIC: RegExp[] = [
