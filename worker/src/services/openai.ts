@@ -424,6 +424,11 @@ function getBrandColors(ctx: GenerationContext): string {
   }
 }
 
+function compactFeedbackNote(note: string): string {
+  const normalized = note.replace(/\s+/g, ' ').trim();
+  return normalized.length > 800 ? `${normalized.slice(0, 797)}...` : normalized;
+}
+
 function buildSharedContext(ctx: GenerationContext, mode: 'social' | 'blog'): string {
   const { client, intelligence: i, recentTitles, feedback, contentIntent } = ctx;
   const lang = getLanguage(ctx);
@@ -484,8 +489,8 @@ function buildSharedContext(ctx: GenerationContext, mode: 'social' | 'blog'): st
     const uniqueFormats = [...new Set(recentFormats.slice(0, 6))];
     block += `\n\nRECENT FORMATS USED (pick a different one):\n${uniqueFormats.map(f => `- ${f.replace(/_/g, ' ')}`).join('\n')}`;
   }
-  if (positives.length > 0) block += `\n\nWHAT HAS WORKED WELL:\n${positives.map(f => `- ${f.note}`).join('\n')}`;
-  if (negatives.length > 0) block += `\n\nAVOID THESE PATTERNS:\n${negatives.map(f => `- ${f.note}`).join('\n')}`;
+  if (positives.length > 0) block += `\n\nWHAT HAS WORKED WELL:\n${positives.map(f => `- ${compactFeedbackNote(f.note)}`).join('\n')}`;
+  if (negatives.length > 0) block += `\n\nAVOID THESE PATTERNS:\n${negatives.map(f => `- ${compactFeedbackNote(f.note)}`).join('\n')}`;
 
   return block;
 }

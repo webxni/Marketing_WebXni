@@ -91,6 +91,18 @@ describe('generated caption normalization', () => {
     expect(prompt).toContain('NEVER mention car key fob');
   });
 
+  it('keeps editorial feedback concise in later generation briefs', () => {
+    const prompt = buildGenerationRequest({
+      ...socialContext,
+      feedback: [{
+        sentiment: 'negative',
+        note: `Do not repeat the rejected service angle. ${'Repeated detail '.repeat(100)}TAIL_MARKER`,
+      }],
+    }).prompt;
+    expect(prompt).toContain('Do not repeat the rejected service angle.');
+    expect(prompt).not.toContain('TAIL_MARKER');
+  });
+
   it('does not request or render a designer asset for blog slots', () => {
     const request = buildGenerationRequest(blogContext);
     const schema = request.schema.schema as { properties: Record<string, unknown> };
