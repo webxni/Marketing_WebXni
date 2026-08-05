@@ -78,7 +78,8 @@ describe('generated caption normalization', () => {
   it('uses the documented horizontal format for multi-platform images', () => {
     const prompt = buildGenerationRequest(socialContext).prompt;
     expect(prompt).toContain('1200x628');
-    expect(prompt).toContain('immediate help');
+    expect(prompt).toContain('service-specific calls to action');
+    expect(prompt).not.toContain('immediate help');
     expect(prompt).toContain('universal procedure');
   });
 
