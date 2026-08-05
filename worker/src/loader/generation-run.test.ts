@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildPackageSlots, existingPostTopicSelection, resolveKeywordLocality, resolveKeywordService, weeklyUsedServiceCategories, weeklyUsedTargetKeywords } from './generation-run';
+import { buildPackageSlots, existingPostTopicSelection, normalizeWeeklyServiceFamily, resolveKeywordLocality, resolveKeywordService, weeklyUsedServiceCategories, weeklyUsedTargetKeywords } from './generation-run';
 
 function pkg(overrides: Record<string, unknown>) {
   return {
@@ -139,7 +139,16 @@ describe('weeklyUsedTargetKeywords', () => {
       { title: 'Current Friday', target_keyword: 'Building lockout Pasadena', topic_service_category: 'Building lockouts', content_type: 'reel', publish_date: '2026-08-07T10:00', platforms: [] },
     ], '2026-08-06');
 
-    expect([...services]).toEqual(['general lock installation', 'building lockouts']);
+    expect([...services]).toEqual(['lock installation', 'building lockouts']);
+  });
+
+  it('groups equivalent locksmith service labels into one weekly topic family', () => {
+    expect(normalizeWeeklyServiceFamily('Door lock & bolt hardware installation')).toBe('lock installation');
+    expect(normalizeWeeklyServiceFamily('General lock installation')).toBe('lock installation');
+    expect(normalizeWeeklyServiceFamily('Car key copying')).toBe('key copying');
+    expect(normalizeWeeklyServiceFamily('Building key duplication')).toBe('key copying');
+    expect(normalizeWeeklyServiceFamily('Car lockouts')).toBe('automotive lockouts');
+    expect(normalizeWeeklyServiceFamily('Building lockouts')).toBe('building lockouts');
   });
 });
 
