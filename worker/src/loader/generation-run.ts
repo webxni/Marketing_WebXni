@@ -50,6 +50,7 @@ import {
   getGenerationRunById,
   createApprovedCommandJob,
   getClientGenerationTopicHistory,
+  getClientGenerationTopicHistoryForPeriod,
   getLatestClientResearch,
   getLatestClientStrategy,
   getClientKeywords,
@@ -656,6 +657,17 @@ export function weeklyUsedTargetKeywords(
   topicHistory: ClientGenerationTopicHistoryItem[],
   slotDate: string,
 ): Set<string> {
+  const { from, to } = contentWeekDateRange(slotDate);
+  return new Set(topicHistory
+    .filter((item) => {
+      const publishDate = item.publish_date?.slice(0, 10) ?? '';
+      return publishDate >= from && publishDate <= to;
+    })
+    .map((item) => item.target_keyword?.trim().toLowerCase() ?? '')
+    .filter(Boolean));
+}
+
+export function contentWeekDateRange(slotDate: string): { from: string; to: string } {
   const date = new Date(`${slotDate.slice(0, 10)}T12:00:00Z`);
   const weekday = date.getUTCDay();
   const mondayOffset = weekday === 0 ? 6 : weekday - 1;
@@ -665,13 +677,7 @@ export function weeklyUsedTargetKeywords(
   weekEnd.setUTCDate(weekStart.getUTCDate() + 6);
   const from = weekStart.toISOString().slice(0, 10);
   const to = weekEnd.toISOString().slice(0, 10);
-  return new Set(topicHistory
-    .filter((item) => {
-      const publishDate = item.publish_date?.slice(0, 10) ?? '';
-      return publishDate >= from && publishDate <= to;
-    })
-    .map((item) => item.target_keyword?.trim().toLowerCase() ?? '')
-    .filter(Boolean));
+  return { from, to };
 }
 
 export function normalizeWeeklyServiceFamily(serviceCategory: string): string {
@@ -698,15 +704,7 @@ export function weeklyUsedServiceCategories(
   topicHistory: ClientGenerationTopicHistoryItem[],
   slotDate: string,
 ): Set<string> {
-  const date = new Date(`${slotDate.slice(0, 10)}T12:00:00Z`);
-  const weekday = date.getUTCDay();
-  const mondayOffset = weekday === 0 ? 6 : weekday - 1;
-  const weekStart = new Date(date);
-  weekStart.setUTCDate(date.getUTCDate() - mondayOffset);
-  const weekEnd = new Date(weekStart);
-  weekEnd.setUTCDate(weekStart.getUTCDate() + 6);
-  const from = weekStart.toISOString().slice(0, 10);
-  const to = weekEnd.toISOString().slice(0, 10);
+  const { from, to } = contentWeekDateRange(slotDate);
   return new Set(topicHistory
     .filter((item) => {
       const publishDate = item.publish_date?.slice(0, 10) ?? '';
@@ -1226,6 +1224,7 @@ export async function buildSlotGenerationRequest(
   const db = env.DB;
   const run = await getGenerationRunById(db, runId);
   if (!run) throw new Error('Generation run not found');
+  if (run.status === 'cancelled') return null;
   const slots = JSON.parse(run.post_slots ?? '[]') as PostSlot[];
   if (slotIdx < 0 || slotIdx >= slots.length) throw new Error('Slot out of range');
 
@@ -1281,7 +1280,8 @@ export async function buildSlotGenerationRequest(
   );
   if (existingPost?.status === 'posted') return null;
 
-  const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows, keywordRows, topicHistory, restrictions] = await Promise.all([
+  const contentWeek = contentWeekDateRange(slot.date);
+  const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows, keywordRows, topicHistory, weeklyTopicHistory, restrictions] = await Promise.all([
     db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then((row) => row ?? null),
     db.prepare('SELECT sentiment, message AS note FROM client_feedback WHERE client_id = ? ORDER BY created_at DESC LIMIT 10').bind(client.id).all<FeedbackRow>(),
     db.prepare(`SELECT id, title, master_caption, content_type FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`).bind(client.id).all<{id:string;title:string|null;master_caption:string|null;content_type:string|null}>(),
@@ -1289,11 +1289,19 @@ export async function buildSlotGenerationRequest(
     db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC LIMIT 12').bind(client.id).all<{name:string}>(),
     getClientKeywords(db, client.id),
     getClientGenerationTopicHistory(db, client.id, 24),
+    getClientGenerationTopicHistoryForPeriod(db, client.id, contentWeek.from, contentWeek.to),
     getClientRestrictions(db, client.id),
   ]);
 
   const recentRows = recRows.results.filter((row) => row.id !== existingPost?.id);
-  const combinedTopicHistory = [...topicHistory, ...reservedTopicHistory];
+  const seenTopicHistory = new Set<string>();
+  const combinedTopicHistory = [...weeklyTopicHistory, ...topicHistory, ...reservedTopicHistory]
+    .filter((item) => {
+      const key = [item.publish_date, item.content_type, item.title, item.target_keyword].join('|').toLowerCase();
+      if (seenTopicHistory.has(key)) return false;
+      seenTopicHistory.add(key);
+      return true;
+    });
   const recentTitles = uniqueClean([
     ...recentRows.map((row) => row.title ?? row.master_caption?.slice(0, 80) ?? ''),
     ...reservedTopicHistory.map((item) => item.title),
@@ -1620,6 +1628,7 @@ export async function saveGeneratedSlotResult(
   const db = env.DB;
   const run = await getGenerationRunById(db, runId);
   if (!run) throw new Error('Generation run not found');
+  if (run.status === 'cancelled') return { outcome: 'skipped', persisted: 'skipped' };
   const slots = JSON.parse(run.post_slots ?? '[]') as PostSlot[];
   if (slotIdx < 0 || slotIdx >= slots.length) throw new Error('Slot out of range');
   const slot = slots[slotIdx];

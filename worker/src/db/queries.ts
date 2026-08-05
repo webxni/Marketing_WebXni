@@ -157,6 +157,42 @@ export interface ClientGenerationTopicHistoryRow {
   platforms: string[];
 }
 
+interface RawClientGenerationTopicHistoryRow {
+  id: string;
+  title: string | null;
+  target_keyword: string | null;
+  topic_service_category: string | null;
+  content_type: string | null;
+  publish_date: string | null;
+  platforms: string | null;
+}
+
+function mapClientGenerationTopicHistoryRows(rows: RawClientGenerationTopicHistoryRow[]): ClientGenerationTopicHistoryRow[] {
+  return rows
+    .filter((row): row is RawClientGenerationTopicHistoryRow & { title: string } =>
+      typeof row.title === 'string' && row.title.trim().length > 0)
+    .map((row) => {
+      let platforms: string[] = [];
+      try {
+        const parsed = JSON.parse(row.platforms ?? '[]') as unknown;
+        if (Array.isArray(parsed)) {
+          platforms = parsed.map((item) => String(item).trim()).filter(Boolean);
+        }
+      } catch {
+        platforms = [];
+      }
+      return {
+        id: row.id,
+        title: row.title.trim(),
+        target_keyword: row.target_keyword,
+        topic_service_category: row.topic_service_category,
+        content_type: row.content_type,
+        publish_date: row.publish_date,
+        platforms,
+      };
+    });
+}
+
 export interface ListClientContentHistoryParams {
   clientId: string;
   dateFrom?: string;
@@ -246,46 +282,33 @@ export async function getClientGenerationTopicHistory(
        LIMIT ?`,
     )
     .bind(clientId, Math.max(1, Math.min(limit, 60)))
-    .all<{
-      id: string;
-      title: string | null;
-      target_keyword: string | null;
-      topic_service_category: string | null;
-      content_type: string | null;
-      publish_date: string | null;
-      platforms: string | null;
-    }>();
+    .all<RawClientGenerationTopicHistoryRow>();
 
-  return rows.results
-    .filter((row): row is {
-      id: string;
-      title: string;
-      target_keyword: string | null;
-      topic_service_category: string | null;
-      content_type: string | null;
-      publish_date: string | null;
-      platforms: string | null;
-    } => typeof row.title === 'string' && row.title.trim().length > 0)
-    .map((row) => {
-      let platforms: string[] = [];
-      try {
-        const parsed = JSON.parse(row.platforms ?? '[]') as unknown;
-        if (Array.isArray(parsed)) {
-          platforms = parsed.map((item) => String(item).trim()).filter(Boolean);
-        }
-      } catch {
-        platforms = [];
-      }
-      return {
-        id: row.id,
-        title: row.title.trim(),
-        target_keyword: row.target_keyword,
-        topic_service_category: row.topic_service_category,
-        content_type: row.content_type,
-        publish_date: row.publish_date,
-        platforms,
-      };
-    });
+  return mapClientGenerationTopicHistoryRows(rows.results);
+}
+
+export async function getClientGenerationTopicHistoryForPeriod(
+  db: D1Database,
+  clientId: string,
+  dateFrom: string,
+  dateTo: string,
+): Promise<ClientGenerationTopicHistoryRow[]> {
+  const rows = await db
+    .prepare(
+      `SELECT id, title, target_keyword, topic_service_category, content_type, publish_date, platforms
+       FROM posts
+       WHERE client_id = ?
+         AND status NOT IN ('cancelled')
+         AND substr(publish_date, 1, 10) >= ?
+         AND substr(publish_date, 1, 10) <= ?
+         AND title IS NOT NULL
+         AND trim(title) != ''
+       ORDER BY publish_date ASC, created_at ASC`,
+    )
+    .bind(clientId, dateFrom, dateTo)
+    .all<RawClientGenerationTopicHistoryRow>();
+
+  return mapClientGenerationTopicHistoryRows(rows.results);
 }
 
 export async function listClientContentHistory(

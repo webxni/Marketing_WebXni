@@ -909,15 +909,16 @@ discordInternalRoute.post('/approved-jobs/:id/complete', async (c) => {
   if (runId && completedSlots !== null && requestedSlots !== null && completedSlots > 0) {
     const now = Math.floor(Date.now() / 1000);
     const finalStatus = completedSlots >= requestedSlots ? 'completed' : 'completed_with_errors';
-    await c.env.DB.prepare(
+    const updatedRun = await c.env.DB.prepare(
       `UPDATE generation_runs
        SET status = ?,
            current_slot_idx = CASE WHEN ? = 'completed' THEN COALESCE(total_slots, current_slot_idx) ELSE current_slot_idx END,
            completed_at = ?,
            last_activity_at = ?,
            error_log = CASE WHEN ? = 'completed' THEN NULL ELSE error_log END
-       WHERE id = ?`,
+       WHERE id = ? AND status != 'cancelled'`,
     ).bind(finalStatus, finalStatus, now, now, finalStatus, runId).run();
+    if (Number(updatedRun.meta?.changes ?? 0) === 0) return c.json({ ok: true, run_status_preserved: 'cancelled' });
     if (finalStatus === 'completed_with_errors') {
       const errorRecord = {
         kind: 'generation_error' as const,
