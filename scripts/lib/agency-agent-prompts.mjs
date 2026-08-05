@@ -371,6 +371,14 @@ const PLATFORM_QUALITY_STANDARD = [
   '- TikTok/Reels/video: action-oriented hook that matches a visual sequence the designer can execute.',
 ].join('\n');
 
+const SUPPLIED_CONTEXT_ONLY_KINDS = new Set([
+  'qualityCheck',
+  'editorialReview',
+  'reliabilityReview',
+  'securityReview',
+  'orchestratorReview',
+]);
+
 export function buildAgencyPrompt(kind, { client, snapshot, task }) {
   // content_brief carries the per-client "template": brand voice, services,
   // service areas, approved CTAs, and forbidden terms. Keep it out of the raw
@@ -386,6 +394,9 @@ export function buildAgencyPrompt(kind, { client, snapshot, task }) {
     'Preserve Marvin approval, designer asset delivery, and posting automation gates.',
     'Do not claim to publish, schedule, approve, or upload assets.',
     'Designer prompts must be Spanish.',
+    ...(SUPPLIED_CONTEXT_ONLY_KINDS.has(kind)
+      ? ['Use only the supplied production snapshot, client brief, task, and draft. Do not inspect or report the local repository, filesystem, process environment, or git state.']
+      : []),
     HIGH_QUALITY_CONTENT_STANDARD,
     DESIGNER_PROMPT_STANDARD,
     ...(contentBrief
