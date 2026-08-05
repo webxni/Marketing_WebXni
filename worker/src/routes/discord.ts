@@ -740,6 +740,7 @@ discordInternalRoute.get('/approved-jobs/:id/context', async (c) => {
     .bind(args.run_id)
     .first<{ post_slots: string | null; total_slots: number | null; current_slot_idx: number | null; status: string }>();
   if (!run) return c.json({ error: 'Generation run not found' }, 404);
+  if (run.status !== 'running') return c.json({ ok: true, job, run, slots: [] });
   const startIdx = Math.max(0, run.current_slot_idx ?? 0);
   const cachedSlots = Array.isArray(args.prepared_slots) ? args.prepared_slots : [];
   const slotSummaries = cachedSlots.length > 0
@@ -824,7 +825,7 @@ discordInternalRoute.post('/approved-jobs/:id/start', async (c) => {
     await c.env.DB.prepare(
       `UPDATE generation_runs
        SET status = 'running', completed_at = NULL, last_activity_at = ?
-       WHERE id = ?`,
+       WHERE id = ? AND status IN ('pending', 'running')`,
     ).bind(now, runId).run();
   }
   return c.json({ ok: true });

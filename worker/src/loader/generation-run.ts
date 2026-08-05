@@ -855,15 +855,18 @@ async function finalizeSlotProgress(
   log: (level: Parameters<typeof appendGenerationLog>[2], msg: string) => Promise<void>,
 ): Promise<SlotWorkResult> {
   const now = Math.floor(Date.now() / 1000);
-  await db
+  const advanced = await db
     .prepare(`UPDATE generation_runs
               SET current_slot_idx = MAX(COALESCE(current_slot_idx, 0), ?),
                   posts_created    = posts_created + ?,
                   posts_updated    = posts_updated + ?,
                   last_activity_at = ?
-              WHERE id = ?`)
+              WHERE id = ? AND status = 'running'`)
     .bind(nextCompletedIdx, outcome === 'created' ? 1 : 0, outcome === 'updated' ? 1 : 0, now, runId)
     .run();
+  if (Number(advanced.meta?.changes ?? 0) === 0) {
+    return { outcome: 'skipped', persisted: 'skipped' };
+  }
 
   const updated = await db
     .prepare('SELECT current_slot_idx, total_slots, posts_created, posts_updated, error_log FROM generation_runs WHERE id = ?')
@@ -1628,7 +1631,7 @@ export async function saveGeneratedSlotResult(
   const db = env.DB;
   const run = await getGenerationRunById(db, runId);
   if (!run) throw new Error('Generation run not found');
-  if (run.status === 'cancelled') return { outcome: 'skipped', persisted: 'skipped' };
+  if (run.status !== 'running') return { outcome: 'skipped', persisted: 'skipped' };
   const slots = JSON.parse(run.post_slots ?? '[]') as PostSlot[];
   if (slotIdx < 0 || slotIdx >= slots.length) throw new Error('Slot out of range');
   const slot = slots[slotIdx];
@@ -1820,6 +1823,13 @@ export async function saveGeneratedSlotResult(
   const blogGbpDefaults = isBlogSlot
     ? { gbp_cta_type: 'LEARN_MORE' as string, gbp_topic_type: 'STANDARD' as string }
     : {};
+
+  const activeRun = await db.prepare('SELECT status FROM generation_runs WHERE id = ?')
+    .bind(runId)
+    .first<{ status: string }>();
+  if (activeRun?.status !== 'running') {
+    return { outcome: 'skipped', persisted: 'skipped' };
+  }
 
   let outcome: 'created' | 'updated' | 'skipped' = 'skipped';
   let savedPostId: string | null = targetPost?.id ?? null;
