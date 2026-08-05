@@ -1443,6 +1443,7 @@ export async function saveGeneratedSlotResult(
       }, slot.date);
       if (assembled) src.blog_content = assembled;
     }
+    canonicalizeGeneratedPhoneNumbers(generatedPost, client.phone);
   }
 
   const [validationRecentRows, validationAreaRows, validationServiceRows, validationKeywordRows, validationIntel] = await Promise.all([
