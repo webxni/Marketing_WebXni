@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildPostContentHash, hasReviewAffectingUpdate } from './content-review';
+import { buildPostContentHash, hasReviewAffectingUpdate, normalizeContentReviewFindings } from './content-review';
 
 describe('content review versioning', () => {
   it('is stable for non-content metadata changes', async () => {
@@ -27,5 +27,19 @@ describe('content review versioning', () => {
     expect(edited).not.toBe(original);
     expect(hasReviewAffectingUpdate({ master_caption: 'Revised caption' })).toBe(true);
     expect(hasReviewAffectingUpdate({ status: 'pending_approval' })).toBe(false);
+  });
+
+  it('does not persist synthetic clean-pass findings', () => {
+    const notes = normalizeContentReviewFindings({
+      severity: 'info',
+      findings: [
+        { finding_type: 'clean_pass', severity: 'low' },
+        { finding_type: 'designer_prompt_completeness', severity: 'low' },
+      ],
+    });
+
+    expect(notes.findings).toEqual([
+      { finding_type: 'designer_prompt_completeness', severity: 'low' },
+    ]);
   });
 });

@@ -43,3 +43,15 @@ export async function buildPostContentHash(post: Partial<PostRow>): Promise<stri
 export function hasReviewAffectingUpdate(body: Record<string, unknown>): boolean {
   return Object.keys(body).some((field) => REVIEW_AFFECTING_FIELDS.has(field));
 }
+
+export function normalizeContentReviewFindings(notes: Record<string, unknown>): Record<string, unknown> {
+  if (!Array.isArray(notes.findings)) return notes;
+  return {
+    ...notes,
+    findings: notes.findings.filter((finding) => {
+      if (!finding || typeof finding !== 'object') return true;
+      const findingType = (finding as Record<string, unknown>).finding_type;
+      return typeof findingType !== 'string' || findingType.trim().toLowerCase() !== 'clean_pass';
+    }),
+  };
+}

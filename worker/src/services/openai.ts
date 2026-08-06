@@ -119,16 +119,29 @@ const GENERATED_PHONE_FIELDS: Array<keyof GeneratedPost> = [
 export function canonicalizeGeneratedPhoneNumbers(post: GeneratedPost, clientPhone?: string | null): void {
   const canonical = clientPhone?.trim();
   if (!canonical) return;
+  const canonicalDigits = canonical.replace(/\D/g, '');
+  const canonicalTel = canonicalDigits.length === 10
+    ? `tel:+1${canonicalDigits}`
+    : canonicalDigits.length === 11 && canonicalDigits.startsWith('1')
+      ? `tel:+${canonicalDigits}`
+      : `tel:${canonicalDigits}`;
 
   for (const field of GENERATED_PHONE_FIELDS) {
     const value = post[field];
     if (typeof value !== 'string') continue;
-    post[field] = value.replace(/(^|[^\d])((?:\+?1[\s.\-]*)?\(*\s*\d{3}\s*\)?[\s.\-]*\d{3}[\s.\-]*\d{4})(?!\d)/g, (_match, prefix: string, candidate: string) => {
+    const telPlaceholders: string[] = [];
+    const protectedValue = value.replace(/tel:\s*\+?[\d().\s-]{7,}(?=["'])/gi, () => {
+      const placeholder = `__WX_TEL_${telPlaceholders.length}__`;
+      telPlaceholders.push(canonicalTel);
+      return placeholder;
+    });
+    const canonicalized = protectedValue.replace(/(^|[^\d])((?:\+?1[\s.\-]*)?\(*\s*\d{3}\s*\)?[\s.\-]*\d{3}[\s.\-]*\d{4})(?!\d)/g, (_match, prefix: string, candidate: string) => {
       const digits = candidate.replace(/\D/g, '');
       return digits.length === 10 || (digits.length === 11 && digits.startsWith('1'))
         ? `${prefix}${canonical}`
         : `${prefix}${candidate}`;
     });
+    post[field] = canonicalized.replace(/__WX_TEL_(\d+)__/g, (_match, index: string) => telPlaceholders[Number(index)] ?? canonicalTel);
   }
 }
 

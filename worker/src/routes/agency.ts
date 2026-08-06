@@ -50,7 +50,7 @@ import {
   getClientById,
   resolveContentReviewFinding,
 } from '../db/queries';
-import { buildPostContentHash } from '../modules/content-review';
+import { buildPostContentHash, normalizeContentReviewFindings } from '../modules/content-review';
 import { redactSecrets } from '../modules/redaction';
 import { resolveBlogTemplateConfig } from '../modules/blog-templates';
 import { syncUploadPostClientPlatforms } from '../modules/uploadpost-platform-sync';
@@ -892,7 +892,7 @@ agencyInternalRoutes.post('/content-review', async (c) => {
   const contentHash = post ? await buildPostContentHash(post) : null;
   const disposition = parsed.data.disposition
     ?? (['high', 'blocker', 'critical'].includes(parsed.data.severity) ? 'blocked' : 'reviewed');
-  const normalizedNotes = { ...parsed.data.notes_json };
+  const normalizedNotes = normalizeContentReviewFindings({ ...parsed.data.notes_json });
   if (Array.isArray(normalizedNotes.findings)) {
     normalizedNotes.findings = normalizedNotes.findings.map((finding) => {
       if (!finding || typeof finding !== 'object') return finding;
@@ -916,7 +916,7 @@ agencyInternalRoutes.post('/content-review', async (c) => {
     content_hash: contentHash,
     disposition,
     client_id: post?.client_id ?? null,
-    finding_type: parsed.data.finding_type ?? null,
+    finding_type: parsed.data.finding_type === 'clean_pass' ? null : parsed.data.finding_type ?? null,
     source_record_type: parsed.data.source_record_type ?? null,
     source_record_id: parsed.data.source_record_id ?? null,
     recommended_source_fix: parsed.data.recommended_source_fix ?? null,

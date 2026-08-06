@@ -221,6 +221,18 @@ describe('generated caption normalization', () => {
     expect(post.ai_image_prompt).not.toContain('((');
   });
 
+  it('keeps blog click-to-call links URI-safe while canonicalizing display phones', () => {
+    const post = {
+      title: 'Santa Monica Garden Planning',
+      master_caption: 'Review the garden plan before work begins.',
+      blog_content: '<a href="tel:+13239990000">Call (323) 999-0000</a>',
+    };
+
+    canonicalizeGeneratedPhoneNumbers(post, '(323) 306-6441');
+
+    expect(post.blog_content).toBe('<a href="tel:+13233066441">Call (323) 306-6441</a>');
+  });
+
   it('rewrites canned marketing phrases before quality validation', () => {
     const post = {
       title: 'Hollywood Rekeying With Expert Guidance',
