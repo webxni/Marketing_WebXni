@@ -2971,12 +2971,12 @@ export async function getAgencyClientContentBrief(
     .filter((row) => !approvedIntelligenceOnly || row.approval_status === 'approved')
     .map((row) => row.city)
     .filter(Boolean)
-    .slice(0, 8);
+    .slice(0, 30);
   const serviceNames = services.results
     .filter((row) => !approvedIntelligenceOnly || row.approval_status === 'approved')
     .map((row) => row.name)
     .filter(Boolean)
-    .slice(0, 12);
+    .slice(0, 30);
   const eligibleKeywords = approvedIntelligenceOnly
     ? keywords.filter((keyword) => keyword.approval_status === 'approved')
     : keywords;

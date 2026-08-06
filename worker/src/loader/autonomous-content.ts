@@ -240,6 +240,7 @@ export async function createContentWithImage(
   const publishDate = params.publishDate ?? `${today()}T10:00`;
   const planMonth = monthFromPublishDate(publishDate);
   const governedLocksmith = isGovernedLocksmith(client);
+  const approvedIntelligenceOnly = governedLocksmith || client.profile_approval_status === 'approved';
   if (governedLocksmith) {
     await assertLocksmithPortfolioGenerationReady(db, [client], publishDate.slice(0, 10), publishDate.slice(0, 10));
     if (params.topicOverride?.trim()) {
@@ -252,11 +253,11 @@ export async function createContentWithImage(
   const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows] = await Promise.all([
     db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?')
       .bind(client.id).first<IntelRow>().then(r => r ?? null),
-    getClientGenerationFeedback(db, client.id, governedLocksmith, 8),
+    getClientGenerationFeedback(db, client.id, approvedIntelligenceOnly, 8),
     db.prepare(`SELECT title, master_caption FROM posts WHERE client_id = ? AND status NOT IN ('cancelled') ORDER BY created_at DESC LIMIT 20`)
       .bind(client.id).all<{ title: string | null; master_caption: string | null }>(),
-    getClientGenerationServiceAreas(db, client.id, governedLocksmith, 8),
-    getClientGenerationServices(db, client.id, governedLocksmith, 12),
+    getClientGenerationServiceAreas(db, client.id, approvedIntelligenceOnly, 30),
+    getClientGenerationServices(db, client.id, approvedIntelligenceOnly, 30),
   ]);
   const intel = applyMonthlyPlanToIntelligence(intelBase, monthlyPlan);
 

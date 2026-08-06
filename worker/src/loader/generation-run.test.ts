@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildPackageSlots, existingPostTopicSelection, normalizeWeeklyServiceFamily, relevantGbpLocationsForTarget, resolveKeywordLocality, resolveKeywordService, weeklyUsedServiceCategories, weeklyUsedTargetKeywords } from './generation-run';
+import { buildPackageSlots, existingPostTopicSelection, normalizeWeeklyServiceFamily, relevantGbpLocationsForTarget, resolveKeywordLocality, resolveKeywordService, shouldSkipWeeklyService, weeklyUsedServiceCategories, weeklyUsedTargetKeywords } from './generation-run';
 
 function pkg(overrides: Record<string, unknown>) {
   return {
@@ -149,6 +149,26 @@ describe('weeklyUsedTargetKeywords', () => {
     expect(normalizeWeeklyServiceFamily('Building key duplication')).toBe('key copying');
     expect(normalizeWeeklyServiceFamily('Car lockouts')).toBe('automotive lockouts');
     expect(normalizeWeeklyServiceFamily('Building lockouts')).toBe('building lockouts');
+  });
+
+  it('allows a service family to repeat only after every approved family was used', () => {
+    const approvedServices = ['Kitchen Remodeling', 'Bathroom Remodeling', 'ADU Construction'];
+
+    expect(shouldSkipWeeklyService(
+      'Kitchen Remodeling',
+      new Set(['kitchen remodeling', 'bathroom remodeling']),
+      approvedServices,
+    )).toBe(true);
+    expect(shouldSkipWeeklyService(
+      'Kitchen Remodeling',
+      new Set(['kitchen remodeling', 'bathroom remodeling', 'adu construction']),
+      approvedServices,
+    )).toBe(false);
+    expect(shouldSkipWeeklyService(
+      'ADU Construction',
+      new Set(['kitchen remodeling']),
+      approvedServices,
+    )).toBe(false);
   });
 });
 

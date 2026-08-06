@@ -747,6 +747,20 @@ export function weeklyUsedServiceCategories(
     .filter(Boolean));
 }
 
+export function shouldSkipWeeklyService(
+  serviceCategory: string,
+  usedWeeklyServices: Set<string>,
+  approvedServiceNames: string[],
+): boolean {
+  const serviceFamily = normalizeWeeklyServiceFamily(serviceCategory);
+  if (!serviceFamily || !usedWeeklyServices.has(serviceFamily)) return false;
+
+  const approvedFamilies = new Set(
+    approvedServiceNames.map(normalizeWeeklyServiceFamily).filter(Boolean),
+  );
+  return [...approvedFamilies].some((family) => !usedWeeklyServices.has(family));
+}
+
 function selectFallbackTopic(
   client: ClientRow,
   slot: PostSlot,
@@ -761,8 +775,8 @@ function selectFallbackTopic(
   const services = uniqueClean([
     ...serviceNames,
     ...splitJsonOrCsv(intel?.service_priorities),
-  ]).filter((service) => !findRestrictedContentPhrase(service, restrictions)).slice(0, 12);
-  const areas = uniqueClean(serviceAreas.length ? serviceAreas : [client.state]).slice(0, 8);
+  ]).filter((service) => !findRestrictedContentPhrase(service, restrictions)).slice(0, 30);
+  const areas = uniqueClean(serviceAreas.length ? serviceAreas : [client.state]).slice(0, 30);
   const keywordPool = keywordPoolFromContext(intel, keywords, services, areas, restrictions);
   if (!services.length || !keywordPool.length) return null;
 
@@ -1334,8 +1348,8 @@ export async function buildSlotGenerationRequest(
     db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then((row) => row ?? null),
     getClientGenerationFeedback(db, client.id, approvedIntelligenceOnly, 10),
     db.prepare(`SELECT id, title, master_caption, content_type FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`).bind(client.id).all<{id:string;title:string|null;master_caption:string|null;content_type:string|null}>(),
-    getClientGenerationServiceAreas(db, client.id, approvedIntelligenceOnly, 8),
-    getClientGenerationServices(db, client.id, approvedIntelligenceOnly, 12),
+    getClientGenerationServiceAreas(db, client.id, approvedIntelligenceOnly, 30),
+    getClientGenerationServices(db, client.id, approvedIntelligenceOnly, 30),
     getClientKeywords(db, client.id),
     getClientGenerationTopicHistory(db, client.id, 24),
     getClientGenerationTopicHistoryForPeriod(db, client.id, contentWeek.from, contentWeek.to),
@@ -1406,10 +1420,10 @@ export async function buildSlotGenerationRequest(
     : null;
   const skippedTopicIds: string[] = [];
   const usedWeeklyServices = weeklyUsedServiceCategories(combinedTopicHistory, slot.date);
-  for (let attempt = 0; !topicSelection && attempt < 12; attempt++) {
+  for (let attempt = 0; !topicSelection && attempt < Math.max(12, serviceNames.length * 2); attempt++) {
     const candidate = await buildMonthlyTopicSelection(db, client.id, slot.date, slot.content_type, platforms, serviceAreas, skippedTopicIds, approvedIntelligenceOnly);
     if (!candidate) break;
-    if (candidate.serviceCategory && usedWeeklyServices.has(normalizeWeeklyServiceFamily(candidate.serviceCategory))) {
+    if (candidate.serviceCategory && shouldSkipWeeklyService(candidate.serviceCategory, usedWeeklyServices, serviceNames)) {
       if (!candidate.monthlyTopicId) break;
       skippedTopicIds.push(candidate.monthlyTopicId);
       continue;
@@ -1781,8 +1795,8 @@ export async function saveGeneratedSlotResult(
     db.prepare(`SELECT id, title, master_caption FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`)
       .bind(client.id)
       .all<{ id: string; title: string | null; master_caption: string | null }>(),
-    getClientGenerationServiceAreas(db, client.id, approvedIntelligenceOnly, 8),
-    getClientGenerationServices(db, client.id, approvedIntelligenceOnly, 12),
+    getClientGenerationServiceAreas(db, client.id, approvedIntelligenceOnly, 30),
+    getClientGenerationServices(db, client.id, approvedIntelligenceOnly, 30),
     getClientKeywords(db, client.id),
     db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then((row) => row ?? null),
     getClientRestrictions(db, client.id),
@@ -2119,8 +2133,8 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then(r => r ?? null),
         getClientGenerationFeedback(db, client.id, approvedIntelligenceOnly, 10),
         db.prepare(`SELECT id, title, master_caption, content_type FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`).bind(client.id).all<{id:string;title:string|null;master_caption:string|null;content_type:string|null}>(),
-        getClientGenerationServiceAreas(db, client.id, approvedIntelligenceOnly, 8),
-        getClientGenerationServices(db, client.id, approvedIntelligenceOnly, 12),
+        getClientGenerationServiceAreas(db, client.id, approvedIntelligenceOnly, 30),
+        getClientGenerationServices(db, client.id, approvedIntelligenceOnly, 30),
         getClientKeywords(db, client.id),
         getClientGenerationTopicHistory(db, client.id, 24),
         getClientRestrictions(db, client.id),
@@ -2151,10 +2165,10 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         : null;
       const skippedTopicIds: string[] = [];
       const usedWeeklyServices = weeklyUsedServiceCategories(topicHistory, slot.date);
-      for (let attempt = 0; !topicSelection && attempt < 12; attempt++) {
+      for (let attempt = 0; !topicSelection && attempt < Math.max(12, serviceNames.length * 2); attempt++) {
         const candidate = await buildMonthlyTopicSelection(db, client.id, slot.date, slot.content_type, platforms, serviceAreas, skippedTopicIds, approvedIntelligenceOnly);
         if (!candidate) break;
-        if (candidate.serviceCategory && usedWeeklyServices.has(normalizeWeeklyServiceFamily(candidate.serviceCategory))) {
+        if (candidate.serviceCategory && shouldSkipWeeklyService(candidate.serviceCategory, usedWeeklyServices, serviceNames)) {
           if (!candidate.monthlyTopicId) break;
           skippedTopicIds.push(candidate.monthlyTopicId);
           continue;
