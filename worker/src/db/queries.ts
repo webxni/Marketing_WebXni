@@ -2463,7 +2463,7 @@ export async function listPortfolioRecentTopicReferences(
      WHERE c.owner_group = ?
        AND f.category = 'editorial_review'
        AND f.created_at >= unixepoch(date(? || '-01', '-180 day'))
-     ORDER BY slug, id`,
+     ORDER BY 1, 2`,
   ).bind(ownerGroup, month, ownerGroup, month).all<PortfolioTopicReferenceRow>();
   return rows.results ?? [];
 }
