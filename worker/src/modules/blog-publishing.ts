@@ -129,6 +129,7 @@ export function normalizeBlogDraftPayload(
       clientName: client.canonical_name,
       clientSlug: client.slug ?? undefined,
       industry: client.industry,
+      publishDate: typeof data['publish_date'] === 'string' ? data['publish_date'] : null,
       phone: client.phone ?? null,
       ctaDefault: client.cta_text ?? null,
       template: templateConfig,
