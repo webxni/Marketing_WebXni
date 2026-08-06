@@ -141,6 +141,18 @@ export function getConnectionHealth(
     };
   }
 
+  if (account.reauth_required === true || account.reauth_required === 'true' || account.reauth_required === 1) {
+    return {
+      platform: normalized,
+      configured: true,
+      connected: false,
+      status: 'failed',
+      message: 'Upload-Post account requires reauthentication.',
+      message_es: 'La cuenta de Upload-Post requiere reconexión.',
+      details: { ...probe.details, social_account: account },
+    };
+  }
+
   if (!probe.ok) {
     return {
       platform: normalized,
