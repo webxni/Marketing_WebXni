@@ -134,6 +134,29 @@ const strategies = {
   'unlocked-pros': { identity: 'Pasadena commercial property-management and conditional electronic-lock service', mix: '8 commercial; 6 property/multi-unit; 4 conditional electronic; 3 residential; 2 car lockout; 2 trust; 1 offer' },
 };
 
+const approvedProfiles = {
+  '247-lockout-pasadena': {
+    identity: 'Pasadena emergency and residential lockout specialist',
+    notes: 'Pasadena-area residential lockout, rekeying, lock repair, deadbolt, smart-lock, and limited car-lockout assistance. Use only approved Pasadena-area coverage and neutral availability language.',
+    automotiveScope: 'Vehicle entry and car lockout assistance only',
+  },
+  '724-locksmith-ca': {
+    identity: 'North Hollywood, Burbank, and Studio City residential and commercial lock service',
+    notes: 'North Hollywood, Burbank, and Studio City residential and commercial lock service with approved San Fernando Valley coverage. Automotive scope is vehicle entry and car lockout assistance only.',
+    automotiveScope: 'Vehicle entry and car lockout assistance only',
+  },
+  'daniels-locksmith': {
+    identity: 'Hollywood-area owner-operated rekeying, lock repair, deadbolt, and smart-lock service',
+    notes: 'Hollywood-area owner-operated rekeying, residential lock repair, deadbolt, smart-lock, limited commercial, and car-lockout assistance. Pasadena, Sherman Oaks, and Burbank targeting remains held.',
+    automotiveScope: 'One limited Hollywood car-lockout education topic; vehicle entry only',
+  },
+  'unlocked-pros': {
+    identity: 'Pasadena commercial and property-management lock service',
+    notes: 'Pasadena commercial and property-management lock service. Electronic-lock, access-control, offer, and location-specific claims remain held until their evidence and destination records are approved.',
+    automotiveScope: 'Limited secondary car-lockout assistance; vehicle entry only',
+  },
+};
+
 const restrictions = [
   'key copying', 'key duplication', 'duplicate keys', 'key cutting', 'car key replacement',
   'vehicle key replacement', 'remote key', 'coded key', 'digital key', 'key fob',
@@ -402,6 +425,32 @@ FROM topic_data d
 JOIN clients c ON c.slug = d.slug
 JOIN client_monthly_content_plans p ON p.client_id = c.id AND p.plan_month = '2026-08';`);
 
+const neutralCta = 'Call to confirm current availability, service coverage, and scheduling.';
+const migration57 = ['-- Replace stale locksmith profile narratives with the approved portfolio profiles.'];
+for (const [slug, profile] of Object.entries(approvedProfiles)) {
+  const brandJson = JSON.stringify({
+    editorial_identity: profile.identity,
+    approved_service_pillars: ['residential', 'commercial', 'automotive lockout assistance only'],
+    approved_areas: serviceAreas[slug],
+    approved_services: intelligence[slug].services,
+    automotive_scope: profile.automotiveScope,
+    prohibited_services: restrictions.slice(0, 18),
+    claims_policy: 'Use only approved claims. Otherwise use the neutral approved CTA.',
+    profile_source: 'owner-locksmith-policy-2026-08-06',
+  });
+  migration57.push(`UPDATE clients
+SET notes = ${q(profile.notes)},
+    brand_json = ${q(brandJson)},
+    cta_text = ${q(neutralCta)},
+    cta_label = 'Call to confirm',
+    profile_approval_status = 'approved',
+    profile_approved_by = 'portfolio-reset',
+    profile_approved_at = unixepoch(),
+    updated_at = unixepoch()
+WHERE slug = ${q(slug)};`);
+}
+
 writeFileSync(resolve(migrationDir, '0054_gabriel_locksmith_portfolio_reset.sql'), `${migration54.join('\n\n')}\n`);
 writeFileSync(resolve(migrationDir, '0055_gabriel_locksmith_august_topics.sql'), `${migration55.join('\n\n')}\n`);
-console.log(`Generated migrations 0054 (${serviceRows.length} services, ${keywordRows.length} keywords) and 0055 (${topicRows.length} topics).`);
+writeFileSync(resolve(migrationDir, '0057_gabriel_locksmith_profile_cleanup.sql'), `${migration57.join('\n\n')}\n`);
+console.log(`Generated migrations 0054 (${serviceRows.length} services, ${keywordRows.length} keywords), 0055 (${topicRows.length} topics), and 0057 (approved profiles).`);

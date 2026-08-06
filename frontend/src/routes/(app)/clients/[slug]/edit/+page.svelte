@@ -159,7 +159,7 @@
     if (!validateBrandJson()) return;
     saving = true;
     try {
-      await clientsApi.update($page.params.slug ?? '', {
+      const updates: Partial<Client> = {
         canonical_name,
         package:                  packageField || null,
         status,
@@ -179,14 +179,17 @@
         wp_admin_url:             wp_admin_url || null,
         wp_rest_base:             wp_rest_base || '/wp-json/wp/v2',
         wp_username:              wp_username || null,
-        wp_application_password:  wp_application_password || null,
         wp_default_post_status:   wp_default_post_status || 'draft',
         wp_default_author_id:     wp_default_author_id ? parseInt(wp_default_author_id, 10) : null,
         wp_default_category_ids:  wp_default_category_ids || null,
         wp_template_key:          wp_template_key || null,
         wp_featured_image_mode:   wp_featured_image_mode || 'upload',
         wp_excerpt_mode:          wp_excerpt_mode || 'auto',
-      });
+      };
+      if (wp_application_password.trim()) {
+        updates.wp_application_password = wp_application_password.trim();
+      }
+      await clientsApi.update($page.params.slug ?? '', updates);
       toast.success('Client updated');
       goto(`/clients/${$page.params.slug ?? ''}`);
     } catch (e) { toast.error(String(e)); }
@@ -388,7 +391,7 @@
             class="input w-full font-mono text-xs"
             autocomplete="new-password"
           />
-          <p class="text-xs text-muted mt-1">Generate in WP Admin → Users → Application Passwords.</p>
+          <p class="text-xs text-muted mt-1">Leave blank to keep the stored password. Generate replacements in WP Admin → Users → Application Passwords.</p>
         </div>
         <div>
           <label for="wp_default_post_status" class="block text-xs text-muted mb-1.5">Default Post Status</label>

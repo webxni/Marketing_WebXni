@@ -81,6 +81,32 @@ export function isGovernedLocksmith(client: Pick<ClientRow, 'owner_group' | 'slu
     || LOCKSMITH_PORTFOLIO_SLUGS.includes(client.slug as typeof LOCKSMITH_PORTFOLIO_SLUGS[number]);
 }
 
+const LOCKSMITH_APPROVED_PROFILE_FIELDS = new Set<keyof ClientRow>([
+  'canonical_name',
+  'language',
+  'notes',
+  'brand_json',
+  'phone',
+  'email',
+  'owner_name',
+  'cta_text',
+  'cta_label',
+  'industry',
+  'state',
+]);
+
+export function locksmithProfileRequiresReapproval(
+  client: ClientRow,
+  updates: Record<string, unknown>,
+): boolean {
+  if (!isGovernedLocksmith(client)) return false;
+  return Object.entries(updates).some(([field, nextValue]) => {
+    if (!LOCKSMITH_APPROVED_PROFILE_FIELDS.has(field as keyof ClientRow)) return false;
+    const currentValue = client[field as keyof ClientRow];
+    return String(nextValue ?? '').trim() !== String(currentValue ?? '').trim();
+  });
+}
+
 export function findProhibitedLocksmithService(value: string | null | undefined): string | null {
   const text = String(value ?? '').trim();
   if (!text) return null;

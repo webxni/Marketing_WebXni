@@ -3,6 +3,7 @@ import type { ClientRow } from '../types';
 import {
   findProhibitedLocksmithService,
   getLocksmithPortfolioTopicCollision,
+  locksmithProfileRequiresReapproval,
   validateLocksmithGeneratedContent,
 } from './editorial-governance';
 
@@ -37,6 +38,12 @@ const client = {
 } as ClientRow;
 
 describe('locksmith editorial governance', () => {
+  it('reopens approval after a material governed profile change', () => {
+    expect(locksmithProfileRequiresReapproval(client, { notes: 'New approved-profile candidate' })).toBe(true);
+    expect(locksmithProfileRequiresReapproval(client, { package: 'medium' })).toBe(false);
+    expect(locksmithProfileRequiresReapproval({ ...client, owner_group: null, slug: 'other' }, { notes: 'Changed' })).toBe(false);
+  });
+
   it.each([
     'duplicate keys for a building',
     'coded-key copying',

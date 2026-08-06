@@ -19,6 +19,7 @@ import {
   preferMetricTotals,
   syncPostPlatformMetrics,
 } from '../modules/reporting-metrics';
+import { sanitizeClientForResponse } from '../modules/client-security';
 
 export const reportRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -472,7 +473,7 @@ reportRoutes.get('/monthly/:clientId', async (c) => {
   const failed = postsWithPlatformRows.filter((row) => row.status === 'failed').length;
 
   return c.json({
-    client:     { ...client, brand: client.brand_json ? JSON.parse(client.brand_json) : null },
+    client:     { ...sanitizeClientForResponse(client), brand: client.brand_json ? JSON.parse(client.brand_json) : null },
     period:     { month: resolvedMonth, from, to },
     filters:    { platform: platformFilter },
     summary:    {

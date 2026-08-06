@@ -28,7 +28,8 @@ import { createContentWithImage } from '../loader/autonomous-content';
 import { discordSend, DISCORD_COLORS } from '../services/discord';
 import { syncUploadPostClientPlatforms } from '../modules/uploadpost-platform-sync';
 import { publishBlogPost } from '../modules/blog-publishing';
-import { isGovernedLocksmith } from '../modules/editorial-governance';
+import { isGovernedLocksmith, locksmithProfileRequiresReapproval } from '../modules/editorial-governance';
+import { redactClientSecrets, sanitizeClientForResponse } from '../modules/client-security';
 import {
   AGENT_SKILLS, AGENT_MEMORY, RESPONSE_RULES,
   CLIENT_EXPERTISE, BUYER_PERSONAS, NL_INTENT_MAP, QUALITY_REVIEW_RULES,
@@ -1468,7 +1469,7 @@ export async function executeTool(
         return {
           success: true,
           data: {
-            profile:    client,
+            profile:    sanitizeClientForResponse(client),
             platforms:  platforms.results,
             intelligence: intel ?? null,
             services:   services.results,
@@ -2061,7 +2062,7 @@ export async function executeTool(
         const client = await getClientBySlug(env.DB, slug);
         return {
           success: true,
-          data: client,
+          data: client ? sanitizeClientForResponse(client) : null,
           summary: { client_id: id, slug, services_added: serviceNames.length, service_areas_added: savedAreas.length, intelligence_fields: Object.keys(intelligence) },
           suggestions: ['Review the new client in the dashboard before running content generation.', 'Add Upload-Post platform IDs when accounts are connected.'],
           action_summary: `Created client profile ${canonicalName} (${slug}) with ${serviceNames.length} service(s) and ${savedAreas.length} service area(s).`,
@@ -2077,18 +2078,23 @@ export async function executeTool(
         const fields = (args.fields ?? {}) as Record<string, unknown>;
         const safe = sanitizeAgentClientFields(fields, 'update');
         if (Object.keys(safe).length === 0) return { success: false, error: 'No valid fields to update' };
+        if (locksmithProfileRequiresReapproval(client, safe)) {
+          safe['profile_approval_status'] = 'pending';
+          safe['profile_approved_by'] = null;
+          safe['profile_approved_at'] = null;
+        }
 
         const now = Math.floor(Date.now() / 1000);
         const sets   = [...Object.keys(safe).map(k => `${k} = ?`), 'updated_at = ?'];
         const values = [...Object.values(safe), now, client.id];
         await env.DB.prepare(`UPDATE clients SET ${sets.join(', ')} WHERE id = ?`).bind(...values).run();
-        await writeAuditLog(env.DB, { user_id: user.userId, action: 'agent_update_client', entity_type: 'client', entity_id: client.id, new_value: safe });
+        await writeAuditLog(env.DB, { user_id: user.userId, action: 'agent_update_client', entity_type: 'client', entity_id: client.id, new_value: redactClientSecrets(safe) });
 
         // Fresh data
         const after = await getClientBySlug(env.DB, client.slug);
         return {
           success: true,
-          data: after,
+          data: after ? sanitizeClientForResponse(after) : null,
           summary: { updated_fields: Object.keys(safe) },
           action_summary: `Updated ${client.canonical_name}: ${Object.keys(safe).join(', ')}`,
         };

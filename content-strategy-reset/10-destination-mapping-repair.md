@@ -1,5 +1,18 @@
 # Destination Mapping Repair
 
+## Live Audit: 2026-08-06
+
+All four Upload-Post profiles are reachable. Each profile has nine healthy non-GBP destinations and one blocked Google Business destination.
+
+| Brand | Canonical GBP ID | Live Name | Result |
+|---|---|---|---|
+| 24/7 Lockout | `locations/105295919997970852` | `24/7 Lockout Locksmith` | ID and name match; phone and market were absent from the provider response |
+| 7/24 Locksmith | `locations/6092571096858603058` | `7/24 locksmith` | ID and name match; phone and market were absent; a second live location is present and remains unassigned |
+| Daniel's Locks & Key | `locations/908727413318428834` | `Daniel's Lock & Key Service` | ID is live; canonical name differs; phone and market were absent |
+| Unlock'D Pros | `locations/12106510679330317066`, `locations/3082714888579803430` | `Unlock´D Pros` on both | Both IDs are live, but their distinct address/service-area identities cannot be established; phone, address, and market were absent |
+
+No GBP destination is marked healthy. Publishing remains held until provider data or owner evidence establishes the required business name, phone, and market identity.
+
 ## Daniel's Locks & Key
 
 - Stored GBP account/location was stale.

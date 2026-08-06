@@ -27,6 +27,8 @@ import { getConnectionHealth, type UploadPostProfileResponse } from '../modules/
 import { getPlatformConfigWarnings } from '../modules/platform-config';
 import { syncUploadPostClientPlatforms } from '../modules/uploadpost-platform-sync';
 import { destinationIdentityMatches, normalizeGbpDestination } from '../modules/gbp-destination';
+import { redactClientSecrets, sanitizeClientForResponse } from '../modules/client-security';
+import { locksmithProfileRequiresReapproval } from '../modules/editorial-governance';
 
 export const clientRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -55,7 +57,7 @@ const CLIENT_WRITABLE_FIELDS = new Set([
 clientRoutes.get('/', async (c) => {
   const status = (c.req.query('status') as 'active' | 'inactive' | 'all') ?? 'active';
   const clients = await listClients(c.env.DB, status);
-  return c.json({ clients });
+  return c.json({ clients: clients.map(sanitizeClientForResponse) });
 });
 
 /** POST /api/clients — create a new client */
@@ -112,7 +114,7 @@ clientRoutes.post('/', async (c) => {
     ip: c.req.header('CF-Connecting-IP') ?? c.req.header('X-Forwarded-For') ?? undefined,
   });
 
-  return c.json({ client }, 201);
+  return c.json({ client: client ? sanitizeClientForResponse(client) : null }, 201);
 });
 
 /** GET /api/clients/:slug */
@@ -124,7 +126,7 @@ clientRoutes.get('/:slug', async (c) => {
     getClientGbpLocations(c.env.DB, client.id),
     getClientRestrictions(c.env.DB, client.id),
   ]);
-  return c.json({ client: { ...client, platforms, gbp_locations, restrictions } });
+  return c.json({ client: { ...sanitizeClientForResponse(client), platforms, gbp_locations, restrictions } });
 });
 
 /** GET /api/clients/:id/connection-check */
@@ -219,10 +221,26 @@ clientRoutes.get('/:id/connection-check', async (c) => {
         const missing: string[] = [];
         const mismatched: string[] = [];
         const returned: string[] = [];
+        const returnedDestinations: Array<{
+          profile: string;
+          id: string;
+          business_name: string | null;
+          phone: string | null;
+          address: string | null;
+          market: string | null;
+        }> = [];
         for (const [profile, profileExpected] of profiles) {
           const payload = await up.getGbpLocations(profile) as { locations?: Array<Record<string, unknown>> };
           const destinations = (payload.locations ?? []).map(normalizeGbpDestination);
           returned.push(...destinations.map((destination) => destination.id));
+          returnedDestinations.push(...destinations.map((destination) => ({
+            profile,
+            id: destination.id,
+            business_name: destination.businessName,
+            phone: destination.phone,
+            address: destination.address,
+            market: destination.market,
+          })));
           for (const item of profileExpected) {
             let destination = destinations.find((candidate) => candidate.id === item.locationId);
             if (!destination && destinations.length === 1) destination = destinations[0];
@@ -261,8 +279,8 @@ clientRoutes.get('/:id/connection-check', async (c) => {
         }
         const ok = missing.length === 0 && mismatched.length === 0;
         return ok
-          ? { ok: true, message: 'Google Business destination IDs and identities are verified.', details: { expected: expected.map((item) => item.locationId), returned } }
-          : { ok: false, message: `GBP destination verification failed. Missing: ${missing.join(', ') || 'none'}; identity mismatch: ${mismatched.join(', ') || 'none'}.`, details: { returned, missing, mismatched } };
+          ? { ok: true, message: 'Google Business destination IDs and identities are verified.', details: { expected: expected.map((item) => item.locationId), returned, returned_destinations: returnedDestinations } }
+          : { ok: false, message: `GBP destination verification failed. Missing: ${missing.join(', ') || 'none'}; identity mismatch: ${mismatched.join(', ') || 'none'}.`, details: { returned, returned_destinations: returnedDestinations, missing, mismatched } };
       } catch (err) {
         return { ok: false, message: err instanceof UploadPostError ? err.body : String(err) };
       }
@@ -374,7 +392,7 @@ clientRoutes.get('/:id/connection-check', async (c) => {
     }
 
     return c.json({
-      ok: profileOk,
+      ok: profileOk && accounts.every((account) => account.connected),
       profile_ok: profileOk,
       profile_message: profileMessage,
       profile_message_es: profileMessageEs,
@@ -400,6 +418,18 @@ clientRoutes.put('/:slug', async (c) => {
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; }
   catch { return c.json({ error: 'Invalid JSON' }, 400); }
+
+  if (
+    locksmithProfileRequiresReapproval(client, body)
+    && body['profile_approval_status'] !== 'approved'
+  ) {
+    body = {
+      ...body,
+      profile_approval_status: 'pending',
+      profile_approved_by: null,
+      profile_approved_at: null,
+    };
+  }
 
   // Build SET clause from allowed fields only
   const setClauses: string[] = [];
@@ -428,11 +458,11 @@ clientRoutes.put('/:slug', async (c) => {
     action: 'client.update',
     entity_type: 'client',
     entity_id: client.id,
-    new_value: body,
+    new_value: redactClientSecrets(body),
     ip: c.req.header('CF-Connecting-IP') ?? c.req.header('X-Forwarded-For') ?? undefined,
   });
 
-  return c.json({ client: updated });
+  return c.json({ client: updated ? sanitizeClientForResponse(updated) : null });
 });
 
 /** DELETE /api/clients/:slug — archive by default; hard delete only when confirmed and no posts exist */
