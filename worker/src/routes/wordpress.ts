@@ -16,6 +16,7 @@ import { Hono } from 'hono';
 import type { Env, SessionData } from '../types';
 import { getClientBySlug } from '../db/queries';
 import { buildWordPressClient } from '../services/wordpress';
+import { requirePermission } from '../middleware/auth';
 
 export const wordpressRoutes = new Hono<{
   Bindings: Env;
@@ -24,8 +25,8 @@ export const wordpressRoutes = new Hono<{
 
 // ─── Status ───────────────────────────────────────────────────────────────────
 
-wordpressRoutes.get('/:slug/wordpress/status', async (c) => {
-  const client = await getClientBySlug(c.env.DB, c.req.param('slug'));
+wordpressRoutes.get('/:slug/wordpress/status', requirePermission('clients.view'), async (c) => {
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') as string);
   if (!client) return c.json({ error: 'Client not found' }, 404);
 
   const configured =
@@ -43,8 +44,8 @@ wordpressRoutes.get('/:slug/wordpress/status', async (c) => {
 
 // ─── Test connection ──────────────────────────────────────────────────────────
 
-wordpressRoutes.post('/:slug/wordpress/test', async (c) => {
-  const client = await getClientBySlug(c.env.DB, c.req.param('slug'));
+wordpressRoutes.post('/:slug/wordpress/test', requirePermission('clients.edit'), async (c) => {
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') as string);
   if (!client) return c.json({ error: 'Client not found' }, 404);
 
   const wp = buildWordPressClient(client);
@@ -63,8 +64,8 @@ wordpressRoutes.post('/:slug/wordpress/test', async (c) => {
 
 // ─── Pull categories ──────────────────────────────────────────────────────────
 
-wordpressRoutes.get('/:slug/wordpress/categories', async (c) => {
-  const client = await getClientBySlug(c.env.DB, c.req.param('slug'));
+wordpressRoutes.get('/:slug/wordpress/categories', requirePermission('clients.view'), async (c) => {
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') as string);
   if (!client) return c.json({ error: 'Client not found' }, 404);
 
   const wp = buildWordPressClient(client);
@@ -80,8 +81,8 @@ wordpressRoutes.get('/:slug/wordpress/categories', async (c) => {
 
 // ─── Pull authors ─────────────────────────────────────────────────────────────
 
-wordpressRoutes.get('/:slug/wordpress/authors', async (c) => {
-  const client = await getClientBySlug(c.env.DB, c.req.param('slug'));
+wordpressRoutes.get('/:slug/wordpress/authors', requirePermission('clients.view'), async (c) => {
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') as string);
   if (!client) return c.json({ error: 'Client not found' }, 404);
 
   const wp = buildWordPressClient(client);
@@ -97,8 +98,8 @@ wordpressRoutes.get('/:slug/wordpress/authors', async (c) => {
 
 // ─── Templates ────────────────────────────────────────────────────────────────
 
-wordpressRoutes.get('/:slug/wordpress/templates', async (c) => {
-  const client = await getClientBySlug(c.env.DB, c.req.param('slug'));
+wordpressRoutes.get('/:slug/wordpress/templates', requirePermission('clients.view'), async (c) => {
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') as string);
   if (!client) return c.json({ error: 'Client not found' }, 404);
 
   // Return templates for this client + global templates
@@ -115,8 +116,8 @@ wordpressRoutes.get('/:slug/wordpress/templates', async (c) => {
   return c.json({ templates: templates.results });
 });
 
-wordpressRoutes.get('/:slug/wordpress/templates/:key', async (c) => {
-  const client = await getClientBySlug(c.env.DB, c.req.param('slug'));
+wordpressRoutes.get('/:slug/wordpress/templates/:key', requirePermission('clients.view'), async (c) => {
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') as string);
   if (!client) return c.json({ error: 'Client not found' }, 404);
 
   const tpl = await c.env.DB
@@ -132,8 +133,8 @@ wordpressRoutes.get('/:slug/wordpress/templates/:key', async (c) => {
   return c.json({ template: tpl });
 });
 
-wordpressRoutes.post('/:slug/wordpress/templates', async (c) => {
-  const client = await getClientBySlug(c.env.DB, c.req.param('slug'));
+wordpressRoutes.post('/:slug/wordpress/templates', requirePermission('clients.edit'), async (c) => {
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') as string);
   if (!client) return c.json({ error: 'Client not found' }, 404);
 
   let body: Record<string, unknown>;
@@ -183,8 +184,8 @@ wordpressRoutes.post('/:slug/wordpress/templates', async (c) => {
   return c.json({ template: tpl }, 201);
 });
 
-wordpressRoutes.delete('/:slug/wordpress/templates/:key', async (c) => {
-  const client = await getClientBySlug(c.env.DB, c.req.param('slug'));
+wordpressRoutes.delete('/:slug/wordpress/templates/:key', requirePermission('clients.edit'), async (c) => {
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') as string);
   if (!client) return c.json({ error: 'Client not found' }, 404);
 
   await c.env.DB

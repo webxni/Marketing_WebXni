@@ -29,6 +29,7 @@ import { syncUploadPostClientPlatforms } from '../modules/uploadpost-platform-sy
 import { destinationIdentityMatches, normalizeGbpDestination } from '../modules/gbp-destination';
 import { redactClientSecrets, sanitizeClientForResponse } from '../modules/client-security';
 import { locksmithProfileRequiresReapproval } from '../modules/editorial-governance';
+import { requirePermission } from '../middleware/auth';
 
 export const clientRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -54,14 +55,14 @@ const CLIENT_WRITABLE_FIELDS = new Set([
 ]);
 
 /** GET /api/clients */
-clientRoutes.get('/', async (c) => {
+clientRoutes.get('/', requirePermission('clients.view'), async (c) => {
   const status = (c.req.query('status') as 'active' | 'inactive' | 'all') ?? 'active';
   const clients = await listClients(c.env.DB, status);
   return c.json({ clients: clients.map(sanitizeClientForResponse) });
 });
 
 /** POST /api/clients — create a new client */
-clientRoutes.post('/', async (c) => {
+clientRoutes.post('/', requirePermission('clients.create'), async (c) => {
   const user = c.get('user');
   if (user.role !== 'admin') {
     return c.json({ error: 'Forbidden — only admin/manager can create clients' }, 403);
@@ -118,8 +119,8 @@ clientRoutes.post('/', async (c) => {
 });
 
 /** GET /api/clients/:slug */
-clientRoutes.get('/:slug', async (c) => {
-  const client = await getClientBySlug(c.env.DB, c.req.param('slug'));
+clientRoutes.get('/:slug', requirePermission('clients.view'), async (c) => {
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') as string);
   if (!client) return c.json({ error: 'Not found' }, 404);
   const [platforms, gbp_locations, restrictions] = await Promise.all([
     getClientPlatforms(c.env.DB, client.id),
@@ -130,9 +131,9 @@ clientRoutes.get('/:slug', async (c) => {
 });
 
 /** GET /api/clients/:id/connection-check */
-clientRoutes.get('/:id/connection-check', async (c) => {
+clientRoutes.get('/:id/connection-check', requirePermission('clients.view'), async (c) => {
   try {
-    const idOrSlug = c.req.param('id');
+    const idOrSlug = c.req.param('id') as string;
     const client = await getClientById(c.env.DB, idOrSlug) ?? await getClientBySlug(c.env.DB, idOrSlug);
     if (!client) return c.json({ error: 'Not found' }, 404);
 
@@ -411,8 +412,8 @@ clientRoutes.get('/:id/connection-check', async (c) => {
 });
 
 /** PUT /api/clients/:slug — update a client */
-clientRoutes.put('/:slug', async (c) => {
-  const client = await getClientBySlug(c.env.DB, c.req.param('slug'));
+clientRoutes.put('/:slug', requirePermission('clients.edit'), async (c) => {
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') as string);
   if (!client) return c.json({ error: 'Not found' }, 404);
 
   let body: Record<string, unknown>;
@@ -452,7 +453,7 @@ clientRoutes.put('/:slug', async (c) => {
     .bind(...values)
     .run();
 
-  const updated = await getClientBySlug(c.env.DB, c.req.param('slug'));
+  const updated = await getClientBySlug(c.env.DB, c.req.param('slug') as string);
   await writeAuditLog(c.env.DB, {
     user_id: c.get('user').userId,
     action: 'client.update',
@@ -466,12 +467,12 @@ clientRoutes.put('/:slug', async (c) => {
 });
 
 /** DELETE /api/clients/:slug — archive by default; hard delete only when confirmed and no posts exist */
-clientRoutes.delete('/:slug', async (c) => {
+clientRoutes.delete('/:slug', requirePermission('clients.delete'), async (c) => {
   const user = c.get('user');
   if (user.role !== 'admin') {
     return c.json({ error: 'Forbidden — only admin/manager can delete clients' }, 403);
   }
-  const client = await getClientBySlug(c.env.DB, c.req.param('slug'));
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') as string);
   if (!client) return c.json({ error: 'Not found' }, 404);
 
   const confirmed = c.req.query('confirmed') === 'true';
@@ -539,20 +540,20 @@ clientRoutes.delete('/:slug', async (c) => {
 });
 
 /** GET /api/clients/:slug/platforms */
-clientRoutes.get('/:slug/platforms', async (c) => {
-  const client = await getClientBySlug(c.env.DB, c.req.param('slug'));
+clientRoutes.get('/:slug/platforms', requirePermission('clients.view'), async (c) => {
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') as string);
   if (!client) return c.json({ error: 'Not found' }, 404);
   const platforms = await getClientPlatforms(c.env.DB, client.id);
   return c.json({ platforms });
 });
 
 /** POST /api/clients/:slug/platforms/sync-upload-post — pull connected platforms from Upload-Post */
-clientRoutes.post('/:slug/platforms/sync-upload-post', async (c) => {
+clientRoutes.post('/:slug/platforms/sync-upload-post', requirePermission('clients.edit'), async (c) => {
   const user = c.get('user');
   if (user.role !== 'admin') {
     return c.json({ error: 'Forbidden — only admin/manager can sync Upload-Post platforms' }, 403);
   }
-  const client = await getClientBySlug(c.env.DB, c.req.param('slug'));
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') as string);
   if (!client) return c.json({ error: 'Not found' }, 404);
   if (!client.upload_post_profile) {
     return c.json({ error: 'Upload-Post profile is not configured for this client.' }, 400);
@@ -588,15 +589,15 @@ clientRoutes.post('/:slug/platforms/sync-upload-post', async (c) => {
 });
 
 /** PUT /api/clients/:slug/platforms/:platform — upsert a platform config */
-clientRoutes.put('/:slug/platforms/:platform', async (c) => {
-  const client = await getClientBySlug(c.env.DB, c.req.param('slug'));
+clientRoutes.put('/:slug/platforms/:platform', requirePermission('clients.edit'), async (c) => {
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') as string);
   if (!client) return c.json({ error: 'Not found' }, 404);
 
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; }
   catch { return c.json({ error: 'Invalid JSON' }, 400); }
 
-  const platform = c.req.param('platform');
+  const platform = c.req.param('platform') as string;
   const allowed = new Set([
     'account_id', 'username', 'page_id',
     'upload_post_board_id', 'upload_post_location_id',
@@ -641,8 +642,8 @@ clientRoutes.put('/:slug/platforms/:platform', async (c) => {
 });
 
 /** POST /api/clients/:slug/platforms/:platform/pause */
-clientRoutes.post('/:slug/platforms/:platform/pause', async (c) => {
-  const client = await getClientBySlug(c.env.DB, c.req.param('slug'));
+clientRoutes.post('/:slug/platforms/:platform/pause', requirePermission('clients.edit'), async (c) => {
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') as string);
   if (!client) return c.json({ error: 'Not found' }, 404);
   let reason = '';
   try { reason = ((await c.req.json()) as { reason?: string }).reason ?? ''; } catch { /* empty */ }
@@ -650,20 +651,20 @@ clientRoutes.post('/:slug/platforms/:platform/pause', async (c) => {
     .prepare(
       "UPDATE client_platforms SET paused = 1, paused_reason = ?, paused_since = date('now') WHERE client_id = ? AND platform = ?",
     )
-    .bind(reason || 'Manually paused', client.id, c.req.param('platform'))
+    .bind(reason || 'Manually paused', client.id, c.req.param('platform') as string)
     .run();
   return c.json({ ok: true });
 });
 
 /** POST /api/clients/:slug/platforms/:platform/unpause */
-clientRoutes.post('/:slug/platforms/:platform/unpause', async (c) => {
-  const client = await getClientBySlug(c.env.DB, c.req.param('slug'));
+clientRoutes.post('/:slug/platforms/:platform/unpause', requirePermission('clients.edit'), async (c) => {
+  const client = await getClientBySlug(c.env.DB, c.req.param('slug') as string);
   if (!client) return c.json({ error: 'Not found' }, 404);
   await c.env.DB
     .prepare(
       'UPDATE client_platforms SET paused = 0, paused_reason = NULL, paused_since = NULL WHERE client_id = ? AND platform = ?',
     )
-    .bind(client.id, c.req.param('platform'))
+    .bind(client.id, c.req.param('platform') as string)
     .run();
   return c.json({ ok: true });
 });
