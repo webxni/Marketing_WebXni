@@ -15,6 +15,7 @@ import {
   listPostAssetsRows,
   attachAssetsToPost,
   getLatestContentReview,
+  approveContentReview,
   preserveEditorialFeedbackBeforePostDelete,
   getClientRestrictions,
 } from '../db/queries';
@@ -27,6 +28,7 @@ import { runFetchUrls } from './run';
 import { normalizeBlogDraftPayload } from '../modules/blog-publishing';
 import { requirePermission } from '../middleware/auth';
 import { buildGenerationSystemMessage, findRestrictedContentPhrase } from '../services/openai';
+import { isGovernedLocksmith, validateLocksmithGeneratedContent } from '../modules/editorial-governance';
 
 export const postRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -284,7 +286,8 @@ postRoutes.post('/', async (c) => {
       const isVideo = (first.content_type ?? '').startsWith('video/');
       await c.env.DB
         .prepare(`UPDATE posts
-                  SET asset_r2_key = ?, asset_r2_bucket = ?, asset_type = ?, asset_delivered = 1, asset_source = 'designer', updated_at = ?
+                  SET asset_r2_key = ?, asset_r2_bucket = ?, asset_type = ?, asset_delivered = 1,
+                      asset_source = 'designer', asset_rights_confirmed = 0, asset_rights_notes = NULL, updated_at = ?
                   WHERE id = ?`)
         .bind(first.r2_key, first.r2_bucket, isVideo ? 'video' : 'image', Math.floor(Date.now() / 1000), post.id)
         .run();
@@ -357,6 +360,10 @@ postRoutes.put('/:id', async (c) => {
     body['platform_manual_override'] = allowPlatformOverride ? 1 : 0;
   }
   delete body['allow_platform_override'];
+  if (Object.prototype.hasOwnProperty.call(body, 'asset_r2_key')) {
+    body['asset_rights_confirmed'] = 0;
+    body['asset_rights_notes'] = null;
+  }
 
   const clientConfig = await getClientWithConfig(c.env.DB, post.client_id);
   if (!clientConfig) return c.json({ error: 'Client not found' }, 404);
@@ -397,9 +404,29 @@ postRoutes.post('/:id/approve', requirePermission('posts.approve'), async (c) =>
     if (!review || !review.content_hash || review.content_hash !== contentHash) {
       return c.json({ error: 'Editorial review is required for the current version before approval.' }, 409);
     }
-    if (review.disposition === 'blocked' || review.severity === 'high' || review.severity === 'critical') {
+    if (review.disposition === 'blocked' || ['high', 'blocker', 'critical'].includes(review.severity)) {
       return c.json({ error: `Editorial review blocked approval (${review.severity}). Revise the content and run review again.` }, 409);
     }
+    if (review.review_status === 'rejected' || review.review_status === 'quarantined') {
+      return c.json({ error: 'Editorial review was rejected. Revise the content and run review again.' }, 409);
+    }
+    try {
+      const notes = JSON.parse(review.notes_json) as { findings?: Array<{ review_status?: string }> };
+      if (notes.findings?.some((finding) => (finding.review_status ?? 'pending') === 'pending')) {
+        return c.json({ error: 'Editorial findings must be reviewed and resolved before approval.' }, 409);
+      }
+    } catch {
+      return c.json({ error: 'Editorial review data is invalid. Run review again before approval.' }, 409);
+    }
+    const client = await getClientWithConfig(c.env.DB, post.client_id);
+    if (!client) return c.json({ error: 'Client not found' }, 404);
+    if (isGovernedLocksmith(client)) {
+      const governanceIssues = await validateLocksmithGeneratedContent(c.env.DB, client, post);
+      if (governanceIssues.length > 0) {
+        return c.json({ error: `Editorial policy blocked approval: ${governanceIssues.join('; ')}` }, 409);
+      }
+    }
+    await approveContentReview(c.env.DB, review.id, c.get('user').userId);
   }
   const mediaRequired = post.content_type !== 'blog' && post.content_type !== 'text';
   const canMoveToReady = !mediaRequired || post.asset_delivered === 1;

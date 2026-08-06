@@ -1,0 +1,55 @@
+brand_id,service,normalized_service,service_pillar,approval_status,editorial_notes
+247-lockout-pasadena,House lockout assistance,house lockout assistance,residential,approved,Pasadena-area residential focus
+247-lockout-pasadena,Apartment and condo lockout assistance,apartment condo lockout assistance,residential,approved,Tenant or owner authorization guidance
+247-lockout-pasadena,Home rekeying,home rekeying,residential,approved,No key-copying language
+247-lockout-pasadena,New-home rekeying,new home rekeying,residential,approved,Move-in security education
+247-lockout-pasadena,Residential lock repair,residential lock repair,residential,approved,
+247-lockout-pasadena,Residential lock replacement,residential lock replacement,residential,approved,
+247-lockout-pasadena,Deadbolt installation and repair,deadbolt installation repair,residential,approved,
+247-lockout-pasadena,Broken-key extraction from residential locks,broken key extraction residential locks,residential,approved,Do not convert to replacement-key content
+247-lockout-pasadena,Property turnover rekeying,property turnover rekeying,commercial,approved,Residential rentals only
+247-lockout-pasadena,Car lockout assistance,car lockout assistance,automotive,approved,Vehicle entry only
+247-lockout-pasadena,Keys locked inside a car,keys locked inside car,automotive,approved,No key generation
+247-lockout-pasadena,Emergency vehicle entry,emergency vehicle entry,automotive,approved,No ignition or fob service
+724-locksmith-ca,House lockout assistance,house lockout assistance,residential,approved,
+724-locksmith-ca,Apartment lockout assistance,apartment lockout assistance,residential,approved,
+724-locksmith-ca,Home rekeying,home rekeying,residential,approved,
+724-locksmith-ca,Residential lock repair,residential lock repair,residential,approved,
+724-locksmith-ca,Residential lock replacement,residential lock replacement,residential,approved,
+724-locksmith-ca,Deadbolt installation and repair,deadbolt installation repair,residential,approved,
+724-locksmith-ca,Smart-lock installation,smart lock installation,residential,approved,Questions and compatibility only
+724-locksmith-ca,Commercial lockout assistance,commercial lockout assistance,commercial,approved,
+724-locksmith-ca,Office and storefront lockouts,office storefront lockouts,commercial,approved,
+724-locksmith-ca,Commercial rekeying,commercial rekeying,commercial,approved,
+724-locksmith-ca,Storefront lock repair,storefront lock repair,commercial,approved,
+724-locksmith-ca,Office lock repair,office lock repair,commercial,approved,
+724-locksmith-ca,Commercial door hardware,commercial door hardware,commercial,approved,
+724-locksmith-ca,Property-management rekeying,property management rekeying,commercial,approved,
+724-locksmith-ca,Car lockout assistance,car lockout assistance,automotive,approved,Vehicle entry only
+724-locksmith-ca,Emergency vehicle entry,emergency vehicle entry,automotive,approved,No automotive key services
+daniels-locksmith,Home rekeying,home rekeying,residential,approved,Primary service
+daniels-locksmith,New-home rekeying,new home rekeying,residential,approved,
+daniels-locksmith,Tenant-change rekeying,tenant change rekeying,residential,approved,
+daniels-locksmith,Residential lock repair,residential lock repair,residential,approved,Primary service
+daniels-locksmith,Residential lock replacement,residential lock replacement,residential,approved,
+daniels-locksmith,Deadbolt installation and repair,deadbolt installation repair,residential,approved,
+daniels-locksmith,Smart-lock installation,smart lock installation,residential,approved,Compatibility guidance only
+daniels-locksmith,Broken-key extraction from residential locks,broken key extraction residential locks,residential,approved,No replacement-key service
+daniels-locksmith,House and apartment lockout assistance,house apartment lockout assistance,residential,approved,Secondary emphasis
+daniels-locksmith,Commercial lock repair,commercial lock repair,commercial,approved,Hollywood-area only
+daniels-locksmith,Commercial rekeying,commercial rekeying,commercial,approved,Hollywood-area only
+daniels-locksmith,Car lockout assistance,car lockout assistance,automotive,approved,One limited monthly topic
+unlocked-pros,Commercial lockout assistance,commercial lockout assistance,commercial,approved,
+unlocked-pros,Office and storefront lockouts,office storefront lockouts,commercial,approved,
+unlocked-pros,Commercial rekeying,commercial rekeying,commercial,approved,Primary service
+unlocked-pros,Storefront lock repair,storefront lock repair,commercial,approved,
+unlocked-pros,Office lock repair,office lock repair,commercial,approved,
+unlocked-pros,Commercial lock replacement,commercial lock replacement,commercial,approved,
+unlocked-pros,Commercial door hardware,commercial door hardware,commercial,approved,
+unlocked-pros,Master-key systems,master key systems,commercial,approved,Planning and authorization only
+unlocked-pros,Property-management rekeying,property management rekeying,commercial,approved,Primary service
+unlocked-pros,Apartment-building lock service,apartment building lock service,commercial,approved,
+unlocked-pros,Residential lock repair,residential lock repair,residential,approved,Secondary service
+unlocked-pros,Home rekeying,home rekeying,residential,approved,Secondary service
+unlocked-pros,Car lockout assistance,car lockout assistance,automotive,approved,Limited vehicle-entry content only
+unlocked-pros,Electronic locks and access control,electronic locks access control,commercial,pending,Inactive until capability evidence is approved

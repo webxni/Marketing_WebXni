@@ -17,6 +17,7 @@
 
 import type { LoaderEnv, ClientOfferRow, ClientEventRow } from '../types';
 import { getClientBySlug, getClientGbpLocations } from '../db/queries';
+import { assertLocksmithPortfolioGenerationReady, isGovernedLocksmith } from '../modules/editorial-governance';
 
 export interface RecurringGbpStats {
   offers_processed: number;
@@ -111,6 +112,14 @@ async function processOneOffer(
   if (!client?.upload_post_profile) {
     stats.offers_skipped++;
     return;
+  }
+  if (isGovernedLocksmith(client)) {
+    try {
+      await assertLocksmithPortfolioGenerationReady(env.DB, [client], today, today);
+    } catch {
+      stats.offers_skipped++;
+      return;
+    }
   }
 
   // Resolve GBP location
@@ -233,6 +242,14 @@ async function processOneEvent(
   if (!client?.upload_post_profile) {
     stats.events_skipped++;
     return;
+  }
+  if (isGovernedLocksmith(client)) {
+    try {
+      await assertLocksmithPortfolioGenerationReady(env.DB, [client], today, today);
+    } catch {
+      stats.events_skipped++;
+      return;
+    }
   }
 
   const locationId = await resolveLocation(env, event.client_id, event.gbp_location_id);

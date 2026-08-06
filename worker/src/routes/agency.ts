@@ -46,6 +46,9 @@ import {
   createClientEventDraft,
   listAgencyStrategyPlans,
   approveAgencyStrategyPlan,
+  listClientsByOwnerGroup,
+  getClientById,
+  resolveContentReviewFinding,
 } from '../db/queries';
 import { buildPostContentHash } from '../modules/content-review';
 import { redactSecrets } from '../modules/redaction';
@@ -54,6 +57,14 @@ import { syncUploadPostClientPlatforms } from '../modules/uploadpost-platform-sy
 import { UploadPostClient } from '../services/uploadpost';
 import { discordSend } from '../services/discord';
 import { requirePermission } from '../middleware/auth';
+import {
+  evaluateLocksmithGenerationGate,
+  getLocksmithPortfolioTopicCollision,
+  assertLocksmithPortfolioGenerationReady,
+  isGovernedLocksmith,
+  LOCKSMITH_OWNER_GROUP,
+  validateLocksmithGeneratedContent,
+} from '../modules/editorial-governance';
 
 export const agencyRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 export const agencyInternalRoutes = new Hono<{ Bindings: Env; Variables: Record<string, unknown> }>();
@@ -160,6 +171,44 @@ agencyRoutes.get('/findings', async (c) => c.json({ findings: await listAgentFin
 agencyRoutes.get('/client-coverage', async (c) => c.json({ clients: await getAgencyClientCoverage(c.env.DB) }));
 agencyRoutes.get('/strategies', async (c) => c.json({ strategies: await listAgencyStrategyPlans(c.env.DB) }));
 
+agencyRoutes.get('/editorial-readiness', async (c) => {
+  const requestedMonth = c.req.query('month') ?? '';
+  const month = /^\d{4}-\d{2}$/.test(requestedMonth)
+    ? requestedMonth
+    : new Date().toISOString().slice(0, 7);
+  const clients = await listClientsByOwnerGroup(c.env.DB, LOCKSMITH_OWNER_GROUP);
+  const collision = await getLocksmithPortfolioTopicCollision(c.env.DB, month);
+  const rows = [];
+  for (const client of clients) {
+    const gate = await evaluateLocksmithGenerationGate(c.env.DB, client.id, month);
+    const checks = gate.checks;
+    const finalStatus = !checks.research_safe ? 'Blocked by research'
+      : !checks.strategy_approved ? 'Blocked by strategy approval'
+      : !checks.topic_plan_approved ? 'Blocked by topic plan'
+      : (!checks.services_approved || !checks.locations_approved) ? 'Blocked by service cleanup'
+      : !checks.keywords_approved ? 'Blocked by keyword cleanup'
+      : !checks.destination_verified ? 'Blocked by destination mapping'
+      : !checks.claims_safe ? 'Blocked by claim approval'
+      : collision ? 'Blocked by owner confirmation'
+      : 'Ready to generate';
+    rows.push({
+      brand: client.canonical_name,
+      slug: client.slug,
+      research_clean: checks.research_safe ? 'Ready to generate' : 'Blocked by research',
+      strategy_approved: checks.strategy_approved ? 'Ready to generate' : 'Blocked by strategy approval',
+      topics_approved: checks.topic_plan_approved ? 'Ready to generate' : 'Blocked by topic plan',
+      services_clean: checks.services_approved && checks.locations_approved ? 'Ready to generate' : 'Blocked by service cleanup',
+      keywords_curated: checks.keywords_approved ? 'Ready to generate' : 'Blocked by keyword cleanup',
+      destination_verified: checks.destination_verified ? 'Ready to generate' : 'Blocked by destination mapping',
+      claims_approved: checks.claims_safe ? 'Ready to generate' : 'Blocked by claim approval',
+      cross_brand_check: collision ? 'Blocked by owner confirmation' : 'Ready to generate',
+      ready_to_generate: finalStatus,
+      reasons: gate.reasons,
+    });
+  }
+  return c.json({ month, portfolio_collision: collision, rows });
+});
+
 agencyRoutes.post('/strategies/:id/approve', requirePermission('posts.approve'), async (c) => {
   const strategy = await approveAgencyStrategyPlan(c.env.DB, c.req.param('id') ?? '');
   if (!strategy) return c.json({ error: 'Strategy plan not found' }, 404);
@@ -172,6 +221,33 @@ agencyRoutes.post('/strategies/:id/approve', requirePermission('posts.approve'),
     ip: c.req.header('CF-Connecting-IP') ?? c.req.header('X-Forwarded-For') ?? undefined,
   });
   return c.json({ ok: true, strategy });
+});
+
+agencyRoutes.post('/content-reviews/:id/resolve', requirePermission('posts.approve'), async (c) => {
+  const parsed = z.object({
+    review_status: z.enum(['approved', 'rejected']),
+    source_action: z.enum(['none', 'approve', 'reject', 'quarantine']).default('none'),
+    finding_index: z.number().int().min(0).default(0),
+  }).safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json({ error: 'Invalid input', issues: parsed.error.issues }, 400);
+  const review = await resolveContentReviewFinding(
+    c.env.DB,
+    c.req.param('id') ?? '',
+    c.get('user').userId,
+    parsed.data.review_status,
+    parsed.data.source_action,
+    parsed.data.finding_index,
+  );
+  if (!review) return c.json({ error: 'Content review not found' }, 404);
+  await writeAuditLog(c.env.DB, {
+    user_id: c.get('user').userId,
+    action: 'agency.content_review.resolve',
+    entity_type: 'content_review_note',
+    entity_id: review.id,
+    new_value: parsed.data,
+    ip: c.req.header('CF-Connecting-IP') ?? c.req.header('X-Forwarded-For') ?? undefined,
+  });
+  return c.json({ ok: true, review });
 });
 agencyRoutes.get('/timeline', async (c) => c.json({ items: TIMELINE.map((item) => ({ ...item, status: timelineStatus(item.day) })) }));
 agencyRoutes.get('/logs', async (c) => c.json({ logs: await getAgencyLogs(c.env.DB) }));
@@ -320,6 +396,18 @@ async function requireBotSecret(c: { req: { header(name: string): string | undef
   return !!botSecret && bearerToken === botSecret;
 }
 
+async function governedAgencyContentBlock(db: D1Database, clientId: string, targetDate?: string | null): Promise<string | null> {
+  const client = await getClientById(db, clientId);
+  if (!client || !isGovernedLocksmith(client)) return null;
+  const day = targetDate?.slice(0, 10) || new Date().toISOString().slice(0, 10);
+  try {
+    await assertLocksmithPortfolioGenerationReady(db, [client], day, day);
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
 const internalUpdateSchema = z.object({
   agent_slug: z.string(),
   task_id: z.string().optional(),
@@ -337,7 +425,7 @@ const internalFindingSchema = z.object({
   agent_slug: z.string(),
   task_id: z.string().optional(),
   client_id: z.string().nullable().optional(),
-  severity: z.enum(['info', 'low', 'medium', 'high', 'critical']),
+  severity: z.enum(['info', 'low', 'medium', 'high', 'blocker', 'critical']),
   title: z.string().min(1).max(200),
   finding_json: z.record(z.unknown()).nullable().optional(),
 });
@@ -348,6 +436,18 @@ const internalResearchSchema = z.object({
   client_id: z.string(),
   source: z.string().min(1).max(80).optional(),
   freshness_date: z.string().min(8).max(20),
+  brand_name: z.string().min(1).max(200),
+  source_url: z.string().max(1000).nullable(),
+  source_domain: z.string().max(300).nullable(),
+  source_title: z.string().max(500).nullable(),
+  entity_match: z.boolean(),
+  geography_match: z.boolean(),
+  service_match: z.boolean(),
+  prohibited_service_detected: z.boolean(),
+  confidence: z.enum(['low', 'medium', 'high']),
+  review_status: z.literal('pending'),
+  expires_at: z.string().max(20).nullable(),
+  notes: z.string().max(2000).nullable(),
   research_json: z.record(z.unknown()),
 });
 
@@ -366,9 +466,13 @@ const internalReviewSchema = z.object({
   task_id: z.string().optional(),
   post_id: z.string().nullable().optional(),
   blog_id: z.string().nullable().optional(),
-  severity: z.enum(['info', 'low', 'medium', 'high', 'critical']),
+  severity: z.enum(['info', 'low', 'medium', 'high', 'blocker', 'critical']),
   notes_json: z.record(z.unknown()),
   disposition: z.enum(['reviewed', 'blocked']).optional(),
+  finding_type: z.string().max(80).nullable().optional(),
+  source_record_type: z.string().max(80).nullable().optional(),
+  source_record_id: z.string().max(80).nullable().optional(),
+  recommended_source_fix: z.string().max(2000).nullable().optional(),
 });
 
 const internalDraftPostSchema = z.object({
@@ -662,6 +766,20 @@ agencyInternalRoutes.post('/research-note', async (c) => {
     parsed.data.source ?? parsed.data.agent_slug,
     JSON.stringify(parsed.data.research_json),
     parsed.data.freshness_date,
+    {
+      brand_name: parsed.data.brand_name,
+      source_url: parsed.data.source_url,
+      source_domain: parsed.data.source_domain,
+      source_title: parsed.data.source_title,
+      entity_match: parsed.data.entity_match ? 1 : 0,
+      geography_match: parsed.data.geography_match ? 1 : 0,
+      service_match: parsed.data.service_match ? 1 : 0,
+      prohibited_service_detected: parsed.data.prohibited_service_detected ? 1 : 0,
+      confidence: parsed.data.confidence,
+      review_status: 'pending',
+      expires_at: parsed.data.expires_at,
+      notes: parsed.data.notes,
+    },
   );
   await appendAgencyLog(c.env.DB, {
     agent_slug: parsed.data.agent_slug,
@@ -773,16 +891,36 @@ agencyInternalRoutes.post('/content-review', async (c) => {
   if (parsed.data.post_id && !post) return c.json({ error: 'Post not found' }, 404);
   const contentHash = post ? await buildPostContentHash(post) : null;
   const disposition = parsed.data.disposition
-    ?? (parsed.data.severity === 'high' || parsed.data.severity === 'critical' ? 'blocked' : 'reviewed');
+    ?? (['high', 'blocker', 'critical'].includes(parsed.data.severity) ? 'blocked' : 'reviewed');
+  const normalizedNotes = { ...parsed.data.notes_json };
+  if (Array.isArray(normalizedNotes.findings)) {
+    normalizedNotes.findings = normalizedNotes.findings.map((finding) => {
+      if (!finding || typeof finding !== 'object') return finding;
+      return {
+        ...finding,
+        brand_id: post?.client_id ?? null,
+        content_id: post?.id ?? null,
+        review_status: 'pending',
+        reviewed_by: null,
+        resolved_at: null,
+      };
+    });
+  }
   await saveContentReview(c.env.DB, {
     post_id: parsed.data.post_id ?? null,
     blog_id: parsed.data.blog_id ?? null,
     agent_task_id: parsed.data.task_id ?? null,
     severity: parsed.data.severity,
-    notes_json: JSON.stringify(parsed.data.notes_json),
+    notes_json: JSON.stringify(normalizedNotes),
     post_updated_at: post?.updated_at ?? null,
     content_hash: contentHash,
     disposition,
+    client_id: post?.client_id ?? null,
+    finding_type: parsed.data.finding_type ?? null,
+    source_record_type: parsed.data.source_record_type ?? null,
+    source_record_id: parsed.data.source_record_id ?? null,
+    recommended_source_fix: parsed.data.recommended_source_fix ?? null,
+    review_status: 'pending',
   });
   if (post && disposition === 'blocked' && ['approved', 'ready', 'scheduled'].includes(post.status ?? '')) {
     await updatePost(c.env.DB, post.id, { status: 'pending_approval', ready_for_automation: 0 });
@@ -801,6 +939,16 @@ agencyInternalRoutes.post('/draft-post', async (c) => {
   if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
   const parsed = internalDraftPostSchema.safeParse(await c.req.json().catch(() => ({})));
   if (!parsed.success) return c.json({ error: 'Invalid input', issues: parsed.error.issues }, 400);
+  const client = await getClientById(c.env.DB, parsed.data.client_id);
+  if (!client) return c.json({ error: 'Client not found' }, 404);
+  if (isGovernedLocksmith(client)) {
+    const publishDay = parsed.data.publish_date?.slice(0, 10) || new Date().toISOString().slice(0, 10);
+    try {
+      await assertLocksmithPortfolioGenerationReady(c.env.DB, [client], publishDay, publishDay);
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 409);
+    }
+  }
 
   let existing = null;
   if (parsed.data.publish_date) {
@@ -884,6 +1032,10 @@ agencyInternalRoutes.post('/draft-post', async (c) => {
     scheduled_by_automation: 1,
     automation_slot_key: parsed.data.automation_slot_key ?? null,
   };
+  const governanceIssues = await validateLocksmithGeneratedContent(c.env.DB, client, postData);
+  if (governanceIssues.length > 0) {
+    return c.json({ error: `Editorial gate failed: ${governanceIssues.join('; ')}` }, 409);
+  }
 
   if (existing && parsed.data.merge_existing) {
     let existingPlatforms: string[] = [];
@@ -1135,6 +1287,8 @@ agencyInternalRoutes.post('/gbp-offer', async (c) => {
   if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
   const b = await c.req.json().catch(() => ({})) as Record<string, string | null>;
   if (!b.client_id || !b.title) return c.json({ error: 'client_id and title required' }, 400);
+  const generationBlock = await governedAgencyContentBlock(c.env.DB, b.client_id, b.valid_until);
+  if (generationBlock) return c.json({ error: generationBlock }, 409);
   // Don't pile up: skip if the client already has a pending (inactive) offer
   // awaiting Marvin's review/activation.
   const pending = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM client_offers WHERE client_id = ? AND active = 0').bind(b.client_id).first<{ n: number }>();
@@ -1157,6 +1311,8 @@ agencyInternalRoutes.post('/gbp-event', async (c) => {
   if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
   const b = await c.req.json().catch(() => ({})) as Record<string, string | null>;
   if (!b.client_id || !b.title) return c.json({ error: 'client_id and title required' }, 400);
+  const generationBlock = await governedAgencyContentBlock(c.env.DB, b.client_id, b.gbp_event_start_date);
+  if (generationBlock) return c.json({ error: generationBlock }, 409);
   const pending = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM client_events WHERE client_id = ? AND active = 0').bind(b.client_id).first<{ n: number }>();
   if ((pending?.n ?? 0) > 0) return c.json({ ok: true, skipped: true, reason: 'pending_event_exists' });
   const id = await createClientEventDraft(c.env.DB, {

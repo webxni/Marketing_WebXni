@@ -39,6 +39,10 @@
     promotion_notes: null,
     priority_services: null,
     notes: null,
+    status: 'draft',
+    expected_slots: 26,
+    approved_by: null,
+    approved_at: null,
   };
   let savingMonthlyPlan = false;
   let showBrandMemory = true;
@@ -104,6 +108,10 @@
       promotion_notes: null,
       priority_services: null,
       notes: null,
+      status: 'draft',
+      expected_slots: 26,
+      approved_by: null,
+      approved_at: null,
     };
   }
 

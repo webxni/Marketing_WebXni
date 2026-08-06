@@ -17,7 +17,7 @@ import {
   deleteAllPostAssets,
 } from '../db/queries';
 import { UploadPostClient, UploadPostError, type PhotoUploadItem } from '../services/uploadpost';
-import { preflight } from '../modules/preflight';
+import { preflight, preflightLocksmithEditorialGate, type PreflightResult } from '../modules/preflight';
 import { makeIdempotencyKey } from '../modules/idempotency';
 import { getCaption, normalizePlatform, SKIP_PLATFORMS } from '../modules/captions';
 import { getGbpCaptionField, getGbpPostedKey, normalizeContentType } from '../modules/platform-compatibility';
@@ -32,6 +32,7 @@ import { buildExtraParams, extractTrackingId, getVideoPostTitle } from '../modul
 import { cleanupLegacyInvalidPlatformAttempts, extractPublishedUrl, syncPublishedUrls } from '../modules/published-urls';
 import { translatePostingError } from '../modules/posting-diagnostics';
 import { isBlogAutomationEligible, publishBlogPost } from '../modules/blog-publishing';
+import { isGovernedLocksmith } from '../modules/editorial-governance';
 
 const DEFAULT_PUBLIC_MEDIA_PROXY = 'https://marketing.webxni.com/media';
 
@@ -132,6 +133,10 @@ async function processPost(
     stats.skipped++;
     return;
   }
+  let locksmithEditorialGate: PreflightResult | undefined;
+  if (isGovernedLocksmith(client)) {
+    locksmithEditorialGate = await preflightLocksmithEditorialGate(client, post, env.DB);
+  }
 
   const platforms: string[] = JSON.parse(post.platforms ?? '[]');
   const publishDate = post.publish_date ?? 'nodate';
@@ -139,6 +144,19 @@ async function processPost(
   const normalizedContentType = normalizeContentType(post.content_type, post.asset_type);
 
   if (isBlogAutomationEligible(post) && platforms.includes('website_blog')) {
+    if (locksmithEditorialGate && !locksmithEditorialGate.ok) {
+      stats.blocked++;
+      if (!dryRun) {
+        await upsertPostPlatform(env.DB, {
+          post_id: post.id,
+          platform: 'website_blog',
+          status: 'blocked',
+          error_message: locksmithEditorialGate.reason,
+        });
+        await logPostingAudit(env.DB, post.id, 'website_blog', 'blocked', locksmithEditorialGate.reason, null);
+      }
+      return;
+    }
     if (dryRun) {
       console.log(`[DRY-RUN] ${post.title} → website_blog`);
       console.log(`  endpoint: POST /api/posts/${post.id}/publish-blog`);
@@ -250,6 +268,29 @@ async function processPost(
     // Multi-location GBP (ETB has LA/WA/OR). GBP is single-photo per post,
     // so we always send the first attached image.
     if (platform === 'google_business' && client.gbp_locations.length > 0) {
+      const gbpCaption = client.gbp_locations
+        .filter((location) => location.paused !== 1)
+        .map((location) => {
+          const field = getGbpCaptionField(location);
+          return (field ? post[field] as string | null : null) ?? post.cap_google_business;
+        })
+        .find((value) => Boolean(value));
+      const result = await preflight(client, platform, gbpCaption ?? null, post, env.DB, locksmithEditorialGate);
+      if (!result.ok) {
+        const reasonEs = translatePostingError(result.reason, platform);
+        if (result.tag === 'BLOCKED') stats.blocked++;
+        else stats.skipped++;
+        if (!dryRun) {
+          await upsertPostPlatform(env.DB, {
+            post_id: post.id,
+            platform,
+            status: result.tag.toLowerCase(),
+            error_message: reasonEs,
+          });
+          await logPostingAudit(env.DB, post.id, platform, result.tag.toLowerCase(), reasonEs, result.reason);
+        }
+        continue;
+      }
       await postGbpMultiLocation(
         env, up, post, client, sched_time, publishDate,
         photoItems, videoR2Url, mediaKind, dryRun, stats, jobId,
@@ -259,7 +300,7 @@ async function processPost(
 
     const caption = getCaption(post, platform);
 
-    const result = await preflight(client, platform, caption);
+    const result = await preflight(client, platform, caption, post, env.DB, locksmithEditorialGate);
     if (!result.ok) {
       const reasonEs = translatePostingError(result.reason, platform);
       if (result.tag === 'BLOCKED') stats.blocked++;
@@ -521,9 +562,33 @@ async function postGbpMultiLocation(
     const caption =
       (captionField ? (post[captionField] as string | null) : null) ??
       post.cap_google_business;
+    const postedField = getGbpPostedKey(loc);
 
     if (!caption) {
       stats.skipped++;
+      continue;
+    }
+
+    if (
+      isGovernedLocksmith(client)
+      && (
+        loc.verification_status !== 'verified'
+        || !loc.verified_business_name
+        || !loc.verified_phone
+        || !loc.verified_market
+      )
+    ) {
+      const reason = `GBP destination '${loc.label}' is not identity-verified`;
+      stats.blocked++;
+      if (!dryRun) {
+        await upsertPostPlatform(env.DB, {
+          post_id: post.id,
+          platform: postedField,
+          status: 'blocked',
+          error_message: reason,
+        });
+        await logPostingAudit(env.DB, post.id, postedField, 'blocked', reason, null);
+      }
       continue;
     }
 
@@ -538,7 +603,6 @@ async function postGbpMultiLocation(
     }
 
     // Atomic idempotency claim for GBP location
-    const postedField = getGbpPostedKey(loc);
     {
       const claim = await claimPostPlatform(env.DB, post.id, postedField, idemKey);
       if (!claim.claimed) {

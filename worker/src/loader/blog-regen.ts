@@ -32,6 +32,7 @@ import {
   type TopicResearch,
 } from '../services/openai';
 import { publishBlogPost } from '../modules/blog-publishing';
+import { isGovernedLocksmith } from '../modules/editorial-governance';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -316,6 +317,12 @@ export async function executeBlogRegenSlot(
       .first<ClientRow>();
     if (!client) {
       await log('WARN', `Client ${slot.client_id} not found — skipping`);
+      return await advance('skipped', totalSlots);
+    }
+    if (isGovernedLocksmith(client)) {
+      const message = `${client.slug}: legacy blog regeneration is disabled; use an approved monthly topic through the terminal workflow.`;
+      await recordError(message);
+      await log('ERROR', message);
       return await advance('skipped', totalSlots);
     }
 

@@ -90,6 +90,66 @@ export async function getClientGbpLocations(
   return r.results;
 }
 
+export async function updateClientPlatformVerification(
+  db: D1Database,
+  platformId: string,
+  data: {
+    status: string;
+    canonicalLocationId?: string | null;
+    providerDestinationId?: string | null;
+    businessName?: string | null;
+    phone?: string | null;
+    market?: string | null;
+    notes?: string | null;
+  },
+): Promise<void> {
+  await db.prepare(
+    `UPDATE client_platforms
+     SET verification_status = ?, upload_post_location_id = COALESCE(?, upload_post_location_id), provider_destination_id = ?, verified_business_name = ?,
+         verified_phone = ?, verified_market = ?, verified_at = unixepoch(), verification_notes = ?
+     WHERE id = ?`,
+  ).bind(
+    data.status,
+    data.canonicalLocationId ?? null,
+    data.providerDestinationId ?? null,
+    data.businessName ?? null,
+    data.phone ?? null,
+    data.market ?? null,
+    data.notes ?? null,
+    platformId,
+  ).run();
+}
+
+export async function updateClientGbpLocationVerification(
+  db: D1Database,
+  locationId: string,
+  data: {
+    status: string;
+    canonicalLocationId?: string | null;
+    businessName?: string | null;
+    phone?: string | null;
+    address?: string | null;
+    market?: string | null;
+    notes?: string | null;
+  },
+): Promise<void> {
+  await db.prepare(
+    `UPDATE client_gbp_locations
+     SET verification_status = ?, location_id = COALESCE(?, location_id), verified_business_name = ?, verified_phone = ?, verified_address = ?,
+         verified_market = ?, verified_at = unixepoch(), verification_notes = ?
+     WHERE id = ?`,
+  ).bind(
+    data.status,
+    data.canonicalLocationId ?? null,
+    data.businessName ?? null,
+    data.phone ?? null,
+    data.address ?? null,
+    data.market ?? null,
+    data.notes ?? null,
+    locationId,
+  ).run();
+}
+
 export async function getClientRestrictions(
   db: D1Database,
   clientId: string,
@@ -1347,11 +1407,18 @@ export interface ClientKeywordRow {
   source: string | null;
   confidence: string | null;
   status: string;
+  normalized_keyword: string | null;
+  service_pillar: string | null;
+  brand_owner: string | null;
+  approval_status: string;
+  approved_by: string | null;
+  approved_at: number | null;
 }
 
 export async function getClientKeywords(db: D1Database, clientId: string): Promise<ClientKeywordRow[]> {
   const rows = await db.prepare(
-    `SELECT id, client_id, keyword, kw_type, search_intent, difficulty, opportunity_notes, locality, source, confidence, status
+    `SELECT id, client_id, keyword, kw_type, search_intent, difficulty, opportunity_notes, locality, source, confidence, status,
+            normalized_keyword, service_pillar, brand_owner, approval_status, approved_by, approved_at
      FROM client_keywords WHERE client_id = ? AND status = 'active'
      ORDER BY CASE kw_type WHEN 'primary' THEN 0 WHEN 'local' THEN 1 WHEN 'near_me' THEN 2 WHEN 'long_tail' THEN 3 ELSE 4 END, keyword`,
   ).bind(clientId).all<ClientKeywordRow>();
@@ -2104,17 +2171,53 @@ export async function saveClientResearch(
   source: string,
   researchJson: string,
   freshnessDate: string,
+  metadata: {
+    brand_name?: string | null;
+    source_url?: string | null;
+    source_domain?: string | null;
+    source_title?: string | null;
+    entity_match?: number;
+    geography_match?: number;
+    service_match?: number;
+    prohibited_service_detected?: number;
+    confidence?: string;
+    review_status?: string;
+    expires_at?: string | null;
+    notes?: string | null;
+  } = {},
 ): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
   // Idempotent per client + day: a job that gets re-run (e.g. lease requeue mid
   // a long sweep) replaces that day's note instead of stacking duplicates.
   await db.prepare(
-    'DELETE FROM client_research_notes WHERE client_id = ? AND freshness_date = ?',
+    "DELETE FROM client_research_notes WHERE client_id = ? AND freshness_date = ? AND review_status != 'approved'",
   ).bind(clientId, freshnessDate).run();
   await db.prepare(
-    `INSERT INTO client_research_notes (client_id, source, research_json, freshness_date, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).bind(clientId, source, redactSecrets(researchJson), freshnessDate, now, now).run();
+    `INSERT INTO client_research_notes
+       (client_id, source, research_json, freshness_date, brand_name, source_url, source_domain, source_title,
+        entity_match, geography_match, service_match, prohibited_service_detected, confidence, review_status,
+        expires_at, notes, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(
+    clientId,
+    source,
+    redactSecrets(researchJson),
+    freshnessDate,
+    metadata.brand_name ?? null,
+    metadata.source_url ?? null,
+    metadata.source_domain ?? null,
+    metadata.source_title ?? null,
+    metadata.entity_match ?? 0,
+    metadata.geography_match ?? 0,
+    metadata.service_match ?? 0,
+    metadata.prohibited_service_detected ?? 0,
+    metadata.confidence ?? 'low',
+    metadata.review_status ?? 'pending',
+    metadata.expires_at ?? null,
+    metadata.notes ?? null,
+    now,
+    now,
+  ).run();
 }
 
 export async function saveClientStrategy(
@@ -2167,23 +2270,252 @@ export async function approveAgencyStrategyPlan(db: D1Database, id: string): Pro
   return rows.find((row) => row.id === id) ?? null;
 }
 
-// Most recent autonomous research note (raw research_json) for a client, or null.
-// Read by weekly generation so the client-research agent's output actually feeds
-// content creation instead of sitting unused in the table.
-export async function getLatestClientResearch(db: D1Database, clientId: string): Promise<string | null> {
+// Gabriel's locksmith portfolio may only consume reviewed research. Other
+// clients retain the existing latest-record behavior until they opt into the
+// same governed owner group.
+export async function getLatestClientResearch(db: D1Database, clientId: string, targetDate?: string): Promise<string | null> {
   const row = await db.prepare(
-    `SELECT research_json FROM client_research_notes WHERE client_id = ? ORDER BY created_at DESC LIMIT 1`,
-  ).bind(clientId).first<{ research_json: string }>();
+    `SELECT r.research_json
+     FROM client_research_notes r
+     JOIN clients c ON c.id = r.client_id
+     WHERE r.client_id = ?
+       AND (
+         COALESCE(c.owner_group, '') != 'gabriel-locksmiths'
+         OR (
+           r.review_status = 'approved'
+           AND r.entity_match = 1
+           AND r.geography_match = 1
+           AND r.service_match = 1
+           AND r.prohibited_service_detected = 0
+           AND (r.expires_at IS NULL OR r.expires_at >= ?)
+         )
+       )
+     ORDER BY r.created_at DESC LIMIT 1`,
+  ).bind(clientId, targetDate ?? new Date().toISOString().slice(0, 10)).first<{ research_json: string }>();
   return row?.research_json ?? null;
 }
 
 // Most recent approved autonomous strategy plan (raw strategy_json), or null.
 // Draft strategy is review material and must not silently steer production copy.
-export async function getLatestClientStrategy(db: D1Database, clientId: string): Promise<string | null> {
+export async function getLatestClientStrategy(db: D1Database, clientId: string, targetDate?: string): Promise<string | null> {
+  const dateFilter = targetDate ? 'AND period_start <= ? AND period_end >= ?' : '';
+  const binds: unknown[] = [clientId];
+  if (targetDate) binds.push(targetDate, targetDate);
   const row = await db.prepare(
-    `SELECT strategy_json FROM client_strategy_plans WHERE client_id = ? AND status = 'approved' ORDER BY created_at DESC LIMIT 1`,
-  ).bind(clientId).first<{ strategy_json: string }>();
+    `SELECT strategy_json FROM client_strategy_plans
+     WHERE client_id = ? AND status = 'approved' ${dateFilter}
+     ORDER BY created_at DESC LIMIT 1`,
+  ).bind(...binds).first<{ strategy_json: string }>();
   return row?.strategy_json ?? null;
+}
+
+export interface EditorialGateSnapshot {
+  client: { slug: string; profile_approval_status: string } | null;
+  strategyApproved: boolean;
+  plan: { status: string; expected_slots: number } | null;
+  topics: { total: number; approved: number };
+  services: { total: number; approved: number };
+  serviceAreas: { approved: number; pending: number };
+  keywords: { total: number; approved: number };
+  platforms: { total: number; verified: number };
+  locations: { total: number; verified: number };
+  research: { approved: number; pending: number };
+  missingRequiredClaims: number;
+}
+
+export async function getEditorialGateSnapshot(
+  db: D1Database,
+  clientId: string,
+  month: string,
+  periodStart: string,
+  periodEnd: string,
+): Promise<EditorialGateSnapshot> {
+  const [client, strategy, plan, topics, services, serviceAreas, keywords, platforms, locations, research, requiredClaims] = await Promise.all([
+    db.prepare('SELECT slug, profile_approval_status FROM clients WHERE id = ?').bind(clientId)
+      .first<{ slug: string; profile_approval_status: string }>(),
+    db.prepare(`SELECT id FROM client_strategy_plans
+                WHERE client_id = ? AND status = 'approved' AND period_start <= ? AND period_end >= ?
+                ORDER BY created_at DESC LIMIT 1`).bind(clientId, periodStart, periodEnd).first<{ id: string }>(),
+    db.prepare(`SELECT status, expected_slots FROM client_monthly_content_plans
+                WHERE client_id = ? AND plan_month = ? LIMIT 1`).bind(clientId, month)
+      .first<{ status: string; expected_slots: number }>(),
+    db.prepare(`SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN approval_status = 'approved' THEN 1 ELSE 0 END) AS approved
+                FROM client_monthly_topics WHERE client_id = ? AND plan_month = ?`)
+      .bind(clientId, month).first<{ total: number; approved: number }>(),
+    db.prepare(`SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN approval_status = 'approved' THEN 1 ELSE 0 END) AS approved
+                FROM client_services WHERE client_id = ? AND active = 1`)
+      .bind(clientId).first<{ total: number; approved: number }>(),
+    db.prepare(`SELECT
+                  SUM(CASE WHEN approval_status = 'approved' THEN 1 ELSE 0 END) AS approved,
+                  SUM(CASE WHEN approval_status = 'pending' THEN 1 ELSE 0 END) AS pending
+                FROM client_service_areas WHERE client_id = ?`)
+      .bind(clientId).first<{ approved: number; pending: number }>(),
+    db.prepare(`SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN approval_status = 'approved' THEN 1 ELSE 0 END) AS approved
+                FROM client_keywords WHERE client_id = ? AND status = 'active'`)
+      .bind(clientId).first<{ total: number; approved: number }>(),
+    db.prepare(`SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN connection_status = 'connected' AND verification_status = 'verified' THEN 1 ELSE 0 END) AS verified
+                FROM client_platforms WHERE client_id = ? AND paused = 0 AND platform != 'website_blog'`)
+      .bind(clientId).first<{ total: number; verified: number }>(),
+    db.prepare(`SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN verification_status = 'verified' THEN 1 ELSE 0 END) AS verified
+                FROM client_gbp_locations WHERE client_id = ? AND paused = 0`)
+      .bind(clientId).first<{ total: number; verified: number }>(),
+    db.prepare(`SELECT
+                  SUM(CASE WHEN review_status = 'approved' AND entity_match = 1 AND geography_match = 1
+                                AND service_match = 1 AND prohibited_service_detected = 0
+                                AND (expires_at IS NULL OR expires_at >= ?) THEN 1 ELSE 0 END) AS approved,
+                  SUM(CASE WHEN review_status = 'pending' THEN 1 ELSE 0 END) AS pending
+                FROM client_research_notes WHERE client_id = ?`)
+      .bind(periodStart, clientId).first<{ approved: number; pending: number }>(),
+    db.prepare(`SELECT COUNT(*) AS total
+                FROM client_monthly_topics t
+                LEFT JOIN client_approved_claims c
+                  ON c.client_id = t.client_id AND c.claim_key = t.claim_requirement AND c.review_status = 'approved'
+                WHERE t.client_id = ? AND t.plan_month = ? AND t.approval_status = 'approved'
+                  AND COALESCE(t.claim_requirement, '') NOT IN ('', 'none') AND c.id IS NULL`)
+      .bind(clientId, month).first<{ total: number }>(),
+  ]);
+  const count = (row: { total?: number | null; approved?: number | null; verified?: number | null } | null) => ({
+    total: row?.total ?? 0,
+    approved: row?.approved ?? 0,
+    verified: row?.verified ?? 0,
+  });
+  const topicCounts = count(topics);
+  const serviceCounts = count(services);
+  const keywordCounts = count(keywords);
+  const platformCounts = count(platforms);
+  const locationCounts = count(locations);
+  return {
+    client: client ?? null,
+    strategyApproved: Boolean(strategy),
+    plan: plan ?? null,
+    topics: { total: topicCounts.total, approved: topicCounts.approved },
+    services: { total: serviceCounts.total, approved: serviceCounts.approved },
+    serviceAreas: { approved: serviceAreas?.approved ?? 0, pending: serviceAreas?.pending ?? 0 },
+    keywords: { total: keywordCounts.total, approved: keywordCounts.approved },
+    platforms: { total: platformCounts.total, verified: platformCounts.verified },
+    locations: { total: locationCounts.total, verified: locationCounts.verified },
+    research: { approved: research?.approved ?? 0, pending: research?.pending ?? 0 },
+    missingRequiredClaims: requiredClaims?.total ?? 0,
+  };
+}
+
+export async function listClientsByOwnerGroup(db: D1Database, ownerGroup: string): Promise<ClientRow[]> {
+  const rows = await db.prepare(
+    `SELECT * FROM clients WHERE owner_group = ? AND status = 'active' ORDER BY slug`,
+  ).bind(ownerGroup).all<ClientRow>();
+  return rows.results ?? [];
+}
+
+export interface ApprovedPortfolioTopicRow {
+  slug: string;
+  id: string;
+  title: string;
+  primary_service: string | null;
+  primary_area: string | null;
+  content_pillar: string | null;
+}
+
+export async function listApprovedPortfolioTopics(
+  db: D1Database,
+  ownerGroup: string,
+  month: string,
+): Promise<ApprovedPortfolioTopicRow[]> {
+  const rows = await db.prepare(
+    `SELECT c.slug, t.id, COALESCE(t.working_title, t.topic_title) AS title,
+            t.primary_service, t.primary_area, t.content_pillar
+     FROM client_monthly_topics t
+     JOIN clients c ON c.id = t.client_id
+     WHERE c.owner_group = ? AND t.plan_month = ? AND t.approval_status = 'approved'
+     ORDER BY c.slug, t.slot_number`,
+  ).bind(ownerGroup, month).all<ApprovedPortfolioTopicRow>();
+  return rows.results ?? [];
+}
+
+export interface PortfolioTopicReferenceRow extends ApprovedPortfolioTopicRow {
+  monthly_topic_id: string | null;
+  source: 'post' | 'rejected_feedback';
+}
+
+export async function listPortfolioRecentTopicReferences(
+  db: D1Database,
+  ownerGroup: string,
+  month: string,
+): Promise<PortfolioTopicReferenceRow[]> {
+  const rows = await db.prepare(
+    `SELECT c.slug, p.id, COALESCE(p.title, p.target_keyword, '') AS title,
+            p.topic_service_category AS primary_service, p.target_locality AS primary_area,
+            NULL AS content_pillar, p.monthly_topic_id, 'post' AS source
+     FROM posts p
+     JOIN clients c ON c.id = p.client_id
+     WHERE c.owner_group = ?
+       AND p.status != 'cancelled'
+       AND date(COALESCE(NULLIF(substr(p.publish_date, 1, 10), ''), datetime(p.created_at, 'unixepoch'))) >= date(? || '-01', '-180 day')
+     UNION ALL
+     SELECT c.slug, f.id, f.message AS title, NULL AS primary_service, NULL AS primary_area,
+            NULL AS content_pillar, NULL AS monthly_topic_id, 'rejected_feedback' AS source
+     FROM client_feedback f
+     JOIN clients c ON c.id = f.client_id
+     WHERE c.owner_group = ?
+       AND f.category = 'editorial_review'
+       AND f.created_at >= unixepoch(date(? || '-01', '-180 day'))
+     ORDER BY slug, id`,
+  ).bind(ownerGroup, month, ownerGroup, month).all<PortfolioTopicReferenceRow>();
+  return rows.results ?? [];
+}
+
+export async function listApprovedClientClaims(db: D1Database, clientId: string): Promise<string[]> {
+  const rows = await db.prepare(
+    `SELECT claim_text FROM client_approved_claims
+     WHERE client_id = ? AND review_status = 'approved' AND (expires_at IS NULL OR expires_at >= date('now'))`,
+  ).bind(clientId).all<{ claim_text: string }>();
+  return rows.results.map((row) => row.claim_text);
+}
+
+export async function getClientGenerationFeedback(
+  db: D1Database,
+  clientId: string,
+  approvedOnly: boolean,
+  limit = 10,
+): Promise<Array<{ sentiment: string; note: string }>> {
+  const rows = await db.prepare(
+    `SELECT sentiment, message AS note FROM client_feedback
+     WHERE client_id = ? AND (? = 0 OR (admin_reviewed = 1 AND applied_to_intelligence = 1))
+     ORDER BY created_at DESC LIMIT ?`,
+  ).bind(clientId, approvedOnly ? 1 : 0, limit).all<{ sentiment: string; note: string }>();
+  return rows.results ?? [];
+}
+
+export async function getClientGenerationServiceAreas(
+  db: D1Database,
+  clientId: string,
+  approvedOnly: boolean,
+  limit = 8,
+): Promise<Array<{ city: string; state: string | null }>> {
+  const rows = await db.prepare(
+    `SELECT city, state FROM client_service_areas
+     WHERE client_id = ? AND (? = 0 OR approval_status = 'approved')
+     ORDER BY primary_area DESC, sort_order ASC LIMIT ?`,
+  ).bind(clientId, approvedOnly ? 1 : 0, limit).all<{ city: string; state: string | null }>();
+  return rows.results ?? [];
+}
+
+export async function getClientGenerationServices(
+  db: D1Database,
+  clientId: string,
+  approvedOnly: boolean,
+  limit = 12,
+): Promise<Array<{ name: string }>> {
+  const rows = await db.prepare(
+    `SELECT name FROM client_services
+     WHERE client_id = ? AND active = 1 AND (? = 0 OR approval_status = 'approved')
+     ORDER BY sort_order ASC LIMIT ?`,
+  ).bind(clientId, approvedOnly ? 1 : 0, limit).all<{ name: string }>();
+  return rows.results ?? [];
 }
 
 export async function saveContentReview(
@@ -2197,13 +2529,20 @@ export async function saveContentReview(
     post_updated_at?: number | null;
     content_hash?: string | null;
     disposition?: string;
+    client_id?: string | null;
+    finding_type?: string | null;
+    source_record_type?: string | null;
+    source_record_id?: string | null;
+    recommended_source_fix?: string | null;
+    review_status?: string;
   },
 ): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
   await db.prepare(
     `INSERT INTO content_review_notes
-       (post_id, blog_id, agent_task_id, severity, notes_json, post_updated_at, content_hash, disposition, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (post_id, blog_id, agent_task_id, severity, notes_json, post_updated_at, content_hash, disposition,
+        client_id, finding_type, source_record_type, source_record_id, recommended_source_fix, review_status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(
     data.post_id ?? null,
     data.blog_id ?? null,
@@ -2213,6 +2552,12 @@ export async function saveContentReview(
     data.post_updated_at ?? null,
     data.content_hash ?? null,
     data.disposition ?? 'reviewed',
+    data.client_id ?? null,
+    data.finding_type ?? null,
+    data.source_record_type ?? null,
+    data.source_record_id ?? null,
+    data.recommended_source_fix ?? null,
+    data.review_status ?? 'pending',
     now,
   ).run();
 }
@@ -2227,12 +2572,122 @@ export async function getLatestContentReview(
   return row ?? null;
 }
 
+export async function approveContentReview(
+  db: D1Database,
+  reviewId: string,
+  reviewedBy: string,
+): Promise<void> {
+  await db.prepare(
+    `UPDATE content_review_notes
+     SET review_status = 'approved', reviewed_by = ?, resolved_at = unixepoch()
+     WHERE id = ?`,
+  ).bind(reviewedBy, reviewId).run();
+}
+
+export async function resolveContentReviewFinding(
+  db: D1Database,
+  reviewId: string,
+  reviewedBy: string,
+  reviewStatus: 'approved' | 'rejected',
+  sourceAction: 'none' | 'approve' | 'reject' | 'quarantine',
+  findingIndex = 0,
+): Promise<ContentReviewNoteRow | null> {
+  const review = await db.prepare('SELECT * FROM content_review_notes WHERE id = ?')
+    .bind(reviewId).first<ContentReviewNoteRow>();
+  if (!review) return null;
+
+  let notes: Record<string, unknown> = {};
+  try { notes = JSON.parse(review.notes_json) as Record<string, unknown>; } catch { /* legacy review */ }
+  const findings = Array.isArray(notes.findings)
+    ? notes.findings.filter((finding): finding is Record<string, unknown> => Boolean(finding) && typeof finding === 'object')
+    : [];
+  const selectedFinding = findings[findingIndex] ?? null;
+  if (findings.length > 0 && !selectedFinding) return null;
+  const sourceId = typeof selectedFinding?.source_record_id === 'string'
+    ? selectedFinding.source_record_id
+    : review.source_record_id;
+  const sourceType = typeof selectedFinding?.source_record_type === 'string'
+    ? selectedFinding.source_record_type
+    : review.source_record_type;
+  const findingClientId = review.client_id ?? (
+    typeof selectedFinding?.brand_id === 'string' ? selectedFinding.brand_id : null
+  );
+  if (sourceId && sourceAction !== 'none') {
+    const approved = sourceAction === 'approve';
+    const quarantined = sourceAction === 'quarantine';
+    if (sourceType === 'research') {
+      await db.prepare(`UPDATE client_research_notes
+                        SET review_status = ?, reviewed_by = ?, reviewed_at = unixepoch(), updated_at = unixepoch()
+                        WHERE id = ? AND client_id = ?`)
+        .bind(approved ? 'approved' : quarantined ? 'quarantined' : 'rejected', reviewedBy, sourceId, findingClientId).run();
+    } else if (sourceType === 'service') {
+      await db.prepare(`UPDATE client_services
+                        SET approval_status = ?, active = ?, approved_by = ?, approved_at = unixepoch(), updated_at = unixepoch()
+                        WHERE id = ? AND client_id = ?`)
+        .bind(approved ? 'approved' : 'rejected', approved ? 1 : 0, reviewedBy, sourceId, findingClientId).run();
+    } else if (sourceType === 'service_area') {
+      await db.prepare(`UPDATE client_service_areas
+                        SET approval_status = ?, approved_by = ?, approved_at = unixepoch()
+                        WHERE id = ? AND client_id = ?`)
+        .bind(approved ? 'approved' : 'rejected', reviewedBy, sourceId, findingClientId).run();
+    } else if (sourceType === 'keyword') {
+      await db.prepare(`UPDATE client_keywords
+                        SET approval_status = ?, status = ?, approved_by = ?, approved_at = unixepoch(), updated_at = unixepoch()
+                        WHERE id = ? AND client_id = ?`)
+        .bind(approved ? 'approved' : 'rejected', approved ? 'active' : 'archived', reviewedBy, sourceId, findingClientId).run();
+    } else if (sourceType === 'strategy') {
+      if (approved) {
+        await db.prepare(`UPDATE client_strategy_plans
+                          SET status = 'archived', updated_at = unixepoch()
+                          WHERE client_id = ? AND id != ? AND status = 'approved'`)
+          .bind(findingClientId, sourceId).run();
+      }
+      await db.prepare("UPDATE client_strategy_plans SET status = ?, updated_at = unixepoch() WHERE id = ? AND client_id = ?")
+        .bind(approved ? 'approved' : 'archived', sourceId, findingClientId).run();
+    } else if (sourceType === 'claim') {
+      await db.prepare(`UPDATE client_approved_claims
+                        SET review_status = ?, reviewed_by = ?, reviewed_at = unixepoch(), updated_at = unixepoch()
+                        WHERE id = ? AND client_id = ?`)
+        .bind(approved ? 'approved' : 'rejected', reviewedBy, sourceId, findingClientId).run();
+    } else if (sourceType === 'platform') {
+      await db.prepare(`UPDATE client_platforms
+                        SET verification_status = ?, verified_at = NULL, verification_notes = ?
+                        WHERE id = ? AND client_id = ?`)
+        .bind(approved ? 'pending_live_verification' : 'quarantined', selectedFinding?.recommended_source_fix ?? review.recommended_source_fix, sourceId, findingClientId).run();
+    } else if (sourceType === 'gbp_location') {
+      await db.prepare(`UPDATE client_gbp_locations
+                        SET verification_status = ?, verified_at = NULL, verification_notes = ?
+                        WHERE id = ? AND client_id = ?`)
+        .bind(approved ? 'pending_live_verification' : 'quarantined', selectedFinding?.recommended_source_fix ?? review.recommended_source_fix, sourceId, findingClientId).run();
+    }
+  }
+
+  let aggregateStatus: 'pending' | 'approved' | 'rejected' = reviewStatus;
+  if (selectedFinding) {
+    selectedFinding.review_status = reviewStatus;
+    selectedFinding.reviewed_by = reviewedBy;
+    selectedFinding.resolved_at = Math.floor(Date.now() / 1000);
+    notes.findings = findings;
+    aggregateStatus = findings.some((finding) => finding.review_status === 'pending')
+      ? 'pending'
+      : findings.some((finding) => finding.review_status === 'rejected') ? 'rejected' : 'approved';
+  }
+  await db.prepare(`UPDATE content_review_notes
+                    SET review_status = ?, reviewed_by = ?,
+                        resolved_at = CASE WHEN ? = 'pending' THEN NULL ELSE unixepoch() END,
+                        notes_json = ?
+                    WHERE id = ?`)
+    .bind(aggregateStatus, reviewedBy, aggregateStatus, JSON.stringify(notes), reviewId).run();
+  return db.prepare('SELECT * FROM content_review_notes WHERE id = ?')
+    .bind(reviewId).first<ContentReviewNoteRow>();
+}
+
 export async function preserveEditorialFeedbackBeforePostDelete(
   db: D1Database,
-  post: Pick<PostRow, 'id' | 'client_id' | 'publish_date'>,
+  post: Pick<PostRow, 'id' | 'client_id' | 'publish_date' | 'title' | 'target_keyword' | 'topic_service_category'>,
 ): Promise<boolean> {
   const review = await getLatestContentReview(db, post.id);
-  if (!review || !['medium', 'high', 'critical'].includes(review.severity)) return false;
+  if (!review || !['medium', 'high', 'blocker', 'critical'].includes(review.severity)) return false;
 
   let summary = '';
   let issues: string[] = [];
@@ -2244,7 +2699,10 @@ export async function preserveEditorialFeedbackBeforePostDelete(
       : [];
   } catch { /* retain the severity-only fallback */ }
 
-  const details = [summary, ...issues.slice(0, 3)].filter(Boolean).join(' ');
+  const rejectedTopic = [post.title, post.target_keyword, post.topic_service_category].filter(Boolean).join(' | ');
+  const details = [rejectedTopic ? `Rejected topic: ${rejectedTopic}.` : '', summary, ...issues.slice(0, 3)]
+    .filter(Boolean)
+    .join(' ');
   const message = redactSecrets(
     `Editorial ${review.severity}: ${details || 'Replace this draft and avoid repeating its editorial quality failures.'}`,
   ).slice(0, 3000);
@@ -2476,14 +2934,14 @@ export async function getAgencyClientContentBrief(
   options: { includeRecentTopics?: boolean } = {},
 ): Promise<{ brief: string; hasBrief: boolean; profile_gaps: string[]; active_platforms: string[]; gbp_locations: Array<{ label: string; caption_field: string | null; upload_post_profile: string | null; location_id: string; paused: number }> }> {
   const [client, intel, areas, services, restrictions, keywords, gbpRows, platforms, recentTopics, latestResearch, latestStrategy] = await Promise.all([
-    db.prepare('SELECT canonical_name, industry, state, phone, cta_text, notes FROM clients WHERE id = ?')
-      .bind(clientId).first<{ canonical_name: string | null; industry: string | null; state: string | null; phone: string | null; cta_text: string | null; notes: string | null }>(),
+    db.prepare('SELECT canonical_name, industry, state, phone, cta_text, notes, owner_group FROM clients WHERE id = ?')
+      .bind(clientId).first<{ canonical_name: string | null; industry: string | null; state: string | null; phone: string | null; cta_text: string | null; notes: string | null; owner_group: string | null }>(),
     db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?')
       .bind(clientId).first<Record<string, string | null>>(),
-    db.prepare('SELECT city FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 8')
-      .bind(clientId).all<{ city: string }>(),
-    db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC LIMIT 12')
-      .bind(clientId).all<{ name: string }>(),
+    db.prepare('SELECT city, approval_status FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 20')
+      .bind(clientId).all<{ city: string; approval_status: string }>(),
+    db.prepare('SELECT name, approval_status FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC LIMIT 30')
+      .bind(clientId).all<{ name: string; approval_status: string }>(),
     getClientRestrictions(db, clientId),
     getClientKeywords(db, clientId),
     getClientGbpLocations(db, clientId),
@@ -2492,8 +2950,10 @@ export async function getAgencyClientContentBrief(
     getLatestClientResearch(db, clientId),
     getLatestClientStrategy(db, clientId),
   ]);
+  const governedLocksmith = client?.owner_group === 'gabriel-locksmiths';
   const seenGbpLocations = new Set<string>();
   const gbp_locations = gbpRows.filter((g) => {
+    if (governedLocksmith && g.verification_status !== 'verified') return false;
     const key = `${g.location_id}|${g.upload_post_profile ?? ''}|${g.caption_field ?? ''}`;
     if (seenGbpLocations.has(key)) return false;
     seenGbpLocations.add(key);
@@ -2506,8 +2966,19 @@ export async function getAgencyClientContentBrief(
     paused: g.paused,
   }));
 
-  const serviceAreas = areas.results.map((r) => r.city).filter(Boolean);
-  const serviceNames = services.results.map((r) => r.name).filter(Boolean);
+  const serviceAreas = areas.results
+    .filter((row) => !governedLocksmith || row.approval_status === 'approved')
+    .map((row) => row.city)
+    .filter(Boolean)
+    .slice(0, 8);
+  const serviceNames = services.results
+    .filter((row) => !governedLocksmith || row.approval_status === 'approved')
+    .map((row) => row.name)
+    .filter(Boolean)
+    .slice(0, 12);
+  const eligibleKeywords = governedLocksmith
+    ? keywords.filter((keyword) => keyword.approval_status === 'approved')
+    : keywords;
   const i = intel ?? {};
   const lines: string[] = [];
   const add = (label: string, value: string | null | undefined) => {
@@ -2538,8 +3009,8 @@ export async function getAgencyClientContentBrief(
 
   // Shared target keyword set (§3) — feeds research/strategy/social/blog/GMB from
   // one source so messaging stays consistent and on-target for local ranking.
-  if (keywords.length) {
-    const byType = (t: string) => keywords.filter((k) => k.kw_type === t).map((k) => k.keyword);
+  if (eligibleKeywords.length) {
+    const byType = (t: string) => eligibleKeywords.filter((k) => k.kw_type === t).map((k) => k.keyword);
     const kwLines: string[] = [];
     const primary = byType('primary');
     const local = [...byType('local'), ...byType('near_me')];
@@ -2596,7 +3067,9 @@ export async function getAgencyClientContentBrief(
     hasBrief,
     profile_gaps,
     active_platforms: [...new Set(platforms
-      .filter((platform) => platform.paused !== 1 && platform.connection_status !== 'failed')
+      .filter((platform) => platform.paused !== 1
+        && platform.connection_status !== 'failed'
+        && (!governedLocksmith || platform.platform === 'website_blog' || platform.verification_status === 'verified'))
       .map((platform) => platform.platform))],
     gbp_locations,
   };
@@ -3280,7 +3753,8 @@ export async function getClientMonthlyContentPlan(
 
 export async function upsertClientMonthlyContentPlan(
   db: D1Database,
-  data: Omit<ClientMonthlyContentPlanRow, 'id' | 'created_at' | 'updated_at'>,
+  data: Omit<ClientMonthlyContentPlanRow, 'id' | 'created_at' | 'updated_at' | 'status' | 'expected_slots' | 'approved_by' | 'approved_at'> &
+    Partial<Pick<ClientMonthlyContentPlanRow, 'status' | 'expected_slots' | 'approved_by' | 'approved_at'>>,
 ): Promise<ClientMonthlyContentPlanRow> {
   const now = Math.floor(Date.now() / 1000);
   const existing = await getClientMonthlyContentPlan(db, data.client_id, data.plan_month);
@@ -3289,8 +3763,9 @@ export async function upsertClientMonthlyContentPlan(
     await db
       .prepare(
         `INSERT INTO client_monthly_content_plans
-          (id, client_id, plan_month, monthly_focus, promotion_notes, priority_services, notes, created_by, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, client_id, plan_month, monthly_focus, promotion_notes, priority_services, notes,
+           status, expected_slots, approved_by, approved_at, created_by, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         id,
@@ -3300,6 +3775,10 @@ export async function upsertClientMonthlyContentPlan(
         data.promotion_notes ?? null,
         data.priority_services ?? null,
         data.notes ?? null,
+        data.status ?? 'draft',
+        data.expected_slots ?? 26,
+        data.approved_by ?? null,
+        data.approved_at ?? null,
         data.created_by ?? null,
         now,
         now,
@@ -3310,13 +3789,20 @@ export async function upsertClientMonthlyContentPlan(
 
   await db
     .prepare(`UPDATE client_monthly_content_plans
-              SET monthly_focus = ?, promotion_notes = ?, priority_services = ?, notes = ?, created_by = COALESCE(created_by, ?), updated_at = ?
+              SET monthly_focus = ?, promotion_notes = ?, priority_services = ?, notes = ?,
+                  status = COALESCE(?, status), expected_slots = COALESCE(?, expected_slots),
+                  approved_by = COALESCE(?, approved_by), approved_at = COALESCE(?, approved_at),
+                  created_by = COALESCE(created_by, ?), updated_at = ?
               WHERE id = ?`)
     .bind(
       data.monthly_focus ?? null,
       data.promotion_notes ?? null,
       data.priority_services ?? null,
       data.notes ?? null,
+      data.status ?? null,
+      data.expected_slots ?? null,
+      data.approved_by ?? null,
+      data.approved_at ?? null,
       data.created_by ?? null,
       now,
       existing.id,
@@ -3327,16 +3813,26 @@ export async function upsertClientMonthlyContentPlan(
 
 export async function createClientMonthlyTopic(
   db: D1Database,
-  data: Omit<ClientMonthlyTopicRow, 'created_at' | 'updated_at' | 'used_at'>,
+  data: Omit<ClientMonthlyTopicRow,
+    'created_at' | 'updated_at' | 'used_at' | 'slot_number' | 'content_pillar' | 'working_title' |
+    'primary_service' | 'primary_area' | 'supporting_keywords' | 'format' | 'offer_or_event' |
+    'image_requirement' | 'proof_requirement' | 'claim_requirement' | 'approval_status' |
+    'approved_by' | 'approved_at'> & Partial<Pick<ClientMonthlyTopicRow,
+      'slot_number' | 'content_pillar' | 'working_title' | 'primary_service' | 'primary_area' |
+      'supporting_keywords' | 'format' | 'offer_or_event' | 'image_requirement' |
+      'proof_requirement' | 'claim_requirement' | 'approval_status' | 'approved_by' | 'approved_at'>>,
 ): Promise<ClientMonthlyTopicRow> {
   const now = Math.floor(Date.now() / 1000);
   await db
     .prepare(
       `INSERT INTO client_monthly_topics
         (id, client_id, plan_id, plan_month, topic_title, service_category, target_keyword,
-         content_type_preference, preferred_platforms, priority, status, notes,
-         generated_post_id, used_post_id, created_by, created_at, updated_at, used_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+         content_type_preference, preferred_platforms, priority, status, slot_number,
+         content_pillar, working_title, primary_service, primary_area, supporting_keywords,
+         format, offer_or_event, image_requirement, proof_requirement, claim_requirement,
+         approval_status, approved_by, approved_at, notes, generated_post_id, used_post_id,
+         created_by, created_at, updated_at, used_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
     )
     .bind(
       data.id,
@@ -3350,6 +3846,20 @@ export async function createClientMonthlyTopic(
       data.preferred_platforms ?? null,
       data.priority ?? 0,
       data.status ?? 'planned',
+      data.slot_number ?? null,
+      data.content_pillar ?? null,
+      data.working_title ?? data.topic_title,
+      data.primary_service ?? data.service_category ?? null,
+      data.primary_area ?? null,
+      data.supporting_keywords ?? null,
+      data.format ?? null,
+      data.offer_or_event ?? null,
+      data.image_requirement ?? null,
+      data.proof_requirement ?? null,
+      data.claim_requirement ?? null,
+      data.approval_status ?? 'draft',
+      data.approved_by ?? null,
+      data.approved_at ?? null,
       data.notes ?? null,
       data.generated_post_id ?? null,
       data.used_post_id ?? null,
@@ -3469,17 +3979,24 @@ export async function findRecentTopicConflict(
   },
 ): Promise<TopicConflictMatch | null> {
   const baseDate = (params.publishDate ?? '').slice(0, 10) || new Date().toISOString().slice(0, 10);
+  const targetClient = await db.prepare('SELECT owner_group FROM clients WHERE id = ?')
+    .bind(params.clientId)
+    .first<{ owner_group: string | null }>();
+  const portfolioScope = targetClient?.owner_group === 'gabriel-locksmiths';
   const rows = await db
     .prepare(
-      `SELECT * FROM posts
-       WHERE client_id = ?
-         AND status NOT IN ('cancelled')
-         AND substr(COALESCE(publish_date, ''), 1, 10) >= date(?, '-90 day')
-       ORDER BY updated_at DESC
-       LIMIT 120`,
+      `SELECT posts.*,
+              CASE WHEN posts.client_id = ? THEN 1 ELSE 0 END AS conflict_same_brand
+       FROM posts
+       JOIN clients source_client ON source_client.id = posts.client_id
+       WHERE (posts.client_id = ? OR (? = 1 AND source_client.owner_group = 'gabriel-locksmiths'))
+         AND posts.status NOT IN ('cancelled')
+         AND date(COALESCE(NULLIF(substr(posts.publish_date, 1, 10), ''), datetime(posts.created_at, 'unixepoch'))) >= date(?, ?)
+       ORDER BY posts.updated_at DESC
+       LIMIT 500`,
     )
-    .bind(params.clientId, baseDate)
-    .all<PostRow>();
+    .bind(params.clientId, params.clientId, portfolioScope ? 1 : 0, baseDate, portfolioScope ? '-180 day' : '-90 day')
+    .all<PostRow & { conflict_same_brand: number }>();
 
   const candidateTitle = params.candidateTitle ?? '';
   const candidateKeyword = params.candidateKeyword ?? '';
@@ -3505,6 +4022,22 @@ export async function findRecentTopicConflict(
     if (params.excludePostId && row.id === params.excludePostId) continue;
 
     const rowPublishDate = (row.publish_date ?? '').slice(0, 10);
+    const rowReferenceDate = rowPublishDate || new Date((row.created_at ?? 0) * 1000).toISOString().slice(0, 10);
+    const ageDays = Math.max(0, Math.floor(
+      (Date.parse(`${baseDate}T00:00:00Z`) - Date.parse(`${rowReferenceDate}T00:00:00Z`)) / 86_400_000,
+    ));
+    const sameBrand = row.conflict_same_brand === 1;
+    const normalizedCandidateTitle = normalizeTopicFingerprint(candidateTitle);
+    const normalizedRowTitle = normalizeTopicFingerprint(row.title);
+    if (
+      portfolioScope
+      && normalizedCandidateTitle
+      && normalizedCandidateTitle === normalizedRowTitle
+      && ageDays <= 180
+    ) {
+      return { post: row, reason: 'exact title matched within the 180-day portfolio cooldown' };
+    }
+
     const rowWeekStart = rowPublishDate ? new Date(`${rowPublishDate}T00:00:00Z`) : null;
     if (rowWeekStart && !Number.isNaN(rowWeekStart.getTime())) {
       rowWeekStart.setUTCDate(rowWeekStart.getUTCDate() - rowWeekStart.getUTCDay());
@@ -3528,15 +4061,28 @@ export async function findRecentTopicConflict(
         targetKeyword: row.target_keyword,
       }),
     );
-    if (candidateFingerprint && rowFingerprint && candidateFingerprint === rowFingerprint) {
+    const angleCooldownDays = portfolioScope ? (sameBrand ? 60 : 45) : 90;
+    if (candidateFingerprint && rowFingerprint && candidateFingerprint === rowFingerprint && ageDays <= angleCooldownDays) {
       return { post: row, reason: 'topic fingerprint matched recent post' };
     }
 
-    if (candidateTitle && row.title && topicSimilarity(candidateTitle, row.title) >= 0.74) {
+    if (candidateTitle && row.title && topicSimilarity(candidateTitle, row.title) >= 0.74 && ageDays <= angleCooldownDays) {
       return { post: row, reason: 'title/topic matched recent post' };
     }
 
-    if (candidateCaption && row.master_caption && topicSimilarity(candidateCaption, row.master_caption) >= 0.82) {
+    const candidateHook = normalizeTopicFingerprint(candidateCaption).split(' ').slice(0, 18).join(' ');
+    const rowHook = normalizeTopicFingerprint(row.master_caption).split(' ').slice(0, 18).join(' ');
+    if (
+      portfolioScope
+      && candidateHook
+      && rowHook
+      && topicSimilarity(candidateHook, rowHook) >= 0.9
+      && ageDays <= 90
+    ) {
+      return { post: row, reason: 'opening hook matched within the 90-day portfolio cooldown' };
+    }
+
+    if (candidateCaption && row.master_caption && topicSimilarity(candidateCaption, row.master_caption) >= 0.82 && ageDays <= angleCooldownDays) {
       return { post: row, reason: 'caption pattern matched recent post' };
     }
 
@@ -3546,9 +4092,43 @@ export async function findRecentTopicConflict(
       normalizeTopicFingerprint(candidateServiceCategory) === normalizeTopicFingerprint(row.topic_service_category) &&
       candidateTitle &&
       row.title &&
-      topicSimilarity(candidateTitle, row.title) >= 0.55
+      topicSimilarity(candidateTitle, row.title) >= 0.55 &&
+      ageDays <= angleCooldownDays
     ) {
       return { post: row, reason: 'service angle matched recent post' };
+    }
+  }
+
+  if (portfolioScope) {
+    const feedback = await db.prepare(
+      `SELECT f.id, f.client_id, f.message, f.created_at
+       FROM client_feedback f
+       JOIN clients c ON c.id = f.client_id
+       WHERE c.owner_group = 'gabriel-locksmiths'
+         AND f.category = 'editorial_review'
+         AND f.created_at >= unixepoch(date(?, '-180 day'))
+       ORDER BY f.created_at DESC
+       LIMIT 500`,
+    ).bind(baseDate).all<{ id: string; client_id: string; message: string; created_at: number }>();
+    const normalizedTitle = normalizeTopicFingerprint(candidateTitle);
+    const normalizedKeyword = normalizeTopicFingerprint(candidateKeyword);
+    for (const row of feedback.results) {
+      const normalizedMessage = normalizeTopicFingerprint(row.message);
+      const titleConflict = normalizedTitle && (
+        normalizedMessage.includes(normalizedTitle)
+        || topicSimilarity(candidateTitle, row.message) >= 0.55
+      );
+      const keywordConflict = normalizedKeyword && normalizedMessage.includes(normalizedKeyword);
+      if (titleConflict || keywordConflict) {
+        const rejected = {
+          id: `feedback:${row.id}`,
+          client_id: row.client_id,
+          title: row.message,
+          created_at: row.created_at,
+          updated_at: row.created_at,
+        } as PostRow;
+        return { post: rejected, reason: 'topic matched preserved rejected editorial feedback' };
+      }
     }
   }
   return null;

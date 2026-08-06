@@ -18,12 +18,15 @@ import {
   getClientPlatforms,
   getClientGbpLocations,
   getClientRestrictions,
+  updateClientPlatformVerification,
+  updateClientGbpLocationVerification,
   writeAuditLog,
 } from '../db/queries';
 import { UploadPostClient, UploadPostError } from '../services/uploadpost';
 import { getConnectionHealth, type UploadPostProfileResponse } from '../modules/posting-diagnostics';
 import { getPlatformConfigWarnings } from '../modules/platform-config';
 import { syncUploadPostClientPlatforms } from '../modules/uploadpost-platform-sync';
+import { destinationIdentityMatches, normalizeGbpDestination } from '../modules/gbp-destination';
 
 export const clientRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -31,6 +34,7 @@ export const clientRoutes = new Hono<{ Bindings: Env; Variables: { user: Session
 const CLIENT_WRITABLE_FIELDS = new Set([
   'canonical_name', 'package', 'status', 'language', 'manual_only',
   'requires_approval_from', 'owner_group', 'never_mix_with',
+  'profile_approval_status', 'profile_approved_by', 'profile_approved_at',
   'upload_post_profile', 'notes', 'brand_json',
   // WordPress legacy
   'wp_domain', 'wp_url', 'wp_auth', 'wp_template',
@@ -173,15 +177,92 @@ clientRoutes.get('/:id/connection-check', async (c) => {
 
     const locationProbe = async (): Promise<{ ok: boolean; message: string; details?: Record<string, unknown> }> => {
       try {
-        const payload = await up.getGbpLocations(client.upload_post_profile!) as { locations?: Array<Record<string, unknown>> };
-        const expected = gbp_locations
-          .filter((loc) => loc.paused !== 1)
-          .map((loc) => loc.location_id);
-        const returned = (payload.locations ?? []).map((loc) => String(loc.location_id ?? loc.id ?? ''));
-        const missing = expected.filter((locationId) => !returned.includes(locationId));
-        return missing.length === 0
-          ? { ok: true, message: 'Connected Google Business locations are available.', details: { expected, returned } }
-          : { ok: false, message: `Missing GBP locations: ${missing.join(', ')}`, details: { expected, returned, missing } };
+        const googlePlatform = byPlatform.get('google_business');
+        const expected: Array<{
+          rowId: string;
+          locationId: string;
+          profile: string;
+          businessName: string;
+          phone: string | null;
+          market: string | null;
+          kind: 'multi' | 'single';
+        }> = gbp_locations.filter((loc) => loc.paused !== 1).map((loc) => ({
+          rowId: loc.id,
+          locationId: loc.location_id,
+          profile: loc.upload_post_profile ?? client.upload_post_profile!,
+          businessName: client.canonical_name,
+          phone: client.phone,
+          market: loc.verified_market ?? loc.label,
+          kind: 'multi' as const,
+        }));
+        if (googlePlatform?.upload_post_location_id && expected.length === 0) {
+          expected.push({
+            rowId: googlePlatform.id,
+            locationId: googlePlatform.upload_post_location_id,
+            profile: client.upload_post_profile!,
+            businessName: client.canonical_name,
+            phone: client.phone,
+            market: googlePlatform.verified_market,
+            kind: 'single' as const,
+          });
+        }
+        if (expected.length === 0) {
+          return { ok: false, message: 'Google Business is connected but no canonical destination is configured.' };
+        }
+
+        const profiles = new Map<string, typeof expected>();
+        for (const item of expected) {
+          const rows = profiles.get(item.profile) ?? [];
+          rows.push(item);
+          profiles.set(item.profile, rows);
+        }
+        const missing: string[] = [];
+        const mismatched: string[] = [];
+        const returned: string[] = [];
+        for (const [profile, profileExpected] of profiles) {
+          const payload = await up.getGbpLocations(profile) as { locations?: Array<Record<string, unknown>> };
+          const destinations = (payload.locations ?? []).map(normalizeGbpDestination);
+          returned.push(...destinations.map((destination) => destination.id));
+          for (const item of profileExpected) {
+            let destination = destinations.find((candidate) => candidate.id === item.locationId);
+            if (!destination && destinations.length === 1) destination = destinations[0];
+            if (!destination) {
+              missing.push(item.locationId);
+              continue;
+            }
+            const identity = destinationIdentityMatches(destination, item);
+            const status = identity.ok ? 'verified' : 'identity_mismatch';
+            const notes = identity.ok
+              ? `Live Upload-Post destination verified through ${profile}.`
+              : `Identity mismatch: name=${identity.nameMatch}, phone=${identity.phoneMatch}, market=${identity.marketMatch}.`;
+            if (!identity.ok) mismatched.push(item.locationId);
+            if (item.kind === 'multi') {
+              await updateClientGbpLocationVerification(c.env.DB, item.rowId, {
+                status,
+                canonicalLocationId: destination.id,
+                businessName: destination.businessName,
+                phone: destination.phone,
+                address: destination.address,
+                market: destination.market,
+                notes,
+              });
+            } else {
+              await updateClientPlatformVerification(c.env.DB, item.rowId, {
+                status,
+                canonicalLocationId: destination.id,
+                providerDestinationId: destination.id,
+                businessName: destination.businessName,
+                phone: destination.phone,
+                market: destination.market,
+                notes,
+              });
+            }
+          }
+        }
+        const ok = missing.length === 0 && mismatched.length === 0;
+        return ok
+          ? { ok: true, message: 'Google Business destination IDs and identities are verified.', details: { expected: expected.map((item) => item.locationId), returned } }
+          : { ok: false, message: `GBP destination verification failed. Missing: ${missing.join(', ') || 'none'}; identity mismatch: ${mismatched.join(', ') || 'none'}.`, details: { returned, missing, mismatched } };
       } catch (err) {
         return { ok: false, message: err instanceof UploadPostError ? err.body : String(err) };
       }
@@ -273,6 +354,19 @@ clientRoutes.get('/:id/connection-check', async (c) => {
             .prepare('UPDATE client_platforms SET connection_status = ? WHERE id = ?')
             .bind(item.status, cfg.id)
             .run();
+          if (platform !== 'google_business') {
+            await updateClientPlatformVerification(c.env.DB, cfg.id, {
+              status: item.connected ? 'verified' : 'provider_unhealthy',
+              providerDestinationId: cfg.page_id
+                ?? cfg.upload_post_board_id
+                ?? cfg.account_id
+                ?? cfg.username,
+              businessName: cfg.username ?? cfg.profile_username,
+              phone: null,
+              market: null,
+              notes: item.message,
+            });
+          }
         } catch {
           // Diagnostics should not fail the whole response if persistence is unavailable.
         }

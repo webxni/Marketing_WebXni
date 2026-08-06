@@ -22,6 +22,9 @@ import {
   createPost,
   findSimilarRecentPost,
   getClientBySlug,
+  getClientGenerationFeedback,
+  getClientGenerationServiceAreas,
+  getClientGenerationServices,
   getClientMonthlyContentPlan,
   getClientPlatforms,
   getNextClientMonthlyTopic,
@@ -62,6 +65,11 @@ import {
   resolvePlatformSelection,
   withImplicitBlogPlatform,
 } from '../modules/platform-compatibility';
+import {
+  assertLocksmithPortfolioGenerationReady,
+  isGovernedLocksmith,
+  validateLocksmithGeneratedContent,
+} from '../modules/editorial-governance';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -231,26 +239,30 @@ export async function createContentWithImage(
   // ── 3. Resolve publish date ─────────────────────────────────────────────────
   const publishDate = params.publishDate ?? `${today()}T10:00`;
   const planMonth = monthFromPublishDate(publishDate);
+  const governedLocksmith = isGovernedLocksmith(client);
+  if (governedLocksmith) {
+    await assertLocksmithPortfolioGenerationReady(db, [client], publishDate.slice(0, 10), publishDate.slice(0, 10));
+    if (params.topicOverride?.trim()) {
+      throw new Error('Generation blocked: governed locksmith content must use an approved monthly topic slot.');
+    }
+  }
   const monthlyPlan = await getClientMonthlyContentPlan(db, client.id, planMonth);
 
   // ── 4. Load intelligence + service context ──────────────────────────────────
   const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows] = await Promise.all([
     db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?')
       .bind(client.id).first<IntelRow>().then(r => r ?? null),
-    db.prepare('SELECT sentiment, message AS note FROM client_feedback WHERE client_id = ? ORDER BY created_at DESC LIMIT 8')
-      .bind(client.id).all<{ sentiment: string; note: string }>(),
+    getClientGenerationFeedback(db, client.id, governedLocksmith, 8),
     db.prepare(`SELECT title, master_caption FROM posts WHERE client_id = ? AND status NOT IN ('cancelled') ORDER BY created_at DESC LIMIT 20`)
       .bind(client.id).all<{ title: string | null; master_caption: string | null }>(),
-    db.prepare('SELECT city FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 8')
-      .bind(client.id).all<{ city: string }>(),
-    db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC LIMIT 12')
-      .bind(client.id).all<{ name: string }>(),
+    getClientGenerationServiceAreas(db, client.id, governedLocksmith, 8),
+    getClientGenerationServices(db, client.id, governedLocksmith, 12),
   ]);
   const intel = applyMonthlyPlanToIntelligence(intelBase, monthlyPlan);
 
   const recentTitles  = recRows.results.map(r => r.title ?? r.master_caption?.slice(0, 80) ?? '').filter(Boolean) as string[];
-  const serviceAreas  = svcAreaRows.results.map(r => r.city);
-  const serviceNames  = svcNameRows.results.map(r => r.name);
+  const serviceAreas  = svcAreaRows.map(r => r.city);
+  const serviceNames  = svcNameRows.map(r => r.name);
   const recentFormats = recRows.results
     .map(r => detectFormatFromTitle(r.title ?? ''))
     .filter((f): f is ContentFormat => f !== null);
@@ -278,7 +290,7 @@ export async function createContentWithImage(
     };
   }
 
-  if (resolvedTopicOverride) {
+  if (resolvedTopicOverride && !topicResearch) {
     // User supplied a specific topic — use it directly
     topicResearch = {
       topic:          resolvedTopicOverride,
@@ -288,7 +300,7 @@ export async function createContentWithImage(
       localModifier:  serviceAreas[0] ?? '',
       searchQuestion: resolvedTopicOverride,
     };
-  } else {
+  } else if (!topicResearch) {
     try {
       topicResearch = await researchTopic(openAiKey, {
         client:        { slug: client.slug, canonical_name: client.canonical_name, industry: client.industry, state: client.state, language: client.language },
@@ -323,7 +335,7 @@ export async function createContentWithImage(
     },
     intelligence:  intel as GenerationContext['intelligence'],
     recentTitles,
-    feedback:      fbRows.results,
+    feedback:      fbRows,
     publishDate:   publishDate.slice(0, 10),
     contentType,
     platforms: contentType === 'blog'
@@ -340,6 +352,10 @@ export async function createContentWithImage(
 
   const genResult = await generatePostContent(openAiKey, ctx);
   const p = genResult.post;
+  const governanceIssues = await validateLocksmithGeneratedContent(db, client, p);
+  if (governanceIssues.length > 0) {
+    throw new Error(`Editorial gate failed: ${governanceIssues.join('; ')}`);
+  }
 
   // ── 7. Stability image generation (3-attempt loop) ──────────────────────────
   const { stabilityKey: resolvedStabilityKey } = await resolveStabilityApiKeys(env);

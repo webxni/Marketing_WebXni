@@ -49,7 +49,8 @@ async function refreshPostPrimaryAsset(db: D1Database, postId: string): Promise<
     await db
       .prepare(
         `UPDATE posts SET asset_r2_key = NULL, asset_r2_bucket = NULL,
-                          asset_type = NULL, asset_delivered = 0, updated_at = ?
+                          asset_type = NULL, asset_delivered = 0,
+                          asset_rights_confirmed = 0, asset_rights_notes = NULL, updated_at = ?
          WHERE id = ?`,
       )
       .bind(now, postId)
@@ -60,7 +61,8 @@ async function refreshPostPrimaryAsset(db: D1Database, postId: string): Promise<
   await db
     .prepare(
       `UPDATE posts SET asset_r2_key = ?, asset_r2_bucket = ?, asset_type = ?,
-                        asset_delivered = 1, updated_at = ?
+                        asset_delivered = 1, asset_rights_confirmed = 0,
+                        asset_rights_notes = NULL, updated_at = ?
        WHERE id = ?`,
     )
     .bind(row.r2_key, row.r2_bucket, isVideo ? 'video' : 'image', now, postId)

@@ -1,0 +1,9 @@
+brand_id,brand_name,source_url,source_domain,source_title,entity_match,geography_match,service_match,prohibited_service_detected,confidence,review_status,reviewed_by,reviewed_at,expires_at,notes
+247-lockout-pasadena,24/7 Lockout,internal://owner-locksmith-policy-2026-08-06,internal,Owner editorial policy,1,1,1,0,high,approved,portfolio-reset,2026-08-06,2026-11-30,Only Pasadena-area approved services and restrictions
+724-locksmith-ca,7/24 Locksmith,internal://owner-locksmith-policy-2026-08-06,internal,Owner editorial policy,1,1,1,0,high,approved,portfolio-reset,2026-08-06,2026-11-30,Only SFV approved services and restrictions
+daniels-locksmith,Daniel's Locks & Key,internal://owner-locksmith-policy-2026-08-06,internal,Owner editorial policy,1,1,1,0,high,approved,portfolio-reset,2026-08-06,2026-11-30,Virginia entity research quarantined
+unlocked-pros,Unlock'D Pros,internal://owner-locksmith-policy-2026-08-06,internal,Owner editorial policy,1,1,1,0,high,approved,portfolio-reset,2026-08-06,2026-11-30,Canadian detailing entity research quarantined
+247-lockout-pasadena,24/7 Lockout,legacy://all-prior-research,legacy,Prior autonomous research,0,0,0,1,low,quarantined,portfolio-reset,2026-08-06,,Imported prohibited competitor services
+724-locksmith-ca,7/24 Locksmith,legacy://all-prior-research,legacy,Prior autonomous research,0,0,0,1,low,quarantined,portfolio-reset,2026-08-06,,Imported prohibited competitor services
+daniels-locksmith,Daniel's Locks & Key,legacy://all-prior-research,legacy,Prior autonomous research,0,0,0,1,low,quarantined,portfolio-reset,2026-08-06,,Wrong Virginia entity
+unlocked-pros,Unlock'D Pros,legacy://all-prior-research,legacy,Prior autonomous research,0,0,0,1,low,quarantined,portfolio-reset,2026-08-06,,Wrong Canadian automotive-detailing entity

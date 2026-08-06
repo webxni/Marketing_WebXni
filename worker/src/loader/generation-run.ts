@@ -56,6 +56,9 @@ import {
   getClientKeywords,
   getClientRestrictions,
   getClientProfileCompleteness,
+  getClientGenerationFeedback,
+  getClientGenerationServiceAreas,
+  getClientGenerationServices,
   reclassifyActiveClientKeywords,
   type GenerationProgress,
   buildTopicFingerprint,
@@ -97,6 +100,11 @@ import {
   withImplicitBlogPlatform,
   withImplicitGbpPlatform,
 } from '../modules/platform-compatibility';
+import {
+  assertLocksmithPortfolioGenerationReady,
+  isGovernedLocksmith,
+  validateLocksmithGeneratedContent,
+} from '../modules/editorial-governance';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -127,7 +135,9 @@ export function relevantGbpLocationsForTarget(
   const targetState = targetArea?.state?.trim().toUpperCase() ?? '';
   return active.filter((location) => {
     const label = location.label.trim().toLowerCase();
+    const verifiedMarket = location.verified_market?.trim().toLowerCase() ?? '';
     if (label === target) return true;
+    if (verifiedMarket === target) return true;
 
     const fieldRegion = getGbpCaptionField(location)?.match(/^cap_gbp_([a-z]{2})$/i)?.[1].toUpperCase() ?? '';
     if (fieldRegion === 'LA') return targetState === 'CA';
@@ -469,14 +479,16 @@ async function buildMonthlyTopicSelection(
   platforms: string[],
   serviceAreas: string[],
   excludedTopicIds: string[] = [],
+  strictApproval = false,
 ): Promise<SlotTopicSelection | null> {
   const month = planMonth(date);
   const requestedPlatforms = new Set(platforms);
   const [approvedTopics, plannedTopics] = await Promise.all([
     listClientMonthlyTopics(db, clientId, month, 'approved'),
-    listClientMonthlyTopics(db, clientId, month, 'planned'),
+    strictApproval ? Promise.resolve([]) : listClientMonthlyTopics(db, clientId, month, 'planned'),
   ]);
   const allTopics = [...approvedTopics, ...plannedTopics].filter((topic) => {
+    if (strictApproval && topic.approval_status !== 'approved') return false;
     if (excludedTopicIds.includes(topic.id)) return false;
     if (topic.content_type_preference && topic.content_type_preference !== contentType) return false;
     if (!topic.preferred_platforms || requestedPlatforms.size === 0) return true;
@@ -495,7 +507,7 @@ async function buildMonthlyTopicSelection(
     topicTitle: monthlyTopic.topic_title,
     serviceCategory: monthlyTopic.service_category ?? null,
     targetKeyword: monthlyTopic.target_keyword?.trim() || monthlyTopic.topic_title.toLowerCase().split(' ').slice(0, 4).join(' '),
-    targetLocality: serviceAreas[0] ?? null,
+    targetLocality: monthlyTopic.primary_area?.trim() || serviceAreas[0] || null,
     topicFingerprint: buildTopicFingerprint({
       topic: monthlyTopic.topic_title,
       serviceCategory: monthlyTopic.service_category,
@@ -934,6 +946,7 @@ export async function prepareGenerationPlan(env: Env, params: GenerationParams):
     ? allClients.filter((client) => params.client_slugs.includes(client.slug))
     : allClients;
   if (clients.length === 0) throw new Error('No matching active clients found');
+  await assertLocksmithPortfolioGenerationReady(db, clients, params.period_start, params.period_end);
 
   const provider = normalizeContentProvider(params.provider);
   const slots: PostSlot[] = [];
@@ -1145,6 +1158,16 @@ export async function resumeGenerationRun(env: Env, baseUrl: string, runId: stri
     throw new Error('Generation run is already complete');
   }
 
+  const slotClientIds = new Set(slots.slice(nextSlot).map((slot) => slot.client_id));
+  const resumeClients = (await listClients(env.DB, 'active')).filter((client) => slotClientIds.has(client.id));
+  const remainingDates = slots.slice(nextSlot).map((slot) => slot.date).sort();
+  await assertLocksmithPortfolioGenerationReady(
+    env.DB,
+    resumeClients,
+    remainingDates[0],
+    remainingDates[remainingDates.length - 1],
+  );
+
   const now = Math.floor(Date.now() / 1000);
   await env.DB
     .prepare(`UPDATE generation_runs
@@ -1305,12 +1328,13 @@ export async function buildSlotGenerationRequest(
   if (existingPost?.status === 'posted') return null;
 
   const contentWeek = contentWeekDateRange(slot.date);
+  const governedLocksmith = isGovernedLocksmith(client);
   const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows, keywordRows, topicHistory, weeklyTopicHistory, restrictions] = await Promise.all([
     db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then((row) => row ?? null),
-    db.prepare('SELECT sentiment, message AS note FROM client_feedback WHERE client_id = ? ORDER BY created_at DESC LIMIT 10').bind(client.id).all<FeedbackRow>(),
+    getClientGenerationFeedback(db, client.id, governedLocksmith, 10),
     db.prepare(`SELECT id, title, master_caption, content_type FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`).bind(client.id).all<{id:string;title:string|null;master_caption:string|null;content_type:string|null}>(),
-    db.prepare('SELECT city, state FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 8').bind(client.id).all<{city:string;state:string|null}>(),
-    db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC LIMIT 12').bind(client.id).all<{name:string}>(),
+    getClientGenerationServiceAreas(db, client.id, governedLocksmith, 8),
+    getClientGenerationServices(db, client.id, governedLocksmith, 12),
     getClientKeywords(db, client.id),
     getClientGenerationTopicHistory(db, client.id, 24),
     getClientGenerationTopicHistoryForPeriod(db, client.id, contentWeek.from, contentWeek.to),
@@ -1330,13 +1354,16 @@ export async function buildSlotGenerationRequest(
     ...recentRows.map((row) => row.title ?? row.master_caption?.slice(0, 80) ?? ''),
     ...reservedTopicHistory.map((item) => item.title),
   ]);
-  const serviceAreas  = svcAreaRows.results.map((row) => row.city);
-  const serviceNames  = svcNameRows.results
+  const serviceAreas  = svcAreaRows.map((row) => row.city);
+  const serviceNames  = svcNameRows
     .map((row) => row.name)
     .filter((service) => !findRestrictedContentPhrase(service, restrictions));
   const monthlyPlan = await getClientMonthlyContentPlan(db, client.id, planMonth(slot.date));
   const intel = applyMonthlyPlanToIntelligence(intelBase, monthlyPlan);
-  let targetKeywords = keywordPoolFromContext(intel, keywordRows, serviceNames, serviceAreas, restrictions);
+  const approvedKeywordRows = governedLocksmith
+    ? keywordRows.filter((keyword) => keyword.approval_status === 'approved')
+    : keywordRows;
+  let targetKeywords = keywordPoolFromContext(intel, approvedKeywordRows, serviceNames, serviceAreas, restrictions);
   const recentFormats = recentRows
     .map((row) => detectFormatFromTitle(row.title ?? row.master_caption ?? ''))
     .filter((format): format is ContentFormat => format !== null);
@@ -1379,7 +1406,7 @@ export async function buildSlotGenerationRequest(
   const skippedTopicIds: string[] = [];
   const usedWeeklyServices = weeklyUsedServiceCategories(combinedTopicHistory, slot.date);
   for (let attempt = 0; !topicSelection && attempt < 12; attempt++) {
-    const candidate = await buildMonthlyTopicSelection(db, client.id, slot.date, slot.content_type, platforms, serviceAreas, skippedTopicIds);
+    const candidate = await buildMonthlyTopicSelection(db, client.id, slot.date, slot.content_type, platforms, serviceAreas, skippedTopicIds, governedLocksmith);
     if (!candidate) break;
     if (candidate.serviceCategory && usedWeeklyServices.has(normalizeWeeklyServiceFamily(candidate.serviceCategory))) {
       if (!candidate.monthlyTopicId) break;
@@ -1412,7 +1439,7 @@ export async function buildSlotGenerationRequest(
     topicResearch = getTopicResearchFromSelection(candidate, serviceAreas);
     break;
   }
-  if (!topicResearch && primaryKey) {
+  if (!governedLocksmith && !topicResearch && primaryKey) {
     topicResearch = await researchTopicWithProvider(provider, primaryKey, researchParams, settings).catch(() => null);
   }
   if (!topicSelection && topicResearch) {
@@ -1437,19 +1464,22 @@ export async function buildSlotGenerationRequest(
     topicResearch = null;
     topicSelection = null;
   }
-  if (!topicResearch || !topicSelection) {
-    const fallback = selectFallbackTopic(client, slot, intel, serviceNames, serviceAreas, keywordRows, combinedTopicHistory, recentFormats, restrictions);
+  if (!governedLocksmith && (!topicResearch || !topicSelection)) {
+    const fallback = selectFallbackTopic(client, slot, intel, serviceNames, serviceAreas, approvedKeywordRows, combinedTopicHistory, recentFormats, restrictions);
     if (fallback) {
       topicResearch = fallback.research;
       topicSelection = fallback.selection;
       targetKeywords = fallback.keywords;
     }
   }
+  if (governedLocksmith && (!topicResearch || !topicSelection)) {
+    throw new Error(`Generation blocked: ${client.slug} has no collision-free approved topic slot for ${slot.date}/${slot.content_type}`);
+  }
 
   const topicGbpLocations = relevantGbpLocationsForTarget(
     gbpLocations,
     topicSelection?.targetLocality ?? topicResearch?.localModifier,
-    svcAreaRows.results,
+    svcAreaRows,
   );
   if (gbpLocations.length > 0 && platforms.includes('google_business') && topicGbpLocations.length === 0) {
     platforms = platforms.filter((platform) => platform !== 'google_business');
@@ -1458,9 +1488,12 @@ export async function buildSlotGenerationRequest(
   if (existingPost && run.overwrite_existing !== 1 && isPostContentComplete(existingPost, topicGbpLocations, platforms)) return null;
 
   const [latestResearch, latestStrategy] = await Promise.all([
-    getLatestClientResearch(db, client.id),
-    getLatestClientStrategy(db, client.id),
+    getLatestClientResearch(db, client.id, slot.date),
+    getLatestClientStrategy(db, client.id, slot.date),
   ]);
+  if (governedLocksmith && !latestResearch) {
+    await appendGenerationLog(db, runId, 'WARN', `${client.slug}: approved research unavailable; using approved profile, strategy, services, keywords, claims, and topic slot only.`);
+  }
   const strategicContext = buildWeeklyMarketingStrategicContext({
     client: {
       slug: client.slug,
@@ -1489,7 +1522,7 @@ export async function buildSlotGenerationRequest(
     },
     intelligence: intel,
     recentTitles,
-    feedback: fbRows.results,
+    feedback: fbRows as FeedbackRow[],
     publishDate: slot.date,
     contentType: slot.content_type,
     platforms,
@@ -1668,6 +1701,7 @@ export async function saveGeneratedSlotResult(
   const postTime = run.publish_time ?? '10:00';
   const client = await db.prepare('SELECT * FROM clients WHERE id = ?').bind(slot.client_id).first<ClientRow>();
   if (!client) throw new Error(`Client not found: ${slot.client_slug}`);
+  const governedLocksmith = isGovernedLocksmith(client);
 
   const [storedClientPlatforms, gbpLocations] = await Promise.all([
     getClientPlatforms(db, client.id),
@@ -1712,7 +1746,7 @@ export async function saveGeneratedSlotResult(
   if (topicSelection?.targetKeyword) generatedPost.target_keyword = topicSelection.targetKeyword;
   if (topicSelection?.targetLocality) generatedPost.target_locality = topicSelection.targetLocality;
   normalizeGeneratedMarketingCliches(generatedPost, client.industry);
-  canonicalizeGeneratedPhoneNumbers(generatedPost, client.phone);
+  if (!governedLocksmith) canonicalizeGeneratedPhoneNumbers(generatedPost, client.phone);
 
   // Terminal-generated blogs return structured fields (intro/sections/faq), not a
   // ready-to-store blog_content. The OpenAI path assembles the body inside
@@ -1738,28 +1772,24 @@ export async function saveGeneratedSlotResult(
       if (assembled) src.blog_content = assembled;
     }
     normalizeGeneratedMarketingCliches(generatedPost, client.industry);
-    canonicalizeGeneratedPhoneNumbers(generatedPost, client.phone);
+    if (!governedLocksmith) canonicalizeGeneratedPhoneNumbers(generatedPost, client.phone);
   }
 
   const [validationRecentRows, validationAreaRows, validationServiceRows, validationKeywordRows, validationIntel, validationRestrictions] = await Promise.all([
     db.prepare(`SELECT id, title, master_caption FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`)
       .bind(client.id)
       .all<{ id: string; title: string | null; master_caption: string | null }>(),
-    db.prepare('SELECT city, state FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 8')
-      .bind(client.id)
-      .all<{ city: string; state: string | null }>(),
-    db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC LIMIT 12')
-      .bind(client.id)
-      .all<{ name: string }>(),
+    getClientGenerationServiceAreas(db, client.id, governedLocksmith, 8),
+    getClientGenerationServices(db, client.id, governedLocksmith, 12),
     getClientKeywords(db, client.id),
     db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then((row) => row ?? null),
     getClientRestrictions(db, client.id),
   ]);
-  const validationServiceAreas = validationAreaRows.results.map((row) => row.city);
+  const validationServiceAreas = validationAreaRows.map((row) => row.city);
   const topicGbpLocations = relevantGbpLocationsForTarget(
     gbpLocations,
     topicSelection?.targetLocality ?? generatedPost.target_locality,
-    validationAreaRows.results,
+    validationAreaRows,
   );
   if (gbpLocations.length > 0 && platforms.includes('google_business') && topicGbpLocations.length === 0) {
     platforms = platforms.filter((platform) => platform !== 'google_business');
@@ -1767,16 +1797,20 @@ export async function saveGeneratedSlotResult(
   if (platforms.length === 0) {
     return finalizeSlotProgress(db, env, runId, slotIdx + 1, 'skipped', client.canonical_name, slots, async () => undefined);
   }
-  const validationServiceNames = validationServiceRows.results.map((row) => row.name);
-  normalizeGeneratedUnverifiedClaims(generatedPost, [
-    client.notes,
-    client.brand_json,
-    client.cta_text,
-    validationIntel?.approved_ctas,
-  ].filter(Boolean).join(' '));
+  const validationServiceNames = validationServiceRows.map((row) => row.name);
+  if (!governedLocksmith) {
+    normalizeGeneratedUnverifiedClaims(generatedPost, [
+      client.notes,
+      client.brand_json,
+      client.cta_text,
+      validationIntel?.approved_ctas,
+    ].filter(Boolean).join(' '));
+  }
   const validationTargetKeywords = keywordPoolFromContext(
     validationIntel,
-    validationKeywordRows,
+    governedLocksmith
+      ? validationKeywordRows.filter((keyword) => keyword.approval_status === 'approved')
+      : validationKeywordRows,
     validationServiceNames,
     validationServiceAreas,
     validationRestrictions,
@@ -1822,11 +1856,16 @@ export async function saveGeneratedSlotResult(
     strategicContext: null,
   });
   if (!validationResult.passed) {
-    await appendGenerationLog(db, runId, slot.high_quality ? 'ERROR' : 'WARN', `Quality validation failed for slot ${slotIdx + 1}/${slots.length}: ${validationResult.warnings.join('; ')}`);
-    if (slot.high_quality) {
+    await appendGenerationLog(db, runId, slot.high_quality || governedLocksmith ? 'ERROR' : 'WARN', `Quality validation failed for slot ${slotIdx + 1}/${slots.length}: ${validationResult.warnings.join('; ')}`);
+    if (slot.high_quality || governedLocksmith) {
       await appendGenerationError(db, runId, `Slot ${slotIdx + 1} ${slot.client_slug}/${slot.content_type} quality validation failed: ${validationResult.warnings.join('; ')}`);
       throw new Error(`Quality validation failed: ${validationResult.warnings.join('; ')}`);
     }
+  }
+  const governanceIssues = await validateLocksmithGeneratedContent(db, client, generatedPost);
+  if (governanceIssues.length > 0) {
+    await appendGenerationError(db, runId, `Slot ${slotIdx + 1} ${slot.client_slug}/${slot.content_type} editorial gate failed: ${governanceIssues.join('; ')}`);
+    throw new Error(`Editorial gate failed: ${governanceIssues.join('; ')}`);
   }
 
   const merged = mergeGeneratedContent(existingPost as unknown as Record<string, string | null | undefined>, generatedPost as unknown as Record<string, string | undefined>, overwriteExisting);
@@ -2072,23 +2111,28 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
 
       const isHighQuality = slot.high_quality ?? false;
 
-      // Parallel fetch: intelligence, feedback, recent posts, service areas, service names
-      const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows, topicHistory, restrictions] = await Promise.all([
+      const governedLocksmith = isGovernedLocksmith(client);
+      const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows, keywordRows, topicHistory, restrictions] = await Promise.all([
         db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then(r => r ?? null),
-        db.prepare('SELECT sentiment, message AS note FROM client_feedback WHERE client_id = ? ORDER BY created_at DESC LIMIT 10').bind(client.id).all<FeedbackRow>(),
+        getClientGenerationFeedback(db, client.id, governedLocksmith, 10),
         db.prepare(`SELECT id, title, master_caption, content_type FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`).bind(client.id).all<{id:string;title:string|null;master_caption:string|null;content_type:string|null}>(),
-        db.prepare('SELECT city FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 8').bind(client.id).all<{city:string}>(),
-        db.prepare('SELECT name FROM client_services WHERE client_id = ? AND active = 1 ORDER BY sort_order ASC LIMIT 12').bind(client.id).all<{name:string}>(),
+        getClientGenerationServiceAreas(db, client.id, governedLocksmith, 8),
+        getClientGenerationServices(db, client.id, governedLocksmith, 12),
+        getClientKeywords(db, client.id),
         getClientGenerationTopicHistory(db, client.id, 24),
         getClientRestrictions(db, client.id),
       ]);
 
       const recentRows = recRows.results.filter((row) => row.id !== existingPost?.id);
       const recentTitles  = recentRows.map(r => r.title ?? r.master_caption?.slice(0, 80) ?? '').filter(Boolean) as string[];
-      const serviceAreas  = svcAreaRows.results.map(r => r.city);
-      const serviceNames  = svcNameRows.results
+      const serviceAreas  = svcAreaRows.map(r => r.city);
+      const serviceNames  = svcNameRows
         .map(r => r.name)
         .filter((service) => !findRestrictedContentPhrase(service, restrictions));
+      const approvedKeywordRows = governedLocksmith
+        ? keywordRows.filter((keyword) => keyword.approval_status === 'approved')
+        : keywordRows;
+      const targetKeywords = keywordPoolFromContext(intelBase, approvedKeywordRows, serviceNames, serviceAreas, restrictions);
       const monthlyPlan = await getClientMonthlyContentPlan(db, client.id, planMonth(slot.date));
       const intel = applyMonthlyPlanToIntelligence(intelBase, monthlyPlan);
       const recentFormats = recentRows
@@ -2105,7 +2149,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
       const skippedTopicIds: string[] = [];
       const usedWeeklyServices = weeklyUsedServiceCategories(topicHistory, slot.date);
       for (let attempt = 0; !topicSelection && attempt < 12; attempt++) {
-        const candidate = await buildMonthlyTopicSelection(db, client.id, slot.date, slot.content_type, platforms, serviceAreas, skippedTopicIds);
+        const candidate = await buildMonthlyTopicSelection(db, client.id, slot.date, slot.content_type, platforms, serviceAreas, skippedTopicIds, governedLocksmith);
         if (!candidate) break;
         if (candidate.serviceCategory && usedWeeklyServices.has(normalizeWeeklyServiceFamily(candidate.serviceCategory))) {
           if (!candidate.monthlyTopicId) break;
@@ -2140,11 +2184,11 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         topicResearch = getTopicResearchFromSelection(candidate, serviceAreas);
         break;
       }
-      if (!topicSelection && skippedTopicIds.length > 0) {
+      if (!governedLocksmith && !topicSelection && skippedTopicIds.length > 0) {
         await log('WARN', `${postKey}: no unique monthly topic remained after duplicate checks; falling back to research`);
       }
       try {
-        if (!topicResearch) {
+        if (!governedLocksmith && !topicResearch) {
           topicResearch = await researchTopicWithProvider(provider, apiKey, {
           client: {
             slug: client.slug,
@@ -2196,11 +2240,17 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         topicResearch = null;
         topicSelection = null;
       }
+      if (governedLocksmith && (!topicResearch || !topicSelection)) {
+        throw new Error(`Generation blocked: ${client.slug} has no collision-free approved topic slot for ${slot.date}/${slot.content_type}`);
+      }
 
       const [latestResearch, latestStrategy] = await Promise.all([
-        getLatestClientResearch(db, client.id),
-        getLatestClientStrategy(db, client.id),
+        getLatestClientResearch(db, client.id, slot.date),
+        getLatestClientStrategy(db, client.id, slot.date),
       ]);
+      if (governedLocksmith && !latestResearch) {
+        await log('WARN', `${client.slug}: approved research unavailable; using approved profile, strategy, services, keywords, claims, and topic slot only.`);
+      }
       const strategicContext = buildWeeklyMarketingStrategicContext({
         client: {
           slug: client.slug,
@@ -2229,13 +2279,16 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         },
         intelligence:  intel,
         recentTitles,
-        feedback:      fbRows.results,
+        feedback:      fbRows,
         publishDate:   slot.date,
         contentType:   slot.content_type,
         platforms,
         contentIntent: slot.content_intent,
-        gbpLocations: gbpLocations
-          .filter((location) => location.paused !== 1)
+        gbpLocations: relevantGbpLocationsForTarget(
+          gbpLocations,
+          topicSelection?.targetLocality ?? topicResearch?.localModifier,
+          svcAreaRows,
+        )
           .map((location) => ({
             label: location.label,
             captionField: getGbpCaptionField(location),
@@ -2244,6 +2297,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
         topicResearch,
         serviceAreas,
         serviceNames,
+        targetKeywords,
         restrictions,
         recentFormats,
         highQuality: isHighQuality,
@@ -2264,18 +2318,26 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
       await log('AI', `${getProviderDisplayName(provider)} done: ${postKey} (${genResult.meta.elapsedMs}ms, attempts=${genResult.meta.attempts}, model=${genResult.meta.model})`);
 
       normalizeGeneratedMarketingCliches(genResult.post, client.industry);
-      normalizeGeneratedUnverifiedClaims(genResult.post, [
-        client.notes,
-        client.brand_json,
-        client.cta_text,
-        intel?.approved_ctas,
-      ].filter(Boolean).join(' '));
-      canonicalizeGeneratedPhoneNumbers(genResult.post, client.phone);
+      if (!governedLocksmith) {
+        normalizeGeneratedUnverifiedClaims(genResult.post, [
+          client.notes,
+          client.brand_json,
+          client.cta_text,
+          intel?.approved_ctas,
+        ].filter(Boolean).join(' '));
+        canonicalizeGeneratedPhoneNumbers(genResult.post, client.phone);
+      }
 
-      // Quality validation — soft check, log warnings but never block saves
       const qualityResult = validateGeneratedContent(genResult.post, ctx);
       if (!qualityResult.passed) {
         await log('WARN', `Quality flags for "${genResult.post.title?.slice(0, 50)}": ${qualityResult.warnings.join('; ')}`);
+        if (governedLocksmith) {
+          throw new Error(`Quality validation failed: ${qualityResult.warnings.join('; ')}`);
+        }
+      }
+      const governanceIssues = await validateLocksmithGeneratedContent(db, client, genResult.post);
+      if (governanceIssues.length > 0) {
+        throw new Error(`Editorial gate failed: ${governanceIssues.join('; ')}`);
       }
 
       await log('INFO', `Save start: ${postKey}`);

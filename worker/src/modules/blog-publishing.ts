@@ -20,6 +20,7 @@ import { getBlogDistributionPlatforms } from './platform-compatibility';
 import { applyInternalLinks, loadClientInternalLinks, syncClientInternalLinks } from './internal-links';
 import { resolveStabilityApiKeys } from '../services/stability';
 import { resolveBlogTemplateConfig } from './blog-templates';
+import { preflightLocksmithEditorialGate } from './preflight';
 import {
   buildBlogSocialCaption,
   getCompatibleBlogDistributionPlatforms,
@@ -691,6 +692,8 @@ export async function publishBlogPost(env: Env, postId: string, options: Publish
 
   const client = await getClientWithConfig(env.DB, post.client_id);
   if (!client) throw new Error('Client not found');
+  const editorialGate = await preflightLocksmithEditorialGate(client, post, env.DB);
+  if (!editorialGate.ok) throw new Error(editorialGate.reason);
 
   const validationContext = await loadBlogValidationContext(env.DB, client);
   const check = preflightBlogPost(post, validationContext);

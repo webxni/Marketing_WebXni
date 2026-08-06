@@ -84,6 +84,9 @@ export interface ClientRow {
   upload_post_profile:      string | null;
   owner_group:              string | null;
   never_mix_with:           string | null;
+  profile_approval_status:  string;
+  profile_approved_by:      string | null;
+  profile_approved_at:      number | null;
   // WordPress — legacy fields (kept for backwards compat)
   wp_domain:                string | null;
   wp_url:                   string | null;
@@ -133,6 +136,13 @@ export interface ClientPlatformRow {
   connection_status?:      string | null;
   yt_channel_id?:          string | null;
   linkedin_urn?:           string | null;
+  verification_status:    string;
+  provider_destination_id:string | null;
+  verified_business_name: string | null;
+  verified_phone:         string | null;
+  verified_market:        string | null;
+  verified_at:            number | null;
+  verification_notes:     string | null;
   paused:                  number;
   paused_reason:           string | null;
   paused_since:            string | null;
@@ -147,6 +157,13 @@ export interface ClientGbpLocationRow {
   upload_post_profile: string | null;
   caption_field:       string | null;
   posted_field:        string | null;
+  verification_status:string;
+  verified_business_name: string | null;
+  verified_phone:      string | null;
+  verified_address:    string | null;
+  verified_market:     string | null;
+  verified_at:         number | null;
+  verification_notes:  string | null;
   paused:              number;
   paused_reason:       string | null;
   sort_order:          number;
@@ -165,6 +182,12 @@ export interface ClientServiceRow {
   category_id:   string | null;
   name:          string;
   description:   string | null;
+  normalized_name: string | null;
+  service_pillar: string | null;
+  approval_status: string;
+  approved_by:   string | null;
+  approved_at:   number | null;
+  editorial_notes: string | null;
   active:        number;
   sort_order:    number;
   category_name: string | null; // joined
@@ -177,6 +200,10 @@ export interface ClientServiceAreaRow {
   state:        string | null;
   zip:          string | null;
   radius_mi:    number | null;
+  approval_status: string;
+  approved_by:  string | null;
+  approved_at:  number | null;
+  editorial_notes: string | null;
   primary_area: number;
   sort_order:   number;
 }
@@ -298,6 +325,8 @@ export interface PostRow {
   ready_for_automation:   number;
   asset_delivered:        number;
   asset_source:           string | null;
+  asset_rights_confirmed: number;
+  asset_rights_notes:     string | null;
   skarleth_status:        string | null;
   skarleth_notes:         string | null;
   error_log:              string | null;
@@ -469,6 +498,20 @@ export interface ClientResearchNoteRow {
   source:         string;
   research_json:  string;
   freshness_date: string;
+  brand_name:     string | null;
+  source_url:     string | null;
+  source_domain:  string | null;
+  source_title:   string | null;
+  entity_match:   number;
+  geography_match:number;
+  service_match:  number;
+  prohibited_service_detected: number;
+  confidence:     string;
+  review_status:  string;
+  reviewed_by:    string | null;
+  reviewed_at:    number | null;
+  expires_at:     string | null;
+  notes:          string | null;
   created_at:     number;
   updated_at:     number;
 }
@@ -494,6 +537,14 @@ export interface ContentReviewNoteRow {
   post_updated_at: number | null;
   content_hash:  string | null;
   disposition:   string;
+  client_id:     string | null;
+  finding_type:  string | null;
+  source_record_type: string | null;
+  source_record_id: string | null;
+  recommended_source_fix: string | null;
+  review_status: string;
+  reviewed_by:   string | null;
+  resolved_at:   number | null;
   created_at:    number;
 }
 
@@ -565,6 +616,20 @@ export interface ClientMonthlyTopicRow {
   preferred_platforms:     string | null;
   priority:                number;
   status:                  string;
+  slot_number:             number | null;
+  content_pillar:          string | null;
+  working_title:           string | null;
+  primary_service:         string | null;
+  primary_area:            string | null;
+  supporting_keywords:     string | null;
+  format:                  string | null;
+  offer_or_event:          string | null;
+  image_requirement:       string | null;
+  proof_requirement:       string | null;
+  claim_requirement:       string | null;
+  approval_status:         string;
+  approved_by:             string | null;
+  approved_at:             number | null;
   notes:                   string | null;
   generated_post_id:       string | null;
   used_post_id:            string | null;
@@ -583,9 +648,30 @@ export interface ClientMonthlyContentPlanRow {
   promotion_notes:   string | null;
   priority_services: string | null;
   notes:             string | null;
+  status:            string;
+  expected_slots:    number;
+  approved_by:       string | null;
+  approved_at:       number | null;
   created_by:        string | null;
   created_at:        number;
   updated_at:        number;
+}
+
+export interface ClientApprovedClaimRow {
+  id: string;
+  client_id: string;
+  claim_key: string;
+  claim_text: string;
+  claim_category: string;
+  evidence_url: string | null;
+  evidence_notes: string | null;
+  review_status: string;
+  reviewed_by: string | null;
+  reviewed_at: number | null;
+  expires_at: string | null;
+  notes: string | null;
+  created_at: number;
+  updated_at: number;
 }
 
 export interface ClientMcpTokenRow {

@@ -4,8 +4,16 @@
  */
 import { UploadPostClient, UploadPostError } from '../services/uploadpost';
 import { getConnectionHealth, type UploadPostProfileResponse } from './posting-diagnostics';
-import { listClients, getClientPlatforms, getClientGbpLocations } from '../db/queries';
-import type { Env } from '../types';
+import {
+  listClients,
+  getClientPlatforms,
+  getClientGbpLocations,
+  updateClientPlatformVerification,
+  updateClientGbpLocationVerification,
+} from '../db/queries';
+import type { ClientRow, Env } from '../types';
+import { destinationIdentityMatches, normalizeGbpDestination } from './gbp-destination';
+import { isGovernedLocksmith } from './editorial-governance';
 
 export interface PlatformIssue {
   platform: string;
@@ -67,7 +75,7 @@ export async function runPlatformHealthCheck(env: Env): Promise<PlatformHealthSu
 async function checkClientPlatforms(
   db: D1Database,
   up: UploadPostClient,
-  client: { id: string; slug: string; canonical_name: string; upload_post_profile: string | null },
+  client: ClientRow,
 ): Promise<ClientHealthReport> {
   const profile = client.upload_post_profile;
   const platforms = await getClientPlatforms(db, client.id);
@@ -120,25 +128,87 @@ async function checkClientPlatforms(
   // Build probes
   const locationProbe = async () => {
     try {
-      // Group locations by their own upload_post_profile (multi-profile clients like ETB use different profiles per location)
       const activeLocations = gbpLocations.filter((l) => l.paused !== 1);
-      if (activeLocations.length === 0) {
-        // Nothing expected — probe passes (single-location GBP via client_platforms.upload_post_location_id is validated separately)
-        return { ok: true, message: 'OK', details: { expected: [], returned: [] } };
+      const gbpPlatform = platforms.find((platform) => platform.platform === 'google_business');
+      const expected: Array<{
+        rowId: string;
+        locationId: string;
+        profile: string;
+        market: string | null;
+        kind: 'multi' | 'single';
+      }> = activeLocations.map((location) => ({
+        rowId: location.id,
+        locationId: location.location_id,
+        profile: location.upload_post_profile ?? profile,
+        market: location.verified_market ?? location.label,
+        kind: 'multi',
+      }));
+      if (expected.length === 0 && gbpPlatform?.upload_post_location_id) {
+        expected.push({
+          rowId: gbpPlatform.id,
+          locationId: gbpPlatform.upload_post_location_id,
+          profile,
+          market: gbpPlatform.verified_market,
+          kind: 'single',
+        });
       }
-      const byProfile = new Map<string, string[]>();
-      for (const loc of activeLocations) {
-        const p = loc.upload_post_profile ?? profile;
-        if (!byProfile.has(p)) byProfile.set(p, []);
-        byProfile.get(p)!.push(loc.location_id);
+      if (expected.length === 0) return { ok: false, message: 'No canonical GBP destination is configured.' };
+      const byProfile = new Map<string, typeof expected>();
+      for (const item of expected) {
+        const rows = byProfile.get(item.profile) ?? [];
+        rows.push(item);
+        byProfile.set(item.profile, rows);
       }
       const missing: string[] = [];
-      for (const [locProfile, expectedIds] of byProfile) {
+      const mismatched: string[] = [];
+      const returnedIds: string[] = [];
+      for (const [locProfile, profileExpected] of byProfile) {
         const r = (await up.getGbpLocations(locProfile)) as { locations?: Array<Record<string, unknown>> };
-        const returned = (r.locations ?? []).map((l) => String(l.location_id ?? l.id ?? ''));
-        missing.push(...expectedIds.filter((id) => !returned.includes(id)));
+        const returned = (r.locations ?? []).map(normalizeGbpDestination);
+        returnedIds.push(...returned.map((destination) => destination.id));
+        for (const item of profileExpected) {
+          let destination = returned.find((candidate) => candidate.id === item.locationId);
+          if (!destination && returned.length === 1) destination = returned[0];
+          if (!destination) {
+            missing.push(item.locationId);
+            continue;
+          }
+          const identity = destinationIdentityMatches(destination, {
+            businessName: client.canonical_name,
+            phone: client.phone,
+            market: item.market,
+          });
+          const requiresIdentity = isGovernedLocksmith(client);
+          const verified = requiresIdentity ? identity.ok : true;
+          if (!verified) mismatched.push(item.locationId);
+          const notes = verified
+            ? `Live destination verified through ${locProfile}.`
+            : `Identity mismatch: name=${identity.nameMatch}, phone=${identity.phoneMatch}, market=${identity.marketMatch}.`;
+          if (item.kind === 'multi') {
+            await updateClientGbpLocationVerification(db, item.rowId, {
+              status: verified ? 'verified' : 'identity_mismatch',
+              canonicalLocationId: destination.id,
+              businessName: destination.businessName,
+              phone: destination.phone,
+              address: destination.address,
+              market: destination.market,
+              notes,
+            });
+          } else {
+            await updateClientPlatformVerification(db, item.rowId, {
+              status: verified ? 'verified' : 'identity_mismatch',
+              canonicalLocationId: destination.id,
+              providerDestinationId: destination.id,
+              businessName: destination.businessName,
+              phone: destination.phone,
+              market: destination.market,
+              notes,
+            });
+          }
+        }
       }
-      return { ok: missing.length === 0, message: missing.length ? `Missing: ${missing.join(', ')}` : 'OK', details: { activeLocations: activeLocations.length } };
+      const ok = missing.length === 0 && mismatched.length === 0;
+      return { ok, message: ok ? 'OK' : `Missing: ${missing.join(', ') || 'none'}; identity mismatch: ${mismatched.join(', ') || 'none'}`, details: { expected: expected.map((item) => item.locationId), returned: returnedIds } };
     } catch (err) {
       return { ok: false, message: err instanceof UploadPostError ? err.body : String(err) };
     }
@@ -216,6 +286,14 @@ async function checkClientPlatforms(
           .run();
       } catch { /* non-fatal */ }
     }
+    if (cfg && platform !== 'google_business') {
+      await updateClientPlatformVerification(db, cfg.id, {
+        status: health.status === 'connected' ? 'verified' : 'provider_unhealthy',
+        providerDestinationId: cfg.page_id ?? cfg.upload_post_board_id ?? cfg.account_id ?? cfg.username,
+        businessName: cfg.username ?? cfg.profile_username,
+        notes: health.message,
+      }).catch(() => undefined);
+    }
 
     if (health.status !== 'connected') {
       issues.push({
@@ -235,7 +313,7 @@ async function checkClientPlatforms(
       const r = (await up.getGbpLocations(profile)) as { locations?: Array<Record<string, unknown>> };
       const locs = r.locations ?? [];
       if (locs.length === 1) {
-        const locId = String(locs[0].location_id ?? locs[0].id ?? '');
+        const locId = normalizeGbpDestination(locs[0]).id;
         if (locId && locId !== 'NOT_LINKED') {
           await db
             .prepare('UPDATE client_platforms SET upload_post_location_id = ?, updated_at = ? WHERE id = ?')
@@ -247,7 +325,7 @@ async function checkClientPlatforms(
           if (idx !== -1) issues.splice(idx, 1);
         }
       } else if (locs.length > 1) {
-        gbpFix = { location_id: locs.map((l) => String(l.location_id ?? l.id ?? '')).join(', '), auto_set: false };
+        gbpFix = { location_id: locs.map((l) => normalizeGbpDestination(l).id).join(', '), auto_set: false };
       }
     } catch { /* non-fatal */ }
   }

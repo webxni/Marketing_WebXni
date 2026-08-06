@@ -28,6 +28,7 @@ import { createContentWithImage } from '../loader/autonomous-content';
 import { discordSend, DISCORD_COLORS } from '../services/discord';
 import { syncUploadPostClientPlatforms } from '../modules/uploadpost-platform-sync';
 import { publishBlogPost } from '../modules/blog-publishing';
+import { isGovernedLocksmith } from '../modules/editorial-governance';
 import {
   AGENT_SKILLS, AGENT_MEMORY, RESPONSE_RULES,
   CLIENT_EXPERTISE, BUYER_PERSONAS, NL_INTENT_MAP, QUALITY_REVIEW_RULES,
@@ -1451,6 +1452,9 @@ export async function executeTool(
         const slug = typeof args.client === 'string' ? args.client : '';
         const client = await getClientBySlug(env.DB, slug);
         if (!client) return { success: false, error: `Client not found: ${slug}` };
+        if (isGovernedLocksmith(client)) {
+          return { success: false, error: 'Generation blocked: governed locksmith content must use an approved monthly topic through the terminal workflow.' };
+        }
 
         const [platforms, intel, services, areas, offers, events] = await Promise.all([
           env.DB.prepare('SELECT * FROM client_platforms WHERE client_id = ?').bind(client.id).all(),
@@ -2627,7 +2631,8 @@ export async function executeTool(
         // agent/Discord delivery counts as a designer asset.
         const attachSource = user.userId.startsWith('mcp:') ? 'external_upload' : 'designer';
         await env.DB
-          .prepare(`UPDATE posts SET asset_r2_key = ?, asset_r2_bucket = 'MEDIA', asset_type = ?, asset_delivered = 1, asset_source = ?, updated_at = ? WHERE id = ?`)
+          .prepare(`UPDATE posts SET asset_r2_key = ?, asset_r2_bucket = 'MEDIA', asset_type = ?, asset_delivered = 1,
+                    asset_source = ?, asset_rights_confirmed = 0, asset_rights_notes = NULL, updated_at = ? WHERE id = ?`)
           .bind(r2Key, assetType, attachSource, now, postId)
           .run();
 

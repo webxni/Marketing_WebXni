@@ -1,0 +1,10 @@
+brand_id,claim_key,claim_text,claim_category,evidence_url,evidence_notes,review_status,reviewed_by,reviewed_at,expires_at,notes
+247-lockout-pasadena,neutral_availability,Call to confirm current availability service coverage and scheduling,cta,,Owner-directed neutral fallback,approved,portfolio-reset,2026-08-06,2026-11-30,No response-time or 24/7 availability implication
+724-locksmith-ca,neutral_availability,Call to confirm current availability service coverage and scheduling,cta,,Owner-directed neutral fallback,approved,portfolio-reset,2026-08-06,2026-11-30,No response-time or 24/7 availability implication
+daniels-locksmith,neutral_availability,Call to confirm current availability service coverage and scheduling,cta,,Owner-directed neutral fallback,approved,portfolio-reset,2026-08-06,2026-11-30,No response-time implication
+unlocked-pros,neutral_availability,Call to confirm current availability service coverage and scheduling,cta,,Owner-directed neutral fallback,approved,portfolio-reset,2026-08-06,2026-11-30,No response-time implication
+247-lockout-pasadena,approved_offer_terms,Owner-approved offer terms,promotion,,Price discount eligibility exclusions dates and redemption not supplied,pending,,,2026-08-31,Blocks offer-slot generation
+724-locksmith-ca,approved_offer_terms,Owner-approved offer terms,promotion,,Price discount eligibility exclusions dates and redemption not supplied,pending,,,2026-08-31,Blocks offer-slot generation
+daniels-locksmith,approved_offer_terms,Owner-approved seasonal terms,promotion,,Terms not supplied,pending,,,2026-08-31,Blocks seasonal promotion generation
+unlocked-pros,approved_offer_terms,Owner-approved offer terms,promotion,,Terms not supplied,pending,,,2026-08-31,Blocks offer-slot generation
+unlocked-pros,electronic_lock_service_confirmation,Confirmed electronic-lock and access-control scope,service_evidence,,Service capability not yet evidenced,pending,,,,Blocks four conditional slots

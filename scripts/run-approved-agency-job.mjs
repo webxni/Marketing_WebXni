@@ -852,6 +852,18 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
         client_id: client.client_id,
         source: result.backend,
         freshness_date: isoDate(),
+        brand_name: result.output.brand_name,
+        source_url: result.output.source_url,
+        source_domain: result.output.source_domain,
+        source_title: result.output.source_title,
+        entity_match: result.output.entity_match,
+        geography_match: result.output.geography_match,
+        service_match: result.output.service_match,
+        prohibited_service_detected: result.output.prohibited_service_detected,
+        confidence: result.output.confidence,
+        review_status: 'pending',
+        expires_at: result.output.expires_at,
+        notes: result.output.notes,
         research_json: result.output,
       });
 
@@ -1404,12 +1416,17 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
         content: taskInput.review_target ?? null,
       };
       const result = await runStructuredAgent('editorialReview', agentSlug, backend, target, snapshot, taskInput);
+      const primaryFinding = Array.isArray(result.output.findings) ? result.output.findings[0] : null;
       await post('/internal/agency/content-review', {
         agent_slug: agentSlug,
         task_id: taskId,
         post_id: taskInput.post_id ?? null,
         severity: result.output.severity,
         notes_json: result.output,
+        finding_type: primaryFinding?.finding_type ?? null,
+        source_record_type: primaryFinding?.source_record_type ?? null,
+        source_record_id: primaryFinding?.source_record_id ?? null,
+        recommended_source_fix: primaryFinding?.recommended_source_fix ?? null,
       });
       return {
         summary: `Editorial review note saved with ${result.output.severity} severity.`,
@@ -1442,7 +1459,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
     }
 
     const reviewed = [];
-    const severityRank = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
+    const severityRank = { info: 0, low: 1, medium: 2, high: 3, blocker: 4, critical: 5 };
     let worst = 'info';
     const reviewConcurrency = Math.max(1, Math.min(Number(process.env.AGENCY_EDITORIAL_CONCURRENCY || 4), 6));
     for (let i = 0; i < items.length; i += reviewConcurrency) {
@@ -1459,12 +1476,17 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
             content: item,
           };
           const result = await runStructuredAgent('editorialReview', agentSlug, backend, target, snapshot, taskInput);
+          const primaryFinding = Array.isArray(result.output.findings) ? result.output.findings[0] : null;
           await post('/internal/agency/content-review', {
             agent_slug: agentSlug,
             task_id: taskId,
             post_id: item.id,
             severity: result.output.severity,
             notes_json: result.output,
+            finding_type: primaryFinding?.finding_type ?? null,
+            source_record_type: primaryFinding?.source_record_type ?? null,
+            source_record_id: primaryFinding?.source_record_id ?? null,
+            recommended_source_fix: primaryFinding?.recommended_source_fix ?? null,
           });
           return { post_id: item.id, client: item.client_name, content_type: item.content_type, severity: result.output.severity, backend: result.backend };
         } catch (err) {

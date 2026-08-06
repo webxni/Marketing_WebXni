@@ -206,7 +206,10 @@ export async function syncUploadPostClientPlatforms(
                 upload_post_location_id = COALESCE(?, upload_post_location_id),
                 page_id = COALESCE(?, page_id),
                 linkedin_urn = COALESCE(?, linkedin_urn),
-                connection_status = 'connected'
+                connection_status = 'connected',
+                verification_status = 'unverified',
+                verified_at = NULL,
+                verification_notes = 'Provider mapping changed; identity verification required.'
             WHERE client_id = ? AND platform = ?
           `).bind(
             values.account_id,

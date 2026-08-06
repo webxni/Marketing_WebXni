@@ -11,6 +11,13 @@ import type { ClientPlatformRow, ClientRow, PostRow } from '../types';
 import { normalizePlatform } from './captions';
 import { normalizeContentType } from './platform-compatibility';
 import { getPlatformConfigWarnings, hasMappedValue } from './platform-config';
+import { getLatestContentReview } from '../db/queries';
+import { buildPostContentHash } from './content-review';
+import {
+  assertLocksmithPortfolioGenerationReady,
+  isGovernedLocksmith,
+  validateLocksmithGeneratedContent,
+} from './editorial-governance';
 
 export interface PreflightResult {
   ok:     boolean;
@@ -23,11 +30,58 @@ export interface PreflightWarning {
   message: string;
 }
 
+export async function preflightLocksmithEditorialGate(
+  client: ClientRow,
+  post: PostRow,
+  db: D1Database,
+): Promise<PreflightResult> {
+  if (!isGovernedLocksmith(client)) return { ok: true, tag: 'OK', reason: '' };
+  if (post.asset_r2_key && post.asset_rights_confirmed !== 1) {
+    return {
+      ok: false, tag: 'BLOCKED',
+      reason: 'Post media rights and excluded-service imagery have not been confirmed',
+    };
+  }
+  const publishDay = post.publish_date?.slice(0, 10) || new Date().toISOString().slice(0, 10);
+  try {
+    await assertLocksmithPortfolioGenerationReady(db, [client], publishDay, publishDay);
+  } catch (error) {
+    return {
+      ok: false, tag: 'BLOCKED',
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+  const review = await getLatestContentReview(db, post.id);
+  const contentHash = await buildPostContentHash(post);
+  if (
+    !review
+    || review.content_hash !== contentHash
+    || review.review_status !== 'approved'
+    || review.disposition !== 'reviewed'
+    || ['high', 'blocker', 'critical'].includes(review.severity)
+  ) {
+    return {
+      ok: false, tag: 'BLOCKED',
+      reason: 'Current content version does not have an approved editorial review',
+    };
+  }
+  const governanceIssues = await validateLocksmithGeneratedContent(db, client, post);
+  if (governanceIssues.length > 0) {
+    return {
+      ok: false, tag: 'BLOCKED',
+      reason: `Editorial policy violation: ${governanceIssues.join('; ')}`,
+    };
+  }
+  return { ok: true, tag: 'OK', reason: '' };
+}
+
 export async function preflight(
   client: ClientRow & { platforms: ClientPlatformRow[]; restrictions: string[] },
   platform: string,
   caption: string | null,
   post?: PostRow,
+  db?: D1Database,
+  editorialGate?: PreflightResult,
 ): Promise<PreflightResult> {
 
   // 1. Upload-Post profile must be configured
@@ -59,6 +113,32 @@ export async function preflight(
       ok: false, tag: 'SKIP',
       reason: `Platform '${normalizedPlatform}' not configured for '${client.slug}'`,
     };
+  }
+
+  if (isGovernedLocksmith(client)) {
+    if (!db || !post) {
+      return {
+        ok: false, tag: 'BLOCKED',
+        reason: 'Locksmith editorial publishing gate requires the current post and database context',
+      };
+    }
+    const sharedGate = editorialGate ?? await preflightLocksmithEditorialGate(client, post, db);
+    if (!sharedGate.ok) return sharedGate;
+    if (platCfg.verification_status !== 'verified') {
+      return {
+        ok: false, tag: 'BLOCKED',
+        reason: `Destination '${normalizedPlatform}' is not identity-verified for '${client.slug}'`,
+      };
+    }
+    if (
+      normalizedPlatform === 'google_business'
+      && (!platCfg.verified_business_name || !platCfg.verified_phone || !platCfg.verified_market)
+    ) {
+      return {
+        ok: false, tag: 'BLOCKED',
+        reason: `Google Business destination identity is incomplete for '${client.slug}'`,
+      };
+    }
   }
 
   // 4. Platform not paused

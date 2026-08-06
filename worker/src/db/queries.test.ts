@@ -2,11 +2,19 @@ import { describe, expect, it } from 'vitest';
 import { findRecentTopicConflict } from './queries';
 import type { PostRow } from '../types';
 
-function mockDb(posts: PostRow[]): D1Database {
+function mockDb(
+  posts: PostRow[],
+  options: { ownerGroup?: string | null; feedback?: Array<{ id: string; client_id: string; message: string; created_at: number }> } = {},
+): D1Database {
   return {
-    prepare: () => ({
+    prepare: (sql: string) => ({
       bind: () => ({
-        all: async () => ({ results: posts }),
+        first: async () => ({ owner_group: options.ownerGroup ?? null }),
+        all: async () => ({
+          results: sql.includes('FROM posts')
+            ? posts
+            : sql.includes('FROM client_feedback') ? options.feedback ?? [] : [],
+        }),
       }),
     }),
   } as unknown as D1Database;
@@ -48,5 +56,24 @@ describe('findRecentTopicConflict', () => {
     });
 
     expect(conflict).toBeNull();
+  });
+
+  it('blocks a topic preserved from deleted portfolio editorial feedback', async () => {
+    const conflict = await findRecentTopicConflict(mockDb([], {
+      ownerGroup: 'gabriel-locksmiths',
+      feedback: [{
+        id: 'feedback-1',
+        client_id: 'sibling-client',
+        message: 'Editorial high: Rejected topic: Pasadena Lock Installation Tips | lock installation Pasadena.',
+        created_at: 1_786_000_000,
+      }],
+    }), {
+      clientId: 'client-1',
+      candidateTitle: 'Pasadena Lock Installation Tips',
+      candidateKeyword: 'lock installation Pasadena',
+      publishDate: '2026-08-17T10:00',
+    });
+
+    expect(conflict?.reason).toBe('topic matched preserved rejected editorial feedback');
   });
 });
