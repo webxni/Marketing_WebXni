@@ -689,6 +689,16 @@ function formatBlogDate(value: string | null | undefined): string {
   return parsed.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 }
 
+function buildTelHref(phone: string | null | undefined): string {
+  if (!phone?.trim()) return '#contact';
+  const digits = phone.replace(/\D/g, '');
+  if (!digits) return '#contact';
+  if (phone.trim().startsWith('+')) return `tel:+${digits}`;
+  if (digits.length === 10) return `tel:+1${digits}`;
+  if (digits.length === 11 && digits.startsWith('1')) return `tel:+${digits}`;
+  return `tel:${digits}`;
+}
+
 export function renderStructuredBlogHtml(input: {
   templateKey: BusinessTemplateKey;
   primaryColor: string;
@@ -712,7 +722,7 @@ export function renderStructuredBlogHtml(input: {
   blog: StructuredBlogContent;
 }): string {
   const chrome = getTemplateChrome(input.templateKey);
-  const ctaHref = input.phone ? `tel:${input.phone}` : '#contact';
+  const ctaHref = buildTelHref(input.phone);
   const primaryColor = normalizePrimaryColor(input.primaryColor);
   const profile = resolveTemplateProfile({
     templateKey: input.templateKey,
