@@ -1329,12 +1329,13 @@ export async function buildSlotGenerationRequest(
 
   const contentWeek = contentWeekDateRange(slot.date);
   const governedLocksmith = isGovernedLocksmith(client);
+  const approvedIntelligenceOnly = governedLocksmith || client.profile_approval_status === 'approved';
   const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows, keywordRows, topicHistory, weeklyTopicHistory, restrictions] = await Promise.all([
     db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then((row) => row ?? null),
-    getClientGenerationFeedback(db, client.id, governedLocksmith, 10),
+    getClientGenerationFeedback(db, client.id, approvedIntelligenceOnly, 10),
     db.prepare(`SELECT id, title, master_caption, content_type FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`).bind(client.id).all<{id:string;title:string|null;master_caption:string|null;content_type:string|null}>(),
-    getClientGenerationServiceAreas(db, client.id, governedLocksmith, 8),
-    getClientGenerationServices(db, client.id, governedLocksmith, 12),
+    getClientGenerationServiceAreas(db, client.id, approvedIntelligenceOnly, 8),
+    getClientGenerationServices(db, client.id, approvedIntelligenceOnly, 12),
     getClientKeywords(db, client.id),
     getClientGenerationTopicHistory(db, client.id, 24),
     getClientGenerationTopicHistoryForPeriod(db, client.id, contentWeek.from, contentWeek.to),
@@ -1360,7 +1361,7 @@ export async function buildSlotGenerationRequest(
     .filter((service) => !findRestrictedContentPhrase(service, restrictions));
   const monthlyPlan = await getClientMonthlyContentPlan(db, client.id, planMonth(slot.date));
   const intel = applyMonthlyPlanToIntelligence(intelBase, monthlyPlan);
-  const approvedKeywordRows = governedLocksmith
+  const approvedKeywordRows = approvedIntelligenceOnly
     ? keywordRows.filter((keyword) => keyword.approval_status === 'approved')
     : keywordRows;
   let targetKeywords = keywordPoolFromContext(intel, approvedKeywordRows, serviceNames, serviceAreas, restrictions);
@@ -1406,7 +1407,7 @@ export async function buildSlotGenerationRequest(
   const skippedTopicIds: string[] = [];
   const usedWeeklyServices = weeklyUsedServiceCategories(combinedTopicHistory, slot.date);
   for (let attempt = 0; !topicSelection && attempt < 12; attempt++) {
-    const candidate = await buildMonthlyTopicSelection(db, client.id, slot.date, slot.content_type, platforms, serviceAreas, skippedTopicIds, governedLocksmith);
+    const candidate = await buildMonthlyTopicSelection(db, client.id, slot.date, slot.content_type, platforms, serviceAreas, skippedTopicIds, approvedIntelligenceOnly);
     if (!candidate) break;
     if (candidate.serviceCategory && usedWeeklyServices.has(normalizeWeeklyServiceFamily(candidate.serviceCategory))) {
       if (!candidate.monthlyTopicId) break;
@@ -1702,6 +1703,7 @@ export async function saveGeneratedSlotResult(
   const client = await db.prepare('SELECT * FROM clients WHERE id = ?').bind(slot.client_id).first<ClientRow>();
   if (!client) throw new Error(`Client not found: ${slot.client_slug}`);
   const governedLocksmith = isGovernedLocksmith(client);
+  const approvedIntelligenceOnly = governedLocksmith || client.profile_approval_status === 'approved';
 
   const [storedClientPlatforms, gbpLocations] = await Promise.all([
     getClientPlatforms(db, client.id),
@@ -1779,8 +1781,8 @@ export async function saveGeneratedSlotResult(
     db.prepare(`SELECT id, title, master_caption FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`)
       .bind(client.id)
       .all<{ id: string; title: string | null; master_caption: string | null }>(),
-    getClientGenerationServiceAreas(db, client.id, governedLocksmith, 8),
-    getClientGenerationServices(db, client.id, governedLocksmith, 12),
+    getClientGenerationServiceAreas(db, client.id, approvedIntelligenceOnly, 8),
+    getClientGenerationServices(db, client.id, approvedIntelligenceOnly, 12),
     getClientKeywords(db, client.id),
     db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then((row) => row ?? null),
     getClientRestrictions(db, client.id),
@@ -1808,7 +1810,7 @@ export async function saveGeneratedSlotResult(
   }
   const validationTargetKeywords = keywordPoolFromContext(
     validationIntel,
-    governedLocksmith
+    approvedIntelligenceOnly
       ? validationKeywordRows.filter((keyword) => keyword.approval_status === 'approved')
       : validationKeywordRows,
     validationServiceNames,
@@ -2112,12 +2114,13 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
       const isHighQuality = slot.high_quality ?? false;
 
       const governedLocksmith = isGovernedLocksmith(client);
+      const approvedIntelligenceOnly = governedLocksmith || client.profile_approval_status === 'approved';
       const [intelBase, fbRows, recRows, svcAreaRows, svcNameRows, keywordRows, topicHistory, restrictions] = await Promise.all([
         db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?').bind(client.id).first<IntelRow>().then(r => r ?? null),
-        getClientGenerationFeedback(db, client.id, governedLocksmith, 10),
+        getClientGenerationFeedback(db, client.id, approvedIntelligenceOnly, 10),
         db.prepare(`SELECT id, title, master_caption, content_type FROM posts WHERE client_id = ? AND status NOT IN ('cancelled','failed') ORDER BY created_at DESC LIMIT 30`).bind(client.id).all<{id:string;title:string|null;master_caption:string|null;content_type:string|null}>(),
-        getClientGenerationServiceAreas(db, client.id, governedLocksmith, 8),
-        getClientGenerationServices(db, client.id, governedLocksmith, 12),
+        getClientGenerationServiceAreas(db, client.id, approvedIntelligenceOnly, 8),
+        getClientGenerationServices(db, client.id, approvedIntelligenceOnly, 12),
         getClientKeywords(db, client.id),
         getClientGenerationTopicHistory(db, client.id, 24),
         getClientRestrictions(db, client.id),
@@ -2129,7 +2132,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
       const serviceNames  = svcNameRows
         .map(r => r.name)
         .filter((service) => !findRestrictedContentPhrase(service, restrictions));
-      const approvedKeywordRows = governedLocksmith
+      const approvedKeywordRows = approvedIntelligenceOnly
         ? keywordRows.filter((keyword) => keyword.approval_status === 'approved')
         : keywordRows;
       const targetKeywords = keywordPoolFromContext(intelBase, approvedKeywordRows, serviceNames, serviceAreas, restrictions);
@@ -2149,7 +2152,7 @@ export async function executeSlotWork(env: Env, run_id: string, slot_idx: number
       const skippedTopicIds: string[] = [];
       const usedWeeklyServices = weeklyUsedServiceCategories(topicHistory, slot.date);
       for (let attempt = 0; !topicSelection && attempt < 12; attempt++) {
-        const candidate = await buildMonthlyTopicSelection(db, client.id, slot.date, slot.content_type, platforms, serviceAreas, skippedTopicIds, governedLocksmith);
+        const candidate = await buildMonthlyTopicSelection(db, client.id, slot.date, slot.content_type, platforms, serviceAreas, skippedTopicIds, approvedIntelligenceOnly);
         if (!candidate) break;
         if (candidate.serviceCategory && usedWeeklyServices.has(normalizeWeeklyServiceFamily(candidate.serviceCategory))) {
           if (!candidate.monthlyTopicId) break;

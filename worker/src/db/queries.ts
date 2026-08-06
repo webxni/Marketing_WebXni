@@ -2270,9 +2270,9 @@ export async function approveAgencyStrategyPlan(db: D1Database, id: string): Pro
   return rows.find((row) => row.id === id) ?? null;
 }
 
-// Gabriel's locksmith portfolio may only consume reviewed research. Other
-// clients retain the existing latest-record behavior until they opt into the
-// same governed owner group.
+// Once a profile is approved, generation may only consume research that passed
+// the same approval gate. Pending profiles retain the legacy latest-record
+// behavior so onboarding research can still populate their initial brief.
 export async function getLatestClientResearch(db: D1Database, clientId: string, targetDate?: string): Promise<string | null> {
   const row = await db.prepare(
     `SELECT r.research_json
@@ -2280,7 +2280,7 @@ export async function getLatestClientResearch(db: D1Database, clientId: string, 
      JOIN clients c ON c.id = r.client_id
      WHERE r.client_id = ?
        AND (
-         COALESCE(c.owner_group, '') != 'gabriel-locksmiths'
+         c.profile_approval_status != 'approved'
          OR (
            r.review_status = 'approved'
            AND r.entity_match = 1
@@ -2934,8 +2934,8 @@ export async function getAgencyClientContentBrief(
   options: { includeRecentTopics?: boolean } = {},
 ): Promise<{ brief: string; hasBrief: boolean; profile_gaps: string[]; active_platforms: string[]; gbp_locations: Array<{ label: string; caption_field: string | null; upload_post_profile: string | null; location_id: string; paused: number }> }> {
   const [client, intel, areas, services, restrictions, keywords, gbpRows, platforms, recentTopics, latestResearch, latestStrategy] = await Promise.all([
-    db.prepare('SELECT canonical_name, industry, state, phone, cta_text, notes, owner_group FROM clients WHERE id = ?')
-      .bind(clientId).first<{ canonical_name: string | null; industry: string | null; state: string | null; phone: string | null; cta_text: string | null; notes: string | null; owner_group: string | null }>(),
+    db.prepare('SELECT canonical_name, industry, state, phone, cta_text, notes, owner_group, profile_approval_status FROM clients WHERE id = ?')
+      .bind(clientId).first<{ canonical_name: string | null; industry: string | null; state: string | null; phone: string | null; cta_text: string | null; notes: string | null; owner_group: string | null; profile_approval_status: string }>(),
     db.prepare('SELECT * FROM client_intelligence WHERE client_id = ?')
       .bind(clientId).first<Record<string, string | null>>(),
     db.prepare('SELECT city, approval_status FROM client_service_areas WHERE client_id = ? ORDER BY primary_area DESC, sort_order ASC LIMIT 20')
@@ -2951,6 +2951,7 @@ export async function getAgencyClientContentBrief(
     getLatestClientStrategy(db, clientId),
   ]);
   const governedLocksmith = client?.owner_group === 'gabriel-locksmiths';
+  const approvedIntelligenceOnly = governedLocksmith || client?.profile_approval_status === 'approved';
   const seenGbpLocations = new Set<string>();
   const gbp_locations = gbpRows.filter((g) => {
     if (governedLocksmith && g.verification_status !== 'verified') return false;
@@ -2967,16 +2968,16 @@ export async function getAgencyClientContentBrief(
   }));
 
   const serviceAreas = areas.results
-    .filter((row) => !governedLocksmith || row.approval_status === 'approved')
+    .filter((row) => !approvedIntelligenceOnly || row.approval_status === 'approved')
     .map((row) => row.city)
     .filter(Boolean)
     .slice(0, 8);
   const serviceNames = services.results
-    .filter((row) => !governedLocksmith || row.approval_status === 'approved')
+    .filter((row) => !approvedIntelligenceOnly || row.approval_status === 'approved')
     .map((row) => row.name)
     .filter(Boolean)
     .slice(0, 12);
-  const eligibleKeywords = governedLocksmith
+  const eligibleKeywords = approvedIntelligenceOnly
     ? keywords.filter((keyword) => keyword.approval_status === 'approved')
     : keywords;
   const i = intel ?? {};
