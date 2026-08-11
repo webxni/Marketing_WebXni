@@ -291,10 +291,12 @@ async function processPost(
         }
         continue;
       }
-      await postGbpMultiLocation(
+      const gbpStats = await postGbpMultiLocation(
         env, up, post, client, sched_time, publishDate,
         photoItems, videoR2Url, mediaKind, dryRun, stats, jobId,
       );
+      thisPosted += gbpStats.posted;
+      thisFailed += gbpStats.failed;
       continue;
     }
 
@@ -533,6 +535,13 @@ async function processPost(
   }
 }
 
+interface GbpLocationStats {
+  posted: number;
+  failed: number;
+  skipped: number;
+  blocked: number;
+}
+
 async function postGbpMultiLocation(
   env: LoaderEnv,
   up: UploadPostClient,
@@ -546,14 +555,16 @@ async function postGbpMultiLocation(
   dryRun: boolean,
   stats: PostingStats,
   _jobId: string,
-): Promise<void> {
-  if (!client) return;
+): Promise<GbpLocationStats> {
+  const localStats: GbpLocationStats = { posted: 0, failed: 0, skipped: 0, blocked: 0 };
+  if (!client) return localStats;
 
   const locations: ClientGbpLocationRow[] = client.gbp_locations;
 
   for (const loc of locations) {
     if (loc.paused === 1) {
       stats.skipped++;
+      localStats.skipped++;
       continue;
     }
 
@@ -566,6 +577,7 @@ async function postGbpMultiLocation(
 
     if (!caption) {
       stats.skipped++;
+      localStats.skipped++;
       continue;
     }
 
@@ -580,6 +592,7 @@ async function postGbpMultiLocation(
     ) {
       const reason = `GBP destination '${loc.label}' is not identity-verified`;
       stats.blocked++;
+      localStats.blocked++;
       if (!dryRun) {
         await upsertPostPlatform(env.DB, {
           post_id: post.id,
@@ -666,6 +679,7 @@ async function postGbpMultiLocation(
       });
       await logPostingAudit(env.DB, post.id, postedField, 'sent', `Publicación GBP enviada para ${loc.label}.`, response);
       stats.posted++;
+      localStats.posted++;
     } catch (err) {
       if (err instanceof UploadPostError && err.isIdempotent) {
         await upsertPostPlatform(env.DB, {
@@ -676,6 +690,7 @@ async function postGbpMultiLocation(
         });
         await logPostingAudit(env.DB, post.id, postedField, 'idempotent', `Upload-Post indicó que la publicación GBP de ${loc.label} ya existía.`, err.body);
         stats.posted++;
+        localStats.posted++;
       } else {
         const rawMsg = err instanceof UploadPostError
           ? `HTTP ${err.status}: ${err.body.slice(0, 200)}`
@@ -689,9 +704,11 @@ async function postGbpMultiLocation(
         });
         await logPostingAudit(env.DB, post.id, postedField, 'failed', msg, rawMsg);
         stats.failed++;
+        localStats.failed++;
       }
     }
   }
+  return localStats;
 }
 
 async function writeError(db: D1Database, postId: string, msg: string): Promise<void> {
