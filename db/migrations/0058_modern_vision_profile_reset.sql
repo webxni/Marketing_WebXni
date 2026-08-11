@@ -278,7 +278,7 @@ INSERT INTO client_monthly_topics
      offer_or_event, image_requirement, proof_requirement, claim_requirement, approval_status,
      approved_by, approved_at)
 SELECT c.id, '2026-08', d.topic, d.service, d.keyword, d.content_type,
-       CASE WHEN d.content_type = 'image' THEN '["facebook","instagram","google_business"]' ELSE '["facebook","instagram"]' END,
+       CASE WHEN d.content_type IN ('image','reel','video') THEN '["facebook","instagram","google_business"]' ELSE '["facebook","instagram"]' END,
        1000 - d.slot_number, 'approved', d.notes, 'owner-profile-2026-08-06', unixepoch(), unixepoch(),
        d.slot_number, d.pillar, d.topic, d.service, d.area, d.supporting_keywords, d.format,
        'none', d.image_requirement, d.proof_requirement, 'none', 'approved',
