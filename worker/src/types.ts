@@ -16,6 +16,8 @@ export interface Env {
   OPENAI_API_KEY: string;
   ANTHROPIC_API_KEY?: string;
   AGENT_INTERNAL_TOKEN?: string;
+  APP_VERSION?: string;
+  SOURCE_COMMIT?: string;
   AGENCY_SCHEDULER_ENABLED?:   string;
   AGENCY_NOTIFY_CHANNEL_ID?:   string;
   AGENCY_AGENT_DAILY_BUDGET_USD?: string;

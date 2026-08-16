@@ -74,7 +74,7 @@ app.route('/api/ai',        aiRoutes);
 app.route('/api/agency',    agencyRoutes);
 
 app.get('/api/health', (c) =>
-  c.json({ status: 'ok', ts: Date.now(), version: '2.0.0' }),
+  c.json({ status: 'ok', ts: Date.now(), version: c.env.APP_VERSION ?? 'unknown', source_commit: c.env.SOURCE_COMMIT ?? 'unknown', worker_version: c.env.APP_VERSION ?? 'unknown' }),
 );
 
 // One-time setup — disabled automatically after first admin is created

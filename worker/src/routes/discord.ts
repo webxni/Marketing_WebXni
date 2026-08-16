@@ -37,12 +37,90 @@ import {
   createAgentTask,
   updateAgentTask,
   appendAgencyLog,
+  writeAuditLog,
 } from '../db/queries';
 import { prepareGenerationPlan, prebuildApprovedTerminalSlotRequests, buildSlotGenerationRequest, saveGeneratedSlotResult, type PreparedApprovedSlotRequest, type SlotTopicSelection } from '../loader/generation-run';
 import { createContentWithImage } from '../loader/autonomous-content';
 import type { GeneratedPost } from '../services/openai';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
+
+
+function parseJobArgs(job: { args_json?: string | null } | null): Partial<ApprovedTerminalJobArgs> {
+  try { return job?.args_json ? JSON.parse(job.args_json) as Partial<ApprovedTerminalJobArgs> : {}; } catch { return {}; }
+}
+
+function terminalGenerationType(result: Record<string, unknown>, args: Partial<ApprovedTerminalJobArgs>): string | null {
+  return typeof result.generation_type === 'string'
+    ? result.generation_type
+    : (typeof args.requested_in === 'string' ? args.requested_in : null);
+}
+
+function terminalCorrelationKey(result: Record<string, unknown>, args: Partial<ApprovedTerminalJobArgs>, generationType: string | null): string | null {
+  if (typeof result.correlation_key === 'string') return result.correlation_key;
+  if (generationType && args.period_start && args.period_end) return `${generationType}:${args.period_start}:${args.period_end}`;
+  return null;
+}
+
+function summarizeTerminalResult(
+  result: Record<string, unknown>,
+  args: Partial<ApprovedTerminalJobArgs>,
+  fallbackRunId: string | null,
+  jobId: string,
+): { runId: string | null; action: string; payload: Record<string, unknown> } {
+  const runId = typeof result.run_id === 'string' ? result.run_id : fallbackRunId;
+  const requested = typeof result.requested_slots === 'number' ? result.requested_slots : null;
+  const generated = typeof result.generated_count === 'number'
+    ? result.generated_count
+    : (typeof result.completed_slots === 'number' ? result.completed_slots : null);
+  const excluded = typeof result.excluded_count === 'number' ? result.excluded_count : 0;
+  const failed = typeof result.failed_count === 'number'
+    ? result.failed_count
+    : (requested !== null && generated !== null ? Math.max(0, requested - generated - excluded) : null);
+  const status = typeof result.status === 'string'
+    ? result.status
+    : (requested !== null && generated !== null && failed !== null
+      ? (failed > 0 ? (generated > 0 ? 'completed_with_errors' : 'failed') : 'completed')
+      : 'completed');
+  const generationType = terminalGenerationType(result, args);
+  const correlationKey = terminalCorrelationKey(result, args, generationType);
+  const reasonCodes = Array.isArray(result.reason_codes)
+    ? result.reason_codes
+    : (failed && failed > 0 ? ['TERMINAL_JOB_PARTIAL_OR_FAILED'] : []);
+  const payload: Record<string, unknown> = {
+    job_id: jobId,
+    run_id: runId,
+    status,
+    generated_count: generated,
+    excluded_count: excluded,
+    blocked_count: failed,
+    failed_count: failed,
+    requested_slots: requested,
+    reason_codes: reasonCodes,
+    generation_type: generationType,
+    correlation_key: correlationKey,
+    backend: typeof result.backend === 'string' ? result.backend : (typeof result.provider === 'string' ? result.provider : null),
+    runner_id: typeof result.runner_id === 'string' ? result.runner_id : null,
+  };
+  return { runId, action: `generation.terminal.${status}`, payload };
+}
+
+async function writeTerminalAuditEvent(
+  db: Env['DB'],
+  result: Record<string, unknown>,
+  args: Partial<ApprovedTerminalJobArgs>,
+  fallbackRunId: string | null,
+  jobId: string,
+): Promise<void> {
+  const terminal = summarizeTerminalResult(result, args, fallbackRunId, jobId);
+  if (!terminal.runId) return;
+  await writeAuditLog(db, {
+    action: terminal.action,
+    entity_type: 'generation_run',
+    entity_id: terminal.runId,
+    new_value: terminal.payload,
+  });
+}
 
 const DISCORD_AGENCY_BACKEND_PRIORITY: Record<string, string[]> = {
   'agency-orchestrator': ['hermes', 'claude_code', 'codex', 'openai'],
@@ -89,7 +167,7 @@ interface ApprovedTerminalJobArgs {
   content_only: true;
   generate_images: false;
   provider: 'terminal';
-  requested_in: 'discord';
+  requested_in: 'discord' | 'agent_mcp' | 'weekly_cron' | 'daily_rolling_cron';
   prepared_slots?: PreparedApprovedSlotRequest[];
 }
 
@@ -904,40 +982,59 @@ discordInternalRoute.post('/approved-jobs/:id/complete', async (c) => {
   let body: { result_json?: Record<string, unknown> | null } = {};
   try { body = await c.req.json(); } catch { /* */ }
   const result = body.result_json ?? {};
-  await completeApprovedCommandJob(c.env.DB, c.req.param('id'), 'completed', JSON.stringify(result), null);
+  const jobId = c.req.param('id');
+  const job = await getApprovedCommandJobById(c.env.DB, jobId);
+  const args = parseJobArgs(job);
+  await completeApprovedCommandJob(c.env.DB, jobId, 'completed', JSON.stringify(result), null);
+  await writeTerminalAuditEvent(c.env.DB, result, args, typeof result.run_id === 'string' ? result.run_id : null, jobId);
   const runId = typeof result.run_id === 'string' ? result.run_id : '';
   const completedSlots = typeof result.completed_slots === 'number' ? result.completed_slots : null;
   const requestedSlots = typeof result.requested_slots === 'number' ? result.requested_slots : null;
-  if (runId && completedSlots !== null && requestedSlots !== null && completedSlots > 0) {
+  if (runId && completedSlots !== null && requestedSlots !== null) {
     const now = Math.floor(Date.now() / 1000);
-    const finalStatus = completedSlots >= requestedSlots ? 'completed' : 'completed_with_errors';
+    const failedCount = typeof result.failed_count === 'number' ? result.failed_count : Math.max(0, requestedSlots - completedSlots);
+    const excludedCount = typeof result.excluded_count === 'number' ? result.excluded_count : Math.max(0, requestedSlots - completedSlots - failedCount);
+    const finalStatus = completedSlots >= requestedSlots ? 'completed' : (completedSlots > 0 ? 'completed_with_errors' : 'failed');
+    const terminalProgress = JSON.stringify({
+      current_client: '',
+      current_post: '',
+      completed: completedSlots,
+      total_estimated: requestedSlots,
+      errors: failedCount,
+      clients_done: 0,
+      clients_total: 0,
+      generation_type: terminalGenerationType(result, args),
+      correlation_key: terminalCorrelationKey(result, args, terminalGenerationType(result, args)),
+      terminal_counts: { generated: completedSlots, excluded: excludedCount, failed: failedCount, requested: requestedSlots },
+    });
     const updatedRun = await c.env.DB.prepare(
       `UPDATE generation_runs
        SET status = ?,
            current_slot_idx = CASE WHEN ? = 'completed' THEN COALESCE(total_slots, current_slot_idx) ELSE current_slot_idx END,
            completed_at = ?,
            last_activity_at = ?,
+           progress_json = ?,
            error_log = CASE WHEN ? = 'completed' THEN NULL ELSE error_log END
        WHERE id = ? AND status != 'cancelled'`,
-    ).bind(finalStatus, finalStatus, now, now, finalStatus, runId).run();
+    ).bind(finalStatus, finalStatus, now, now, terminalProgress, finalStatus, runId).run();
     if (Number(updatedRun.meta?.changes ?? 0) === 0) return c.json({ ok: true, run_status_preserved: 'cancelled' });
     if (finalStatus === 'completed_with_errors') {
       const errorRecord = {
         kind: 'generation_error' as const,
         run_id: runId,
-        command_job_id: c.req.param('id'),
+        command_job_id: jobId,
         client: null,
         client_slug: null,
         slot_idx: completedSlots,
         provider: typeof result.provider === 'string' ? result.provider : 'terminal',
         failing_step: 'terminal_complete',
-        message: `Terminal job completed with partial success: ${completedSlots}/${requestedSlots}`,
+        message: `Terminal job completed with partial success: generated=${completedSlots}, excluded=${excludedCount}, failed=${failedCount}, requested=${requestedSlots}`,
         details: JSON.stringify(result),
       };
       await appendStructuredGenerationError(c.env.DB, runId, errorRecord);
       await appendApprovedCommandJobError(c.env.DB, c.req.param('id'), errorRecord);
     }
-    await appendGenerationLog(c.env.DB, runId, 'DONE', `Terminal job complete: saved ${completedSlots}/${requestedSlots} slot(s), status=${finalStatus}`);
+    await appendGenerationLog(c.env.DB, runId, 'DONE', `Terminal job terminal event: generated=${completedSlots}, excluded=${excludedCount}, failed=${failedCount}, requested=${requestedSlots}, status=${finalStatus}`);
   }
   return c.json({ ok: true });
 });
@@ -947,13 +1044,33 @@ discordInternalRoute.post('/approved-jobs/:id/fail', async (c) => {
   let body: { run_id?: string; error?: string } = {};
   try { body = await c.req.json(); } catch { /* */ }
   const error = body.error?.slice(0, 4000) ?? 'Unknown failure';
-  await completeApprovedCommandJob(c.env.DB, c.req.param('id'), 'failed', null, error);
+  const jobId = c.req.param('id');
+  await completeApprovedCommandJob(c.env.DB, jobId, 'failed', null, error);
   if (body.run_id) {
-    const job = await getApprovedCommandJobById(c.env.DB, c.req.param('id'));
+    const job = await getApprovedCommandJobById(c.env.DB, jobId);
+    const args = parseJobArgs(job);
+    const run = await getGenerationRunById(c.env.DB, body.run_id);
+    const requested = run?.total_slots ?? null;
+    const generated = run?.posts_created ?? 0;
+    const failed = requested !== null ? Math.max(0, requested - generated) : null;
+    const failureResult: Record<string, unknown> = {
+      run_id: body.run_id,
+      status: generated > 0 ? 'completed_with_errors' : 'failed',
+      requested_slots: requested,
+      generated_count: generated,
+      completed_slots: generated,
+      excluded_count: 0,
+      failed_count: failed,
+      generation_type: args.requested_in ?? null,
+      correlation_key: terminalCorrelationKey({}, args, args.requested_in ?? null),
+      backend: job?.provider ?? 'terminal',
+      reason_codes: ['TERMINAL_JOB_FAILED'],
+    };
+    await writeTerminalAuditEvent(c.env.DB, failureResult, args, body.run_id, jobId);
     const errorRecord = {
       kind: 'generation_error' as const,
       run_id: body.run_id,
-      command_job_id: c.req.param('id'),
+      command_job_id: jobId,
       client: null,
       client_slug: null,
       slot_idx: null,
@@ -963,8 +1080,7 @@ discordInternalRoute.post('/approved-jobs/:id/fail', async (c) => {
       details: null,
     };
     await appendStructuredGenerationError(c.env.DB, body.run_id, errorRecord);
-    await appendApprovedCommandJobError(c.env.DB, c.req.param('id'), errorRecord);
-    const run = await getGenerationRunById(c.env.DB, body.run_id);
+    await appendApprovedCommandJobError(c.env.DB, jobId, errorRecord);
     if (run && run.status === 'running') {
       await finalizeGenerationRun(
         c.env.DB,

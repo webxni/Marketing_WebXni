@@ -15,6 +15,7 @@
     detail:     string | null;
     ip:         string | null;
     created_at: number;
+    details_json?: unknown;
   }
 
   let logs: AuditLog[] = [];
@@ -22,6 +23,9 @@
   let page = 1;
   const limit = 50;
   let total = 0;
+  let totalMode = 'recent_window_estimate';
+  let archiveProof: { retained_total: number; min_created_at: number; max_created_at: number; retention_path: string } | null = null;
+  let expandedLogId: string | null = null;
   let filterAction = '';
   let filterUser = '';
   let filterDateFrom = '';
@@ -34,9 +38,11 @@
       const params = new URLSearchParams({ page: String(page), limit: String(limit) });
       if (filterAction) params.set('action', filterAction);
       if (filterUser)   params.set('user', filterUser);
-      const r = await api.get<{ logs: AuditLog[]; total: number }>(`/api/logs?${params}`);
+      const r = await api.get<{ logs: AuditLog[]; total: number; total_mode?: string; archive_proof?: typeof archiveProof }>(`/api/logs?${params}`);
       logs = r.logs;
       total = r.total ?? logs.length;
+      totalMode = r.total_mode ?? 'recent_window_estimate';
+      archiveProof = r.archive_proof ?? null;
     } finally { loading = false; }
   }
 
@@ -58,6 +64,10 @@
         (l.resource ?? '').toLowerCase().includes(filterSearch.toLowerCase())
       )
     : logs;
+
+  function safeDetail(log: AuditLog): string {
+    try { return JSON.stringify(log.details_json ?? {}, null, 2); } catch { return String(log.details_json ?? ''); }
+  }
 
   const actionColors: Record<string, string> = {
     login:        'text-green-400',
@@ -122,6 +132,11 @@
 {:else}
   <div class="card">
     <div class="table-wrapper">
+      {#if archiveProof}
+        <div class="px-5 py-3 text-xs text-muted border-b border-border">
+          Showing recent audit window. Historical audit evidence remains in <span class="font-mono text-white">audit_logs</span>: {archiveProof.retained_total.toLocaleString()} retained rows · path: {archiveProof.retention_path}.
+        </div>
+      {/if}
       <table class="data-table">
         <thead>
           <tr>
@@ -135,7 +150,7 @@
         </thead>
         <tbody>
           {#each displayedLogs as log}
-            <tr>
+            <tr class="cursor-pointer" on:click={() => expandedLogId = expandedLogId === log.id ? null : log.id}>
               <td class="text-xs text-muted whitespace-nowrap">{formatDateTime(log.created_at)}</td>
               <td class="text-xs text-white">{log.user_email ?? '—'}</td>
               <td>
@@ -144,9 +159,14 @@
                 </span>
               </td>
               <td class="text-xs text-muted">{log.resource ?? '—'}</td>
-              <td class="text-xs text-muted max-w-xs truncate">{log.detail ?? '—'}</td>
+              <td class="text-xs text-muted max-w-xs truncate">{log.detail ?? '—'} <span class="text-accent">details</span></td>
               <td class="text-xs font-mono text-muted">{log.ip ?? '—'}</td>
             </tr>
+            {#if expandedLogId === log.id}
+              <tr>
+                <td colspan="6" class="bg-black/20"><pre class="text-xs whitespace-pre-wrap overflow-auto max-h-72 p-3">{safeDetail(log)}</pre></td>
+              </tr>
+            {/if}
           {/each}
         </tbody>
       </table>
@@ -155,7 +175,7 @@
     <!-- Pagination -->
     {#if totalPages > 1}
     <div class="px-5 py-3 border-t border-border flex items-center justify-between">
-      <span class="text-xs text-muted">Page {page} of {totalPages} · {total} entries</span>
+      <span class="text-xs text-muted">Page {page} of {totalPages} · {total} recent-window entries ({totalMode})</span>
       <div class="flex gap-2">
         <button class="btn-ghost btn-sm text-xs" disabled={page <= 1} on:click={() => { page--; load(); }}>Prev</button>
         <button class="btn-ghost btn-sm text-xs" disabled={page >= totalPages} on:click={() => { page++; load(); }}>Next</button>

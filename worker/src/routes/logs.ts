@@ -7,6 +7,10 @@ import { requirePermission } from '../middleware/auth';
 
 export const logRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
+function safeParseDetailJson(value: string): unknown {
+  try { return JSON.parse(value); } catch { return value.slice(0, 4000); }
+}
+
 /** Build a human-readable detail string from stored JSON values */
 function buildDetail(entityId: string | null, oldVal: string | null, newVal: string | null): string | null {
   const parts: string[] = [];
@@ -61,38 +65,78 @@ logRoutes.get('/', requirePermission('logs.view'), async (c) => {
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
-  const [rows, countRow] = await Promise.all([
-    c.env.DB
-      .prepare(`
-        SELECT al.id, al.user_id, u.email as user_email, al.action,
-               al.entity_type as resource, al.entity_id, al.old_value, al.new_value,
-               al.ip, al.created_at
-        FROM audit_logs al
-        LEFT JOIN users u ON u.id = al.user_id
-        ${where}
-        ORDER BY al.created_at DESC
-        LIMIT ? OFFSET ?
-      `)
-      .bind(...binds, limitNum, offset)
-      .all<{
-        id: string; user_id: string | null; user_email: string | null;
-        action: string; resource: string | null; entity_id: string | null;
-        old_value: string | null; new_value: string | null;
-        ip: string | null; created_at: number;
-      }>()
-      .then(res => ({
-        ...res,
-        results: res.results.map(row => ({
-          ...row,
-          detail: buildDetail(row.entity_id, row.old_value, row.new_value),
-        })),
+  const rows = await c.env.DB
+    .prepare(`
+      SELECT al.id, al.user_id, u.email as user_email, al.action,
+             al.entity_type as resource, al.entity_id, al.old_value, al.new_value,
+             al.ip, al.created_at
+      FROM audit_logs al
+      LEFT JOIN users u ON u.id = al.user_id
+      ${where}
+      ORDER BY al.created_at DESC
+      LIMIT ? OFFSET ?
+    `)
+    .bind(...binds, limitNum, offset)
+    .all<{
+      id: string; user_id: string | null; user_email: string | null;
+      action: string; resource: string | null; entity_id: string | null;
+      old_value: string | null; new_value: string | null;
+      ip: string | null; created_at: number;
+    }>()
+    .then(res => ({
+      ...res,
+      results: res.results.map(row => ({
+        ...row,
+        detail: buildDetail(row.entity_id, row.old_value, row.new_value),
+        details_json: {
+          old_value: row.old_value ? safeParseDetailJson(row.old_value) : null,
+          new_value: row.new_value ? safeParseDetailJson(row.new_value) : null,
+        },
       })),
-    c.env.DB
-      .prepare(`SELECT COUNT(*) as n FROM audit_logs al LEFT JOIN users u ON u.id = al.user_id ${where}`)
-      .bind(...binds)
-      .first<{ n: number }>(),
-  ]);
+    }));
 
-  return c.json({ logs: rows.results, total: countRow?.n ?? rows.results.length });
+  // Avoid slow COUNT(*) over millions of audit rows for the live log view.
+  // This number is intentionally a recent-window pagination hint, not a
+  // historical retention total. The first unfiltered page includes a read-only
+  // archive proof so the UI can distinguish "recent page" from "all history".
+  const recentWindowTotal = offset + rows.results.length + (rows.results.length >= limitNum ? 1 : 0);
+  const archiveProof = pageNum === 1 && !action && !userFilter
+    ? await c.env.DB.prepare('SELECT COUNT(*) AS n, MIN(created_at) AS min_ts, MAX(created_at) AS max_ts FROM audit_logs').first<{ n: number; min_ts: number; max_ts: number }>().catch(() => null)
+    : null;
+
+  const deployment = {
+    app_version: c.env.APP_VERSION ?? 'unknown',
+    source_commit: c.env.SOURCE_COMMIT ?? 'unknown',
+    worker_version: c.env.APP_VERSION ?? 'unknown',
+  };
+  const deploymentLog = {
+    id: `deployment-${deployment.app_version}`,
+    user_id: null,
+    user_email: null,
+    action: 'system.deployment',
+    resource: 'worker',
+    entity_id: deployment.app_version,
+    old_value: null,
+    new_value: JSON.stringify(deployment),
+    ip: null,
+    created_at: Math.floor(Date.now() / 1000),
+    detail: `version: ${deployment.app_version} · commit: ${deployment.source_commit} · worker: ${deployment.worker_version}`,
+    details_json: { old_value: null, new_value: deployment },
+  };
+  const logs = pageNum === 1 && !action && !userFilter ? [deploymentLog, ...rows.results] : rows.results;
+
+  return c.json({
+    logs,
+    total: recentWindowTotal + (pageNum === 1 && !action && !userFilter ? 1 : 0),
+    total_mode: 'recent_window_estimate',
+    archive_proof: archiveProof ? {
+      table: 'audit_logs',
+      retained_total: archiveProof.n,
+      min_created_at: archiveProof.min_ts,
+      max_created_at: archiveProof.max_ts,
+      retention_path: 'live_d1_audit_logs_table_not_pruned',
+    } : null,
+    deployment,
+  });
 
 });
