@@ -5,6 +5,7 @@ import { normalizeEvidenceBackedReview, shouldPersistAgentFinding } from './lib/
 import { runTerminalJsonAgent } from './lib/terminal-json-agent.mjs';
 import { pick_executor, executorLead, taskTypeForAgent } from './lib/executor-router.mjs';
 import { automationSlotKey, deliveryPlatforms, packageBlogSlots, packageSlots, packageSocialSlots } from './lib/agency-package-slots.mjs';
+import { agencySafety } from './lib/agency-harness-contract.mjs';
 
 function arg(name) {
   const idx = process.argv.indexOf(name);
@@ -154,12 +155,7 @@ function buildResult(agentSlug, commandName, snapshot) {
   const overview = snapshot.overview;
   const systemHealth = snapshot.system_health || {};
   const coverageGaps = summary.top_coverage_gaps;
-  const safety = {
-    no_arbitrary_shell: true,
-    preserve_marvin_approval: true,
-    preserve_designer_gate: true,
-    no_auto_publish: true,
-  };
+  const safety = agencySafety();
 
   if (agentSlug === 'system-reliability') {
     const recentFailures = systemHealth.recent_generation_failures || [];

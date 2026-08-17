@@ -65,37 +65,12 @@ import {
   LOCKSMITH_OWNER_GROUP,
   validateLocksmithGeneratedContent,
 } from '../modules/editorial-governance';
+import { agencySafety, backendPriorityForAgent, commandForAgent } from '../modules/agency-contract';
 
 export const agencyRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 export const agencyInternalRoutes = new Hono<{ Bindings: Env; Variables: Record<string, unknown> }>();
 
 agencyRoutes.use('*', requirePermission('automation.generate'));
-
-const AGENT_COMMANDS: Record<string, string> = {
-  'agency-orchestrator': 'agency_orchestrator',
-  'system-reliability': 'agency_system_review',
-  'security-sentinel': 'agency_security_review',
-  'client-research': 'agency_client_research',
-  strategy: 'agency_strategy',
-  'social-copy': 'agency_social_generation',
-  'blog-writer': 'agency_blog_generation',
-  'editorial-review': 'agency_editorial_review',
-  'client-onboarding': 'agency_client_onboarding',
-  'gmb-rank': 'agency_gmb_rank',
-};
-
-const AGENT_BACKEND_PRIORITY: Record<string, string[]> = {
-  'agency-orchestrator': ['hermes', 'claude_code', 'codex', 'openai'],
-  'system-reliability': ['hermes', 'claude_code', 'codex', 'openai'],
-  'security-sentinel': ['hermes', 'claude_code', 'codex', 'openai'],
-  'client-research': ['hermes', 'gemini_cli', 'openai'],
-  strategy: ['hermes', 'claude_code', 'codex', 'openai'],
-  'social-copy': ['hermes', 'claude_code', 'codex', 'openai'],
-  'blog-writer': ['hermes', 'claude_code', 'codex', 'openai'],
-  'editorial-review': ['hermes', 'claude_code', 'codex', 'openai'],
-  'client-onboarding': ['hermes', 'claude_code', 'codex', 'openai'],
-  'gmb-rank': ['hermes', 'codex', 'openai'],
-};
 
 const TIMELINE = [
   { day: 'Monday', title: 'Security check', agent_slug: 'security-sentinel', summary: 'Defensive audit and auth signal review.' },
@@ -275,7 +250,7 @@ const createTaskSchema = z.object({
 agencyRoutes.post('/tasks', async (c) => {
   const parsed = createTaskSchema.safeParse(await c.req.json().catch(() => ({})));
   if (!parsed.success) return c.json({ error: 'Invalid input', issues: parsed.error.issues }, 400);
-  if (!AGENT_COMMANDS[parsed.data.agent_slug]) return c.json({ error: 'Unknown agent_slug' }, 400);
+  if (!commandForAgent(parsed.data.agent_slug)) return c.json({ error: 'Unknown agent_slug' }, 400);
   const task = await createAgentTask(c.env.DB, {
     agent_slug: parsed.data.agent_slug,
     client_id: parsed.data.client_id ?? null,
@@ -294,7 +269,7 @@ agencyRoutes.post('/tasks', async (c) => {
 });
 
 async function enqueueAgent(c: Context<{ Bindings: Env; Variables: { user: SessionData } }>, agentSlug: string, taskId?: string | null) {
-  const commandName = AGENT_COMMANDS[agentSlug];
+  const commandName = commandForAgent(agentSlug);
   if (!commandName) return c.json({ error: 'Unknown agent_slug' }, 400);
   const agents = await listAgentDefinitions(c.env.DB);
   const agent = agents.find((item) => item.slug === agentSlug);
@@ -327,12 +302,8 @@ async function enqueueAgent(c: Context<{ Bindings: Env; Variables: { user: Sessi
       agent_slug: agentSlug,
       task_id: task.id,
       source: 'agency_dashboard',
-      backend_priority: AGENT_BACKEND_PRIORITY[agentSlug] ?? ['hermes', 'openai'],
-      safety: {
-        no_arbitrary_shell: true,
-        preserve_marvin_approval: true,
-        preserve_designer_gate: true,
-      },
+      backend_priority: backendPriorityForAgent(agentSlug),
+      safety: agencySafety(),
     }),
   });
   await updateAgentTask(c.env.DB, task.id, { approved_job_id: job.id, status: 'queued', progress: 0 });
@@ -555,7 +526,7 @@ async function enqueueInternalAgencyJob(
   requestedBy: string,
   source: string,
 ) {
-  const commandName = AGENT_COMMANDS[agentSlug];
+  const commandName = commandForAgent(agentSlug);
   if (!commandName) return null;
   const agents = await listAgentDefinitions(db);
   const agent = agents.find((item) => item.slug === agentSlug);
@@ -575,12 +546,8 @@ async function enqueueInternalAgencyJob(
       agent_slug: agentSlug,
       task_id: task.id,
       source,
-      backend_priority: AGENT_BACKEND_PRIORITY[agentSlug] ?? ['hermes', 'openai'],
-      safety: {
-        no_arbitrary_shell: true,
-        preserve_marvin_approval: true,
-        preserve_designer_gate: true,
-      },
+      backend_priority: backendPriorityForAgent(agentSlug),
+      safety: agencySafety(),
     }),
   });
   await updateAgentTask(db, task.id, { approved_job_id: job.id, status: 'queued', progress: 0 });

@@ -9,12 +9,14 @@ crons = [
   "0 * * * *",    # Recurring GBP offers/events — top of every hour
   "*/1 * * * *",  # Exact-time posting — polls every minute for due posts
   "0 9 * * *",    # Platform health check + agency stale check — daily 9AM
+  "*/15 * * * *", # Agency harness watchdog/stale sweep — every 15 minutes
   "0 20 * * FRI", # Agency weekend sequence begins — Friday 8PM UTC
   "0 8 * * SAT",  # Agency Saturday morning — research + strategy
   "0 16 * * SAT", # Agency Saturday afternoon — blog drafts + editorial
   "0 7 * * SUN",  # Package-driven weekly generation + GMB + editorial
   "0 16 * * SUN", # Agency Sunday afternoon — orchestrator wrap-up
   "0 16,19,22 * * MON-FRI", # Editorial review sweep — every 3h during business hours (9am/12pm/3pm PT)
+  "30 6 * * MON-FRI", # Package gap recovery — weekdays 6:30AM UTC, queues safe draft recovery jobs
 ]
 
 [[d1_databases]]

@@ -94,7 +94,7 @@ app.all('/*', async (c) => {
 import { runPosting } from './loader/posting-run';
 import { runRecurringGbp } from './loader/recurring-gbp-run';
 import { runContentRequests } from './loader/content-request-run';
-import { runAgencyScheduler, runAgentStaleSweep, enqueueEditorialSweep, enqueueWeeklyPackageGeneration } from './loader/agency-scheduler';
+import { runAgencyScheduler, runAgentStaleSweep, enqueueEditorialSweep, enqueueWeeklyPackageGeneration, enqueuePackageGapRecovery } from './loader/agency-scheduler';
 import { runFetchUrls } from './routes/run';
 import { notifyPostingComplete, discordDM, discordSend, DISCORD_COLORS } from './services/discord';
 import { runPlatformHealthCheck, buildHealthDiscordMessage } from './modules/platform-health';
@@ -116,7 +116,7 @@ export default {
   fetch: app.fetch,
 
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
-    const AGENCY_CRONS = new Set(['0 20 * * FRI', '0 8 * * SAT', '0 16 * * SAT', '0 7 * * SUN', '0 16 * * SUN', '0 9 * * *']);
+    const AGENCY_CRONS = new Set(['0 20 * * FRI', '0 8 * * SAT', '0 16 * * SAT', '0 7 * * SUN', '0 16 * * SUN', '0 9 * * *', '*/15 * * * *']);
 
     async function runSchedulerWithAlert() {
       try {
@@ -169,6 +169,17 @@ export default {
           if (res.queued) console.log('Editorial sweep: editorial-review queued');
         } catch (err) {
           console.error('Editorial sweep cron error:', err);
+        }
+      })());
+    }
+
+    if (event.cron === '30 6 * * MON-FRI') {
+      ctx.waitUntil((async () => {
+        try {
+          const res = await enqueuePackageGapRecovery(env, new Date(event.scheduledTime));
+          if (res.queued > 0) console.log(`Package gap recovery: queued=${res.queued} missing=${res.missing_slots} skipped=${res.skipped}`);
+        } catch (err) {
+          console.error('Package gap recovery cron error:', err);
         }
       })());
     }

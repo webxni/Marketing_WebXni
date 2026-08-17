@@ -6,6 +6,8 @@ import {
   createAgentFinding,
   createAgentTask,
   createApprovedCommandJob,
+  getAgencyClientCoverage,
+  getPostByAutomationSlotKey,
   getAgentHealthSummary,
   getLatestAuditMarker,
   listAgentDefinitions,
@@ -14,35 +16,7 @@ import {
   updateAgentTask,
   writeAuditLog,
 } from '../db/queries';
-
-const AGENT_COMMANDS: Record<string, string> = {
-  'agency-orchestrator': 'agency_orchestrator',
-  'system-reliability': 'agency_system_review',
-  'security-sentinel': 'agency_security_review',
-  'client-research': 'agency_client_research',
-  strategy: 'agency_strategy',
-  'social-copy': 'agency_social_generation',
-  'blog-writer': 'agency_blog_generation',
-  'editorial-review': 'agency_editorial_review',
-  'client-onboarding': 'agency_client_onboarding',
-  'gmb-rank': 'agency_gmb_rank',
-};
-
-// Hermes is the default agency brain. Complex agents may use Claude as a
-// secondary executor, and OpenAI remains the final fallback. Codex is kept out
-// of active routing for this deployment.
-const AGENT_BACKEND_PRIORITY: Record<string, string[]> = {
-  'agency-orchestrator': ['hermes', 'claude_code', 'openai'],
-  'system-reliability': ['hermes', 'claude_code', 'openai'],
-  'security-sentinel': ['hermes', 'claude_code', 'openai'],
-  'client-research': ['hermes', 'gemini_cli', 'openai'],
-  strategy: ['hermes', 'claude_code', 'openai'],
-  'social-copy': ['hermes', 'claude_code', 'openai'],
-  'blog-writer': ['hermes', 'claude_code', 'openai'],
-  'editorial-review': ['hermes', 'claude_code', 'openai'],
-  'client-onboarding': ['hermes', 'claude_code', 'openai'],
-  'gmb-rank': ['hermes', 'openai'],
-};
+import { agencySafety, backendPriorityForAgent, commandForAgent } from '../modules/agency-contract';
 
 // Weekend schedule — tasks run Friday night through Sunday.
 // Mon–Thu: stale detection only, no job enqueueing.
@@ -93,6 +67,68 @@ export function weeklyGenerationPeriod(now: Date): { period_start: string; perio
   };
 }
 
+function parseWeeklySchedule(raw: string | null): Record<string, string[]> {
+  try {
+    const parsed = JSON.parse(raw || '{}') as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out: Record<string, string[]> = {};
+    for (const [day, value] of Object.entries(parsed as Record<string, unknown>)) {
+      out[day.toLowerCase()] = Array.isArray(value) ? value.map((item) => String(item).toLowerCase()) : [];
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function currentMonday(now: Date): string {
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const diff = start.getUTCDay() === 0 ? 6 : start.getUTCDay() - 1;
+  start.setUTCDate(start.getUTCDate() - diff);
+  return start.toISOString().slice(0, 10);
+}
+
+function monthlyLimit(client: { images_per_month: number; videos_per_month: number; reels_per_month: number; blog_posts_per_month: number }, type: string): number {
+  if (type === 'blog') return Number(client.blog_posts_per_month || 0);
+  if (type === 'video') return Number(client.videos_per_month || 0);
+  if (type === 'reel') return Number(client.reels_per_month || 0);
+  return Number(client.images_per_month || 0);
+}
+
+function currentWeekPackageSlots(client: {
+  client_id: string;
+  weekly_schedule: string | null;
+  images_per_month: number;
+  videos_per_month: number;
+  reels_per_month: number;
+  blog_posts_per_month: number;
+}, now: Date): Array<{ date: string; type: string; dailyIndex: number; slotKey: string }> {
+  const schedule = parseWeeklySchedule(client.weekly_schedule);
+  const monday = currentMonday(now);
+  const weekDates = Array.from({ length: 7 }, (_, offset) => {
+    const date = new Date(`${monday}T12:00:00Z`);
+    date.setUTCDate(date.getUTCDate() + offset);
+    return date.toISOString().slice(0, 10);
+  });
+  const monthUse: Record<string, Record<string, number>> = {};
+  const slots: Array<{ date: string; type: string; dailyIndex: number; slotKey: string }> = [];
+  for (const date of weekDates) {
+    const day = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][new Date(`${date}T12:00:00Z`).getUTCDay()]!;
+    const month = date.slice(0, 7);
+    monthUse[month] ??= {};
+    const types = schedule[day] ?? [];
+    for (const [dailyIndex, type] of types.entries()) {
+      const limit = monthlyLimit(client, type);
+      if (limit <= 0) continue;
+      const next = (monthUse[month][type] ?? 0) + 1;
+      if (next > limit) continue;
+      monthUse[month][type] = next;
+      slots.push({ date, type, dailyIndex, slotKey: `${client.client_id}:${date}:${type}:${dailyIndex}` });
+    }
+  }
+  return slots;
+}
+
 export async function enqueueWeeklyPackageGeneration(
   env: Env,
   now = new Date(),
@@ -134,6 +170,99 @@ export async function enqueueWeeklyPackageGeneration(
     run_id: queued.run_id,
     total_slots: queued.total_slots,
   };
+}
+
+export async function enqueuePackageGapRecovery(
+  env: Env,
+  now = new Date(),
+): Promise<{ queued: number; skipped: number; missing_slots: number; reason: string }> {
+  if (!(await agencySchedulerEnabled(env))) return { queued: 0, skipped: 0, missing_slots: 0, reason: 'scheduler_disabled' };
+
+  const coverage = await getAgencyClientCoverage(env.DB);
+  const agents = await listAgentDefinitions(env.DB);
+  let queued = 0;
+  let skipped = 0;
+  let missingSlots = 0;
+  const weekStart = currentMonday(now);
+
+  for (const client of coverage) {
+    const slots = currentWeekPackageSlots(client, now);
+    for (const slot of slots) {
+      const existing = await getPostByAutomationSlotKey(env.DB, client.client_id, slot.slotKey);
+      if (existing && existing.status !== 'cancelled') {
+        skipped++;
+        continue;
+      }
+
+      missingSlots++;
+      const agentSlug = slot.type === 'blog' ? 'blog-writer' : 'social-copy';
+      const commandName = commandForAgent(agentSlug);
+      const agent = agents.find((item) => item.slug === agentSlug);
+      if (!agent || agent.enabled !== 1 || !commandName) {
+        skipped++;
+        continue;
+      }
+
+      const dedupeKey = `${weekStart}:${client.client_id}:${slot.slotKey}`;
+      const previous = await getLatestAuditMarker(env.DB, 'agency.scheduler.gap_recovery', 'package_slot', dedupeKey);
+      if (previous) {
+        skipped++;
+        continue;
+      }
+
+      const task = await createAgentTask(env.DB, {
+        agent_slug: agentSlug,
+        client_id: client.client_id,
+        title: `Recover missing ${slot.type} package slot for ${client.client_name}`,
+        priority: 'high',
+        input_json: JSON.stringify({
+          requested_from: 'daily_package_gap_recovery',
+          mode: 'recover_missing_slots',
+          week_start: weekStart,
+          client_id: client.client_id,
+          client_slug: client.client_slug,
+          missing_slots: [slot],
+        }),
+      });
+      const job = await createApprovedCommandJob(env.DB, {
+        generation_run_id: null,
+        command_name: commandName,
+        provider: agent.default_backend,
+        requested_by: 'daily_package_gap_recovery',
+        args_json: JSON.stringify({
+          agent_slug: agentSlug,
+          task_id: task.id,
+          source: 'daily_package_gap_recovery',
+          mode: 'recover_missing_slots',
+          week_start: weekStart,
+          client_id: client.client_id,
+          client_slug: client.client_slug,
+          missing_slots: [slot],
+          backend_priority: backendPriorityForAgent(agentSlug),
+          safety: agencySafety(),
+        }),
+      });
+      await updateAgentTask(env.DB, task.id, { approved_job_id: job.id, status: 'queued', progress: 0 });
+      await appendAgencyLog(env.DB, {
+        agent_slug: agentSlug,
+        task_id: task.id,
+        job_id: job.id,
+        status: 'queued',
+        step: 'package_gap_recovery',
+        summary: `${agent.name} queued to recover ${client.client_name} ${slot.date} ${slot.type} package slot.`,
+        backend: agent.default_backend,
+      });
+      await writeAuditLog(env.DB, {
+        action: 'agency.scheduler.gap_recovery',
+        entity_type: 'package_slot',
+        entity_id: dedupeKey,
+        new_value: { agent_slug: agentSlug, command_name: commandName, job_id: job.id, slot },
+      });
+      queued++;
+    }
+  }
+
+  return { queued, skipped, missing_slots: missingSlots, reason: queued > 0 ? 'queued' : 'no_missing_slots' };
 }
 
 function requestedAgents(now: Date): string[] {
@@ -205,7 +334,7 @@ export async function runAgencyScheduler(env: Env, now = new Date()): Promise<Ag
 
   for (const agentSlug of requested) {
     const agent = agents.find((item) => item.slug === agentSlug);
-    const commandName = AGENT_COMMANDS[agentSlug];
+    const commandName = commandForAgent(agentSlug);
     if (!agent || agent.enabled !== 1 || !commandName) {
       skipped++;
       continue;
@@ -233,12 +362,8 @@ export async function runAgencyScheduler(env: Env, now = new Date()): Promise<Ag
         task_id: task.id,
         source: 'agency_scheduler',
         day_key: dayKey,
-        backend_priority: AGENT_BACKEND_PRIORITY[agentSlug] ?? ['hermes', 'openai'],
-        safety: {
-          no_arbitrary_shell: true,
-          preserve_marvin_approval: true,
-          preserve_designer_gate: true,
-        },
+        backend_priority: backendPriorityForAgent(agentSlug),
+        safety: agencySafety(),
       }),
     });
     await updateAgentTask(env.DB, task.id, { approved_job_id: job.id, status: 'queued', progress: 0 });
@@ -280,7 +405,7 @@ export async function enqueueEditorialSweep(env: Env, now = new Date()): Promise
   if (!(await agencySchedulerEnabled(env))) return { queued: false, reason: 'scheduler_disabled' };
 
   const agentSlug = 'editorial-review';
-  const commandName = AGENT_COMMANDS[agentSlug];
+  const commandName = commandForAgent(agentSlug);
   const agents = await listAgentDefinitions(env.DB);
   const agent = agents.find((item) => item.slug === agentSlug);
   if (!agent || agent.enabled !== 1 || !commandName) return { queued: false, reason: 'agent_unavailable' };
@@ -307,12 +432,8 @@ export async function enqueueEditorialSweep(env: Env, now = new Date()): Promise
       task_id: task.id,
       source: 'agency_editorial_sweep',
       day_key: dayKey,
-      backend_priority: AGENT_BACKEND_PRIORITY[agentSlug] ?? ['hermes', 'openai'],
-      safety: {
-        no_arbitrary_shell: true,
-        preserve_marvin_approval: true,
-        preserve_designer_gate: true,
-      },
+      backend_priority: backendPriorityForAgent(agentSlug),
+      safety: agencySafety(),
     }),
   });
   await updateAgentTask(env.DB, task.id, { approved_job_id: job.id, status: 'queued', progress: 0 });
