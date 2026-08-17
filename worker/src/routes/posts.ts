@@ -14,12 +14,10 @@ import {
   getClientWithConfig,
   listPostAssetsRows,
   attachAssetsToPost,
-  getLatestContentReview,
-  approveContentReview,
   preserveEditorialFeedbackBeforePostDelete,
   getClientRestrictions,
 } from '../db/queries';
-import { buildPostContentHash, hasReviewAffectingUpdate } from '../modules/content-review';
+import { hasReviewAffectingUpdate } from '../modules/content-review';
 import { CAPTION_MAX_LEN } from '../modules/captions';
 import { normalizeContentType, parsePlatforms, resolvePlatformSelection, withImplicitBlogPlatform } from '../modules/platform-compatibility';
 import { cleanupLegacyInvalidPlatformAttempts, syncPublishedUrls } from '../modules/published-urls';
@@ -399,25 +397,6 @@ postRoutes.post('/:id/approve', requirePermission('posts.approve'), async (c) =>
   const post = await getPostById(c.env.DB, c.req.param('id') ?? '');
   if (!post) return c.json({ error: 'Not found' }, 404);
   if (post.scheduled_by_automation === 1) {
-    const review = await getLatestContentReview(c.env.DB, post.id);
-    const contentHash = await buildPostContentHash(post);
-    if (!review || !review.content_hash || review.content_hash !== contentHash) {
-      return c.json({ error: 'Editorial review is required for the current version before approval.' }, 409);
-    }
-    if (review.disposition === 'blocked' || ['high', 'blocker', 'critical'].includes(review.severity)) {
-      return c.json({ error: `Editorial review blocked approval (${review.severity}). Revise the content and run review again.` }, 409);
-    }
-    if (review.review_status === 'rejected' || review.review_status === 'quarantined') {
-      return c.json({ error: 'Editorial review was rejected. Revise the content and run review again.' }, 409);
-    }
-    try {
-      const notes = JSON.parse(review.notes_json) as { findings?: Array<{ review_status?: string }> };
-      if (notes.findings?.some((finding) => (finding.review_status ?? 'pending') === 'pending')) {
-        return c.json({ error: 'Editorial findings must be reviewed and resolved before approval.' }, 409);
-      }
-    } catch {
-      return c.json({ error: 'Editorial review data is invalid. Run review again before approval.' }, 409);
-    }
     const client = await getClientWithConfig(c.env.DB, post.client_id);
     if (!client) return c.json({ error: 'Client not found' }, 404);
     if (isGovernedLocksmith(client)) {
@@ -426,7 +405,6 @@ postRoutes.post('/:id/approve', requirePermission('posts.approve'), async (c) =>
         return c.json({ error: `Editorial policy blocked approval: ${governanceIssues.join('; ')}` }, 409);
       }
     }
-    await approveContentReview(c.env.DB, review.id, c.get('user').userId);
   }
   const mediaRequired = post.content_type !== 'blog' && post.content_type !== 'text';
   const canMoveToReady = !mediaRequired || post.asset_delivered === 1;
