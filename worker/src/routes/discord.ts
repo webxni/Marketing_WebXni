@@ -123,15 +123,15 @@ async function writeTerminalAuditEvent(
 }
 
 const DISCORD_AGENCY_BACKEND_PRIORITY: Record<string, string[]> = {
-  'agency-orchestrator': ['hermes', 'claude_code', 'codex', 'openai'],
-  'system-reliability': ['hermes', 'claude_code', 'codex', 'openai'],
-  'security-sentinel': ['hermes', 'claude_code', 'codex', 'openai'],
+  'agency-orchestrator': ['hermes', 'claude_code', 'openai'],
+  'system-reliability': ['hermes', 'claude_code', 'openai'],
+  'security-sentinel': ['hermes', 'claude_code', 'openai'],
   'client-research': ['hermes', 'gemini_cli', 'openai'],
-  strategy: ['hermes', 'claude_code', 'codex', 'openai'],
-  'social-copy': ['hermes', 'claude_code', 'codex', 'openai'],
-  'blog-writer': ['hermes', 'claude_code', 'codex', 'openai'],
-  'editorial-review': ['hermes', 'claude_code', 'codex', 'openai'],
-  'gmb-rank': ['hermes', 'codex', 'openai'],
+  strategy: ['hermes', 'claude_code', 'openai'],
+  'social-copy': ['hermes', 'claude_code', 'openai'],
+  'blog-writer': ['hermes', 'claude_code', 'openai'],
+  'editorial-review': ['hermes', 'claude_code', 'openai'],
+  'gmb-rank': ['hermes', 'openai'],
 };
 
 interface DiscordInteractionOption {

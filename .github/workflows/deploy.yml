@@ -38,6 +38,11 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: deploy --config wrangler.loader.toml
 
+      - name: Stamp deployment identity
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: node scripts/stamp-deployment-identity.mjs wrangler.toml
+
       # Then deploy main worker (includes static assets from frontend/build)
       - name: Deploy main worker
         uses: cloudflare/wrangler-action@v3

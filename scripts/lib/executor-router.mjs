@@ -5,10 +5,9 @@
 // honoring budget state and quality target. It is pure and testable so routing
 // is not scattered across scripts.
 //
-// Backends: hermes (brain/default), claude (long-form/brand/polish), codex
-// (structured/JSON/templated), gemini (fast/cheap research/bulk), openai (final
-// fallback). Every chain keeps hermes + openai at the tail so a single backend
-// outage never blocks the back-office.
+// Backends: hermes (brain/default), claude (long-form/brand/polish),
+// gemini (fast/cheap research/bulk), openai (final fallback). Every chain keeps
+// hermes + openai at the tail so a single backend outage never blocks the back-office.
 
 // task_type -> preferred lead executors (before the hermes/openai safety tail).
 const TASK_LEAD = {
@@ -17,9 +16,9 @@ const TASK_LEAD = {
   blog:        ['claude'],
   polish:      ['claude'],
   revision:    ['claude'],
-  structured:  ['codex'],
-  schema:      ['codex'],
-  templated:   ['codex'],
+  structured:  ['hermes'],
+  schema:      ['hermes'],
+  templated:   ['hermes'],
   research:    ['gemini'],
   bulk:        ['gemini'],
   web:         ['gemini'],
@@ -30,7 +29,7 @@ const TASK_LEAD = {
 };
 
 // Executors that cost meaningfully more — dropped when an agent is over budget.
-const EXPENSIVE = new Set(['claude', 'codex']);
+const EXPENSIVE = new Set(['claude']);
 // Cheapest viable chain when budget is exhausted.
 const CHEAP_FALLBACK = ['hermes', 'gemini', 'openai'];
 
@@ -81,8 +80,7 @@ const COMPLEX_AGENTS = new Set(['blog-writer', 'strategy', 'editorial-review', '
  */
 export function taskTypeForAgent(agentSlug, mode) {
   if (mode === 'blog') return 'blog';
-  // GMB posts are schema-bound, structured JSON — route to Codex (Hermes
-  // fallback). This is where Codex earns its place in the executor mix.
+  // GMB posts are schema-bound structured JSON — keep Hermes as the lead.
   if (agentSlug === 'gmb-rank') return 'structured';
   // Client research is fast/cheap, web-grounded lookups — Gemini's sweet spot
   // (via REST API + Google Search grounding). Hermes stays as fallback.

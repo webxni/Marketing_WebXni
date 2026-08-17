@@ -28,20 +28,20 @@ const AGENT_COMMANDS: Record<string, string> = {
   'gmb-rank': 'agency_gmb_rank',
 };
 
-// Complex agents lead with Claude (Hermes is gpt-5.4-mini — too small for
-// long-form/strategy/editorial/self-review work). Simpler agents lead with
-// Hermes. Hermes always remains in the chain as a fallback.
+// Hermes is the default agency brain. Complex agents may use Claude as a
+// secondary executor, and OpenAI remains the final fallback. Codex is kept out
+// of active routing for this deployment.
 const AGENT_BACKEND_PRIORITY: Record<string, string[]> = {
-  'agency-orchestrator': ['hermes', 'claude_code', 'codex', 'openai'],
-  'system-reliability': ['claude_code', 'hermes', 'codex', 'openai'],
-  'security-sentinel': ['hermes', 'claude_code', 'codex', 'openai'],
+  'agency-orchestrator': ['hermes', 'claude_code', 'openai'],
+  'system-reliability': ['hermes', 'claude_code', 'openai'],
+  'security-sentinel': ['hermes', 'claude_code', 'openai'],
   'client-research': ['hermes', 'gemini_cli', 'openai'],
-  strategy: ['claude_code', 'hermes', 'codex', 'openai'],
-  'social-copy': ['hermes', 'claude_code', 'codex', 'openai'],
-  'blog-writer': ['claude_code', 'hermes', 'codex', 'openai'],
-  'editorial-review': ['claude_code', 'hermes', 'codex', 'openai'],
-  'client-onboarding': ['hermes', 'claude_code', 'codex', 'openai'],
-  'gmb-rank': ['hermes', 'codex', 'openai'],
+  strategy: ['hermes', 'claude_code', 'openai'],
+  'social-copy': ['hermes', 'claude_code', 'openai'],
+  'blog-writer': ['hermes', 'claude_code', 'openai'],
+  'editorial-review': ['hermes', 'claude_code', 'openai'],
+  'client-onboarding': ['hermes', 'claude_code', 'openai'],
+  'gmb-rank': ['hermes', 'openai'],
 };
 
 // Weekend schedule — tasks run Friday night through Sunday.

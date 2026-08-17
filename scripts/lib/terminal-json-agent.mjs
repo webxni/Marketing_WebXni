@@ -69,7 +69,7 @@ function isBackendAvailable(backend) {
  * 'auto' expands to all available backends in default order.
  */
 function completePriority(backends, excludedBackends = []) {
-  const AUTO_ORDER = ['codex', 'gemini', 'claude', 'hermes', 'openai'];
+  const AUTO_ORDER = ['hermes', 'gemini', 'claude', 'openai'];
   const excluded = new Set(excludedBackends.map(normalizeBackendName));
   const requested = backends.flatMap((backend) => {
     const normalized = normalizeBackendName(backend);
@@ -96,7 +96,7 @@ function expandPriority(backends, excludedBackends = []) {
     const tried = backends.join(', ');
     throw new Error(
       `No backend available. Tried: ${tried}. ` +
-      'Check CLI installations (claude/codex/gemini --version) and OPENAI_API_KEY.',
+      'Check CLI installations (hermes/claude/gemini --version) and OPENAI_API_KEY.',
     );
   }
   return result;

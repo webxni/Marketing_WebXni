@@ -15,14 +15,14 @@ const SIMULATE_FALLBACK = process.argv.includes('--simulate-fallback');
 const STALE_MINUTES = Number(process.env.AGENCY_STALE_JOB_MINUTES || 90);
 
 const AGENT_BACKEND_PRIORITY = {
-  'agency-orchestrator': ['hermes', 'claude_code', 'codex', 'openai'],
-  'system-reliability': ['hermes', 'claude_code', 'codex', 'openai'],
-  'security-sentinel': ['hermes', 'claude_code', 'codex', 'openai'],
+  'agency-orchestrator': ['hermes', 'claude_code', 'openai'],
+  'system-reliability': ['hermes', 'claude_code', 'openai'],
+  'security-sentinel': ['hermes', 'claude_code', 'openai'],
   'client-research': ['hermes', 'gemini_cli', 'openai'],
-  strategy: ['hermes', 'claude_code', 'codex', 'openai'],
-  'social-copy': ['hermes', 'claude_code', 'codex', 'openai'],
-  'blog-writer': ['hermes', 'claude_code', 'codex', 'openai'],
-  'editorial-review': ['hermes', 'claude_code', 'codex', 'openai'],
+  strategy: ['hermes', 'claude_code', 'openai'],
+  'social-copy': ['hermes', 'claude_code', 'openai'],
+  'blog-writer': ['hermes', 'claude_code', 'openai'],
+  'editorial-review': ['hermes', 'claude_code', 'openai'],
 };
 
 const COMMAND_WHITELIST = {
@@ -104,7 +104,7 @@ function inspectLocalHarness() {
     warn('pm2', 'not available from this shell');
   }
 
-  for (const cmd of ['claude', 'gemini', 'codex', 'npx']) {
+  for (const cmd of ['hermes', 'claude', 'gemini', 'npx']) {
     const version = commandVersion(cmd);
     if (version) ok(`${cmd} command`, version);
     else warn(`${cmd} command`, 'not available');
