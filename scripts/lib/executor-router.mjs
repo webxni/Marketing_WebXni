@@ -6,7 +6,9 @@
 // is not scattered across scripts.
 //
 // Backends: hermes (brain/default), claude (long-form/brand/polish),
-// gemini (fast/cheap research/bulk), openai (final fallback). Every chain keeps
+// gemini (fast/cheap research/bulk), openai (final fallback). Codex is
+// intentionally not in the active Marketing_WebXni routing chain; stale Codex
+// OAuth/model state has caused weekly generation dead letters. Every chain keeps
 // hermes + openai at the tail so a single backend outage never blocks the back-office.
 
 // task_type -> preferred lead executors (before the hermes/openai safety tail).

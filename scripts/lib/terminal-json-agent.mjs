@@ -75,11 +75,12 @@ function completePriority(backends, excludedBackends = []) {
     const normalized = normalizeBackendName(backend);
     return normalized === 'auto' ? AUTO_ORDER : [normalized];
   });
+  const allowCodex = process.env.AGENCY_ALLOW_CODEX === '1';
   return [...new Set([
     ...requested.filter((backend) => backend && backend !== 'openai'),
     ...AUTO_ORDER.filter((backend) => backend !== 'openai'),
     'openai',
-  ])].filter((backend) => !excluded.has(backend));
+  ])].filter((backend) => !excluded.has(backend) && (allowCodex || backend !== 'codex'));
 }
 
 function expandPriority(backends, excludedBackends = []) {

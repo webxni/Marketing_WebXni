@@ -43,7 +43,7 @@ ok('codex exec can read oversized prompts from stdin', () => {
 ok('explicit agent priorities still try every available terminal before OpenAI', () => {
   assert.deepEqual(
     completePriority(['claude_code', 'hermes', 'openai']),
-    ['claude', 'hermes', 'codex', 'gemini', 'openai'],
+    ['claude', 'hermes', 'gemini', 'openai'],
   );
 });
 
@@ -52,6 +52,16 @@ ok('cooling backends are not added back into the fallback chain', () => {
     completePriority(['codex', 'openai'], ['codex', 'hermes']),
     ['gemini', 'claude', 'openai'],
   );
+});
+
+ok('codex is not routed unless explicitly re-enabled', () => {
+  const prior = process.env.AGENCY_ALLOW_CODEX;
+  delete process.env.AGENCY_ALLOW_CODEX;
+  assert.deepEqual(completePriority(['codex', 'openai']), ['hermes', 'gemini', 'claude', 'openai']);
+  process.env.AGENCY_ALLOW_CODEX = '1';
+  assert.deepEqual(completePriority(['codex', 'openai']), ['codex', 'hermes', 'gemini', 'claude', 'openai']);
+  if (prior === undefined) delete process.env.AGENCY_ALLOW_CODEX;
+  else process.env.AGENCY_ALLOW_CODEX = prior;
 });
 
 console.log(`\n${passed} terminal JSON agent tests passed`);
