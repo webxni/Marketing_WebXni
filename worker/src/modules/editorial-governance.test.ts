@@ -77,6 +77,21 @@ describe('locksmith editorial governance', () => {
     expect(issues).toContain('invalid or mismatched phone');
   });
 
+  it('does not block Hollywood when it only appears inside approved North Hollywood', async () => {
+    const issues = await validateLocksmithGeneratedContent(mockDb([], ['North Hollywood']), {
+      ...client,
+      slug: '724-locksmith-ca',
+      canonical_name: '7/24 Locksmith',
+    } as ClientRow, {
+      title: 'Locked Out In North Hollywood? Three Steps Before You Panic',
+      master_caption: 'A lockout is stressful. 7/24 Locksmith helps North Hollywood drivers, renters, homeowners, and businesses with practical lockout guidance.',
+      cap_facebook: 'Locked out in North Hollywood? Stay safe, confirm the exact address, and avoid forcing the lock.',
+      cap_instagram: 'North Hollywood lockout checklist: stay safe, confirm the exact address, and avoid DIY lock damage.',
+    });
+
+    expect(issues).not.toContain('wrong or unapproved location: Hollywood');
+  });
+
   it('detects duplicate approved slots within the same brand plan', async () => {
     const db = {
       prepare(sql: string) {

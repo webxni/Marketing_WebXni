@@ -191,6 +191,17 @@ function topicSimilarity(left: string, right: string): number {
   return overlap / Math.max(a.size, b.size);
 }
 
+function stripApprovedLocationMentions(text: string, approvedAreas: string[]): string {
+  let remaining = text;
+  const longestFirst = [...approvedAreas]
+    .filter((area) => area.trim())
+    .sort((a, b) => b.length - a.length);
+  for (const area of longestFirst) {
+    remaining = remaining.replace(new RegExp(`\\b${escapeRegExp(area)}\\b`, 'gi'), ' ');
+  }
+  return remaining;
+}
+
 export async function getLocksmithPortfolioTopicCollision(db: D1Database, month: string): Promise<string | null> {
   const [rows, references] = await Promise.all([
     listApprovedPortfolioTopics(db, LOCKSMITH_OWNER_GROUP, month),
@@ -314,10 +325,12 @@ export async function validateLocksmithGeneratedContent(
   }
 
   const approvedAreas = await getClientGenerationServiceAreas(db, client.id, true, 100);
-  const approvedAreaSet = new Set(approvedAreas.map((area) => normalizeTopic(area.city)));
+  const approvedAreaNames = approvedAreas.map((area) => area.city).filter(Boolean);
+  const approvedAreaSet = new Set(approvedAreaNames.map((area) => normalizeTopic(area)));
+  const textWithoutApprovedAreas = stripApprovedLocationMentions(text, approvedAreaNames);
   const wrongLocation = LOCKSMITH_LOCATION_TERMS.find((location) => {
     if (approvedAreaSet.has(normalizeTopic(location))) return false;
-    return new RegExp(`\\b${escapeRegExp(location)}\\b`, 'i').test(text);
+    return new RegExp(`\\b${escapeRegExp(location)}\\b`, 'i').test(textWithoutApprovedAreas);
   });
   if (wrongLocation) issues.push(`wrong or unapproved location: ${wrongLocation}`);
 
