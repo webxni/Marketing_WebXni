@@ -65,6 +65,26 @@ export function packageBlogSlots(client, referenceDate) {
   return packageSlots(client, referenceDate).filter((slot) => slot.type === 'blog');
 }
 
+export function normalizePackageSlot(slot) {
+  if (!slot || typeof slot !== 'object') return null;
+  const date = String(slot.date || '').slice(0, 10);
+  const type = String(slot.type || '').toLowerCase();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !type) return null;
+  const dailyIndex = Number.isInteger(slot.dailyIndex) ? slot.dailyIndex : Number(slot.dailyIndex || 0);
+  const day = String(slot.day || ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][new Date(`${date}T12:00:00Z`).getUTCDay()]);
+  return { day, date, type, dailyIndex: Number.isFinite(dailyIndex) ? dailyIndex : 0 };
+}
+
+export function recoveryPackageSlotsForClient(client, taskInput, contentKind = 'all') {
+  if (taskInput?.mode !== 'recover_missing_slots') return null;
+  if (taskInput.client_id && String(taskInput.client_id) !== String(client.client_id)) return [];
+  const slots = (Array.isArray(taskInput.missing_slots) ? taskInput.missing_slots : [])
+    .map(normalizePackageSlot)
+    .filter(Boolean)
+    .filter((slot) => contentKind === 'all' ? true : contentKind === 'blog' ? slot.type === 'blog' : slot.type !== 'blog');
+  return slots;
+}
+
 export function automationSlotKey(clientId, slot) {
   return `${clientId}:${slot.date}:${slot.type}:${slot.dailyIndex}`;
 }

@@ -4,7 +4,7 @@ import { AGENCY_SCHEMAS, buildAgencyPrompt } from './lib/agency-agent-prompts.mj
 import { normalizeEvidenceBackedReview, shouldPersistAgentFinding } from './lib/agency-review-evidence.mjs';
 import { runTerminalJsonAgent } from './lib/terminal-json-agent.mjs';
 import { pick_executor, executorLead, taskTypeForAgent } from './lib/executor-router.mjs';
-import { automationSlotKey, deliveryPlatforms, packageBlogSlots, packageSlots, packageSocialSlots } from './lib/agency-package-slots.mjs';
+import { automationSlotKey, deliveryPlatforms, packageBlogSlots, packageSlots, packageSocialSlots, recoveryPackageSlotsForClient } from './lib/agency-package-slots.mjs';
 import { agencySafety, backendPriorityForAgent } from './lib/agency-harness-contract.mjs';
 
 function arg(name) {
@@ -938,6 +938,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
     }
     const socialLimit = Number(process.env.AGENCY_DAILY_SOCIAL_CLIENT_LIMIT || 3);
     const clients = [...snapshot.coverage]
+      .filter((client) => taskInput?.mode !== 'recover_missing_slots' || String(client.client_id) === String(taskInput.client_id || ''))
       .sort((a, b) => {
         const score = (c) => (c.last_research_date ? 0 : 3) + (c.current_strategy_status === 'none' ? 2 : 0);
         return score(b) - score(a);
@@ -950,7 +951,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
     for (const client of clients) {
       try {
         await pingLease(`social-copy: ${client.client_name}`);
-        const socialSlots = packageSocialSlots(client);
+        const socialSlots = recoveryPackageSlotsForClient(client, taskInput, 'social') ?? packageSocialSlots(client);
         if (!socialSlots.length) {
           errors.push({ client: client.client_name, error: 'No social package slot is due next week.' });
           continue;
@@ -1099,6 +1100,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
     }
     const blogLimit = Number(process.env.AGENCY_DAILY_BLOG_LIMIT || 3);
     const clients = [...snapshot.coverage]
+      .filter((client) => taskInput?.mode !== 'recover_missing_slots' || String(client.client_id) === String(taskInput.client_id || ''))
       .sort((a, b) => {
         const score = (c) => (c.last_research_date ? 0 : 3) + (c.current_strategy_status === 'none' ? 2 : 0);
         return score(b) - score(a);
@@ -1123,7 +1125,7 @@ async function runAiPhase(agentSlug, commandName, backend, taskId, snapshot, tas
     for (const client of clients) {
       try {
         await pingLease(`blog-writer: ${client.client_name}`);
-        const blogSlots = packageBlogSlots(client);
+        const blogSlots = recoveryPackageSlotsForClient(client, taskInput, 'blog') ?? packageBlogSlots(client);
         if (!blogSlots.length) {
           blogErrors.push({ client: client.client_name, error: 'No blog package slot is due next week.' });
           continue;
