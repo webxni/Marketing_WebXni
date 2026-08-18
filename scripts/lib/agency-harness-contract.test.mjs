@@ -79,3 +79,9 @@ test('script harness contract stays synchronized with Worker agency contract', (
   assert.deepEqual(parseWorkerContractObject('AGENCY_BACKEND_PRIORITY'), AGENCY_BACKEND_PRIORITY);
   assert.deepEqual(parseWorkerContractObject('DEFAULT_AGENCY_SAFETY'), DEFAULT_AGENCY_SAFETY);
 });
+
+test('approved agency runner uses centralized backend contract', () => {
+  const source = readFileSync(resolve('scripts/run-approved-agency-job.mjs'), 'utf8');
+  assert.match(source, /import \{ agencySafety, backendPriorityForAgent \} from '\.\/lib\/agency-harness-contract\.mjs';/);
+  assert.doesNotMatch(source, /const AGENT_BACKEND_PRIORITY\s*=/);
+});

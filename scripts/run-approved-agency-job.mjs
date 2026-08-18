@@ -5,7 +5,7 @@ import { normalizeEvidenceBackedReview, shouldPersistAgentFinding } from './lib/
 import { runTerminalJsonAgent } from './lib/terminal-json-agent.mjs';
 import { pick_executor, executorLead, taskTypeForAgent } from './lib/executor-router.mjs';
 import { automationSlotKey, deliveryPlatforms, packageBlogSlots, packageSlots, packageSocialSlots } from './lib/agency-package-slots.mjs';
-import { agencySafety } from './lib/agency-harness-contract.mjs';
+import { agencySafety, backendPriorityForAgent } from './lib/agency-harness-contract.mjs';
 
 function arg(name) {
   const idx = process.argv.indexOf(name);
@@ -418,10 +418,9 @@ function upcomingWeekSchedule(totalClients) {
   return schedule;
 }
 
-// Per-agent backend priority chains.
-// Each array is tried in order; the first available backend wins.
-// Claude-backed agency agents use Codex as the terminal fallback Marvin requested,
-// then OpenAI if terminal backends are unavailable or fail.
+// Per-agent backend priority chains are centralized in scripts/lib/agency-harness-contract.mjs
+// and worker/src/modules/agency-contract.ts. Keep this runner pointed at that
+// contract so the executable path cannot drift from the tested Worker policy.
 const AGENT_HERMES_SKILLS = {
   'agency-orchestrator': 'webxni-agency-orchestrator',
   'system-reliability': 'webxni-system-reliability',
@@ -433,19 +432,6 @@ const AGENT_HERMES_SKILLS = {
   'editorial-review': 'webxni-editorial-reviewer',
   'client-onboarding': 'webxni-agency-orchestrator',
   'gmb-rank': 'webxni-gmb-rank',
-};
-
-const AGENT_BACKEND_PRIORITY = {
-  'agency-orchestrator': ['hermes', 'claude', 'codex', 'openai'],
-  'system-reliability':  ['hermes', 'claude', 'codex', 'openai'],
-  'security-sentinel':   ['hermes', 'claude', 'codex', 'openai'],
-  'editorial-review':    ['hermes', 'claude', 'codex', 'openai'],
-  'strategy':            ['hermes', 'claude', 'codex', 'openai'],
-  'social-copy':         ['hermes', 'claude', 'codex', 'openai'],
-  'blog-writer':         ['hermes', 'claude', 'codex', 'openai'],
-  'client-research':     ['hermes', 'gemini', 'openai'],
-  'client-onboarding':   ['hermes', 'claude', 'codex', 'openai'],
-  'gmb-rank':            ['hermes', 'codex', 'openai'],
 };
 
 function parseBackendPriority(value) {
@@ -477,7 +463,7 @@ function preferredBackend(agentSlug, fallback, taskInput = {}) {
     'hermes',
     ...(parseBackendPriority(taskInput.backend_priority) ?? []),
     ...(fallback && fallback !== 'internal' ? [fallback] : []),
-    ...(AGENT_BACKEND_PRIORITY[agentSlug] ?? ['claude', 'openai']),
+    ...backendPriorityForAgent(agentSlug),
   ];
 
   return [...new Set(chain.filter(Boolean))];
