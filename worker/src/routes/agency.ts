@@ -124,7 +124,7 @@ function harnessFlow() {
     ['approved_command_jobs', 'Only fixed command_name values are queued. No shell command comes from the user.'],
     ['Local Discord bot / PM2 runner', 'The bot claims one approved job and runs a fixed script from the whitelist.'],
     ['Whitelisted script', 'The script builds deterministic prompts and validates structured JSON.'],
-    ['Hermes CLI / Gemini CLI / Codex', 'Backend choice is agent-specific and budget controlled.'],
+    ['Hermes CLI / Gemini API / Claude/OpenAI fallback', 'Backend choice is agent-specific and budget controlled; Codex is not part of active agency routing.'],
     ['Database save', 'Outputs are saved as tasks, findings, research, strategy, or draft content.'],
     ['Discord notification', 'Concise status updates are sent without secrets.'],
     ['Frontend dashboard update', 'The AI Agency page reads task, run, finding, and coverage state.'],

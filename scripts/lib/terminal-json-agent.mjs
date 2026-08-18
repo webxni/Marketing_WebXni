@@ -533,6 +533,15 @@ function classifyBackendFailure(command, text) {
   if (lower.includes('401 unauthorized') || lower.includes('api_error_status":401') || lower.includes('missing bearer')) {
     return `cause: ${command} authentication is missing or expired`;
   }
+  if (
+    lower.includes('429')
+    || lower.includes('rate limit')
+    || lower.includes('rate_limit')
+    || lower.includes('resource_exhausted')
+    || lower.includes('quota')
+  ) {
+    return `cause: ${command} quota or rate limit was exceeded`;
+  }
   if (lower.includes('model is not supported')) {
     return `cause: ${command} model is not supported by the authenticated account`;
   }
@@ -601,4 +610,4 @@ export async function runTerminalJsonAgent({ prompt, schema, preferredBackend, m
   throw failure;
 }
 
-export { isBackendAvailable, expandPriority, completePriority, normalizeBackendName, parseEnvFile, loadHermesEnvDefaults };
+export { isBackendAvailable, expandPriority, completePriority, normalizeBackendName, parseEnvFile, loadHermesEnvDefaults, classifyBackendFailure };

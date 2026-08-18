@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { buildCodexExecArgs, buildHermesChatArgs, completePriority, isBackendAvailable, loadHermesEnvDefaults, parseEnvFile } from './terminal-json-agent.mjs';
+import { buildCodexExecArgs, buildHermesChatArgs, classifyBackendFailure, completePriority, isBackendAvailable, loadHermesEnvDefaults, parseEnvFile } from './terminal-json-agent.mjs';
 
 let passed = 0;
 const ok = (label, fn) => { fn(); passed++; console.log(`  ok  ${label}`); };
@@ -176,6 +176,17 @@ ok('terminal agent loads allowlisted Hermes env defaults without overriding serv
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+ok('backend failure classifier preserves provider quota and rate-limit causes', () => {
+  assert.equal(
+    classifyBackendFailure('gemini', 'RESOURCE_EXHAUSTED: Quota exceeded for quota metric GenerateContent requests'),
+    'cause: gemini quota or rate limit was exceeded',
+  );
+  assert.equal(
+    classifyBackendFailure('claude', 'HTTP 429 rate_limit_error: too many requests'),
+    'cause: claude quota or rate limit was exceeded',
+  );
 });
 
 console.log(`\n${passed} terminal JSON agent tests passed`);

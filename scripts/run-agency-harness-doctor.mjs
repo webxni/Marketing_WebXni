@@ -98,9 +98,12 @@ function inspectLocalHarness() {
     else warn(`${cmd} command`, 'not available');
   }
 
-  ok('DISCORD_BOT_SECRET', BOT_SECRET ? 'set (redacted)' : 'missing');
-  ok('OPENAI_API_KEY', process.env.OPENAI_API_KEY ? 'set (redacted)' : 'not set locally; runner may load from KV');
-  ok('ANTHROPIC_API_KEY', process.env.ANTHROPIC_API_KEY ? 'set (redacted)' : 'not set');
+  if (BOT_SECRET) ok('DISCORD_BOT_SECRET', 'set (redacted)');
+  else warn('DISCORD_BOT_SECRET', 'missing; remote internal harness endpoints cannot be audited from this shell');
+  if (process.env.OPENAI_API_KEY) ok('OPENAI_API_KEY', 'set (redacted)');
+  else warn('OPENAI_API_KEY', 'not set locally; runner may load from KV');
+  if (process.env.ANTHROPIC_API_KEY) ok('ANTHROPIC_API_KEY', 'set (redacted)');
+  else warn('ANTHROPIC_API_KEY', 'not set');
   ok('AGENCY_EXECUTE_AI', process.env.AGENCY_EXECUTE_AI === '1' ? 'enabled' : 'disabled');
   ok('AGENCY_ALLOW_DRAFT_POSTS', process.env.AGENCY_ALLOW_DRAFT_POSTS === '1' ? 'enabled' : 'disabled');
 
