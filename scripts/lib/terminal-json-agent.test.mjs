@@ -64,19 +64,16 @@ ok('codex is not routed unless explicitly re-enabled', () => {
   else process.env.AGENCY_ALLOW_CODEX = prior;
 });
 
-ok('hermes runner pins Gemini when Codex is not explicitly allowed', () => {
-  const args = buildHermesChatArgs({
-    wrappedPrompt: 'Return {"ok":true}',
-    skills: ['webxni-agency-orchestrator'],
-    mode: 'default',
-    env: {},
-  });
-  assert.deepEqual(args, [
-    '-z', 'Return {"ok":true}',
-    '--skills', 'webxni-agency-orchestrator',
-    '--provider', 'gemini',
-    '--model', 'gemini-2.5-flash',
-  ]);
+ok('hermes runner refuses implicit Codex-backed Hermes defaults', () => {
+  assert.throws(
+    () => buildHermesChatArgs({
+      wrappedPrompt: 'Return {"ok":true}',
+      skills: ['webxni-agency-orchestrator'],
+      mode: 'default',
+      env: {},
+    }),
+    /requires HERMES_PROVIDER/,
+  );
 });
 
 ok('hermes runner preserves explicit provider override', () => {

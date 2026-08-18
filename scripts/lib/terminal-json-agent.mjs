@@ -296,7 +296,7 @@ async function runGemini(prompt, schema, mode) {
 function resolveHermesProviderOverride(env = process.env) {
   if (env.HERMES_PROVIDER) return env.HERMES_PROVIDER;
   if (env.AGENCY_ALLOW_CODEX === '1') return '';
-  return 'gemini';
+  throw new Error('Hermes backend requires HERMES_PROVIDER when AGENCY_ALLOW_CODEX is not enabled');
 }
 
 export function buildHermesChatArgs({ wrappedPrompt, skills = [], mode = 'default', env = process.env }) {
@@ -304,8 +304,7 @@ export function buildHermesChatArgs({ wrappedPrompt, skills = [], mode = 'defaul
   if (skills.length) args.push('--skills', skills.join(','));
   const provider = resolveHermesProviderOverride(env);
   const model = env.HERMES_MODEL
-    || (mode === 'blog' ? env.HERMES_BLOG_MODEL : undefined)
-    || (provider === 'gemini' ? (mode === 'blog' ? 'gemini-2.5-pro' : 'gemini-2.5-flash') : undefined);
+    || (mode === 'blog' ? env.HERMES_BLOG_MODEL : undefined);
   if (provider) args.push('--provider', provider);
   if (model) args.push('--model', model);
   return args;
