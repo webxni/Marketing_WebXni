@@ -58,7 +58,12 @@ function isBackendAvailable(backend) {
   if (b === 'openai') return !!process.env.OPENAI_API_KEY;
   if (b === 'hermes') {
     if (!resolveHermesCommand()) return false;
-    return process.env.AGENCY_ALLOW_CODEX === '1' || !!process.env.HERMES_PROVIDER;
+    try {
+      resolveHermesProviderOverride(process.env);
+      return true;
+    } catch {
+      return false;
+    }
   }
   // Gemini runs via the REST API (the CLI's free OAuth tier was deprecated), so
   // it's available whenever a key is set; fall back to the CLI only if present.
@@ -297,8 +302,15 @@ async function runGemini(prompt, schema, mode) {
 }
 
 function resolveHermesProviderOverride(env = process.env) {
-  if (env.HERMES_PROVIDER) return env.HERMES_PROVIDER;
-  if (env.AGENCY_ALLOW_CODEX === '1') return '';
+  const provider = String(env.HERMES_PROVIDER || '').trim().toLowerCase();
+  const allowCodex = env.AGENCY_ALLOW_CODEX === '1';
+  if (provider) {
+    if (!allowCodex && ['codex', 'openai-codex', 'openai_codex'].includes(provider)) {
+      throw new Error('Hermes backend refuses Codex provider for agency routing unless AGENCY_ALLOW_CODEX=1');
+    }
+    return env.HERMES_PROVIDER;
+  }
+  if (allowCodex) return '';
   throw new Error('Hermes backend requires HERMES_PROVIDER when AGENCY_ALLOW_CODEX is not enabled');
 }
 

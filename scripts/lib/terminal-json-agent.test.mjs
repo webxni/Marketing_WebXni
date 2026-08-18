@@ -77,6 +77,34 @@ ok('hermes runner refuses implicit Codex-backed Hermes defaults', () => {
   );
 });
 
+ok('hermes runner refuses explicit Codex provider unless agency Codex routing is allowed', () => {
+  assert.throws(
+    () => buildHermesChatArgs({
+      wrappedPrompt: 'Return JSON',
+      mode: 'default',
+      env: { HERMES_PROVIDER: 'openai-codex' },
+    }),
+    /refuses Codex provider/,
+  );
+  assert.throws(
+    () => buildHermesChatArgs({
+      wrappedPrompt: 'Return JSON',
+      mode: 'default',
+      env: { HERMES_PROVIDER: 'codex' },
+    }),
+    /refuses Codex provider/,
+  );
+});
+
+ok('hermes runner allows explicit Codex provider only with agency override', () => {
+  const args = buildHermesChatArgs({
+    wrappedPrompt: 'Return JSON',
+    mode: 'default',
+    env: { HERMES_PROVIDER: 'openai-codex', AGENCY_ALLOW_CODEX: '1' },
+  });
+  assert.deepEqual(args, ['-z', 'Return JSON', '--provider', 'openai-codex']);
+});
+
 ok('hermes runner preserves explicit provider override', () => {
   const args = buildHermesChatArgs({
     wrappedPrompt: 'Return JSON',
@@ -105,6 +133,11 @@ ok('hermes availability matches the provider guard used by the runner', () => {
   process.env.HERMES_PROVIDER = 'google';
   assert.equal(isBackendAvailable('hermes'), hasHermesCommand);
   delete process.env.HERMES_PROVIDER;
+  process.env.AGENCY_ALLOW_CODEX = '1';
+  assert.equal(isBackendAvailable('hermes'), hasHermesCommand);
+  process.env.HERMES_PROVIDER = 'openai-codex';
+  delete process.env.AGENCY_ALLOW_CODEX;
+  assert.equal(isBackendAvailable('hermes'), false);
   process.env.AGENCY_ALLOW_CODEX = '1';
   assert.equal(isBackendAvailable('hermes'), hasHermesCommand);
   if (priorProvider === undefined) delete process.env.HERMES_PROVIDER;

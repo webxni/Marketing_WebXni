@@ -44,6 +44,10 @@ app.route('/media', publicAssetRoutes);
 // Discord interaction endpoint — NO auth middleware (Discord signs with Ed25519)
 app.route('/api/discord', discordInteractRoute);
 
+app.get('/api/health', (c) =>
+  c.json({ status: 'ok', ts: Date.now(), version: c.env.APP_VERSION ?? 'unknown', source_commit: c.env.SOURCE_COMMIT ?? 'unknown', worker_version: c.env.APP_VERSION ?? 'unknown' }),
+);
+
 // Per-client MCP bridge — self-authenticates via bearer token; NOT subject to session auth
 app.route('/mcp', mcpRoutes);
 
@@ -72,10 +76,6 @@ app.route('/api/notion',    notionRoutes);
 app.route('/api/portal',    portalRoutes);
 app.route('/api/ai',        aiRoutes);
 app.route('/api/agency',    agencyRoutes);
-
-app.get('/api/health', (c) =>
-  c.json({ status: 'ok', ts: Date.now(), version: c.env.APP_VERSION ?? 'unknown', source_commit: c.env.SOURCE_COMMIT ?? 'unknown', worker_version: c.env.APP_VERSION ?? 'unknown' }),
-);
 
 // One-time setup — disabled automatically after first admin is created
 app.route('/api/setup', setupRoutes);
