@@ -189,4 +189,15 @@ ok('backend failure classifier preserves provider quota and rate-limit causes', 
   );
 });
 
+ok('backend failure classifier preserves authentication causes from terminal wrappers and APIs', () => {
+  assert.equal(
+    classifyBackendFailure('claude', '{"is_error":true,"result":"Not logged in · Please run /login"}'),
+    'cause: claude authentication is missing or expired',
+  );
+  assert.equal(
+    classifyBackendFailure('gemini', 'Gemini API 400: {"error":{"status":"INVALID_ARGUMENT","message":"API key not valid. Please pass a valid API key."}}'),
+    'cause: gemini authentication is missing or expired',
+  );
+});
+
 console.log(`\n${passed} terminal JSON agent tests passed`);

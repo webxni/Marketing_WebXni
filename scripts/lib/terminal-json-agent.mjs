@@ -530,7 +530,17 @@ function runSpawnJson(command, args, parser, extra = {}) {
 
 function classifyBackendFailure(command, text) {
   const lower = text.toLowerCase();
-  if (lower.includes('401 unauthorized') || lower.includes('api_error_status":401') || lower.includes('missing bearer')) {
+  if (
+    lower.includes('401 unauthorized')
+    || lower.includes('api_error_status":401')
+    || lower.includes('missing bearer')
+    || lower.includes('not logged in')
+    || lower.includes('please run /login')
+    || lower.includes('authentication required')
+    || lower.includes('api key not valid')
+    || lower.includes('invalid api key')
+    || (lower.includes('invalid_argument') && lower.includes('api key'))
+  ) {
     return `cause: ${command} authentication is missing or expired`;
   }
   if (
@@ -599,9 +609,11 @@ export async function runTerminalJsonAgent({ prompt, schema, preferredBackend, m
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       markBackendBroken(backend);
-      errors.push(`[${backend}] ${msg.slice(0, 200)}`);
-      attempts.push({ backend, status: 'failed', error: msg.slice(0, 300) });
-      console.warn(`[agency] backend ${backend} failed, trying next: ${msg.slice(0, 120)}`);
+      const classified = classifyBackendFailure(backend, msg);
+      const safeMsg = msg.includes('cause: ') ? msg : `${classified}\n${msg}`;
+      errors.push(`[${backend}] ${safeMsg.slice(0, 200)}`);
+      attempts.push({ backend, status: 'failed', error: safeMsg.slice(0, 300) });
+      console.warn(`[agency] backend ${backend} failed, trying next: ${safeMsg.slice(0, 120)}`);
     }
   }
 
