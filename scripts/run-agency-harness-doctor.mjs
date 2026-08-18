@@ -83,7 +83,13 @@ function inspectLocalHarness() {
       warn('pm2 parse', err instanceof Error ? err.message : String(err));
     }
   } else {
-    warn('pm2', 'not available from this shell');
+    const daemon = spawnSync('pgrep', ['-af', 'PM2 v|pm2'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const visibleDaemon = daemon.status === 0 && daemon.stdout.trim();
+    if (visibleDaemon) {
+      warn('pm2 CLI', 'not available from this shell, but a PM2 daemon process is visible; cron PATH cannot verify webxni-bot state');
+    } else {
+      warn('pm2', 'not available from this shell and no PM2 daemon process was visible');
+    }
   }
 
   for (const cmd of ['hermes', 'claude', 'gemini', 'npx']) {
