@@ -309,7 +309,7 @@ async function runGemini(prompt, schema, mode) {
     const n = keys.length;
     const start = _geminiKeyCursor % n;
     _geminiKeyCursor = (_geminiKeyCursor + 1) % n; // rotate for the next call
-    let lastErr = '';
+    const keyErrors = [];
     for (let i = 0; i < n; i++) {
       const key = keys[(start + i) % n];
       const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
@@ -318,16 +318,17 @@ async function runGemini(prompt, schema, mode) {
         body: JSON.stringify(body),
       });
       if (!res.ok) {
-        lastErr = `Gemini API ${res.status}: ${(await res.text()).slice(0, 200)}`;
+        const detail = `key #${(start + i) % n + 1} Gemini API ${res.status}: ${(await res.text()).slice(0, 200)}`;
+        keyErrors.push(detail);
         // Failover to the next key on auth/quota/rate/server errors, or a 400
         // that's specifically an API-key problem (revoked/invalid key).
-        const keyError = res.status === 400 && /api.?key/i.test(lastErr);
+        const keyError = res.status === 400 && /api.?key/i.test(detail);
         const retriable = [401, 403, 429, 500, 503].includes(res.status) || keyError;
         if (retriable && i < n - 1) {
           console.warn(`[gemini] key #${(start + i) % n + 1} failed (${res.status}), rotating to next key`);
           continue;
         }
-        throw new Error(lastErr);
+        throw new Error(`All Gemini keys failed:\n${keyErrors.join('\n')}`);
       }
       const data = await res.json();
       const text = (data.candidates?.[0]?.content?.parts ?? []).map((p) => p.text || '').join('').trim();
@@ -338,7 +339,7 @@ async function runGemini(prompt, schema, mode) {
       if (um && price) cost_usd = (um.promptTokenCount / 1e6) * price.in + (um.candidatesTokenCount / 1e6) * price.out;
       return { output: parseJsonFromText(text), cost_usd };
     }
-    throw new Error(lastErr || 'All Gemini keys failed');
+    throw new Error(keyErrors.length ? `All Gemini keys failed:\n${keyErrors.join('\n')}` : 'All Gemini keys failed');
   }
 
   // Legacy fallback: the gemini CLI (only works if its OAuth is still valid).
@@ -575,7 +576,7 @@ function runSpawnJson(command, args, parser, extra = {}) {
 
 function classifyBackendFailure(command, text) {
   const lower = text.toLowerCase();
-  if (
+  const authFailure = (
     lower.includes('401 unauthorized')
     || lower.includes('api_error_status":401')
     || lower.includes('missing bearer')
@@ -585,16 +586,21 @@ function classifyBackendFailure(command, text) {
     || lower.includes('api key not valid')
     || lower.includes('invalid api key')
     || (lower.includes('invalid_argument') && lower.includes('api key'))
-  ) {
-    return `cause: ${command} authentication is missing or expired`;
-  }
-  if (
+  );
+  const quotaFailure = (
     lower.includes('429')
     || lower.includes('rate limit')
     || lower.includes('rate_limit')
     || lower.includes('resource_exhausted')
     || lower.includes('quota')
-  ) {
+  );
+  if (authFailure && quotaFailure) {
+    return `cause: ${command} had mixed authentication and quota/rate-limit failures`;
+  }
+  if (authFailure) {
+    return `cause: ${command} authentication is missing or expired`;
+  }
+  if (quotaFailure) {
     return `cause: ${command} quota or rate limit was exceeded`;
   }
   if (lower.includes('model is not supported')) {

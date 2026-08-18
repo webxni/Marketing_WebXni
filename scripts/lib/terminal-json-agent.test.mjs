@@ -209,6 +209,13 @@ ok('backend failure classifier preserves authentication causes from terminal wra
   );
 });
 
+ok('backend failure classifier preserves mixed Gemini key quota and auth failures', () => {
+  assert.equal(
+    classifyBackendFailure('gemini', 'key #1 Gemini API 429: RESOURCE_EXHAUSTED quota exceeded\nkey #2 Gemini API 400: API key not valid'),
+    'cause: gemini had mixed authentication and quota/rate-limit failures',
+  );
+});
+
 ok('hermes runner isolates agency runs from globally configured MCP OAuth servers', () => {
   const realHome = mkdtempSync(join(tmpdir(), 'webxni-real-hermes-home-'));
   try {
