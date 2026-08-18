@@ -1,6 +1,6 @@
 // Run: node scripts/lib/terminal-json-agent.test.mjs
 import assert from 'node:assert/strict';
-import { buildCodexExecArgs, completePriority } from './terminal-json-agent.mjs';
+import { buildCodexExecArgs, buildHermesChatArgs, completePriority } from './terminal-json-agent.mjs';
 
 let passed = 0;
 const ok = (label, fn) => { fn(); passed++; console.log(`  ok  ${label}`); };
@@ -62,6 +62,39 @@ ok('codex is not routed unless explicitly re-enabled', () => {
   assert.deepEqual(completePriority(['codex', 'openai']), ['codex', 'hermes', 'gemini', 'claude', 'openai']);
   if (prior === undefined) delete process.env.AGENCY_ALLOW_CODEX;
   else process.env.AGENCY_ALLOW_CODEX = prior;
+});
+
+ok('hermes runner pins Gemini when Codex is not explicitly allowed', () => {
+  const args = buildHermesChatArgs({
+    wrappedPrompt: 'Return {"ok":true}',
+    skills: ['webxni-agency-orchestrator'],
+    mode: 'default',
+    env: {},
+  });
+  assert.deepEqual(args, [
+    '-z', 'Return {"ok":true}',
+    '--skills', 'webxni-agency-orchestrator',
+    '--provider', 'gemini',
+    '--model', 'gemini-2.5-flash',
+  ]);
+});
+
+ok('hermes runner preserves explicit provider override', () => {
+  const args = buildHermesChatArgs({
+    wrappedPrompt: 'Return JSON',
+    mode: 'blog',
+    env: { HERMES_PROVIDER: 'anthropic', HERMES_MODEL: 'claude-sonnet-4', GOOGLE_API_KEY: 'configured' },
+  });
+  assert.deepEqual(args, ['-z', 'Return JSON', '--provider', 'anthropic', '--model', 'claude-sonnet-4']);
+});
+
+ok('hermes runner can use the configured Hermes default only when Codex is allowed', () => {
+  const args = buildHermesChatArgs({
+    wrappedPrompt: 'Return JSON',
+    mode: 'default',
+    env: { AGENCY_ALLOW_CODEX: '1', GOOGLE_API_KEY: 'configured' },
+  });
+  assert.deepEqual(args, ['-z', 'Return JSON']);
 });
 
 console.log(`\n${passed} terminal JSON agent tests passed`);

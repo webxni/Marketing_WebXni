@@ -293,6 +293,24 @@ async function runGemini(prompt, schema, mode) {
     { input: wrappedPrompt });
 }
 
+function resolveHermesProviderOverride(env = process.env) {
+  if (env.HERMES_PROVIDER) return env.HERMES_PROVIDER;
+  if (env.AGENCY_ALLOW_CODEX === '1') return '';
+  return 'gemini';
+}
+
+export function buildHermesChatArgs({ wrappedPrompt, skills = [], mode = 'default', env = process.env }) {
+  const args = ['-z', wrappedPrompt];
+  if (skills.length) args.push('--skills', skills.join(','));
+  const provider = resolveHermesProviderOverride(env);
+  const model = env.HERMES_MODEL
+    || (mode === 'blog' ? env.HERMES_BLOG_MODEL : undefined)
+    || (provider === 'gemini' ? (mode === 'blog' ? 'gemini-2.5-pro' : 'gemini-2.5-flash') : undefined);
+  if (provider) args.push('--provider', provider);
+  if (model) args.push('--model', model);
+  return args;
+}
+
 function runHermes(prompt, schema, mode, skills = []) {
   const hermesCmd = resolveHermesCommand();
   if (!hermesCmd) throw new Error('Hermes CLI not found. Run the installer or set HERMES_CLI_PATH.');
@@ -300,18 +318,7 @@ function runHermes(prompt, schema, mode, skills = []) {
   if (Buffer.byteLength(wrappedPrompt, 'utf8') > 120000) {
     throw new Error('Hermes prompt exceeds the safe CLI argument limit');
   }
-  const args = ['-z', wrappedPrompt];
-  if (skills.length) args.push('--skills', skills.join(','));
-  // Only override provider/model when explicitly configured via HERMES_* env.
-  // Otherwise let Hermes use its own authenticated default (e.g. its configured
-  // provider/model from `hermes model`). Forcing a provider Hermes is not
-  // authenticated for makes every Hermes call fail and silently fall through to
-  // the next backend — defeating the Hermes-first routing.
-  const provider = process.env.HERMES_PROVIDER;
-  const model = process.env.HERMES_MODEL
-    || (mode === 'blog' ? process.env.HERMES_BLOG_MODEL : undefined);
-  if (provider) args.push('--provider', provider);
-  if (model) args.push('--model', model);
+  const args = buildHermesChatArgs({ wrappedPrompt, skills, mode });
   return runSpawnJson(hermesCmd, args, (stdout) => ({ output: parseJsonFromText(stdout), cost_usd: null }));
 }
 
