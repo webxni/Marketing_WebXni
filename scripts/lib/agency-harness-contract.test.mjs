@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   AGENCY_AGENT_COMMANDS,
   AGENCY_BACKEND_PRIORITY,
@@ -22,6 +24,13 @@ const expectedSlugs = [
   'client-onboarding',
   'gmb-rank',
 ];
+
+function parseWorkerContractObject(name) {
+  const source = readFileSync(resolve('worker/src/modules/agency-contract.ts'), 'utf8');
+  const match = source.match(new RegExp(`export const ${name}[^=]*= \\{([\\s\\S]*?)\\}(?: as const)?;`));
+  assert.ok(match, `worker contract must export ${name}`);
+  return Function(`return ({${match[1]}});`)();
+}
 
 test('agency contract exposes every required agent slug', () => {
   assert.deepEqual([...REQUIRED_AGENCY_AGENT_SLUGS].sort(), [...expectedSlugs].sort());
@@ -63,4 +72,10 @@ test('helpers return safe fallbacks', () => {
     no_auto_publish: true,
     extra: true,
   });
+});
+
+test('script harness contract stays synchronized with Worker agency contract', () => {
+  assert.deepEqual(parseWorkerContractObject('AGENCY_AGENT_COMMANDS'), AGENCY_AGENT_COMMANDS);
+  assert.deepEqual(parseWorkerContractObject('AGENCY_BACKEND_PRIORITY'), AGENCY_BACKEND_PRIORITY);
+  assert.deepEqual(parseWorkerContractObject('DEFAULT_AGENCY_SAFETY'), DEFAULT_AGENCY_SAFETY);
 });
