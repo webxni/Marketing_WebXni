@@ -56,7 +56,10 @@ function isBackendAvailable(backend) {
   if (brokenUntil > Date.now()) return false;
   if (brokenUntil) brokenBackends.delete(b);
   if (b === 'openai') return !!process.env.OPENAI_API_KEY;
-  if (b === 'hermes') return !!resolveHermesCommand();
+  if (b === 'hermes') {
+    if (!resolveHermesCommand()) return false;
+    return process.env.AGENCY_ALLOW_CODEX === '1' || !!process.env.HERMES_PROVIDER;
+  }
   // Gemini runs via the REST API (the CLI's free OAuth tier was deprecated), so
   // it's available whenever a key is set; fall back to the CLI only if present.
   if (b === 'gemini') return !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) || commandAvailable('gemini');

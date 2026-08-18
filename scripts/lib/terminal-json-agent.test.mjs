@@ -1,6 +1,7 @@
 // Run: node scripts/lib/terminal-json-agent.test.mjs
 import assert from 'node:assert/strict';
-import { buildCodexExecArgs, buildHermesChatArgs, completePriority } from './terminal-json-agent.mjs';
+import { spawnSync } from 'node:child_process';
+import { buildCodexExecArgs, buildHermesChatArgs, completePriority, isBackendAvailable } from './terminal-json-agent.mjs';
 
 let passed = 0;
 const ok = (label, fn) => { fn(); passed++; console.log(`  ok  ${label}`); };
@@ -92,6 +93,24 @@ ok('hermes runner can use the configured Hermes default only when Codex is allow
     env: { AGENCY_ALLOW_CODEX: '1', GOOGLE_API_KEY: 'configured' },
   });
   assert.deepEqual(args, ['-z', 'Return JSON']);
+});
+
+ok('hermes availability matches the provider guard used by the runner', () => {
+  const priorProvider = process.env.HERMES_PROVIDER;
+  const priorAllowCodex = process.env.AGENCY_ALLOW_CODEX;
+  const hasHermesCommand = spawnSync('hermes', ['--version'], { stdio: 'ignore' }).status === 0;
+  delete process.env.HERMES_PROVIDER;
+  delete process.env.AGENCY_ALLOW_CODEX;
+  assert.equal(isBackendAvailable('hermes'), false);
+  process.env.HERMES_PROVIDER = 'google';
+  assert.equal(isBackendAvailable('hermes'), hasHermesCommand);
+  delete process.env.HERMES_PROVIDER;
+  process.env.AGENCY_ALLOW_CODEX = '1';
+  assert.equal(isBackendAvailable('hermes'), hasHermesCommand);
+  if (priorProvider === undefined) delete process.env.HERMES_PROVIDER;
+  else process.env.HERMES_PROVIDER = priorProvider;
+  if (priorAllowCodex === undefined) delete process.env.AGENCY_ALLOW_CODEX;
+  else process.env.AGENCY_ALLOW_CODEX = priorAllowCodex;
 });
 
 console.log(`\n${passed} terminal JSON agent tests passed`);

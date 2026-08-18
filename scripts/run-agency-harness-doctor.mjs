@@ -4,6 +4,7 @@ import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { redactSecrets } from './lib/agency-redaction.mjs';
 import { expandPriority, isBackendAvailable } from './lib/terminal-json-agent.mjs';
+import { AGENCY_AGENT_COMMANDS, AGENCY_BACKEND_PRIORITY } from './lib/agency-harness-contract.mjs';
 
 const API_BASE_URL = process.env.API_BASE_URL || 'https://marketing.webxni.com';
 const BOT_SECRET = process.env.DISCORD_BOT_SECRET || '';
@@ -14,31 +15,12 @@ const REQUEUE_FAILED = process.argv.includes('--requeue-failed');
 const SIMULATE_FALLBACK = process.argv.includes('--simulate-fallback');
 const STALE_MINUTES = Number(process.env.AGENCY_STALE_JOB_MINUTES || 90);
 
-const AGENT_BACKEND_PRIORITY = {
-  'agency-orchestrator': ['hermes', 'claude_code', 'openai'],
-  'system-reliability': ['hermes', 'claude_code', 'openai'],
-  'security-sentinel': ['hermes', 'claude_code', 'openai'],
-  'client-research': ['hermes', 'gemini_cli', 'openai'],
-  strategy: ['hermes', 'claude_code', 'openai'],
-  'social-copy': ['hermes', 'claude_code', 'openai'],
-  'blog-writer': ['hermes', 'claude_code', 'openai'],
-  'editorial-review': ['hermes', 'claude_code', 'openai'],
-};
-
 const COMMAND_WHITELIST = {
   weekly_content_terminal: 'scripts/run-approved-terminal-job.mjs',
   regenerate_content_terminal: 'scripts/run-approved-terminal-job.mjs',
   weekly_content_claude: 'scripts/run-approved-terminal-job.mjs',
   regenerate_content_claude: 'scripts/run-approved-terminal-job.mjs',
-  agency_system_review: 'scripts/run-approved-agency-job.mjs',
-  agency_security_review: 'scripts/run-approved-agency-job.mjs',
-  agency_client_research: 'scripts/run-approved-agency-job.mjs',
-  agency_strategy: 'scripts/run-approved-agency-job.mjs',
-  agency_social_generation: 'scripts/run-approved-agency-job.mjs',
-  agency_blog_generation: 'scripts/run-approved-agency-job.mjs',
-  agency_editorial_review: 'scripts/run-approved-agency-job.mjs',
-  agency_orchestrator: 'scripts/run-approved-agency-job.mjs',
-  agency_client_onboarding: 'scripts/run-approved-agency-job.mjs',
+  ...Object.fromEntries(Object.values(AGENCY_AGENT_COMMANDS).map((command) => [command, 'scripts/run-approved-agency-job.mjs'])),
 };
 
 function ok(label, detail = '') {
@@ -116,7 +98,11 @@ function inspectLocalHarness() {
   ok('AGENCY_EXECUTE_AI', process.env.AGENCY_EXECUTE_AI === '1' ? 'enabled' : 'disabled');
   ok('AGENCY_ALLOW_DRAFT_POSTS', process.env.AGENCY_ALLOW_DRAFT_POSTS === '1' ? 'enabled' : 'disabled');
 
-  for (const [slug, priority] of Object.entries(AGENT_BACKEND_PRIORITY)) {
+  if (!process.env.HERMES_PROVIDER && process.env.AGENCY_ALLOW_CODEX !== '1') {
+    warn('Hermes backend', 'disabled for agency routing until HERMES_PROVIDER is set; this prevents accidental Codex-backed Hermes runs');
+  }
+
+  for (const [slug, priority] of Object.entries(AGENCY_BACKEND_PRIORITY)) {
     try {
       ok(`backend priority ${slug}`, expandPriority(priority).join(' -> '));
     } catch (err) {
@@ -195,7 +181,7 @@ async function inspectRemoteHarness() {
   if (failed.length) warn('failed jobs', failed.map((j) => `${j.command_name}:${j.id.slice(0, 8)}`).join(', '));
 
   for (const agent of snapshot.agents) {
-    const expected = AGENT_BACKEND_PRIORITY[agent.slug];
+    const expected = AGENCY_BACKEND_PRIORITY[agent.slug];
     if (!expected) continue;
     const priority = agent.backend_priority || '';
     const mismatch = agent.default_backend !== expected[0] || !expected.every((p) => priority.includes(p));

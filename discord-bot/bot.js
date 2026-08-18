@@ -400,7 +400,7 @@ async function postInternal(pathname, body) {
 const VALID_AGENT_SLUGS = new Set([
   'agency-orchestrator', 'system-reliability', 'security-sentinel',
   'client-research', 'strategy', 'social-copy', 'blog-writer', 'editorial-review',
-  'client-onboarding',
+  'client-onboarding', 'gmb-rank',
 ]);
 
 function parseAgencyRequest(text) {
@@ -436,7 +436,7 @@ function parseAgencyRequest(text) {
   }
 
   // Existing agency commands
-  if (!/\bagency\b|\bsecurity check\b|\bsystem review\b|\bclient research\b|\beditorial review\b|\bweekly strategy\b/.test(normalized)) {
+  if (!/\bagency\b|\bsecurity check\b|\bsystem review\b|\bclient research\b|\beditorial review\b|\bweekly strategy\b|\bgmb\b|\bgbp\b|\bgoogle business\b/.test(normalized)) {
     return null;
   }
   if (/\b(status|progress|week)\b/.test(normalized)) {
@@ -462,6 +462,9 @@ function parseAgencyRequest(text) {
   }
   if (/\beditorial\b|\breview\b/.test(normalized)) {
     return { kind: 'run', agent_slug: 'editorial-review' };
+  }
+  if (/\bgmb\b|\bgbp\b|\bgoogle business\b|\brank\b/.test(normalized)) {
+    return { kind: 'run', agent_slug: 'gmb-rank' };
   }
   if (/\borchestrator\b|\bcontinue\b/.test(normalized)) {
     return { kind: 'run', agent_slug: 'agency-orchestrator' };
