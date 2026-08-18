@@ -1,10 +1,10 @@
 // Run: node scripts/lib/terminal-json-agent.test.mjs
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { buildCodexExecArgs, buildHermesChatArgs, classifyBackendFailure, completePriority, isBackendAvailable, loadHermesEnvDefaults, parseEnvFile } from './terminal-json-agent.mjs';
+import { buildCodexExecArgs, buildHermesChatArgs, classifyBackendFailure, completePriority, createHermesAgencyRuntimeEnv, isBackendAvailable, loadHermesEnvDefaults, parseEnvFile } from './terminal-json-agent.mjs';
 
 let passed = 0;
 const ok = (label, fn) => { fn(); passed++; console.log(`  ok  ${label}`); };
@@ -108,6 +108,15 @@ ok('hermes runner allows explicit Codex provider only with agency override', () 
   assert.deepEqual(args, ['-z', 'Return JSON', '--provider', 'openai-codex']);
 });
 
+ok('hermes runner supplies provider-specific model defaults for explicit non-Codex providers', () => {
+  const args = buildHermesChatArgs({
+    wrappedPrompt: 'Return JSON',
+    mode: 'default',
+    env: { HERMES_PROVIDER: 'google', GOOGLE_API_KEY: 'configured' },
+  });
+  assert.deepEqual(args, ['-z', 'Return JSON', '--provider', 'google', '--model', 'gemini-2.5-flash']);
+});
+
 ok('hermes runner preserves explicit provider override', () => {
   const args = buildHermesChatArgs({
     wrappedPrompt: 'Return JSON',
@@ -198,6 +207,33 @@ ok('backend failure classifier preserves authentication causes from terminal wra
     classifyBackendFailure('gemini', 'Gemini API 400: {"error":{"status":"INVALID_ARGUMENT","message":"API key not valid. Please pass a valid API key."}}'),
     'cause: gemini authentication is missing or expired',
   );
+});
+
+ok('hermes runner isolates agency runs from globally configured MCP OAuth servers', () => {
+  const realHome = mkdtempSync(join(tmpdir(), 'webxni-real-hermes-home-'));
+  try {
+    writeFileSync(join(realHome, 'config.yaml'), 'mcp_servers:\n  noisy-oauth-server:\n    url: https://example.com/mcp\n    auth: oauth\n');
+    const runtime = createHermesAgencyRuntimeEnv({
+      HERMES_HOME: realHome,
+      HERMES_PROVIDER: 'google',
+      HERMES_MODEL: 'gemini-2.5-flash',
+    });
+    try {
+      assert.notEqual(runtime.home, realHome);
+      assert.equal(existsSync(join(runtime.home, 'sessions')), true);
+      assert.equal(runtime.env.HERMES_HOME, runtime.home);
+      const config = readFileSync(join(runtime.home, 'config.yaml'), 'utf8');
+      assert.match(config, /mcp_servers: \{\}/);
+      assert.doesNotMatch(config, /noisy-oauth-server/);
+      assert.match(config, /- safe/);
+      assert.match(config, /provider: google/);
+    } finally {
+      runtime.cleanup();
+      assert.equal(existsSync(runtime.home), false);
+    }
+  } finally {
+    rmSync(realHome, { recursive: true, force: true });
+  }
 });
 
 console.log(`\n${passed} terminal JSON agent tests passed`);

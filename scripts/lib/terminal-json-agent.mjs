@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 
@@ -360,15 +360,59 @@ function resolveHermesProviderOverride(env = process.env) {
   throw new Error('Hermes backend requires HERMES_PROVIDER when AGENCY_ALLOW_CODEX is not enabled');
 }
 
+function defaultHermesModelForProvider(provider, mode) {
+  const p = String(provider || '').trim().toLowerCase();
+  if (p === 'google' || p === 'gemini') return mode === 'blog' ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
+  if (p === 'anthropic') return 'claude-sonnet-4';
+  if (p === 'openrouter') return mode === 'blog' ? 'google/gemini-2.5-pro' : 'google/gemini-2.5-flash';
+  return '';
+}
+
 export function buildHermesChatArgs({ wrappedPrompt, skills = [], mode = 'default', env = process.env }) {
   const args = ['-z', wrappedPrompt];
   if (skills.length) args.push('--skills', skills.join(','));
   const provider = resolveHermesProviderOverride(env);
   const model = env.HERMES_MODEL
-    || (mode === 'blog' ? env.HERMES_BLOG_MODEL : undefined);
+    || (mode === 'blog' ? env.HERMES_BLOG_MODEL : undefined)
+    || env.HERMES_INFERENCE_MODEL
+    || defaultHermesModelForProvider(provider, mode);
   if (provider) args.push('--provider', provider);
   if (model) args.push('--model', model);
   return args;
+}
+
+export function createHermesAgencyRuntimeEnv(env = process.env) {
+  const realHome = env.HERMES_HOME || join(homedir(), '.hermes');
+  const home = mkdtempSync(join(tmpdir(), 'webxni-hermes-agency-'));
+  const skillsDir = join(realHome, 'skills');
+  const config = [
+    'model:',
+    `  default: ${env.HERMES_MODEL || env.HERMES_BLOG_MODEL || 'gemini-2.5-flash'}`,
+    `  provider: ${env.HERMES_PROVIDER || 'google'}`,
+    'agent:',
+    '  max_turns: 8',
+    'platform_toolsets:',
+    '  cli:',
+    '    - safe',
+    'mcp_servers: {}',
+    'skills:',
+    '  external_dirs:',
+    ...(existsSync(skillsDir) ? [`    - ${skillsDir}`] : []),
+    '',
+  ].join('\n');
+  writeFileSync(join(home, 'config.yaml'), config);
+  mkdirSync(join(home, 'sessions'), { recursive: true });
+  if (existsSync(skillsDir)) {
+    symlinkSync(skillsDir, join(home, 'skills'), 'dir');
+  }
+  return {
+    env: {
+      ...env,
+      HERMES_HOME: home,
+    },
+    cleanup: () => rmSync(home, { recursive: true, force: true }),
+    home,
+  };
 }
 
 function runHermes(prompt, schema, mode, skills = []) {
@@ -379,7 +423,8 @@ function runHermes(prompt, schema, mode, skills = []) {
     throw new Error('Hermes prompt exceeds the safe CLI argument limit');
   }
   const args = buildHermesChatArgs({ wrappedPrompt, skills, mode });
-  return runSpawnJson(hermesCmd, args, (stdout) => ({ output: parseJsonFromText(stdout), cost_usd: null }));
+  const runtime = createHermesAgencyRuntimeEnv();
+  return runSpawnJson(hermesCmd, args, (stdout) => ({ output: parseJsonFromText(stdout), cost_usd: null }), runtime);
 }
 
 export function buildCodexExecArgs({ prompt, schemaPath, outputPath, model }) {
