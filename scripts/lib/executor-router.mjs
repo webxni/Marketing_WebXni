@@ -6,7 +6,7 @@
 // is not scattered across scripts.
 //
 // Backends: hermes (brain/default), claude (long-form/brand/polish),
-// gemini (fast/cheap research/bulk), openai (final fallback). Codex is
+// hermes (primary agency executor), openai (final fallback). Codex is
 // intentionally not in the active Marketing_WebXni routing chain; stale Codex
 // OAuth/model state has caused weekly generation dead letters. Every chain keeps
 // hermes + openai at the tail so a single backend outage never blocks the back-office.
@@ -21,9 +21,9 @@ const TASK_LEAD = {
   structured:  ['hermes'],
   schema:      ['hermes'],
   templated:   ['hermes'],
-  research:    ['gemini'],
-  bulk:        ['gemini'],
-  web:         ['gemini'],
+  research:    ['hermes'],
+  bulk:        ['hermes'],
+  web:         ['hermes'],
   plan:        ['hermes'],
   decide:      ['hermes'],
   validate:    ['hermes'],
@@ -33,7 +33,7 @@ const TASK_LEAD = {
 // Executors that cost meaningfully more — dropped when an agent is over budget.
 const EXPENSIVE = new Set(['claude']);
 // Cheapest viable chain when budget is exhausted.
-const CHEAP_FALLBACK = ['hermes', 'gemini', 'openai'];
+const CHEAP_FALLBACK = ['hermes', 'openai'];
 
 /**
  * Compute just the LEAD executors for a task (no safety tail). Used by the

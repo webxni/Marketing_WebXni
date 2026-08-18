@@ -164,14 +164,12 @@ function resolveTerminalBackend() {
 
 function preferredTerminalBackends() {
   const rawRequested = TERMINAL_AGENT === 'auto' ? '' : TERMINAL_AGENT;
-  const requested = rawRequested === 'codex' && process.env.AGENCY_ALLOW_CODEX !== '1'
+  const requested = (rawRequested === 'gemini' || rawRequested === 'gemini_cli' || rawRequested === 'google')
     ? ''
-    : rawRequested;
-  // Keep Codex out of the active Marketing_WebXni weekly-generation path. The
-  // shared terminal-json-agent still contains a Codex adapter for explicit
-  // one-off diagnostics, but production routing should lead with Hermes and
-  // fall back to Claude/Gemini/OpenAI instead of inheriting Codex OAuth state.
-  const terminalBackends = ['hermes', 'claude', 'gemini'];
+    : (rawRequested === 'codex' && process.env.AGENCY_ALLOW_CODEX !== '1' ? '' : rawRequested);
+  // Keep Codex and direct Gemini out of the active Marketing_WebXni weekly-generation path.
+  // Production routing should lead with Hermes and fall back only to approved non-Gemini backends.
+  const terminalBackends = ['hermes', 'claude'];
   if (requested) {
     return [requested, ...terminalBackends.filter((backend) => backend !== requested), 'openai'];
   }

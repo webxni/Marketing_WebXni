@@ -466,7 +466,10 @@ function preferredBackend(agentSlug, fallback, taskInput = {}) {
     ...backendPriorityForAgent(agentSlug),
   ];
 
-  return [...new Set(chain.filter(Boolean))];
+  return [...new Set(chain.filter(Boolean))].filter((backend) => {
+    const normalized = normalizedBackendName(backend);
+    return normalized !== 'gemini' && normalized !== 'google';
+  });
 }
 
 // Returns true if the agent has spent its daily Claude budget, so we should

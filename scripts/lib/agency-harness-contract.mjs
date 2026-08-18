@@ -15,7 +15,7 @@ export const AGENCY_BACKEND_PRIORITY = Object.freeze({
   'agency-orchestrator': ['hermes', 'claude_code', 'openai'],
   'system-reliability': ['hermes', 'claude_code', 'openai'],
   'security-sentinel': ['hermes', 'claude_code', 'openai'],
-  'client-research': ['hermes', 'gemini_cli', 'openai'],
+  'client-research': ['hermes', 'openai'],
   strategy: ['hermes', 'claude_code', 'openai'],
   'social-copy': ['hermes', 'claude_code', 'openai'],
   'blog-writer': ['hermes', 'claude_code', 'openai'],

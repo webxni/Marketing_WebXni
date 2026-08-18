@@ -9,7 +9,7 @@ const ok = (label, fn) => { fn(); passed++; console.log(`  ok  ${label}`); };
 ok('long_form -> claude lead', () => assert.equal(executorLead({ task_type: 'long_form' })[0], 'claude'));
 ok('blog -> claude lead', () => assert.equal(executorLead({ task_type: 'blog' })[0], 'claude'));
 ok('structured -> hermes lead', () => assert.equal(executorLead({ task_type: 'structured' })[0], 'hermes'));
-ok('research -> gemini lead', () => assert.equal(executorLead({ task_type: 'research' })[0], 'gemini'));
+ok('research -> hermes lead', () => assert.equal(executorLead({ task_type: 'research' })[0], 'hermes'));
 ok('plan/validate -> hermes lead', () => {
   assert.equal(executorLead({ task_type: 'plan' })[0], 'hermes');
   assert.equal(executorLead({ task_type: 'validate' })[0], 'hermes');
@@ -51,9 +51,9 @@ ok('simple agents map to hermes lead', () => {
     assert.equal(executorLead({ task_type: taskTypeForAgent(slug) })[0], 'hermes', slug);
   }
 });
-ok('client-research routes to gemini (research)', () => {
+ok('client-research routes to hermes (research)', () => {
   assert.equal(taskTypeForAgent('client-research'), 'research');
-  assert.equal(executorLead({ task_type: 'research' })[0], 'gemini');
+  assert.equal(executorLead({ task_type: 'research' })[0], 'hermes');
 });
 ok('blog mode forces blog task type', () => {
   assert.equal(taskTypeForAgent('social-copy', 'blog'), 'blog');
