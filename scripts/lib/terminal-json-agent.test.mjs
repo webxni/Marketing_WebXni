@@ -247,6 +247,20 @@ ok('backend failure classifier preserves Hermes no-final failures as execution f
   );
 });
 
+ok('hermes runtime prefers Gemini key pool over stale Google key for Hermes provider', () => {
+  const runtime = createHermesAgencyRuntimeEnv({
+    GOOGLE_API_KEY: 'stale-google-key',
+    GEMINI_API_KEYS: 'pooled-key-1,pooled-key-2',
+    HERMES_PROVIDER: 'google',
+  });
+  try {
+    assert.equal(runtime.env.GOOGLE_API_KEY, 'pooled-key-1');
+    assert.equal(runtime.env.GEMINI_API_KEYS, 'pooled-key-1,pooled-key-2');
+  } finally {
+    runtime.cleanup();
+  }
+});
+
 ok('hermes runner isolates agency runs from globally configured MCP OAuth servers', () => {
   const realHome = mkdtempSync(join(tmpdir(), 'webxni-real-hermes-home-'));
   try {

@@ -107,8 +107,20 @@ function inspectLocalHarness() {
   ok('AGENCY_EXECUTE_AI', process.env.AGENCY_EXECUTE_AI === '1' ? 'enabled' : 'disabled');
   ok('AGENCY_ALLOW_DRAFT_POSTS', process.env.AGENCY_ALLOW_DRAFT_POSTS === '1' ? 'enabled' : 'disabled');
 
-  if (!process.env.HERMES_PROVIDER && process.env.AGENCY_ALLOW_CODEX !== '1') {
-    warn('Hermes backend', 'disabled for agency routing until HERMES_PROVIDER is set; this prevents accidental Codex-backed Hermes runs');
+  const hasNonCodexHermesCredential = !!(
+    process.env.HERMES_PROVIDER
+    || process.env.GOOGLE_API_KEY
+    || process.env.GEMINI_API_KEY
+    || process.env.GEMINI_API_KEYS
+    || process.env.ANTHROPIC_API_KEY
+    || process.env.OPENROUTER_API_KEY
+  );
+  if (!hasNonCodexHermesCredential && process.env.AGENCY_ALLOW_CODEX !== '1') {
+    warn('Hermes backend', 'disabled for agency routing until HERMES_PROVIDER or a non-Codex provider key is set; this prevents accidental Codex-backed Hermes runs');
+  } else if (process.env.HERMES_PROVIDER && /^(codex|openai[-_]codex)$/i.test(process.env.HERMES_PROVIDER) && process.env.AGENCY_ALLOW_CODEX !== '1') {
+    warn('Hermes backend', 'explicit Codex provider is configured but agency routing will refuse it unless AGENCY_ALLOW_CODEX=1');
+  } else {
+    ok('Hermes backend guard', 'non-Codex provider path available for agency routing');
   }
 
   for (const [slug, priority] of Object.entries(AGENCY_BACKEND_PRIORITY)) {

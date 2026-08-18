@@ -385,6 +385,17 @@ export function buildHermesChatArgs({ wrappedPrompt, skills = [], mode = 'defaul
   return args;
 }
 
+function selectHermesGoogleApiKey(env = process.env) {
+  const candidates = [
+    ...(env.GEMINI_API_KEYS ? env.GEMINI_API_KEYS.split(',') : []),
+    env.GEMINI_API_KEY,
+    env.GEMINI_API_KEY_BACKUP,
+    env.GEMINI_API_KEY_3,
+    env.GOOGLE_API_KEY,
+  ].map((key) => String(key || '').trim()).filter(Boolean);
+  return candidates[0] || '';
+}
+
 export function createHermesAgencyRuntimeEnv(env = process.env) {
   const realHome = env.HERMES_HOME || join(homedir(), '.hermes');
   const home = mkdtempSync(join(tmpdir(), 'webxni-hermes-agency-'));
@@ -404,6 +415,9 @@ export function createHermesAgencyRuntimeEnv(env = process.env) {
     ...(existsSync(skillsDir) ? [`    - ${skillsDir}`] : []),
     '',
   ].join('\n');
+  const runtimeEnv = { ...env };
+  const hermesGoogleApiKey = selectHermesGoogleApiKey(runtimeEnv);
+  if (hermesGoogleApiKey) runtimeEnv.GOOGLE_API_KEY = hermesGoogleApiKey;
   writeFileSync(join(home, 'config.yaml'), config);
   mkdirSync(join(home, 'sessions'), { recursive: true });
   if (existsSync(skillsDir)) {
@@ -411,7 +425,7 @@ export function createHermesAgencyRuntimeEnv(env = process.env) {
   }
   return {
     env: {
-      ...env,
+      ...runtimeEnv,
       HERMES_HOME: home,
     },
     cleanup: () => rmSync(home, { recursive: true, force: true }),
