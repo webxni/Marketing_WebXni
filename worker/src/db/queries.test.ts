@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { findRecentTopicConflict } from './queries';
+import { findRecentTopicConflict, listReadyPosts } from './queries';
 import type { PostRow } from '../types';
 
 function mockDb(
@@ -75,5 +75,26 @@ describe('findRecentTopicConflict', () => {
     });
 
     expect(conflict?.reason).toBe('topic matched preserved rejected editorial feedback');
+  });
+});
+
+
+describe('listReadyPosts targeted publish gate', () => {
+  it('keeps post_id targeted runs bound to ready flags and due publish dates', async () => {
+    let capturedSql = '';
+    const db = {
+      prepare: (sql: string) => {
+        capturedSql = sql;
+        return { bind: () => ({ all: async () => ({ results: [] }) }) };
+      },
+    } as unknown as D1Database;
+
+    await listReadyPosts(db, undefined, 10, ['future-post']);
+
+    expect(capturedSql).toContain('ready_for_automation = 1');
+    expect(capturedSql).toContain('asset_delivered = 1');
+    expect(capturedSql).toContain('publish_date IS NOT NULL');
+    expect(capturedSql).toContain('publish_date <=');
+    expect(capturedSql).not.toContain("status IN ('approved','scheduled','failed')");
   });
 });

@@ -10,9 +10,9 @@
  */
 
 import { Hono, type Context } from 'hono';
-import type { Env, SessionData } from '../types';
+import type { Env, PostRow, SessionData } from '../types';
 import {
-  listClients, getClientBySlug,
+  listClients, getClientBySlug, getClientWithConfig,
   listPosts, getPostById, updatePost, setPostStatus,
   createPost, createGenerationRun, createPostingJob, getGenerationRunById,
   createApprovedCommandJob, appendGenerationError, appendGenerationLog,
@@ -29,6 +29,7 @@ import { discordSend, DISCORD_COLORS } from '../services/discord';
 import { syncUploadPostClientPlatforms } from '../modules/uploadpost-platform-sync';
 import { publishBlogPost } from '../modules/blog-publishing';
 import { isGovernedLocksmith, locksmithProfileRequiresReapproval } from '../modules/editorial-governance';
+import { validateAutomationReadiness } from '../modules/readiness-gate';
 import { redactClientSecrets, sanitizeClientForResponse } from '../modules/client-security';
 import {
   AGENT_SKILLS, AGENT_MEMORY, RESPONSE_RULES,
@@ -1823,7 +1824,15 @@ export async function executeTool(
         const ALLOWED = ['approved', 'rejected', 'ready', 'cancelled', 'draft', 'pending_approval'];
         if (!ALLOWED.includes(status)) return { success: false, error: `Invalid status: ${status}` };
 
-        await setPostStatus(env.DB, postId, status);
+        if (status === 'ready') {
+          const client = await getClientWithConfig(env.DB, before.client_id);
+          if (!client) return { success: false, error: 'Client not found' };
+          const readinessIssue = validateAutomationReadiness(before, client, { mode: 'ready' });
+          if (readinessIssue) return { success: false, error: `${readinessIssue.code}: ${readinessIssue.message}` };
+          await updatePost(env.DB, postId, { status: 'ready', ready_for_automation: 1, asset_delivered: before.asset_delivered });
+        } else {
+          await setPostStatus(env.DB, postId, status);
+        }
         await writeAuditLog(env.DB, { user_id: user.userId, action: `agent_${status}_post`, entity_type: 'post', entity_id: postId, new_value: status });
 
         // Fresh data
@@ -1844,6 +1853,10 @@ export async function executeTool(
         if (!post) return { success: false, error: `Post not found: ${postId}` };
 
         const dryRun = args.dry_run === true;
+        const client = await getClientWithConfig(env.DB, post.client_id);
+        if (!client) return { success: false, error: 'Client not found' };
+        const readinessIssue = validateAutomationReadiness(post, client, { mode: 'publish' });
+        if (readinessIssue) return { success: false, error: `${readinessIssue.code}: ${readinessIssue.message}` };
         const job = await createPostingJob(env.DB, { triggered_by: user.userId, mode: dryRun ? 'dry_run' : 'real' });
         ctx.waitUntil(runPosting(env, { mode: dryRun ? 'dry_run' : 'real', job_id: job.id, post_ids: [postId], triggered_by: user.userId }));
         await writeAuditLog(env.DB, { user_id: user.userId, action: 'agent_publish_post', entity_type: 'post', entity_id: postId, new_value: dryRun ? 'dry_run' : 'real' });
@@ -1880,29 +1893,41 @@ export async function executeTool(
         const client  = typeof args.client === 'string' ? args.client : null;
         const postIds = Array.isArray(args.post_ids) ? (args.post_ids as string[]) : [];
 
-        let query: string; let binds: unknown[];
+        const candidates: PostRow[] = [];
         if (postIds.length > 0) {
-          const ph = postIds.map(() => '?').join(',');
-          query = `UPDATE posts SET status = 'ready', updated_at = ? WHERE id IN (${ph}) AND status = 'failed'`;
-          binds = [Math.floor(Date.now() / 1000), ...postIds];
-        } else if (client) {
-          const row = await resolveClientSlug(env.DB, client);
-          if (!row) return { success: false, error: `Client not found: ${client}` };
-          query = `UPDATE posts SET status = 'ready', updated_at = ? WHERE client_id = ? AND status = 'failed'`;
-          binds = [Math.floor(Date.now() / 1000), row.id];
+          for (const id of postIds) {
+            const post = await getPostById(env.DB, id);
+            if (post?.status === 'failed') candidates.push(post);
+          }
         } else {
-          query = `UPDATE posts SET status = 'ready', updated_at = ? WHERE status = 'failed'`;
-          binds = [Math.floor(Date.now() / 1000)];
+          const filters: string[] = ["status = 'failed'"];
+          const binds: unknown[] = [];
+          if (client) {
+            const row = await resolveClientSlug(env.DB, client);
+            if (!row) return { success: false, error: `Client not found: ${client}` };
+            filters.push('client_id = ?');
+            binds.push(row.id);
+          }
+          const rows = await env.DB.prepare(`SELECT * FROM posts WHERE ${filters.join(' AND ')} LIMIT 200`).bind(...binds).all<PostRow>();
+          candidates.push(...rows.results);
         }
 
-        const result = await env.DB.prepare(query).bind(...binds).run();
-        const count  = result.meta?.changes ?? 0;
+        let count = 0;
+        const blocked: string[] = [];
+        const now = Math.floor(Date.now() / 1000);
+        for (const post of candidates) {
+          const postClient = await getClientWithConfig(env.DB, post.client_id);
+          const issue = postClient ? validateAutomationReadiness(post, postClient, { mode: 'ready' }) : { code: 'CLIENT_NOT_FOUND', message: 'Client not found' };
+          if (issue) { blocked.push(`${post.id}: ${issue.code}`); continue; }
+          const result = await env.DB.prepare(`UPDATE posts SET status = 'ready', ready_for_automation = 1, updated_at = ? WHERE id = ? AND status = 'failed'`).bind(now, post.id).run();
+          count += result.meta?.changes ?? 0;
+        }
         await writeAuditLog(env.DB, { user_id: user.userId, action: 'agent_fix_failed', entity_type: 'post', entity_id: 'bulk', new_value: { client, count } });
 
         return {
           success: true,
-          summary: { reset: count, client: client ?? 'all' },
-          suggestions: count > 0 ? ['Run publish_bulk to process them now'] : [],
+          summary: { reset: count, client: client ?? 'all', blocked },
+          suggestions: count > 0 ? ['Run publish_bulk to process due validated posts'] : [],
           action_summary: `Reset ${count} failed post${count !== 1 ? 's' : ''} to ready`,
         };
       }
@@ -2788,12 +2813,10 @@ Return JSON: { "caption": "..." }`;
         if (!post) return { success: false, error: `Post not found: ${postId}` };
 
         const dryRun = args.dry_run === true;
-        const now    = Math.floor(Date.now() / 1000);
-
-        await env.DB
-          .prepare(`UPDATE posts SET status = 'ready', ready_for_automation = 1, asset_delivered = 1, updated_at = ? WHERE id = ?`)
-          .bind(now, postId)
-          .run();
+        const postClient = await getClientWithConfig(env.DB, post.client_id);
+        if (!postClient) return { success: false, error: 'Client not found' };
+        const readinessIssue = validateAutomationReadiness(post, postClient, { mode: 'publish' });
+        if (readinessIssue) return { success: false, error: `${readinessIssue.code}: ${readinessIssue.message}` };
 
         const job = await createPostingJob(env.DB, { triggered_by: user.userId, mode: dryRun ? 'dry_run' : 'real' });
         ctx.waitUntil(runPosting(env, { mode: dryRun ? 'dry_run' : 'real', job_id: job.id, post_ids: [postId], triggered_by: user.userId }));

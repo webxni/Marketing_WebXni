@@ -27,8 +27,17 @@ import { normalizeBlogDraftPayload } from '../modules/blog-publishing';
 import { requirePermission } from '../middleware/auth';
 import { buildGenerationSystemMessage, findRestrictedContentPhrase } from '../services/openai';
 import { isGovernedLocksmith, validateLocksmithGeneratedContent } from '../modules/editorial-governance';
+import { validateAutomationReadiness } from '../modules/readiness-gate';
 
 export const postRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
+
+
+export function approveCompareAndSwapPredicate(post: Pick<PostRow, 'id' | 'status' | 'updated_at'>): { where: string; binds: unknown[] } {
+  return {
+    where: 'id = ? AND status = ? AND updated_at = ?',
+    binds: [post.id, post.status, post.updated_at],
+  };
+}
 
 function parseRequestedPlatforms(body: Record<string, unknown>): string[] {
   if (typeof body['platforms'] === 'string') return parsePlatforms(body['platforms'] as string);
@@ -406,14 +415,24 @@ postRoutes.post('/:id/approve', requirePermission('posts.approve'), async (c) =>
       }
     }
   }
+  const client = await getClientWithConfig(c.env.DB, post.client_id);
+  if (!client) return c.json({ error: 'Client not found' }, 404);
   const mediaRequired = post.content_type !== 'blog' && post.content_type !== 'text';
-  const canMoveToReady = !mediaRequired || post.asset_delivered === 1;
+  const readinessIssue = validateAutomationReadiness(post, client, { mode: 'ready' });
+  if (readinessIssue?.code === 'PUBLISH_DATE_OVERDUE' || readinessIssue?.code === 'PUBLISH_DATE_REQUIRED') {
+    return c.json({ error: readinessIssue.message, code: readinessIssue.code }, 409);
+  }
+  const canMoveToReady = !readinessIssue && (!mediaRequired || post.asset_delivered === 1);
   const nextStatus = canMoveToReady ? 'ready' : 'approved';
-  await updatePost(c.env.DB, post.id, {
-    status: nextStatus,
-    ready_for_automation: canMoveToReady ? 1 : 0,
-    asset_delivered: mediaRequired ? (post.asset_delivered === 1 ? 1 : 0) : 1,
-  });
+  const now = Math.floor(Date.now() / 1000);
+  const guard = approveCompareAndSwapPredicate(post);
+  const result = await c.env.DB
+    .prepare(`UPDATE posts SET status = ?, ready_for_automation = ?, asset_delivered = ?, updated_at = ? WHERE ${guard.where}`)
+    .bind(nextStatus, canMoveToReady ? 1 : 0, mediaRequired ? (post.asset_delivered === 1 ? 1 : 0) : 1, now, ...guard.binds)
+    .run();
+  if ((result.meta?.changes ?? 0) !== 1) {
+    return c.json({ error: 'Post approval state changed; reload and approve again', code: 'APPROVE_CONFLICT' }, 409);
+  }
   await writeAuditLog(c.env.DB, {
     user_id: c.get('user').userId,
     action: 'post.approve',
@@ -441,7 +460,11 @@ postRoutes.post('/:id/reject', async (c) => {
 postRoutes.post('/:id/ready', async (c) => {
   const post = await getPostById(c.env.DB, c.req.param('id'));
   if (!post) return c.json({ error: 'Not found' }, 404);
-  await updatePost(c.env.DB, post.id, { status: 'ready', ready_for_automation: 1, asset_delivered: 1 });
+  const client = await getClientWithConfig(c.env.DB, post.client_id);
+  if (!client) return c.json({ error: 'Client not found' }, 404);
+  const readinessIssue = validateAutomationReadiness(post, client, { mode: 'ready' });
+  if (readinessIssue) return c.json({ error: readinessIssue.message, code: readinessIssue.code }, 409);
+  await updatePost(c.env.DB, post.id, { status: 'ready', ready_for_automation: 1, asset_delivered: post.asset_delivered });
   return c.json({ ok: true, status: 'ready' });
 });
 
@@ -452,6 +475,11 @@ postRoutes.post('/:id/publish', async (c) => {
 
   let dryRun = false;
   try { dryRun = ((await c.req.json()) as { dry_run?: boolean }).dry_run ?? false; } catch { /* empty */ }
+
+  const client = await getClientWithConfig(c.env.DB, post.client_id);
+  if (!client) return c.json({ error: 'Client not found' }, 404);
+  const readinessIssue = validateAutomationReadiness(post, client, { mode: 'publish' });
+  if (readinessIssue) return c.json({ error: readinessIssue.message, code: readinessIssue.code }, 409);
 
   const { createPostingJob } = await import('../db/queries');
   const job = await createPostingJob(c.env.DB, { triggered_by: 'api', mode: dryRun ? 'dry_run' : 'real', client_filter: undefined });
@@ -569,6 +597,10 @@ postRoutes.post('/:id/duplicate', async (c) => {
 postRoutes.post('/:id/retry', async (c) => {
   const post = await getPostById(c.env.DB, c.req.param('id'));
   if (!post) return c.json({ error: 'Not found' }, 404);
+  const client = await getClientWithConfig(c.env.DB, post.client_id);
+  if (!client) return c.json({ error: 'Client not found' }, 404);
+  const readinessIssue = validateAutomationReadiness(post, client, { mode: 'publish' });
+  if (readinessIssue) return c.json({ error: readinessIssue.message, code: readinessIssue.code }, 409);
   const result = await c.env.DB
     .prepare("UPDATE post_platforms SET status = 'pending', tracking_id = NULL, error_message = NULL WHERE post_id = ? AND status = 'failed'")
     .bind(post.id)

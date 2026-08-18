@@ -105,8 +105,9 @@ export async function preflight(
 
   // 3. Platform must be configured for this client
   const normalizedPlatform = normalizePlatform(platform);
+  const destinationPlatform = normalizedPlatform.startsWith('gbp_') ? 'google_business' : normalizedPlatform;
   const platCfg = client.platforms.find(
-    (p) => normalizePlatform(p.platform) === normalizedPlatform,
+    (p) => normalizePlatform(p.platform) === destinationPlatform || normalizePlatform(p.platform) === normalizedPlatform,
   );
   if (!platCfg) {
     return {
@@ -131,7 +132,7 @@ export async function preflight(
       };
     }
     if (
-      normalizedPlatform === 'google_business'
+      destinationPlatform === 'google_business'
       && (!platCfg.verified_business_name || !platCfg.verified_phone || !platCfg.verified_market)
     ) {
       return {
@@ -196,7 +197,7 @@ export async function preflight(
 
   // 7. Google Business requires upload_post_location_id
   if (
-    normalizedPlatform === 'google_business' &&
+    destinationPlatform === 'google_business' &&
     (!platCfg.upload_post_location_id ||
       platCfg.upload_post_location_id === 'PENDING_SETUP' ||
       platCfg.upload_post_location_id === 'NOT_LINKED')
@@ -227,7 +228,7 @@ export async function preflight(
   }
 
   // 8. GBP: CTA URL required when a CTA type is set
-  if (normalizedPlatform === 'google_business' && post) {
+  if (destinationPlatform === 'google_business' && post) {
     if (post.gbp_cta_type && post.gbp_cta_type !== 'CALL' && !post.gbp_cta_url?.trim()) {
       return {
         ok: false, tag: 'BLOCKED',

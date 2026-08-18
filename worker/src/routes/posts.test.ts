@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { generatedCaptionQualityIssue } from './posts';
+import { approveCompareAndSwapPredicate, generatedCaptionQualityIssue } from './posts';
 
 describe('generatedCaptionQualityIssue', () => {
   it('accepts a grounded Pinterest caption beginning with the exact keyword', () => {
@@ -33,5 +33,15 @@ describe('generatedCaptionQualityIssue', () => {
     expect(generatedCaptionQualityIssue('facebook', 'Ask about key fob programming.', null, ['Never mention car key fob'])).toBe(
       'violated a client restriction: key fob',
     );
+  });
+});
+
+
+describe('approval compare-and-swap guard', () => {
+  it('uses id, status, and updated_at so a double approve cannot race the same row', () => {
+    expect(approveCompareAndSwapPredicate({ id: 'post-1', status: 'pending_approval', updated_at: 123 })).toEqual({
+      where: 'id = ? AND status = ? AND updated_at = ?',
+      binds: ['post-1', 'pending_approval', 123],
+    });
   });
 });

@@ -460,8 +460,9 @@ export async function listReadyPosts(
       .prepare(
         `SELECT * FROM posts
          WHERE id IN (${placeholders})
-           AND ((status = 'ready' AND ready_for_automation = 1 AND asset_delivered = 1)
-             OR status IN ('approved','scheduled','failed'))
+           AND ${statusClause}
+           AND publish_date IS NOT NULL
+           AND publish_date <= ${nowExpr}
          ORDER BY publish_date ASC
          LIMIT ?`,
       )

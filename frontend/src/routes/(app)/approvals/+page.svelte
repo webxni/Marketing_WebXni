@@ -93,9 +93,14 @@
   function readinessFlags(post: Post): { label: string; ok: boolean }[] {
     const flags = [];
     const platforms = parsePlatforms(post.platforms);
+    const scheduled = post.publish_date ? new Date(post.publish_date).getTime() : NaN;
+    const tooOld = Number.isFinite(scheduled) && scheduled < Date.now() - 7 * 24 * 60 * 60 * 1000;
     flags.push({ label: 'Caption', ok: !!(post.master_caption?.trim()) });
     flags.push({ label: 'Asset', ok: post.asset_delivered === 1 || post.content_type === 'text' || post.content_type === 'blog' });
-    flags.push({ label: 'Date', ok: !!post.publish_date });
+    flags.push({ label: 'Date', ok: Number.isFinite(scheduled) && !tooOld });
+    if (post.content_type === 'reel' || post.content_type === 'video' || post.asset_type === 'video') {
+      flags.push({ label: 'Media URL', ok: !!post.asset_r2_key });
+    }
     if (platforms.includes('website_blog')) {
       flags.push({ label: 'Blog', ok: !!(post.blog_content?.trim()) });
     }
