@@ -1,7 +1,10 @@
 // Run: node scripts/lib/terminal-json-agent.test.mjs
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { buildCodexExecArgs, buildHermesChatArgs, completePriority, isBackendAvailable } from './terminal-json-agent.mjs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { buildCodexExecArgs, buildHermesChatArgs, completePriority, isBackendAvailable, loadHermesEnvDefaults, parseEnvFile } from './terminal-json-agent.mjs';
 
 let passed = 0;
 const ok = (label, fn) => { fn(); passed++; console.log(`  ok  ${label}`); };
@@ -144,6 +147,35 @@ ok('hermes availability matches the provider guard used by the runner', () => {
   else process.env.HERMES_PROVIDER = priorProvider;
   if (priorAllowCodex === undefined) delete process.env.AGENCY_ALLOW_CODEX;
   else process.env.AGENCY_ALLOW_CODEX = priorAllowCodex;
+});
+
+ok('terminal agent parses simple dotenv content for central Hermes defaults', () => {
+  assert.deepEqual(parseEnvFile('GOOGLE_API_KEY=abc\nexport HERMES_PROVIDER="google"\nBAD LINE\n'), {
+    GOOGLE_API_KEY: 'abc',
+    HERMES_PROVIDER: 'google',
+  });
+});
+
+ok('terminal agent loads allowlisted Hermes env defaults without overriding service env', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'webxni-hermes-env-test-'));
+  try {
+    const envPath = join(dir, '.env');
+    writeFileSync(envPath, [
+      'GOOGLE_API_KEY=central-google',
+      'OPENAI_API_KEY=central-openai',
+      'DISCORD_BOT_SECRET=must-not-load',
+      'HERMES_PROVIDER=google',
+    ].join('\n'));
+    const env = { HERMES_ENV_PATH: envPath, OPENAI_API_KEY: 'service-openai' };
+    const loaded = loadHermesEnvDefaults(env).sort();
+    assert.deepEqual(loaded, ['GOOGLE_API_KEY', 'HERMES_PROVIDER']);
+    assert.equal(env.GOOGLE_API_KEY, 'central-google');
+    assert.equal(env.OPENAI_API_KEY, 'service-openai');
+    assert.equal(env.DISCORD_BOT_SECRET, undefined);
+    assert.equal(env.HERMES_PROVIDER, 'google');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 console.log(`\n${passed} terminal JSON agent tests passed`);

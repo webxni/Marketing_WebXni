@@ -13,7 +13,53 @@ const JSON_ONLY_SYSTEM =
 
 const BROKEN_BACKEND_TTL_MS = Number(process.env.AGENCY_BACKEND_FAILURE_TTL_MS || 15 * 60 * 1000);
 const TERMINAL_PROCESS_TIMEOUT_MS = Number(process.env.AGENCY_TERMINAL_TIMEOUT_MS || 15 * 60 * 1000);
+const HERMES_ENV_ALLOWLIST = new Set([
+  'GOOGLE_API_KEY',
+  'GEMINI_API_KEY',
+  'GEMINI_API_KEYS',
+  'GEMINI_API_KEY_BACKUP',
+  'GEMINI_API_KEY_3',
+  'OPENAI_API_KEY',
+  'ANTHROPIC_API_KEY',
+  'HERMES_PROVIDER',
+  'HERMES_MODEL',
+  'HERMES_BLOG_MODEL',
+]);
 const brokenBackends = new Map();
+
+function parseEnvFile(content) {
+  const values = {};
+  for (const rawLine of String(content || '').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const body = line.startsWith('export ') ? line.slice(7).trim() : line;
+    const eq = body.indexOf('=');
+    if (eq <= 0) continue;
+    const key = body.slice(0, eq).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    let value = body.slice(eq + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    values[key] = value;
+  }
+  return values;
+}
+
+function loadHermesEnvDefaults(env = process.env) {
+  const envPath = env.HERMES_ENV_PATH || join(homedir(), '.hermes', '.env');
+  if (!existsSync(envPath)) return [];
+  const loaded = [];
+  const values = parseEnvFile(readFileSync(envPath, 'utf8'));
+  for (const [key, value] of Object.entries(values)) {
+    if (!HERMES_ENV_ALLOWLIST.has(key) || env[key]) continue;
+    env[key] = value;
+    loaded.push(key);
+  }
+  return loaded;
+}
+
+loadHermesEnvDefaults();
 
 // ── Backend availability ─────────────────────────────────────────────────────
 
@@ -555,4 +601,4 @@ export async function runTerminalJsonAgent({ prompt, schema, preferredBackend, m
   throw failure;
 }
 
-export { isBackendAvailable, expandPriority, completePriority, normalizeBackendName };
+export { isBackendAvailable, expandPriority, completePriority, normalizeBackendName, parseEnvFile, loadHermesEnvDefaults };
