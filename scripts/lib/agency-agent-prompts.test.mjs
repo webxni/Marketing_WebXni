@@ -43,3 +43,16 @@ test('operational reviews separate current state from incident history', () => {
     assert.equal(finding.properties.evidence_ids.minItems, 1);
   }
 });
+
+
+test('locksmith prompts forbid prohibited-service terms even as negative design instructions', () => {
+  const prompt = buildAgencyPrompt('socialWeeklyBatch', {
+    ...input,
+    client: { client_slug: '724-locksmith-ca', weekly_schedule_text: 'monday: video' },
+  });
+
+  assert.match(prompt, /Do not write those prohibited-service words/);
+  assert.match(prompt, /even as negative instructions/);
+  assert.match(prompt, /avoid specialized equipment/);
+  assert.match(prompt, /avoid hardware manipulation close-ups/);
+});

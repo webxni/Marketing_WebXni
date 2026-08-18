@@ -437,6 +437,7 @@ const LOCKSMITH_PORTFOLIO_POLICY = [
   '- Do not generate unless the context explicitly shows an approved profile, monthly strategy, 26-slot plan, slot, services, keywords, claims, locations, and verified destination.',
   '- Use only residential lockout/rekey/repair/hardware, commercial lockout/rekey/repair/hardware/property-management, and car lockout or vehicle-entry assistance.',
   '- Prohibit all key copying/duplication/cutting and all automotive key replacement/generation, remotes, fobs, programming, transponders, chip keys, ignitions, and motorcycle keys.',
+  '- Do not write those prohibited-service words in captions, blogs, scripts, review notes, or designer prompts even as negative instructions; say “avoid specialized equipment” or “avoid hardware manipulation close-ups” instead.',
   '- Response times, prices, affordability, review/rating counts, 24/7 availability, credentials, years in business, superlatives, guarantees, and coverage areas require an explicitly approved evidence record.',
   '- Use one approved primary keyword and no more than two approved supporting keywords. Never repeat city lists.',
   '- Treat all four Gabriel brands as siblings: reject title, hook, city/service/angle, carousel, offer, or caption reuse with a business-name substitution.',

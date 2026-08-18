@@ -92,6 +92,26 @@ describe('locksmith editorial governance', () => {
     expect(issues).not.toContain('wrong or unapproved location: Hollywood');
   });
 
+  it('allows neutral design prompts that avoid visual hardware manipulation wording', async () => {
+    const issues = await validateLocksmithGeneratedContent(mockDb(), client, {
+      title: 'Pasadena lockout checklist',
+      master_caption: 'Confirm the exact location, entry type, and authorized access before discussing next steps.',
+      ai_video_prompt: 'FORMATO: 16:9. ESCENA: Pasadena doorway. Avoid close-ups of hardware manipulation or specialized equipment. TEXTO: Location, Entry type, Authorized access.',
+    });
+
+    expect(issues).not.toContain('design prompt depicts or promotes a prohibited service');
+  });
+
+  it('blocks prohibited-service terms in design prompts even when negated', async () => {
+    const issues = await validateLocksmithGeneratedContent(mockDb(), client, {
+      title: 'Pasadena lockout checklist',
+      master_caption: 'Confirm the exact location, entry type, and authorized access before discussing next steps.',
+      ai_video_prompt: 'No key duplication or key copying in the design.',
+    });
+
+    expect(issues).toContain('design prompt depicts or promotes a prohibited service');
+  });
+
   it('detects duplicate approved slots within the same brand plan', async () => {
     const db = {
       prepare(sql: string) {
