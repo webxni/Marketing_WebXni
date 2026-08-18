@@ -358,7 +358,10 @@ function resolveHermesProviderOverride(env = process.env) {
     return env.HERMES_PROVIDER;
   }
   if (allowCodex) return '';
-  throw new Error('Hermes backend requires HERMES_PROVIDER when AGENCY_ALLOW_CODEX is not enabled');
+  if (env.GOOGLE_API_KEY || env.GEMINI_API_KEY || env.GEMINI_API_KEYS) return 'google';
+  if (env.ANTHROPIC_API_KEY) return 'anthropic';
+  if (env.OPENROUTER_API_KEY) return 'openrouter';
+  throw new Error('Hermes backend requires HERMES_PROVIDER or a non-Codex provider key when AGENCY_ALLOW_CODEX is not enabled');
 }
 
 function defaultHermesModelForProvider(provider, mode) {
@@ -612,7 +615,7 @@ function classifyBackendFailure(command, text) {
   if (command === 'codex' && lower.includes('reading additional input from stdin')) {
     return 'cause: codex CLI did not receive a valid non-interactive prompt/output argument';
   }
-  if (command.includes('hermes') && lower.includes('agent failed: code')) {
+  if (command.includes('hermes') && (lower.includes('agent failed: code') || lower.includes('no final response was produced'))) {
     return 'cause: hermes agent execution failed before returning JSON';
   }
   return 'cause: unknown terminal backend failure';

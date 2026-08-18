@@ -68,7 +68,7 @@ ok('codex is not routed unless explicitly re-enabled', () => {
   else process.env.AGENCY_ALLOW_CODEX = prior;
 });
 
-ok('hermes runner refuses implicit Codex-backed Hermes defaults', () => {
+ok('hermes runner refuses implicit Codex-backed Hermes defaults when no non-Codex provider key exists', () => {
   assert.throws(
     () => buildHermesChatArgs({
       wrappedPrompt: 'Return {"ok":true}',
@@ -78,6 +78,15 @@ ok('hermes runner refuses implicit Codex-backed Hermes defaults', () => {
     }),
     /requires HERMES_PROVIDER/,
   );
+});
+
+ok('hermes runner defaults to Google when central Gemini credentials are available', () => {
+  const args = buildHermesChatArgs({
+    wrappedPrompt: 'Return JSON',
+    mode: 'default',
+    env: { GOOGLE_API_KEY: 'configured' },
+  });
+  assert.deepEqual(args, ['-z', 'Return JSON', '--provider', 'google', '--model', 'gemini-2.5-flash']);
 });
 
 ok('hermes runner refuses explicit Codex provider unless agency Codex routing is allowed', () => {
@@ -138,10 +147,19 @@ ok('hermes runner can use the configured Hermes default only when Codex is allow
 ok('hermes availability matches the provider guard used by the runner', () => {
   const priorProvider = process.env.HERMES_PROVIDER;
   const priorAllowCodex = process.env.AGENCY_ALLOW_CODEX;
+  const priorGoogleApiKey = process.env.GOOGLE_API_KEY;
+  const priorGeminiApiKey = process.env.GEMINI_API_KEY;
+  const priorGeminiApiKeys = process.env.GEMINI_API_KEYS;
   const hasHermesCommand = spawnSync('hermes', ['--version'], { stdio: 'ignore' }).status === 0;
   delete process.env.HERMES_PROVIDER;
   delete process.env.AGENCY_ALLOW_CODEX;
+  delete process.env.GOOGLE_API_KEY;
+  delete process.env.GEMINI_API_KEY;
+  delete process.env.GEMINI_API_KEYS;
   assert.equal(isBackendAvailable('hermes'), false);
+  process.env.GOOGLE_API_KEY = 'configured';
+  assert.equal(isBackendAvailable('hermes'), hasHermesCommand);
+  delete process.env.GOOGLE_API_KEY;
   process.env.HERMES_PROVIDER = 'google';
   assert.equal(isBackendAvailable('hermes'), hasHermesCommand);
   delete process.env.HERMES_PROVIDER;
@@ -156,6 +174,12 @@ ok('hermes availability matches the provider guard used by the runner', () => {
   else process.env.HERMES_PROVIDER = priorProvider;
   if (priorAllowCodex === undefined) delete process.env.AGENCY_ALLOW_CODEX;
   else process.env.AGENCY_ALLOW_CODEX = priorAllowCodex;
+  if (priorGoogleApiKey === undefined) delete process.env.GOOGLE_API_KEY;
+  else process.env.GOOGLE_API_KEY = priorGoogleApiKey;
+  if (priorGeminiApiKey === undefined) delete process.env.GEMINI_API_KEY;
+  else process.env.GEMINI_API_KEY = priorGeminiApiKey;
+  if (priorGeminiApiKeys === undefined) delete process.env.GEMINI_API_KEYS;
+  else process.env.GEMINI_API_KEYS = priorGeminiApiKeys;
 });
 
 ok('terminal agent parses simple dotenv content for central Hermes defaults', () => {
@@ -213,6 +237,13 @@ ok('backend failure classifier preserves mixed Gemini key quota and auth failure
   assert.equal(
     classifyBackendFailure('gemini', 'key #1 Gemini API 429: RESOURCE_EXHAUSTED quota exceeded\nkey #2 Gemini API 400: API key not valid'),
     'cause: gemini had mixed authentication and quota/rate-limit failures',
+  );
+});
+
+ok('backend failure classifier preserves Hermes no-final failures as execution failures', () => {
+  assert.equal(
+    classifyBackendFailure('hermes', 'hermes -z: no final response was produced; treating the run as failed.'),
+    'cause: hermes agent execution failed before returning JSON',
   );
 });
 
