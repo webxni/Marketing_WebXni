@@ -128,21 +128,101 @@
   })();
 
   // ── Estimate helpers ──────────────────────────────────────────────────────────
-  function estimatePosts(client: Client): number {
-    const pkg = pkgMap[client.package ?? ''];
-    if (!pkg) return Math.max(1, Math.round(8 * rangeDays / 30));
-    return Math.max(1, Math.round(pkg.posts_per_month * rangeDays / 30));
+  type ContentBreakdown = { images: number; videos: number; reels: number; blogs: number; total: number };
+  type PreviewSlot = { date: string; type: 'image' | 'video' | 'reel' | 'blog'; dailyIndex: number };
+
+  const dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+
+  function normalizedType(raw: string): PreviewSlot['type'] | null {
+    const value = raw.trim().toLowerCase();
+    return value === 'image' || value === 'video' || value === 'reel' || value === 'blog' ? value : null;
   }
 
-  function contentBreakdown(client: Client): { images: number; videos: number; blogs: number } {
+  function packageSchedule(pkg: Package): Record<string, string[]> {
+    try {
+      const parsed = JSON.parse(pkg.weekly_schedule ?? '{}');
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as Record<string, string[]>
+        : {};
+    } catch { return {}; }
+  }
+
+  function monthBounds(month: string): { start: string; end: string } {
+    const [year, monthNumber] = month.split('-').map(Number);
+    const end = new Date(Date.UTC(year, monthNumber, 0, 12)).toISOString().slice(0, 10);
+    return { start: `${month}-01`, end };
+  }
+
+  function addMonth(month: string): string {
+    const [year, monthNumber] = month.split('-').map(Number);
+    return new Date(Date.UTC(year, monthNumber, 1, 12)).toISOString().slice(0, 7);
+  }
+
+  function scheduledCandidates(pkg: Package, start: string, end: string): PreviewSlot[] {
+    const schedule = packageSchedule(pkg);
+    if (Object.keys(schedule).length === 0) return [];
+    const slots: PreviewSlot[] = [];
+    const cursor = new Date(`${start}T12:00:00Z`);
+    const last = new Date(`${end}T12:00:00Z`);
+    while (cursor <= last) {
+      const date = cursor.toISOString().slice(0, 10);
+      const types = schedule[dayNames[cursor.getUTCDay()]] ?? [];
+      types.forEach((raw, dailyIndex) => {
+        const type = normalizedType(raw);
+        if (type) slots.push({ date, type, dailyIndex });
+      });
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+    return slots;
+  }
+
+  // Mirror the Worker package planner: enumerate the package's exact weekday
+  // schedule, then enforce each content type's monthly allowance.
+  function plannedSlots(pkg: Package, start: string, end: string): PreviewSlot[] {
+    const current = scheduledCandidates(pkg, start, end);
+    if (current.length === 0) return [];
+    const caps: Record<PreviewSlot['type'], number> = {
+      image: Math.max(0, pkg.images_per_month ?? 0),
+      video: Math.max(0, pkg.videos_per_month ?? 0),
+      reel: Math.max(0, pkg.reels_per_month ?? 0),
+      blog: Math.max(0, pkg.blog_posts_per_month ?? 0),
+    };
+    const allowed = new Set<string>();
+    for (let month = start.slice(0, 7); month <= end.slice(0, 7); month = addMonth(month)) {
+      const bounds = monthBounds(month);
+      const used: Record<PreviewSlot['type'], number> = { image: 0, video: 0, reel: 0, blog: 0 };
+      for (const slot of scheduledCandidates(pkg, bounds.start, bounds.end)) {
+        if (used[slot.type] >= caps[slot.type]) continue;
+        used[slot.type]++;
+        allowed.add(`${slot.date}:${slot.dailyIndex}:${slot.type}`);
+      }
+    }
+    return current.filter(slot => allowed.has(`${slot.date}:${slot.dailyIndex}:${slot.type}`));
+  }
+
+  function contentBreakdown(client: Client): ContentBreakdown {
     const pkg = pkgMap[client.package ?? ''];
-    const total = estimatePosts(client);
-    if (!pkg || pkg.posts_per_month === 0) return { images: total, videos: 0, blogs: 0 };
-    const ratio = total / pkg.posts_per_month;
-    const blogs  = Math.round((pkg.blog_posts_per_month ?? 0) * ratio);
-    const videos = Math.round(((pkg.videos_per_month ?? 0) + (pkg.reels_per_month ?? 0)) * ratio);
-    const images = Math.max(0, total - blogs - videos);
-    return { images, videos, blogs };
+    if (!pkg) {
+      const images = Math.max(1, Math.round(8 * rangeDays / 30));
+      return { images, videos: 0, reels: 0, blogs: 0, total: images };
+    }
+    const slots = plannedSlots(pkg, periodStart, periodEnd);
+    if (slots.length === 0) {
+      const total = Math.max(0, Math.round(pkg.posts_per_month * rangeDays / 30));
+      return { images: total, videos: 0, reels: 0, blogs: 0, total };
+    }
+    const result: ContentBreakdown = { images: 0, videos: 0, reels: 0, blogs: 0, total: slots.length };
+    for (const slot of slots) {
+      if (slot.type === 'image') result.images++;
+      else if (slot.type === 'video') result.videos++;
+      else if (slot.type === 'reel') result.reels++;
+      else result.blogs++;
+    }
+    return result;
+  }
+
+  function estimatePosts(client: Client): number {
+    return contentBreakdown(client).total;
   }
 
   function getWarnings(client: Client): string[] {
@@ -710,6 +790,9 @@
                   {/if}
                   {#if bkdn.videos > 0}
                     <span class="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-400">{bkdn.videos} vid</span>
+                  {/if}
+                  {#if bkdn.reels > 0}
+                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-pink-500/15 text-pink-400">{bkdn.reels} reel</span>
                   {/if}
                   {#if bkdn.blogs > 0}
                     <span class="text-[10px] px-1.5 py-0.5 rounded bg-green-500/15 text-green-400">{bkdn.blogs} blog</span>

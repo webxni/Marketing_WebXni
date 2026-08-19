@@ -16,11 +16,27 @@
   let selected = new Set<string>();
   let bulkProcessing = false;
 
-  $: eligiblePosts = posts.filter(p => p.approval_eligible === true);
+  function hasFuturePublishDate(post: Post): boolean {
+    if (!post.publish_date) return false;
+    const scheduled = new Date(post.publish_date).getTime();
+    return Number.isFinite(scheduled) && scheduled > Date.now();
+  }
+
+  function isApprovalEligible(post: Post): boolean {
+    return post.approval_eligible === true && hasFuturePublishDate(post);
+  }
+
+  function approvalBlockerMessage(post: Post): string {
+    if (!hasFuturePublishDate(post)) return 'Publish date has passed; reschedule before approval';
+    return post.approval_blockers?.[0]?.message ?? 'Approval blocked';
+  }
+
+  $: eligiblePosts = posts.filter(isApprovalEligible);
   $: allSelected = eligiblePosts.length > 0 && selected.size === eligiblePosts.length;
 
   function toggleSelect(id: string) {
-    if (posts.find(p => p.id === id)?.approval_eligible !== true) return;
+    const post = posts.find(p => p.id === id);
+    if (!post || !isApprovalEligible(post)) return;
     if (selected.has(id)) selected.delete(id);
     else selected.add(id);
     selected = selected;
@@ -200,7 +216,7 @@
   <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
     {#each posts as post}
       {@const flags = readinessFlags(post)}
-      {@const allReady = post.approval_eligible === true}
+      {@const allReady = isApprovalEligible(post)}
       {@const platformList = parsePlatforms(post.platforms)}
 
       <div class="card overflow-hidden flex flex-col transition-shadow hover:shadow-lg
@@ -371,7 +387,7 @@
               <button
                 class="btn-primary btn-sm text-xs flex-1"
                 disabled={actionLoading === post.id || !allReady}
-                title={allReady ? 'Approve post' : post.approval_blockers?.[0]?.message ?? 'Approval blocked'}
+                title={allReady ? 'Approve post' : approvalBlockerMessage(post)}
                 on:click={() => approve(post)}
               >
                 {actionLoading === post.id ? '…' : 'Approve'}

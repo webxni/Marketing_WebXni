@@ -154,5 +154,5 @@
   </div>
 
   <!-- Month total -->
-  <div class="mt-4 text-xs text-muted text-right">{posts.length} posts scheduled this month</div>
+  <div class="mt-4 text-xs text-muted text-right">{posts.length} dated posts on this calendar</div>
 {/if}

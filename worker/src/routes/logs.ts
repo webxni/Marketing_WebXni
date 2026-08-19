@@ -100,9 +100,10 @@ logRoutes.get('/', requirePermission('logs.view'), async (c) => {
   // historical retention total. The first unfiltered page includes a read-only
   // archive proof so the UI can distinguish "recent page" from "all history".
   const recentWindowTotal = offset + rows.results.length + (rows.results.length >= limitNum ? 1 : 0);
-  const archiveProof = pageNum === 1 && !action && !userFilter
-    ? await c.env.DB.prepare('SELECT COUNT(*) AS n, MIN(created_at) AS min_ts, MAX(created_at) AS max_ts FROM audit_logs').first<{ n: number; min_ts: number; max_ts: number }>().catch(() => null)
-    : null;
+  // Do not aggregate the full multi-million-row table in the interactive
+  // request. That scan blocked the page after the live audit table grew.
+  // Retention is reported by the separate audit-retention proof event.
+  const archiveProof = null;
 
   const deployment = {
     app_version: c.env.APP_VERSION ?? 'unknown',
@@ -129,13 +130,7 @@ logRoutes.get('/', requirePermission('logs.view'), async (c) => {
     logs,
     total: recentWindowTotal + (pageNum === 1 && !action && !userFilter ? 1 : 0),
     total_mode: 'recent_window_estimate',
-    archive_proof: archiveProof ? {
-      table: 'audit_logs',
-      retained_total: archiveProof.n,
-      min_created_at: archiveProof.min_ts,
-      max_created_at: archiveProof.max_ts,
-      retention_path: 'live_d1_audit_logs_table_not_pruned',
-    } : null,
+    archive_proof: archiveProof,
     deployment,
   });
 
