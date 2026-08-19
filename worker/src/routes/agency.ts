@@ -72,6 +72,20 @@ import { agencySafety, backendPriorityForAgent, commandForAgent } from '../modul
 export const agencyRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 export const agencyInternalRoutes = new Hono<{ Bindings: Env; Variables: Record<string, unknown> }>();
 
+// Internal automation callers need a stable, secret-safe failure contract.
+// Without this handler Hono collapses unexpected D1/runtime failures to a plain
+// 500, which leaves the harness unable to classify, quarantine, or repair the
+// underlying defect without blind retries.
+agencyInternalRoutes.onError((error, c) => {
+  const detail = redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 600);
+  console.error('[agency-internal] request failed:', detail);
+  return c.json({
+    error: 'Internal agency request failed',
+    code: 'AGENCY_INTERNAL_ERROR',
+    detail,
+  }, 500);
+});
+
 agencyRoutes.use('*', requirePermission('automation.generate'));
 
 const TIMELINE = [
