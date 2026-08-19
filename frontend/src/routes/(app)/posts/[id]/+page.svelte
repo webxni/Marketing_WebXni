@@ -33,6 +33,21 @@
 
   function setTab(key: string) { activeTab = key as typeof activeTab; }
 
+  function hasFuturePublishDate(item: Post): boolean {
+    if (!item.publish_date) return false;
+    const scheduled = new Date(item.publish_date).getTime();
+    return Number.isFinite(scheduled) && scheduled > Date.now();
+  }
+
+  function isApprovalEligible(item: Post): boolean {
+    return item.approval_eligible === true && hasFuturePublishDate(item);
+  }
+
+  function approvalBlockerMessage(item: Post): string {
+    if (!hasFuturePublishDate(item)) return 'Publish date has passed; reschedule before approval';
+    return item.approval_blockers?.[0]?.message ?? 'Approval blocked';
+  }
+
   async function load() {
     loading = true;
     try {
@@ -717,7 +732,12 @@
         <button class="btn-primary btn-sm" on:click={submitForReview}>Submit for Review</button>
       {/if}
       {#if post.status === 'pending_approval' && can('posts.approve')}
-        <button class="btn-primary btn-sm" on:click={() => (showApproveConfirm = true)}>Approve</button>
+        <button
+          class="btn-primary btn-sm"
+          on:click={() => (showApproveConfirm = true)}
+          disabled={!isApprovalEligible(post)}
+          title={!isApprovalEligible(post) ? approvalBlockerMessage(post) : 'Approve this post'}
+        >{isApprovalEligible(post) ? 'Approve' : 'Approval blocked'}</button>
         <button class="btn-danger btn-sm" on:click={() => (showRejectConfirm = true)}>Reject</button>
       {/if}
       {#if hasFailedPlatforms(platforms) && can('automation.trigger')}
@@ -725,6 +745,21 @@
       {/if}
     </div>
   </div>
+
+  {#if post.status === 'pending_approval' && !isApprovalEligible(post)}
+    <div class="mb-5 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100" role="alert">
+      <p class="font-semibold mb-1">Approval blocked</p>
+      {#if post.approval_blockers?.length}
+        <ul class="space-y-1">
+          {#each post.approval_blockers.slice(0, 5) as blocker}
+            <li><span class="font-mono text-xs">{blocker.code}</span>: {blocker.message}</li>
+          {/each}
+        </ul>
+      {:else}
+        <p>{approvalBlockerMessage(post)}</p>
+      {/if}
+    </div>
+  {/if}
 
   <!-- Tabs -->
   <div class="flex items-center gap-1 mb-6 bg-surface border border-border rounded-xl p-1 w-fit">
