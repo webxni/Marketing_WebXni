@@ -53,8 +53,8 @@ run_worker_first = true
 not_found_handling = "single-page-application"
 
 [vars]
-APP_VERSION = "webxni-audit-20260819-5"
-SOURCE_COMMIT = "5b20695"
+APP_VERSION = "webxni-audit-20260819-6"
+SOURCE_COMMIT = "ce6e7ea"
 # Agency scheduler — set to "true" to let crons auto-enqueue agents
 AGENCY_SCHEDULER_ENABLED = "true"
 
