@@ -1044,12 +1044,12 @@ agencyInternalRoutes.post('/keywords/approve', async (c) => {
   const found = new Map(rows.results.map((row) => [row.keyword, row]));
   const missing = keywords.filter((keyword) => !found.has(keyword));
   if (missing.length > 0) return c.json({ error: 'Keywords must be created and classified before approval', missing }, 409);
-  const inactive = rows.results.filter((row) => row.status !== 'active').map((row) => row.keyword);
-  if (inactive.length > 0) return c.json({ error: 'Only active classified keywords can be approved', inactive }, 409);
+  const inactive = rows.results.filter((row) => !['active', 'proposed'].includes(row.status)).map((row) => row.keyword);
+  if (inactive.length > 0) return c.json({ error: 'Archived or rejected keywords cannot be reactivated through this endpoint', inactive }, 409);
   await c.env.DB.prepare(`UPDATE client_keywords
-                          SET approval_status = 'approved', approved_by = ?, approved_at = unixepoch(),
+                          SET status = 'active', approval_status = 'approved', approved_by = ?, approved_at = unixepoch(),
                               editorial_notes = ?, updated_at = unixepoch()
-                          WHERE client_id = ? AND keyword IN (${placeholders}) AND status = 'active'`)
+                          WHERE client_id = ? AND keyword IN (${placeholders}) AND status IN ('active', 'proposed')`)
     .bind(parsed.data.approved_by, parsed.data.reason, client.id, ...keywords).run();
   await appendAgencyLog(c.env.DB, {
     agent_slug: 'supervisor-content-qa', status: 'saved', step: 'keyword-approval',
