@@ -438,21 +438,16 @@ export async function listReadyPosts(
   limit = 50,
   postIds?: string[],
 ): Promise<PostRow[]> {
-  // Only pick up posts whose scheduled time has arrived (or have no time set).
+  // Only pick up posts whose scheduled time has arrived. A NULL schedule is
+  // incomplete state and must never silently become publication-eligible.
   // publish_date is stored as-entered in Nicaragua time (CST = UTC-6, no DST).
   // We compare against NIC "now" = datetime('now', '-6 hours').
   //
-  // Accept both 'ready' and 'approved' — after the approval=ready change,
-  // 'approved' is semantically equivalent to 'ready'. Posts approved under
-  // the old two-step flow land here via the 'approved' branch.
   const nowExpr = `strftime('%Y-%m-%dT%H:%M','now','-6 hours')`;
   const statusClause = `(
-    (content_type = 'blog' AND ready_for_automation = 1 AND asset_delivered = 1 AND status IN ('ready','approved','scheduled'))
+    (content_type = 'blog' AND ready_for_automation = 1 AND asset_delivered = 1 AND status IN ('ready','scheduled'))
     OR
-    (content_type != 'blog' AND (
-      (status = 'ready' AND ready_for_automation = 1 AND asset_delivered = 1)
-      OR status = 'approved'
-    ))
+    (content_type != 'blog' AND status IN ('ready','scheduled') AND ready_for_automation = 1 AND asset_delivered = 1)
   )`;
   if (postIds && postIds.length > 0) {
     const placeholders = postIds.map(() => '?').join(',');
@@ -478,7 +473,8 @@ export async function listReadyPosts(
         `SELECT * FROM posts
          WHERE ${statusClause}
            AND client_id = ?
-           AND (publish_date IS NULL OR publish_date <= ${nowExpr})
+           AND publish_date IS NOT NULL
+           AND publish_date <= ${nowExpr}
          ORDER BY publish_date ASC
          LIMIT ?`,
       )
@@ -490,7 +486,8 @@ export async function listReadyPosts(
     .prepare(
       `SELECT * FROM posts
        WHERE ${statusClause}
-         AND (publish_date IS NULL OR publish_date <= ${nowExpr})
+         AND publish_date IS NOT NULL
+         AND publish_date <= ${nowExpr}
        ORDER BY publish_date ASC
        LIMIT ?`,
     )
@@ -3708,6 +3705,42 @@ function topicSimilarity(left: string | null | undefined, right: string | null |
   return overlap / Math.max(aSet.size, bSet.size, 1);
 }
 
+const SEMANTIC_TOKEN_ALIASES: Record<string, string> = {
+  address: 'location', locations: 'location',
+  details: 'detail', information: 'detail',
+  authorized: 'authorization', authorize: 'authorization', authorisation: 'authorization',
+  verify: 'authorization', verified: 'authorization', verification: 'authorization',
+  situation: 'request', requests: 'request',
+  steps: 'step',
+  clarity: 'clear', clearly: 'clear',
+  responsibly: 'responsible',
+  discussing: 'discuss', discussed: 'discuss', discussion: 'discuss',
+  planning: 'plan', planned: 'plan',
+};
+const SEMANTIC_FILLER_TOKENS = new Set([
+  'any', 'are', 'be', 'before', 'can', 'conversation', 'exact', 'first', 'helps',
+  'keep', 'keeps', 'next', 'practical', 'simple', 'useful', 'whether',
+]);
+
+function semanticCaptionTokens(value: string | null | undefined, ignoredValues: Array<string | null | undefined>): Set<string> {
+  const ignored = new Set(ignoredValues.flatMap((item) => normalizeTopicFingerprint(item).split(' ')).filter(Boolean));
+  const tokens = normalizeTopicFingerprint(value).split(' ').filter(Boolean).map((token) => SEMANTIC_TOKEN_ALIASES[token] ?? token);
+  return new Set(tokens.filter((token) => !ignored.has(token) && !SEMANTIC_FILLER_TOKENS.has(token)));
+}
+
+function semanticCaptionSimilarity(
+  left: string | null | undefined,
+  right: string | null | undefined,
+  ignoredValues: Array<string | null | undefined>,
+): { score: number; overlap: number } {
+  const a = semanticCaptionTokens(left, ignoredValues);
+  const b = semanticCaptionTokens(right, ignoredValues);
+  if (a.size === 0 || b.size === 0) return { score: 0, overlap: 0 };
+  let overlap = 0;
+  for (const token of a) if (b.has(token)) overlap++;
+  return { score: overlap / Math.max(a.size, b.size, 1), overlap };
+}
+
 export interface TopicConflictMatch {
   post: PostRow;
   reason: string;
@@ -3973,6 +4006,7 @@ export async function findRecentTopicConflict(
     candidateTitle?: string | null;
     candidateKeyword?: string | null;
     candidateCaption?: string | null;
+    candidateLocality?: string | null;
     candidateServiceCategory?: string | null;
     contentType?: string | null;
     topicFingerprint?: string | null;
@@ -3981,13 +4015,15 @@ export async function findRecentTopicConflict(
   },
 ): Promise<TopicConflictMatch | null> {
   const baseDate = (params.publishDate ?? '').slice(0, 10) || new Date().toISOString().slice(0, 10);
-  const targetClient = await db.prepare('SELECT owner_group FROM clients WHERE id = ?')
+  const targetClient = await db.prepare('SELECT owner_group, canonical_name, slug FROM clients WHERE id = ?')
     .bind(params.clientId)
-    .first<{ owner_group: string | null }>();
+    .first<{ owner_group: string | null; canonical_name: string | null; slug: string | null }>();
   const portfolioScope = targetClient?.owner_group === 'gabriel-locksmiths';
   const rows = await db
     .prepare(
       `SELECT posts.*,
+              source_client.canonical_name AS conflict_client_name,
+              source_client.slug AS conflict_client_slug,
               CASE WHEN posts.client_id = ? THEN 1 ELSE 0 END AS conflict_same_brand
        FROM posts
        JOIN clients source_client ON source_client.id = posts.client_id
@@ -3998,7 +4034,7 @@ export async function findRecentTopicConflict(
        LIMIT 500`,
     )
     .bind(params.clientId, params.clientId, portfolioScope ? 1 : 0, baseDate, portfolioScope ? '-180 day' : '-90 day')
-    .all<PostRow & { conflict_same_brand: number }>();
+    .all<PostRow & { conflict_same_brand: number; conflict_client_name: string | null; conflict_client_slug: string | null }>();
 
   const candidateTitle = params.candidateTitle ?? '';
   const candidateKeyword = params.candidateKeyword ?? '';
@@ -4086,6 +4122,20 @@ export async function findRecentTopicConflict(
 
     if (candidateCaption && row.master_caption && topicSimilarity(candidateCaption, row.master_caption) >= 0.82 && ageDays <= angleCooldownDays) {
       return { post: row, reason: 'caption pattern matched recent post' };
+    }
+
+    if (portfolioScope && candidateCaption && row.master_caption && ageDays <= 90) {
+      const semantic = semanticCaptionSimilarity(candidateCaption, row.master_caption, [
+        targetClient?.canonical_name,
+        targetClient?.slug,
+        params.candidateLocality,
+        row.conflict_client_name,
+        row.conflict_client_slug,
+        row.target_locality,
+      ]);
+      if (semantic.overlap >= 6 && semantic.score >= 0.62) {
+        return { post: row, reason: 'semantic caption signature matched within the 90-day portfolio cooldown' };
+      }
     }
 
     if (

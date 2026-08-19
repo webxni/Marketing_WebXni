@@ -15,7 +15,7 @@ function client(platform: Partial<ClientPlatformRow> = {}): ClientRow & { platfo
 function post(overrides: Partial<PostRow> = {}): PostRow {
   return {
     id: 'post-1', client_id: 'client-1', title: 'Post', status: 'ready', content_type: 'text', platforms: JSON.stringify(['facebook']),
-    publish_date: '2026-08-18T19:00:00Z', master_caption: 'Caption', ready_for_automation: 1, asset_delivered: 1,
+    publish_date: '2026-08-18T19:00:00Z', master_caption: 'Caption', cap_facebook: 'Facebook caption', ready_for_automation: 1, asset_delivered: 1,
     asset_r2_key: null, asset_type: null, gbp_topic_type: null, gbp_cta_type: null, gbp_cta_url: null,
     gbp_event_title: null, gbp_event_start_date: null, gbp_event_end_date: null, gbp_coupon_code: null, gbp_redeem_url: null,
     ...overrides,
@@ -29,8 +29,13 @@ describe('validateAutomationReadiness', () => {
   });
 
   it('blocks approval/readiness for overdue posts', () => {
-    expect(validateAutomationReadiness(post({ publish_date: '2026-08-01T10:00:00Z' }), client(), { mode: 'ready', now })?.code)
+    expect(validateAutomationReadiness(post({ publish_date: '2026-08-18T19:59:59Z' }), client(), { mode: 'ready', now })?.code)
       .toBe('PUBLISH_DATE_OVERDUE');
+  });
+
+  it('allows approval/readiness only for a future schedule', () => {
+    expect(validateAutomationReadiness(post({ publish_date: '2026-08-18T20:00:01Z' }), client(), { mode: 'ready', now }))
+      .toBeNull();
   });
 
   it('blocks disconnected destinations', () => {
@@ -45,9 +50,9 @@ describe('validateAutomationReadiness', () => {
 
   it('applies GBP CTA/topic checks to regional GBP variants', () => {
     const c = client({ platform: 'google_business', upload_post_location_id: 'loc' });
-    expect(validateAutomationReadiness(post({ platforms: JSON.stringify(['gbp_la']), gbp_cta_type: 'LEARN_MORE', gbp_cta_url: null }), c, { mode: 'publish', now })?.code)
+    expect(validateAutomationReadiness(post({ platforms: JSON.stringify(['gbp_la']), cap_gbp_la: 'Local GBP copy', gbp_cta_type: 'LEARN_MORE', gbp_cta_url: null }), c, { mode: 'publish', now })?.code)
       .toBe('GBP_CTA_URL_REQUIRED');
-    expect(validateAutomationReadiness(post({ platforms: JSON.stringify(['gbp_la']), gbp_topic_type: 'EVENT' }), c, { mode: 'publish', now })?.code)
+    expect(validateAutomationReadiness(post({ platforms: JSON.stringify(['gbp_la']), cap_gbp_la: 'Local GBP copy', gbp_topic_type: 'EVENT' }), c, { mode: 'publish', now })?.code)
       .toBe('GBP_EVENT_FIELDS_REQUIRED');
   });
 

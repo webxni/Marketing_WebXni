@@ -26,8 +26,8 @@ import { runFetchUrls } from './run';
 import { normalizeBlogDraftPayload } from '../modules/blog-publishing';
 import { requirePermission } from '../middleware/auth';
 import { buildGenerationSystemMessage, findRestrictedContentPhrase } from '../services/openai';
-import { isGovernedLocksmith, validateLocksmithGeneratedContent } from '../modules/editorial-governance';
 import { validateAutomationReadiness } from '../modules/readiness-gate';
+import { approveCleanEditorialReview, validatePostApprovalReadiness } from '../modules/approval-readiness';
 
 export const postRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
@@ -138,16 +138,27 @@ postRoutes.get('/', async (c) => {
     for (const row of cl.results) clientMap.set(row.id, row);
   }
 
-  const enriched = posts.map(p => ({
-    ...p,
-    client_slug: clientMap.get(p.client_id)?.slug,
-    client_name: clientMap.get(p.client_id)?.canonical_name,
-    // Normalize date-only publish_date strings (YYYY-MM-DD) to include noon time.
-    // Bare date strings are parsed as UTC midnight by JS, causing off-by-one in
-    // negative-UTC timezones. T12:00 (local noon) is unambiguous in all UTC offsets.
-    publish_date: p.publish_date && /^\d{4}-\d{2}-\d{2}$/.test(p.publish_date)
-      ? p.publish_date + 'T12:00'
-      : p.publish_date,
+  const enriched = await Promise.all(posts.map(async (p) => {
+    let approvalBlockers: Array<{ code: string; message: string }> | undefined;
+    if (status === 'pending_approval') {
+      const config = await getClientWithConfig(c.env.DB, p.client_id);
+      approvalBlockers = config
+        ? (await validatePostApprovalReadiness(c.env.DB, p, config)).blockers
+        : [{ code: 'CLIENT_NOT_FOUND', message: 'Client configuration is missing' }];
+    }
+    return {
+      ...p,
+      client_slug: clientMap.get(p.client_id)?.slug,
+      client_name: clientMap.get(p.client_id)?.canonical_name,
+      approval_eligible: approvalBlockers ? approvalBlockers.length === 0 : undefined,
+      approval_blockers: approvalBlockers,
+      // Normalize date-only publish_date strings (YYYY-MM-DD) to include noon time.
+      // Bare date strings are parsed as UTC midnight by JS, causing off-by-one in
+      // negative-UTC timezones. T12:00 (local noon) is unambiguous in all UTC offsets.
+      publish_date: p.publish_date && /^\d{4}-\d{2}-\d{2}$/.test(p.publish_date)
+        ? p.publish_date + 'T12:00'
+        : p.publish_date,
+    };
   }));
 
   return c.json({ posts: enriched, total });
@@ -405,41 +416,34 @@ postRoutes.put('/:id', async (c) => {
 postRoutes.post('/:id/approve', requirePermission('posts.approve'), async (c) => {
   const post = await getPostById(c.env.DB, c.req.param('id') ?? '');
   if (!post) return c.json({ error: 'Not found' }, 404);
-  if (post.scheduled_by_automation === 1) {
-    const client = await getClientWithConfig(c.env.DB, post.client_id);
-    if (!client) return c.json({ error: 'Client not found' }, 404);
-    if (isGovernedLocksmith(client)) {
-      const governanceIssues = await validateLocksmithGeneratedContent(c.env.DB, client, post);
-      if (governanceIssues.length > 0) {
-        return c.json({ error: `Editorial policy blocked approval: ${governanceIssues.join('; ')}` }, 409);
-      }
-    }
-  }
   const client = await getClientWithConfig(c.env.DB, post.client_id);
   if (!client) return c.json({ error: 'Client not found' }, 404);
-  const mediaRequired = post.content_type !== 'blog' && post.content_type !== 'text';
-  const readinessIssue = validateAutomationReadiness(post, client, { mode: 'ready' });
-  if (readinessIssue?.code === 'PUBLISH_DATE_OVERDUE' || readinessIssue?.code === 'PUBLISH_DATE_REQUIRED') {
-    return c.json({ error: readinessIssue.message, code: readinessIssue.code }, 409);
+  const approval = await validatePostApprovalReadiness(c.env.DB, post, client);
+  if (approval.blockers.length > 0) {
+    return c.json({
+      error: approval.blockers[0]?.message ?? 'Post is not ready for approval',
+      code: approval.blockers[0]?.code ?? 'APPROVAL_BLOCKED',
+      blockers: approval.blockers,
+    }, 409);
   }
-  const canMoveToReady = !readinessIssue && (!mediaRequired || post.asset_delivered === 1);
-  const nextStatus = canMoveToReady ? 'ready' : 'approved';
+  const nextStatus = 'ready';
   const now = Math.floor(Date.now() / 1000);
   const guard = approveCompareAndSwapPredicate(post);
   const result = await c.env.DB
     .prepare(`UPDATE posts SET status = ?, ready_for_automation = ?, asset_delivered = ?, updated_at = ? WHERE ${guard.where}`)
-    .bind(nextStatus, canMoveToReady ? 1 : 0, mediaRequired ? (post.asset_delivered === 1 ? 1 : 0) : 1, now, ...guard.binds)
+    .bind(nextStatus, 1, post.content_type === 'blog' || post.content_type === 'text' ? 1 : post.asset_delivered, now, ...guard.binds)
     .run();
   if ((result.meta?.changes ?? 0) !== 1) {
     return c.json({ error: 'Post approval state changed; reload and approve again', code: 'APPROVE_CONFLICT' }, 409);
   }
+  await approveCleanEditorialReview(c.env.DB, approval.cleanReviewId, c.get('user').userId);
   await writeAuditLog(c.env.DB, {
     user_id: c.get('user').userId,
     action: 'post.approve',
     entity_type: 'post',
     entity_id: post.id,
     old_value: { status: post.status },
-    new_value: { status: nextStatus, title: post.title, designer_gate_preserved: mediaRequired && post.asset_delivered !== 1 },
+    new_value: { status: nextStatus, title: post.title, editorial_review_id: approval.cleanReviewId },
     ip: c.req.header('CF-Connecting-IP') ?? c.req.header('X-Forwarded-For') ?? undefined,
   });
   return c.json({ ok: true, status: nextStatus });

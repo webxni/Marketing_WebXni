@@ -49,6 +49,8 @@ import {
   listClientsByOwnerGroup,
   getClientById,
   resolveContentReviewFinding,
+  buildTopicFingerprint,
+  findRecentTopicConflict,
 } from '../db/queries';
 import { buildPostContentHash, normalizeContentReviewFindings } from '../modules/content-review';
 import { redactSecrets } from '../modules/redaction';
@@ -998,10 +1000,44 @@ agencyInternalRoutes.post('/draft-post', async (c) => {
     asset_delivered: 0,
     scheduled_by_automation: 1,
     automation_slot_key: parsed.data.automation_slot_key ?? null,
+    generation_run_id: parsed.data.task_id ?? null,
+    created_by: parsed.data.agent_slug,
+    topic_fingerprint: buildTopicFingerprint({
+      title: parsed.data.title,
+      contentType: parsed.data.content_type,
+      targetKeyword: parsed.data.target_keyword ?? null,
+    }),
   };
   const governanceIssues = await validateLocksmithGeneratedContent(c.env.DB, client, postData);
   if (governanceIssues.length > 0) {
     return c.json({ error: `Editorial gate failed: ${governanceIssues.join('; ')}` }, 409);
+  }
+  const duplicateConflict = await findRecentTopicConflict(c.env.DB, {
+    clientId: client.id,
+    candidateTitle: postData.title,
+    candidateKeyword: postData.target_keyword,
+    candidateCaption: postData.master_caption,
+    candidateLocality: postData.target_locality,
+    contentType: postData.content_type,
+    topicFingerprint: postData.topic_fingerprint,
+    publishDate: postData.publish_date,
+    excludePostId: existing?.id ?? null,
+  });
+  if (duplicateConflict) {
+    await appendAgencyLog(c.env.DB, {
+      agent_slug: parsed.data.agent_slug,
+      task_id: parsed.data.task_id ?? null,
+      status: 'skipped',
+      step: 'draft-post',
+      summary: `Draft blocked as duplicate of ${duplicateConflict.post.id}: ${duplicateConflict.reason}`,
+    });
+    return c.json({
+      error: `Duplicate content blocked: ${duplicateConflict.reason}`,
+      code: 'DUPLICATE_CONTENT',
+      nearest_post_id: duplicateConflict.post.id,
+      nearest_client_id: duplicateConflict.post.client_id,
+      reason: duplicateConflict.reason,
+    }, 409);
   }
 
   if (existing && parsed.data.merge_existing) {
@@ -1014,6 +1050,9 @@ agencyInternalRoutes.post('/draft-post', async (c) => {
       target_keyword: existing.target_keyword ?? parsed.data.target_keyword ?? null,
       target_locality: existing.target_locality ?? parsed.data.target_locality ?? null,
       automation_slot_key: existing.automation_slot_key ?? parsed.data.automation_slot_key ?? null,
+      generation_run_id: existing.generation_run_id ?? parsed.data.task_id ?? null,
+      created_by: existing.created_by ?? parsed.data.agent_slug,
+      topic_fingerprint: existing.topic_fingerprint ?? postData.topic_fingerprint,
     };
     if (existing.status === 'approved' || existing.status === 'ready' || existing.status === 'scheduled') {
       mergeUpdates.status = 'pending_approval';

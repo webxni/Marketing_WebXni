@@ -75,6 +75,26 @@ function gbpIssue(post: PostRow, platforms: string[]): ReadinessIssue | null {
   return null;
 }
 
+function platformCaption(post: PostRow, platform: string): string | null | undefined {
+  switch (platform) {
+    case 'facebook': return post.cap_facebook;
+    case 'instagram': return post.cap_instagram;
+    case 'linkedin': return post.cap_linkedin;
+    case 'x': return post.cap_x;
+    case 'threads': return post.cap_threads;
+    case 'tiktok': return post.cap_tiktok;
+    case 'pinterest': return post.cap_pinterest;
+    case 'bluesky': return post.cap_bluesky;
+    case 'youtube': return post.youtube_title;
+    case 'google_business': return post.cap_google_business;
+    case 'gbp_la': return post.cap_gbp_la ?? post.cap_google_business;
+    case 'gbp_wa': return post.cap_gbp_wa ?? post.cap_google_business;
+    case 'gbp_or': return post.cap_gbp_or ?? post.cap_google_business;
+    case 'website_blog': return post.blog_content;
+    default: return post.master_caption;
+  }
+}
+
 export function validateAutomationReadiness(
   post: PostRow,
   client: ReadinessClient,
@@ -86,11 +106,20 @@ export function validateAutomationReadiness(
   const scheduled = parsePublishDate(post.publish_date);
   if (scheduled === null) return { code: 'PUBLISH_DATE_REQUIRED', message: 'publish_date is required before automation' };
   const now = options.now?.getTime() ?? Date.now();
-  const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
-  if (scheduled < sevenDaysAgo) return { code: 'PUBLISH_DATE_OVERDUE', message: `publish_date is more than 7 days in the past (${post.publish_date})` };
+  if (options.mode === 'ready' && scheduled <= now) {
+    return { code: 'PUBLISH_DATE_OVERDUE', message: `publish_date has passed (${post.publish_date}); reschedule before approval` };
+  }
   if (options.mode === 'publish' && scheduled > now) return { code: 'PUBLISH_DATE_IN_FUTURE', message: `publish_date is in the future (${post.publish_date})` };
 
   const contentType = normalizeContentType(post.content_type, post.asset_type);
+  if (contentType !== 'blog' && !post.master_caption?.trim()) {
+    return { code: 'MASTER_CAPTION_REQUIRED', message: 'master_caption is required' };
+  }
+  for (const platform of platforms) {
+    if (!platformCaption(post, platform)?.trim()) {
+      return { code: 'PLATFORM_COPY_REQUIRED', message: `Platform-specific copy is required for '${platform}'` };
+    }
+  }
   const mediaRequired = contentType !== 'blog' && contentType !== 'text';
   if (mediaRequired && post.asset_delivered !== 1) return { code: 'ASSET_REQUIRED', message: 'Media post requires delivered designer asset' };
   if ((contentType === 'reel' || contentType === 'video') && !post.asset_r2_key) {

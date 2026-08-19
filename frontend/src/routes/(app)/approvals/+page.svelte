@@ -16,9 +16,11 @@
   let selected = new Set<string>();
   let bulkProcessing = false;
 
-  $: allSelected = posts.length > 0 && selected.size === posts.length;
+  $: eligiblePosts = posts.filter(p => p.approval_eligible === true);
+  $: allSelected = eligiblePosts.length > 0 && selected.size === eligiblePosts.length;
 
   function toggleSelect(id: string) {
+    if (posts.find(p => p.id === id)?.approval_eligible !== true) return;
     if (selected.has(id)) selected.delete(id);
     else selected.add(id);
     selected = selected;
@@ -26,7 +28,7 @@
 
   function toggleAll() {
     if (allSelected) selected = new Set();
-    else selected = new Set(posts.map(p => p.id));
+    else selected = new Set(eligiblePosts.map(p => p.id));
   }
 
   async function bulkApprove() {
@@ -94,10 +96,10 @@
     const flags = [];
     const platforms = parsePlatforms(post.platforms);
     const scheduled = post.publish_date ? new Date(post.publish_date).getTime() : NaN;
-    const tooOld = Number.isFinite(scheduled) && scheduled < Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const overdue = Number.isFinite(scheduled) && scheduled <= Date.now();
     flags.push({ label: 'Caption', ok: !!(post.master_caption?.trim()) });
     flags.push({ label: 'Asset', ok: post.asset_delivered === 1 || post.content_type === 'text' || post.content_type === 'blog' });
-    flags.push({ label: 'Date', ok: Number.isFinite(scheduled) && !tooOld });
+    flags.push({ label: 'Date', ok: Number.isFinite(scheduled) && !overdue });
     if (post.content_type === 'reel' || post.content_type === 'video' || post.asset_type === 'video') {
       flags.push({ label: 'Media URL', ok: !!post.asset_r2_key });
     }
@@ -136,6 +138,7 @@
       dateSaved[post.id] = true;
       dateSaved = dateSaved;
       setTimeout(() => { delete dateSaved[post.id]; dateSaved = dateSaved; }, 1500);
+      await load();
     } catch {
       toast.error('Failed to save date');
     } finally {
@@ -188,7 +191,7 @@
   <div class="flex items-center gap-3 mb-4 text-xs text-muted">
     <label class="flex items-center gap-2 cursor-pointer select-none">
       <input type="checkbox" checked={allSelected} on:change={toggleAll} class="rounded" />
-      Select all {posts.length}
+      Select all {eligiblePosts.length} eligible
     </label>
   </div>
   {/if}
@@ -197,7 +200,7 @@
   <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
     {#each posts as post}
       {@const flags = readinessFlags(post)}
-      {@const allReady = flags.every(f => f.ok)}
+      {@const allReady = post.approval_eligible === true}
       {@const platformList = parsePlatforms(post.platforms)}
 
       <div class="card overflow-hidden flex flex-col transition-shadow hover:shadow-lg
@@ -210,6 +213,7 @@
             <input
               type="checkbox"
               checked={selected.has(post.id)}
+              disabled={!allReady}
               on:change={() => toggleSelect(post.id)}
               class="rounded"
             />
@@ -347,6 +351,18 @@
             {/each}
           </div>
 
+          {#if post.approval_blockers?.length}
+            <div class="rounded border border-red-500/30 bg-red-500/5 px-2 py-1.5 text-[10px] text-red-300">
+              <div class="font-semibold mb-0.5">Approval blocked</div>
+              {#each post.approval_blockers.slice(0, 3) as blocker}
+                <div title={blocker.code}>{blocker.message}</div>
+              {/each}
+              {#if post.approval_blockers.length > 3}
+                <div>+{post.approval_blockers.length - 3} more blocker(s)</div>
+              {/if}
+            </div>
+          {/if}
+
           <!-- Actions -->
           <div class="flex gap-1.5 pt-2 border-t border-border">
             <a href="/posts/{post.id}"       class="btn-ghost btn-sm text-xs text-center px-2.5">View</a>
@@ -354,7 +370,8 @@
             {#if can('posts.approve')}
               <button
                 class="btn-primary btn-sm text-xs flex-1"
-                disabled={actionLoading === post.id}
+                disabled={actionLoading === post.id || !allReady}
+                title={allReady ? 'Approve post' : post.approval_blockers?.[0]?.message ?? 'Approval blocked'}
                 on:click={() => approve(post)}
               >
                 {actionLoading === post.id ? '…' : 'Approve'}
