@@ -8,6 +8,7 @@ import {
   createAgentFinding,
   createAgentRun,
   createAgentTask,
+  createGenerationRun,
   createApprovedCommandJob,
   createPost,
   updatePost,
@@ -18,6 +19,7 @@ import {
   getApprovedCommandJobById,
   getAgentSystemHealthSnapshot,
   getAgentTask,
+  getGenerationRunById,
   saveClientResearch,
   saveClientStrategy,
   saveContentReview,
@@ -34,6 +36,7 @@ import {
   updateAgentHeartbeat,
   updateAgentRun,
   updateAgentTask,
+  finalizeGenerationRun,
   checkStaleAgents,
   markAgentStale,
   getAgentHealthSummary,
@@ -465,6 +468,7 @@ const internalReviewSchema = z.object({
 const internalDraftPostSchema = z.object({
   agent_slug: z.string(),
   task_id: z.string().optional(),
+  generation_run_id: z.string().min(32).max(64).nullable().optional(),
   client_id: z.string(),
   title: z.string().min(1).max(200),
   content_type: z.enum(['image', 'reel', 'video', 'blog']),
@@ -796,6 +800,46 @@ agencyInternalRoutes.post('/strategy-plan', async (c) => {
   return c.json({ ok: true });
 });
 
+// Create/finalize a provenance run for a supervised content batch without
+// queueing a second autonomous generator. Both routes remain bot-secret gated.
+agencyInternalRoutes.post('/generation-run', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const parsed = z.object({
+    period_start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    period_end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    triggered_by: z.string().min(1).max(80).default('supervisor-content-qa'),
+    client_ids: z.array(z.string().min(1)).max(100).default([]),
+  }).safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json({ error: 'Invalid input', issues: parsed.error.issues }, 400);
+  const run = await createGenerationRun(c.env.DB, {
+    triggered_by: parsed.data.triggered_by,
+    date_range: `${parsed.data.period_start}:${parsed.data.period_end}`,
+    client_filter: parsed.data.client_ids.length ? JSON.stringify(parsed.data.client_ids) : null,
+    overwrite_existing: false,
+  });
+  return c.json({ ok: true, generation_run_id: run.id, status: run.status }, 201);
+});
+
+agencyInternalRoutes.post('/generation-run/:id/finalize', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const run = await getGenerationRunById(c.env.DB, c.req.param('id'));
+  if (!run) return c.json({ error: 'Generation run not found' }, 404);
+  const parsed = z.object({
+    status: z.enum(['completed', 'completed_with_errors', 'failed']),
+    posts_created: z.number().int().min(0),
+    error_log: z.string().max(8000).nullable().optional(),
+  }).safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json({ error: 'Invalid input', issues: parsed.error.issues }, 400);
+  await finalizeGenerationRun(
+    c.env.DB,
+    run.id,
+    parsed.data.status,
+    parsed.data.posts_created,
+    parsed.data.error_log ?? null,
+  );
+  return c.json({ ok: true, generation_run_id: run.id, status: parsed.data.status });
+});
+
 agencyInternalRoutes.get('/review-queue', async (c) => {
   if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
   const limit = Math.min(Math.max(Number(c.req.query('limit') ?? '8'), 1), 25);
@@ -1014,7 +1058,7 @@ agencyInternalRoutes.post('/draft-post', async (c) => {
     asset_delivered: 0,
     scheduled_by_automation: 1,
     automation_slot_key: parsed.data.automation_slot_key ?? null,
-    generation_run_id: parsed.data.task_id ?? null,
+    generation_run_id: parsed.data.generation_run_id ?? null,
     created_by: parsed.data.agent_slug,
     topic_fingerprint: buildTopicFingerprint({
       title: parsed.data.title,
@@ -1077,7 +1121,7 @@ agencyInternalRoutes.post('/draft-post', async (c) => {
       target_keyword: existing.target_keyword ?? parsed.data.target_keyword ?? null,
       target_locality: existing.target_locality ?? parsed.data.target_locality ?? null,
       automation_slot_key: existing.automation_slot_key ?? parsed.data.automation_slot_key ?? null,
-      generation_run_id: existing.generation_run_id ?? parsed.data.task_id ?? null,
+      generation_run_id: existing.generation_run_id ?? parsed.data.generation_run_id ?? null,
       created_by: existing.created_by ?? parsed.data.agent_slug,
       topic_fingerprint: existing.topic_fingerprint ?? postData.topic_fingerprint,
     };
@@ -1149,6 +1193,7 @@ agencyInternalRoutes.post('/draft-post', async (c) => {
   if (Object.keys(gbpUpdates).length > 0) {
     await updatePost(c.env.DB, post.id, gbpUpdates as Partial<typeof post>);
   }
+  await updatePost(c.env.DB, post.id, { topic_fingerprint: postData.topic_fingerprint });
 
   await appendAgencyLog(c.env.DB, {
     agent_slug: parsed.data.agent_slug,
