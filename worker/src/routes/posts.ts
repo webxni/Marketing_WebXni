@@ -31,6 +31,16 @@ import { approveCleanEditorialReview, validatePostApprovalReadiness } from '../m
 
 export const postRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 
+const PROTECTED_POST_UPDATE_FIELDS = new Set([
+  'id', 'client_id', 'created_at', 'updated_at', 'posted_at',
+  'ready_for_automation', 'automation_status', 'last_automation_run',
+  'scheduled_by_automation', 'automation_slot_key', 'generation_run_id', 'created_by',
+  'wp_post_id', 'wp_post_url', 'wp_post_status', 'wp_featured_media_id',
+]);
+
+function sanitizeRequestedStatus(value: unknown): 'draft' | 'pending_approval' {
+  return value === 'pending_approval' ? 'pending_approval' : 'draft';
+}
 
 export function approveCompareAndSwapPredicate(post: Pick<PostRow, 'id' | 'status' | 'updated_at'>): { where: string; binds: unknown[] } {
   return {
@@ -241,7 +251,7 @@ postRoutes.post('/', async (c) => {
   const post = await createPost(c.env.DB, {
     client_id:           clientId,
     title:               (body['title'] as string) ?? null,
-    status:              (body['status'] as string) ?? 'draft',
+    status:              sanitizeRequestedStatus(body['status']),
     content_type:        body['content_type'] as string ?? selection.contentType,
     platforms:           JSON.stringify(selection.selected),
     publish_date:        (body['publish_date'] as string) ?? null,
@@ -331,6 +341,11 @@ postRoutes.put('/:id', async (c) => {
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'Invalid JSON' }, 400); }
 
+  for (const field of PROTECTED_POST_UPDATE_FIELDS) delete body[field];
+  if (Object.prototype.hasOwnProperty.call(body, 'status')) {
+    body['status'] = sanitizeRequestedStatus(body['status']);
+  }
+
   const nextContentType = (body['content_type'] as string) ?? post.content_type ?? 'image';
   const shouldValidatePlatforms =
     Object.prototype.hasOwnProperty.call(body, 'platforms') ||
@@ -388,8 +403,7 @@ postRoutes.put('/:id', async (c) => {
   body = normalizeBlogDraftPayload(clientConfig, body);
 
   if (
-    post.scheduled_by_automation === 1
-    && ['approved', 'ready', 'scheduled'].includes(post.status ?? '')
+    ['approved', 'ready', 'scheduled'].includes(post.status ?? '')
     && hasReviewAffectingUpdate(body)
   ) {
     body['status'] = 'pending_approval';
@@ -466,9 +480,16 @@ postRoutes.post('/:id/ready', async (c) => {
   if (!post) return c.json({ error: 'Not found' }, 404);
   const client = await getClientWithConfig(c.env.DB, post.client_id);
   if (!client) return c.json({ error: 'Client not found' }, 404);
-  const readinessIssue = validateAutomationReadiness(post, client, { mode: 'ready' });
-  if (readinessIssue) return c.json({ error: readinessIssue.message, code: readinessIssue.code }, 409);
+  const approval = await validatePostApprovalReadiness(c.env.DB, post, client);
+  if (approval.blockers.length > 0) {
+    return c.json({
+      error: approval.blockers[0]?.message ?? 'Post is not ready',
+      code: approval.blockers[0]?.code ?? 'READINESS_BLOCKED',
+      blockers: approval.blockers,
+    }, 409);
+  }
   await updatePost(c.env.DB, post.id, { status: 'ready', ready_for_automation: 1, asset_delivered: post.asset_delivered });
+  await approveCleanEditorialReview(c.env.DB, approval.cleanReviewId, c.get('user').userId);
   return c.json({ ok: true, status: 'ready' });
 });
 
@@ -509,11 +530,17 @@ postRoutes.post('/:id/duplicate', async (c) => {
 
   let publishNow = false;
   try { publishNow = ((await c.req.json()) as { publish_now?: boolean }).publish_now === true; } catch { /* empty */ }
+  if (publishNow) {
+    return c.json({
+      error: 'Immediate duplicate publishing is disabled. Duplicate as a draft, review it, then approve and publish through the normal workflow.',
+      code: 'APPROVAL_REQUIRED',
+    }, 409);
+  }
 
   const duplicate = await createPost(c.env.DB, {
     client_id: source.client_id,
     title: source.title ?? `Copy of ${source.id}`,
-    status: publishNow ? 'ready' : 'draft',
+    status: 'draft',
     content_type: source.content_type,
     platforms: source.platforms,
     publish_date: source.publish_date,
@@ -557,7 +584,7 @@ postRoutes.post('/:id/duplicate', async (c) => {
     asset_r2_bucket: source.asset_r2_bucket,
     asset_type: source.asset_type,
     canva_link: source.canva_link,
-    ready_for_automation: publishNow ? 1 : 0,
+    ready_for_automation: 0,
     asset_delivered: source.asset_delivered,
     skarleth_notes: source.skarleth_notes,
     platform_manual_override: source.platform_manual_override,
@@ -578,23 +605,7 @@ postRoutes.post('/:id/duplicate', async (c) => {
     ip: c.req.header('CF-Connecting-IP') ?? c.req.header('X-Forwarded-For') ?? undefined,
   });
 
-  if (!publishNow) {
-    return c.json({ ok: true, post: duplicate }, 201);
-  }
-
-  const jobId = crypto.randomUUID().replace(/-/g, '').toLowerCase();
-  c.executionCtx.waitUntil((async () => {
-    await runPosting(c.env, {
-      mode: 'real',
-      job_id: jobId,
-      triggered_by: 'api.duplicate',
-      post_ids: [duplicate.id],
-      limit: 1,
-    });
-    await runFetchUrls(c.env, `${jobId}-urls`);
-  })());
-
-  return c.json({ ok: true, post: duplicate, job_id: jobId }, 202);
+  return c.json({ ok: true, post: duplicate }, 201);
 });
 
 /** POST /api/posts/:id/retry */

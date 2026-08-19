@@ -39,11 +39,11 @@ function platformIssue(client: ReadinessClient, platform: string): ReadinessIssu
   const cfg = client.platforms.find((row) => normalizePlatform(row.platform) === destination || normalizePlatform(row.platform) === platform);
   if (!cfg) return { code: 'DESTINATION_NOT_CONFIGURED', message: `Destination '${platform}' is not configured` };
   if (cfg.paused === 1) return { code: 'DESTINATION_PAUSED', message: `Destination '${platform}' is paused` };
-  if (cfg.connection_status && cfg.connection_status !== 'connected') {
-    return { code: 'DESTINATION_DISCONNECTED', message: `Destination '${platform}' is ${cfg.connection_status}` };
+  if (cfg.connection_status !== 'connected') {
+    return { code: 'DESTINATION_DISCONNECTED', message: `Destination '${platform}' is ${cfg.connection_status ?? 'not connected'}` };
   }
-  if (cfg.verification_status && cfg.verification_status !== 'verified') {
-    return { code: 'DESTINATION_NOT_VERIFIED', message: `Destination '${platform}' is ${cfg.verification_status}` };
+  if (cfg.verification_status !== 'verified') {
+    return { code: 'DESTINATION_NOT_VERIFIED', message: `Destination '${platform}' is ${cfg.verification_status ?? 'not verified'}` };
   }
   if (destination === 'google_business') {
     const locations = client.gbp_locations ?? [];

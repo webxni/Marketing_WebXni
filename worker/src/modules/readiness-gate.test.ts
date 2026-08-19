@@ -48,6 +48,13 @@ describe('validateAutomationReadiness', () => {
       .toBe('DESTINATION_NOT_VERIFIED');
   });
 
+  it('fails closed when destination health is unknown', () => {
+    expect(validateAutomationReadiness(post(), client({ connection_status: undefined }), { mode: 'publish', now })?.code)
+      .toBe('DESTINATION_DISCONNECTED');
+    expect(validateAutomationReadiness(post(), client({ verification_status: undefined }), { mode: 'publish', now })?.code)
+      .toBe('DESTINATION_NOT_VERIFIED');
+  });
+
   it('applies GBP CTA/topic checks to regional GBP variants', () => {
     const c = client({ platform: 'google_business', upload_post_location_id: 'loc' });
     expect(validateAutomationReadiness(post({ platforms: JSON.stringify(['gbp_la']), cap_gbp_la: 'Local GBP copy', gbp_cta_type: 'LEARN_MORE', gbp_cta_url: null }), c, { mode: 'publish', now })?.code)

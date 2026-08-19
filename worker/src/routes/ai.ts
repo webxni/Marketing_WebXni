@@ -30,6 +30,7 @@ import { syncUploadPostClientPlatforms } from '../modules/uploadpost-platform-sy
 import { publishBlogPost } from '../modules/blog-publishing';
 import { isGovernedLocksmith, locksmithProfileRequiresReapproval } from '../modules/editorial-governance';
 import { validateAutomationReadiness } from '../modules/readiness-gate';
+import { approveCleanEditorialReview, validatePostApprovalReadiness } from '../modules/approval-readiness';
 import { redactClientSecrets, sanitizeClientForResponse } from '../modules/client-security';
 import {
   AGENT_SKILLS, AGENT_MEMORY, RESPONSE_RULES,
@@ -230,6 +231,22 @@ function normalizeAgentPostUpdateFields(args: Record<string, unknown>): Record<s
     'generation_run_id',
     'automation_slot_key',
     'post_id',
+    'status',
+    'automation_status',
+    'ready_for_automation',
+    'asset_delivered',
+    'asset_rights_confirmed',
+    'asset_rights_notes',
+    'last_automation_run',
+    'scheduled_by_automation',
+    'platform_manual_override',
+    'created_by',
+    'posted_at',
+    'updated_at',
+    'wp_post_id',
+    'wp_post_url',
+    'wp_post_status',
+    'wp_featured_media_id',
   ]);
   const safe: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(merged)) {
@@ -1795,9 +1812,8 @@ export async function executeTool(
           };
         }
 
-        const FORBIDDEN = ['id', 'client_id', 'created_at'];
-        const safe: Record<string, unknown> = {};
-        for (const [k, v] of Object.entries(changes)) if (!FORBIDDEN.includes(k)) safe[k] = v;
+        const safe = normalizeAgentPostUpdateFields({ fields: changes });
+        if (Object.keys(safe).length === 0) return { success: false, error: 'No safe content fields to update' };
 
         let updated = 0;
         for (const id of matchedIds) {
@@ -1821,15 +1837,19 @@ export async function executeTool(
         const before = await getPostById(env.DB, postId);
         if (!before) return { success: false, error: `Post not found: ${postId}` };
 
-        const ALLOWED = ['approved', 'rejected', 'ready', 'cancelled', 'draft', 'pending_approval'];
+        const ALLOWED = ['rejected', 'ready', 'cancelled', 'draft', 'pending_approval'];
         if (!ALLOWED.includes(status)) return { success: false, error: `Invalid status: ${status}` };
 
         if (status === 'ready') {
           const client = await getClientWithConfig(env.DB, before.client_id);
           if (!client) return { success: false, error: 'Client not found' };
-          const readinessIssue = validateAutomationReadiness(before, client, { mode: 'ready' });
-          if (readinessIssue) return { success: false, error: `${readinessIssue.code}: ${readinessIssue.message}` };
+          const approval = await validatePostApprovalReadiness(env.DB, before, client);
+          if (approval.blockers.length > 0) {
+            const first = approval.blockers[0]!;
+            return { success: false, error: `${first.code}: ${first.message}` };
+          }
           await updatePost(env.DB, postId, { status: 'ready', ready_for_automation: 1, asset_delivered: before.asset_delivered });
+          await approveCleanEditorialReview(env.DB, approval.cleanReviewId, user.userId);
         } else {
           await setPostStatus(env.DB, postId, status);
         }
