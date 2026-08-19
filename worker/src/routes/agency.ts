@@ -66,6 +66,8 @@ import {
   evaluateLocksmithGenerationGate,
   getLocksmithPortfolioTopicCollision,
   assertLocksmithPortfolioGenerationReady,
+  assertLocksmithContentReady,
+  findProhibitedLocksmithService,
   isGovernedLocksmith,
   LOCKSMITH_OWNER_GROUP,
   validateLocksmithGeneratedContent,
@@ -986,6 +988,160 @@ agencyInternalRoutes.get('/content-batch', async (c) => {
   return c.json({ ok: true, date, count: items.length, items });
 });
 
+agencyInternalRoutes.post('/research-review/:id', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const parsed = z.object({
+    review_status: z.enum(['approved', 'rejected', 'quarantined']),
+    reviewed_by: z.string().min(1).max(100),
+    reason: z.string().min(1).max(1000),
+  }).safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json({ error: 'Invalid input', issues: parsed.error.issues }, 400);
+  const note = await c.env.DB.prepare(`SELECT id, client_id, entity_match, geography_match,
+                                             service_match, prohibited_service_detected, confidence,
+                                             review_status
+                                      FROM client_research_notes WHERE id = ?`)
+    .bind(c.req.param('id')).first<Record<string, unknown>>();
+  if (!note) return c.json({ error: 'Research note not found' }, 404);
+  if (note.review_status !== 'pending') return c.json({ error: 'Only pending research can be reviewed' }, 409);
+  if (parsed.data.review_status === 'approved') {
+    const safe = note.entity_match === 1 && note.geography_match === 1 && note.service_match === 1
+      && note.prohibited_service_detected === 0 && note.confidence === 'high';
+    if (!safe) return c.json({ error: 'Research does not meet the approval evidence requirements' }, 409);
+  }
+  await c.env.DB.prepare(`UPDATE client_research_notes
+                          SET review_status = ?, reviewed_by = ?, reviewed_at = unixepoch(),
+                              notes = trim(COALESCE(notes, '') || '\n' || ?), updated_at = unixepoch()
+                          WHERE id = ? AND review_status = 'pending'`)
+    .bind(parsed.data.review_status, parsed.data.reviewed_by, parsed.data.reason, c.req.param('id')).run();
+  await appendAgencyLog(c.env.DB, {
+    agent_slug: 'supervisor-content-qa',
+    status: 'saved',
+    step: 'research-review',
+    summary: `Research ${c.req.param('id')} marked ${parsed.data.review_status}: ${parsed.data.reason}`,
+  });
+  return c.json({ ok: true, id: c.req.param('id'), review_status: parsed.data.review_status });
+});
+
+agencyInternalRoutes.post('/keywords/approve', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const parsed = z.object({
+    client_id: z.string().min(1),
+    keywords: z.array(z.string().min(1).max(160)).min(1).max(20),
+    approved_by: z.string().min(1).max(100),
+    reason: z.string().min(1).max(1000),
+  }).safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json({ error: 'Invalid input', issues: parsed.error.issues }, 400);
+  const client = await getClientById(c.env.DB, parsed.data.client_id);
+  if (!client || !isGovernedLocksmith(client)) return c.json({ error: 'Governed locksmith client not found' }, 404);
+  const keywords = [...new Set(parsed.data.keywords.map((keyword) => keyword.trim()).filter(Boolean))];
+  const prohibited = keywords.map((keyword) => ({ keyword, issue: findProhibitedLocksmithService(keyword) }))
+    .filter((row) => row.issue);
+  if (prohibited.length > 0) return c.json({ error: 'Prohibited locksmith keyword', prohibited }, 409);
+  const placeholders = keywords.map(() => '?').join(',');
+  const rows = await c.env.DB.prepare(`SELECT id, keyword, status FROM client_keywords
+                                       WHERE client_id = ? AND keyword IN (${placeholders})`)
+    .bind(client.id, ...keywords).all<{ id: string; keyword: string; status: string }>();
+  const found = new Map(rows.results.map((row) => [row.keyword, row]));
+  const missing = keywords.filter((keyword) => !found.has(keyword));
+  if (missing.length > 0) return c.json({ error: 'Keywords must be created and classified before approval', missing }, 409);
+  const inactive = rows.results.filter((row) => row.status !== 'active').map((row) => row.keyword);
+  if (inactive.length > 0) return c.json({ error: 'Only active classified keywords can be approved', inactive }, 409);
+  await c.env.DB.prepare(`UPDATE client_keywords
+                          SET approval_status = 'approved', approved_by = ?, approved_at = unixepoch(),
+                              editorial_notes = ?, updated_at = unixepoch()
+                          WHERE client_id = ? AND keyword IN (${placeholders}) AND status = 'active'`)
+    .bind(parsed.data.approved_by, parsed.data.reason, client.id, ...keywords).run();
+  await appendAgencyLog(c.env.DB, {
+    agent_slug: 'supervisor-content-qa', status: 'saved', step: 'keyword-approval',
+    summary: `Approved ${keywords.length} evidence-backed keywords for ${client.slug}.`,
+  });
+  return c.json({ ok: true, approved: keywords.length, keywords });
+});
+
+agencyInternalRoutes.post('/draft-post/:id/revise', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const parsed = internalDraftPostSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json({ error: 'Invalid input', issues: parsed.error.issues }, 400);
+  const existing = await getPostById(c.env.DB, c.req.param('id'));
+  if (!existing) return c.json({ error: 'Post not found' }, 404);
+  if (!['draft', 'pending_approval'].includes(existing.status ?? '')) return c.json({ error: 'Only draft or pending-review posts can be revised' }, 409);
+  if (existing.client_id !== parsed.data.client_id || existing.content_type !== parsed.data.content_type) {
+    return c.json({ error: 'Client and content type cannot change during revision' }, 409);
+  }
+  if (parsed.data.publish_date?.slice(0, 10) !== existing.publish_date?.slice(0, 10)
+      || parsed.data.automation_slot_key !== existing.automation_slot_key) {
+    return c.json({ error: 'Publish day and automation slot cannot change during revision' }, 409);
+  }
+  const client = await getClientById(c.env.DB, existing.client_id);
+  if (!client) return c.json({ error: 'Client not found' }, 404);
+  if (isGovernedLocksmith(client)) {
+    await assertLocksmithContentReady(
+      c.env.DB, client, existing.publish_date?.slice(0, 10) ?? new Date().toISOString().slice(0, 10), parsed.data.platforms,
+    );
+  }
+  const captions = parsed.data.platform_captions ?? {};
+  const updates: Partial<typeof existing> = {
+    title: parsed.data.title,
+    status: 'draft',
+    automation_status: null,
+    platforms: JSON.stringify(parsed.data.platforms),
+    master_caption: parsed.data.master_caption ?? null,
+    cap_facebook: captions.facebook ?? null,
+    cap_instagram: captions.instagram ?? null,
+    cap_linkedin: captions.linkedin ?? null,
+    cap_x: captions.x ?? null,
+    cap_threads: captions.threads ?? null,
+    cap_tiktok: captions.tiktok ?? null,
+    cap_pinterest: captions.pinterest ?? null,
+    cap_bluesky: captions.bluesky ?? null,
+    cap_google_business: captions.google_business ?? null,
+    blog_content: parsed.data.blog_content ?? null,
+    blog_excerpt: parsed.data.blog_excerpt ?? null,
+    seo_title: parsed.data.seo_title ?? null,
+    meta_description: parsed.data.meta_description ?? null,
+    slug: parsed.data.slug ?? null,
+    target_keyword: parsed.data.target_keyword ?? null,
+    target_locality: parsed.data.target_locality ?? null,
+    youtube_title: parsed.data.youtube_title ?? null,
+    youtube_description: parsed.data.youtube_description ?? null,
+    video_script: parsed.data.video_script ?? null,
+    ai_image_prompt: parsed.data.ai_image_prompt ?? null,
+    ai_video_prompt: parsed.data.ai_video_prompt ?? null,
+    skarleth_notes: parsed.data.skarleth_notes ?? null,
+    ready_for_automation: 0,
+    asset_delivered: 0,
+    asset_rights_confirmed: 0,
+    generation_run_id: parsed.data.generation_run_id ?? existing.generation_run_id,
+    created_by: parsed.data.agent_slug,
+    topic_fingerprint: buildTopicFingerprint({
+      title: parsed.data.title, contentType: parsed.data.content_type, targetKeyword: parsed.data.target_keyword ?? null,
+    }),
+  };
+  const governanceIssues = await validateLocksmithGeneratedContent(c.env.DB, client, updates);
+  if (governanceIssues.length > 0) return c.json({ error: `Editorial gate failed: ${governanceIssues.join('; ')}` }, 409);
+  const duplicateConflict = await findRecentTopicConflict(c.env.DB, {
+    clientId: existing.client_id,
+    candidateTitle: parsed.data.title,
+    candidateKeyword: parsed.data.target_keyword ?? null,
+    candidateCaption: parsed.data.master_caption ?? null,
+    candidateLocality: parsed.data.target_locality ?? null,
+    contentType: parsed.data.content_type,
+    topicFingerprint: updates.topic_fingerprint ?? null,
+    publishDate: existing.publish_date,
+    excludePostId: existing.id,
+  });
+  if (duplicateConflict) return c.json({
+    error: `Duplicate content blocked: ${duplicateConflict.reason}`,
+    code: 'DUPLICATE_CONTENT', nearest_post_id: duplicateConflict.post.id,
+  }, 409);
+  await updatePost(c.env.DB, existing.id, updates);
+  await appendAgencyLog(c.env.DB, {
+    agent_slug: parsed.data.agent_slug, task_id: parsed.data.task_id ?? null,
+    status: 'saved', step: 'draft-revision', summary: `Revised draft ${existing.id}; approval and asset gates reset.`,
+  });
+  return c.json({ ok: true, post_id: existing.id, revised: true });
+});
+
 agencyInternalRoutes.post('/content-review', async (c) => {
   if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
   const parsed = internalReviewSchema.safeParse(await c.req.json().catch(() => ({})));
@@ -1047,7 +1203,7 @@ agencyInternalRoutes.post('/draft-post', async (c) => {
   if (isGovernedLocksmith(client)) {
     const publishDay = parsed.data.publish_date?.slice(0, 10) || new Date().toISOString().slice(0, 10);
     try {
-      await assertLocksmithPortfolioGenerationReady(c.env.DB, [client], publishDay, publishDay);
+      await assertLocksmithContentReady(c.env.DB, client, publishDay, parsed.data.platforms);
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : String(error) }, 409);
     }

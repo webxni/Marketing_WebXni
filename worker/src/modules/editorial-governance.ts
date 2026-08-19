@@ -264,6 +264,43 @@ export async function assertLocksmithPortfolioGenerationReady(
   if (reasons.length > 0) throw new Error(`Generation blocked: ${reasons.join('; ')}`);
 }
 
+// A single post only needs the destinations it actually selects. Keep the
+// portfolio-wide profile/topic protections, but do not let a disconnected GBP
+// destination block an independently verified social-only draft (or vice versa).
+// Posting preflight calls this same gate again, so the scope cannot be widened
+// after review without being revalidated.
+export async function assertLocksmithContentReady(
+  db: D1Database,
+  client: ClientRow,
+  publishDay: string,
+  selectedPlatforms: string[],
+): Promise<void> {
+  if (!isGovernedLocksmith(client)) return;
+  const month = publishDay.slice(0, 7);
+  const gate = await evaluateLocksmithGenerationGate(db, client.id, month);
+  const reasons = gate.reasons.filter((reason) => !reason.includes('one or more destinations are not verified'));
+  const normalized = [...new Set(selectedPlatforms
+    .map((platform) => platform.toLowerCase().replace(/[ -]+/g, '_'))
+    .map((platform) => ['gbp', 'gbp_la', 'gbp_wa', 'gbp_or', 'google_business_profile'].includes(platform) ? 'google_business' : platform)
+    .filter((platform) => platform && platform !== 'website_blog'))];
+  if (normalized.length > 0) {
+    const placeholders = normalized.map(() => '?').join(',');
+    const rows = await db.prepare(`SELECT platform, connection_status, verification_status, paused
+                                   FROM client_platforms
+                                   WHERE client_id = ? AND platform IN (${placeholders})`)
+      .bind(client.id, ...normalized).all<{ platform: string; connection_status: string | null; verification_status: string | null; paused: number }>();
+    const byPlatform = new Map(rows.results.map((row) => [row.platform, row]));
+    const invalid = normalized.filter((platform) => {
+      const row = byPlatform.get(platform);
+      return !row || row.paused === 1 || row.connection_status !== 'connected' || row.verification_status !== 'verified';
+    });
+    if (invalid.length > 0) reasons.push(`${client.slug}: selected destinations are not verified: ${invalid.join(', ')}`);
+  }
+  const collision = await getLocksmithPortfolioTopicCollision(db, month);
+  if (collision) reasons.push(`portfolio topic collision: ${collision}`);
+  if (reasons.length > 0) throw new Error(`Generation blocked: ${reasons.join('; ')}`);
+}
+
 export async function validateLocksmithGeneratedContent(
   db: D1Database,
   client: ClientRow,

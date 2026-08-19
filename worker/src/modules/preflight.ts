@@ -14,7 +14,7 @@ import { getPlatformConfigWarnings, hasMappedValue } from './platform-config';
 import { getLatestContentReview } from '../db/queries';
 import { buildPostContentHash } from './content-review';
 import {
-  assertLocksmithPortfolioGenerationReady,
+  assertLocksmithContentReady,
   isGovernedLocksmith,
   validateLocksmithGeneratedContent,
 } from './editorial-governance';
@@ -44,7 +44,9 @@ export async function preflightLocksmithEditorialGate(
   }
   const publishDay = post.publish_date?.slice(0, 10) || new Date().toISOString().slice(0, 10);
   try {
-    await assertLocksmithPortfolioGenerationReady(db, [client], publishDay, publishDay);
+    let selectedPlatforms: string[] = [];
+    try { selectedPlatforms = JSON.parse(post.platforms ?? '[]') as string[]; } catch { selectedPlatforms = []; }
+    await assertLocksmithContentReady(db, client, publishDay, selectedPlatforms);
   } catch (error) {
     return {
       ok: false, tag: 'BLOCKED',
