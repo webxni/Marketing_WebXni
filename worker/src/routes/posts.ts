@@ -16,6 +16,7 @@ import {
   attachAssetsToPost,
   preserveEditorialFeedbackBeforePostDelete,
   getClientRestrictions,
+  createPostingJob,
 } from '../db/queries';
 import { hasReviewAffectingUpdate } from '../modules/content-review';
 import { CAPTION_MAX_LEN } from '../modules/captions';
@@ -35,6 +36,7 @@ const PROTECTED_POST_UPDATE_FIELDS = new Set([
   'id', 'client_id', 'created_at', 'updated_at', 'posted_at',
   'ready_for_automation', 'automation_status', 'last_automation_run',
   'scheduled_by_automation', 'automation_slot_key', 'generation_run_id', 'created_by',
+  'owner_approval_override', 'owner_approved_by', 'owner_approved_at',
   'wp_post_id', 'wp_post_url', 'wp_post_status', 'wp_featured_media_id',
 ]);
 
@@ -46,6 +48,18 @@ export function approveCompareAndSwapPredicate(post: Pick<PostRow, 'id' | 'statu
   return {
     where: 'id = ? AND status = ? AND updated_at = ?',
     binds: [post.id, post.status, post.updated_at],
+  };
+}
+
+export function resolveOwnerApprovalSchedule(
+  publishDate: string | null,
+  approvedAtMs: number,
+): { publishDate: string; immediate: boolean } {
+  const scheduledMs = publishDate ? new Date(publishDate).getTime() : NaN;
+  const immediate = !Number.isFinite(scheduledMs) || scheduledMs <= approvedAtMs;
+  return {
+    publishDate: immediate ? new Date(approvedAtMs).toISOString() : publishDate!,
+    immediate,
   };
 }
 
@@ -433,19 +447,26 @@ postRoutes.post('/:id/approve', requirePermission('posts.approve'), async (c) =>
   const client = await getClientWithConfig(c.env.DB, post.client_id);
   if (!client) return c.json({ error: 'Client not found' }, 404);
   const approval = await validatePostApprovalReadiness(c.env.DB, post, client);
-  if (approval.blockers.length > 0) {
-    return c.json({
-      error: approval.blockers[0]?.message ?? 'Post is not ready for approval',
-      code: approval.blockers[0]?.code ?? 'APPROVAL_BLOCKED',
-      blockers: approval.blockers,
-    }, 409);
-  }
   const nextStatus = 'ready';
-  const now = Math.floor(Date.now() / 1000);
+  const approvedAtMs = Date.now();
+  const now = Math.floor(approvedAtMs / 1000);
+  const schedule = resolveOwnerApprovalSchedule(post.publish_date, approvedAtMs);
   const guard = approveCompareAndSwapPredicate(post);
   const result = await c.env.DB
-    .prepare(`UPDATE posts SET status = ?, ready_for_automation = ?, asset_delivered = ?, updated_at = ? WHERE ${guard.where}`)
-    .bind(nextStatus, 1, post.content_type === 'blog' || post.content_type === 'text' ? 1 : post.asset_delivered, now, ...guard.binds)
+    .prepare(`UPDATE posts SET status = ?, ready_for_automation = ?, asset_delivered = ?,
+                              publish_date = ?, owner_approval_override = 1,
+                              owner_approved_by = ?, owner_approved_at = ?, updated_at = ?
+              WHERE ${guard.where}`)
+    .bind(
+      nextStatus,
+      1,
+      post.content_type === 'blog' || post.content_type === 'text' ? 1 : post.asset_delivered,
+      schedule.publishDate,
+      c.get('user').userId,
+      now,
+      now,
+      ...guard.binds,
+    )
     .run();
   if ((result.meta?.changes ?? 0) !== 1) {
     return c.json({ error: 'Post approval state changed; reload and approve again', code: 'APPROVE_CONFLICT' }, 409);
@@ -457,10 +478,30 @@ postRoutes.post('/:id/approve', requirePermission('posts.approve'), async (c) =>
     entity_type: 'post',
     entity_id: post.id,
     old_value: { status: post.status },
-    new_value: { status: nextStatus, title: post.title, editorial_review_id: approval.cleanReviewId },
+    new_value: {
+      status: nextStatus,
+      title: post.title,
+      editorial_review_id: approval.cleanReviewId,
+      owner_override: true,
+      overridden_blockers: approval.blockers,
+      publish_date: schedule.publishDate,
+      immediate_posting: schedule.immediate,
+    },
     ip: c.req.header('CF-Connecting-IP') ?? c.req.header('X-Forwarded-For') ?? undefined,
   });
-  return c.json({ ok: true, status: nextStatus });
+  let jobId: string | null = null;
+  if (schedule.immediate) {
+    const job = await createPostingJob(c.env.DB, { triggered_by: 'owner_approval', mode: 'real' });
+    jobId = job.id;
+    c.executionCtx.waitUntil(runPosting(c.env, {
+      mode: 'real',
+      job_id: job.id,
+      triggered_by: 'owner_approval',
+      post_ids: [post.id],
+      limit: 1,
+    }));
+  }
+  return c.json({ ok: true, status: nextStatus, immediate: schedule.immediate, job_id: jobId });
 });
 
 /** POST /api/posts/:id/reject */

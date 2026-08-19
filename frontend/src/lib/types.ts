@@ -327,6 +327,9 @@ export interface Post {
   error_log:            string | null;
   posted_at:            number | null;
   platform_manual_override: number;
+  owner_approval_override: number;
+  owner_approved_by:       string | null;
+  owner_approved_at:       number | null;
   automation_slot_key:  string | null;
   created_at:           number;
   updated_at:           number;

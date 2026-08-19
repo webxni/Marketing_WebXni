@@ -139,6 +139,7 @@ describe('listReadyPosts targeted publish gate', () => {
     expect(capturedSql).toContain('asset_delivered = 1');
     expect(capturedSql).toContain('publish_date IS NOT NULL');
     expect(capturedSql).toContain('publish_date <=');
+    expect(capturedSql).toContain('owner_approval_override = 1');
     expect(capturedSql).not.toContain("status = 'approved'");
   });
 

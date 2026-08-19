@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { approveCompareAndSwapPredicate, generatedCaptionQualityIssue } from './posts';
+import { approveCompareAndSwapPredicate, generatedCaptionQualityIssue, resolveOwnerApprovalSchedule } from './posts';
 
 describe('generatedCaptionQualityIssue', () => {
   it('accepts a grounded Pinterest caption beginning with the exact keyword', () => {
@@ -42,6 +42,23 @@ describe('approval compare-and-swap guard', () => {
     expect(approveCompareAndSwapPredicate({ id: 'post-1', status: 'pending_approval', updated_at: 123 })).toEqual({
       where: 'id = ? AND status = ? AND updated_at = ?',
       binds: ['post-1', 'pending_approval', 123],
+    });
+  });
+});
+
+describe('owner approval schedule', () => {
+  const approvedAt = Date.parse('2026-08-19T17:00:00Z');
+
+  it('posts immediately when the configured date has passed or is missing', () => {
+    expect(resolveOwnerApprovalSchedule('2026-08-19T10:00:00Z', approvedAt)).toEqual({
+      publishDate: '2026-08-19T17:00:00.000Z', immediate: true,
+    });
+    expect(resolveOwnerApprovalSchedule(null, approvedAt).immediate).toBe(true);
+  });
+
+  it('preserves a future scheduled time', () => {
+    expect(resolveOwnerApprovalSchedule('2026-08-20T10:00:00Z', approvedAt)).toEqual({
+      publishDate: '2026-08-20T10:00:00Z', immediate: false,
     });
   });
 });

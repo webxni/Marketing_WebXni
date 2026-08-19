@@ -445,6 +445,8 @@ export async function listReadyPosts(
   //
   const nowExpr = `strftime('%Y-%m-%dT%H:%M','now','-6 hours')`;
   const statusClause = `(
+    (owner_approval_override = 1 AND status IN ('ready','scheduled'))
+    OR
     (content_type = 'blog' AND ready_for_automation = 1 AND asset_delivered = 1 AND status IN ('ready','scheduled'))
     OR
     (content_type != 'blog' AND status IN ('ready','scheduled') AND ready_for_automation = 1 AND asset_delivered = 1)
@@ -457,7 +459,7 @@ export async function listReadyPosts(
          WHERE id IN (${placeholders})
            AND ${statusClause}
            AND publish_date IS NOT NULL
-           AND publish_date <= ${nowExpr}
+           AND (owner_approval_override = 1 OR publish_date <= ${nowExpr})
          ORDER BY publish_date ASC
          LIMIT ?`,
       )

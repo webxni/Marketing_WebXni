@@ -36,7 +36,7 @@ export const postsApi = {
     api.put<{ post: Post }>(`/api/posts/${id}`, data),
 
   approve: (id: string) =>
-    api.post<{ ok: boolean; status: string }>(`/api/posts/${id}/approve`),
+    api.post<{ ok: boolean; status: string; immediate: boolean; job_id: string | null }>(`/api/posts/${id}/approve`),
 
   reject: (id: string, reason?: string) =>
     api.post<{ ok: boolean }>(`/api/posts/${id}/reject`, { reason }),

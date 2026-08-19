@@ -314,6 +314,13 @@ WebXni uses agency-created AI media. Diseño uploads are classified as
 `ai_generated`, carry an agency-responsibility audit note automatically, and
 do not require a separate manual media-rights confirmation before approval.
 
+An explicit owner approval is the final publication override. Approval
+advisories remain visible for context, but they do not disable approval. If
+the publish date is missing or has passed, owner approval stamps the current
+time and starts a targeted posting run immediately. Future dates remain
+scheduled. External platform/API failures are recorded as failures rather
+than converted into internal approval blocks.
+
 After all platforms for a post are sent successfully (zero failures), the R2
 asset is deleted from the MEDIA bucket and `asset_r2_key` is nulled. If any
 platform fails, the asset is preserved for retries.

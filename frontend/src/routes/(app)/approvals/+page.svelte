@@ -23,12 +23,7 @@
   }
 
   function isApprovalEligible(post: Post): boolean {
-    return post.approval_eligible === true && hasFuturePublishDate(post);
-  }
-
-  function approvalBlockerMessage(post: Post): string {
-    if (!hasFuturePublishDate(post)) return 'Publish date has passed; reschedule before approval';
-    return post.approval_blockers?.[0]?.message ?? 'Approval blocked';
+    return post.status === 'pending_approval';
   }
 
   function toDatetimeLocal(value: string | null): string | null {
@@ -67,7 +62,7 @@
       catch (e) { errors.push(e instanceof Error ? e.message : String(e)); }
     }
     if (done > 0) toast.success(`${done} of ${ids.length} posts approved`);
-    if (errors.length > 0) toast.error(`${errors.length} blocked: ${errors[0]}`);
+    if (errors.length > 0) toast.error(`${errors.length} failed: ${errors[0]}`);
     selected = new Set();
     load();
     bulkProcessing = false;
@@ -100,8 +95,10 @@
   async function approve(post: Post) {
     actionLoading = post.id;
     try {
-      await postsApi.approve(post.id);
-      toast.success(`"${post.title ?? 'Post'}" approved ✓`);
+      const result = await postsApi.approve(post.id);
+      toast.success(result.immediate
+        ? `"${post.title ?? 'Post'}" approved — posting now`
+        : `"${post.title ?? 'Post'}" approved and scheduled`);
       posts = posts.filter(p => p.id !== post.id);
     } catch (e) { toast.error(e instanceof Error ? e.message : 'Failed to approve'); }
     finally { actionLoading = null; }
@@ -216,7 +213,7 @@
   <div class="flex items-center gap-3 mb-4 text-xs text-muted">
     <label class="flex items-center gap-2 cursor-pointer select-none">
       <input type="checkbox" checked={allSelected} on:change={toggleAll} class="rounded" />
-      Select all {eligiblePosts.length} eligible
+      Select all {eligiblePosts.length}
     </label>
   </div>
   {/if}
@@ -238,7 +235,6 @@
             <input
               type="checkbox"
               checked={selected.has(post.id)}
-              disabled={!allReady}
               on:change={() => toggleSelect(post.id)}
               class="rounded"
             />
@@ -378,7 +374,7 @@
 
           {#if post.approval_blockers?.length}
             <div class="rounded border border-red-500/30 bg-red-500/5 px-2 py-1.5 text-[10px] text-red-300">
-              <div class="font-semibold mb-0.5">Approval blocked</div>
+              <div class="font-semibold mb-0.5">Advisory — owner approval will override</div>
               {#each post.approval_blockers.slice(0, 3) as blocker}
                 <div title={blocker.code}>{blocker.message}</div>
               {/each}
@@ -395,11 +391,11 @@
             {#if can('posts.approve')}
               <button
                 class="btn-primary btn-sm text-xs flex-1"
-                disabled={actionLoading === post.id || !allReady}
-                title={allReady ? 'Approve post' : approvalBlockerMessage(post)}
+                disabled={actionLoading === post.id}
+                title={hasFuturePublishDate(post) ? 'Approve and keep scheduled time' : 'Approve and post now'}
                 on:click={() => approve(post)}
               >
-                {actionLoading === post.id ? '…' : (allReady ? 'Approve' : 'Blocked')}
+                {actionLoading === post.id ? '…' : (hasFuturePublishDate(post) ? 'Approve' : 'Approve & Post Now')}
               </button>
               <button
                 class="btn-danger btn-sm text-xs px-2.5"

@@ -39,15 +39,6 @@
     return Number.isFinite(scheduled) && scheduled > Date.now();
   }
 
-  function isApprovalEligible(item: Post): boolean {
-    return item.approval_eligible === true && hasFuturePublishDate(item);
-  }
-
-  function approvalBlockerMessage(item: Post): string {
-    if (!hasFuturePublishDate(item)) return 'Publish date has passed; reschedule before approval';
-    return item.approval_blockers?.[0]?.message ?? 'Approval blocked';
-  }
-
   async function load() {
     loading = true;
     try {
@@ -711,9 +702,8 @@
         <button
           class="btn-primary btn-sm"
           on:click={() => (showApproveConfirm = true)}
-          disabled={!isApprovalEligible(post)}
-          title={!isApprovalEligible(post) ? approvalBlockerMessage(post) : 'Approve this post'}
-        >{isApprovalEligible(post) ? 'Approve' : 'Approval blocked'}</button>
+          title={hasFuturePublishDate(post) ? 'Approve and keep scheduled time' : 'Approve and post now'}
+        >{hasFuturePublishDate(post) ? 'Approve' : 'Approve & Post Now'}</button>
         <button class="btn-danger btn-sm" on:click={() => (showRejectConfirm = true)}>Reject</button>
       {/if}
       {#if hasFailedPlatforms(platforms) && can('automation.trigger')}
@@ -722,17 +712,15 @@
     </div>
   </div>
 
-  {#if post.status === 'pending_approval' && !isApprovalEligible(post)}
+  {#if post.status === 'pending_approval' && post.approval_blockers?.length}
     <div class="mb-5 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100" role="alert">
-      <p class="font-semibold mb-1">Approval blocked</p>
+      <p class="font-semibold mb-1">Advisory — owner approval will override</p>
       {#if post.approval_blockers?.length}
         <ul class="space-y-1">
           {#each post.approval_blockers.slice(0, 5) as blocker}
             <li><span class="font-mono text-xs">{blocker.code}</span>: {blocker.message}</li>
           {/each}
         </ul>
-      {:else}
-        <p>{approvalBlockerMessage(post)}</p>
       {/if}
     </div>
   {/if}
@@ -1649,8 +1637,10 @@
 <ConfirmDialog
   open={showApproveConfirm}
   title="Approve Post"
-  message="This will approve the post and mark it ready for automation. The next posting run will pick it up."
-  confirmLabel="Approve"
+  message={post && !hasFuturePublishDate(post)
+    ? 'This publish date has passed. Approval will replace it with the current time and start posting immediately, overriding all advisories.'
+    : 'This will approve the post, override all advisories, and keep its future scheduled time.'}
+  confirmLabel={post && !hasFuturePublishDate(post) ? 'Approve & Post Now' : 'Approve'}
   on:confirm={() => { showApproveConfirm = false; approve(); }}
   on:cancel={() => (showApproveConfirm = false)}
 />

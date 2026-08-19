@@ -133,14 +133,15 @@ async function processPost(
     stats.skipped++;
     return;
   }
+  const ownerOverride = post.owner_approval_override === 1;
   let locksmithEditorialGate: PreflightResult | undefined;
-  if (isGovernedLocksmith(client)) {
+  if (isGovernedLocksmith(client) && !ownerOverride) {
     locksmithEditorialGate = await preflightLocksmithEditorialGate(client, post, env.DB);
   }
 
   const platforms: string[] = JSON.parse(post.platforms ?? '[]');
   const publishDate = post.publish_date ?? 'nodate';
-  const sched_time = getScheduledTime(post.publish_date);
+  const sched_time = ownerOverride ? undefined : getScheduledTime(post.publish_date);
   const normalizedContentType = normalizeContentType(post.content_type, post.asset_type);
 
   if (isBlogAutomationEligible(post) && platforms.includes('website_blog')) {
@@ -217,9 +218,10 @@ async function processPost(
       mediaKind = inferMediaTypeFromAssetType(post.asset_type) ?? 'image';
     }
   }
+  if (ownerOverride && !firstKey) mediaKind = null;
 
   // Guard: image/video posts require an asset
-  if (!firstKey && requiresMedia(post.content_type ?? '')) {
+  if (!firstKey && requiresMedia(post.content_type ?? '') && !ownerOverride) {
     const msg =
       'Image/video post requires Asset URL — upload to R2 then set asset_r2_key in DB.';
     if (!dryRun) await writeError(env.DB, post.id, msg);
@@ -275,7 +277,9 @@ async function processPost(
           return (field ? post[field] as string | null : null) ?? post.cap_google_business;
         })
         .find((value) => Boolean(value));
-      const result = await preflight(client, platform, gbpCaption ?? null, post, env.DB, locksmithEditorialGate);
+      const result: PreflightResult = ownerOverride
+        ? { ok: true, tag: 'OK', reason: 'owner approval override' }
+        : await preflight(client, platform, gbpCaption ?? null, post, env.DB, locksmithEditorialGate);
       if (!result.ok) {
         const reasonEs = translatePostingError(result.reason, platform);
         if (result.tag === 'BLOCKED') stats.blocked++;
@@ -302,7 +306,9 @@ async function processPost(
 
     const caption = getCaption(post, platform);
 
-    const result = await preflight(client, platform, caption, post, env.DB, locksmithEditorialGate);
+    const result: PreflightResult = ownerOverride
+      ? { ok: true, tag: 'OK', reason: 'owner approval override' }
+      : await preflight(client, platform, caption, post, env.DB, locksmithEditorialGate);
     if (!result.ok) {
       const reasonEs = translatePostingError(result.reason, platform);
       if (result.tag === 'BLOCKED') stats.blocked++;
@@ -321,7 +327,16 @@ async function processPost(
     }
 
     const platCfg = client.platforms.find((p) => normalizePlatform(p.platform) === platform);
-    if (!platCfg) continue;
+    if (!platCfg) {
+      const msg = `Platform '${platform}' is not configured for '${client.slug}'`;
+      if (!dryRun) {
+        await upsertPostPlatform(env.DB, { post_id: post.id, platform, status: 'failed', error_message: msg });
+        await logPostingAudit(env.DB, post.id, platform, 'failed', msg, msg);
+      }
+      stats.failed++;
+      thisFailed++;
+      continue;
+    }
 
     const extra   = buildExtraParams(platform, platCfg, post);
     const idemKey = await makeIdempotencyKey(post.id, platform, publishDate);
@@ -547,7 +562,7 @@ async function postGbpMultiLocation(
   up: UploadPostClient,
   post: PostRow,
   client: Awaited<ReturnType<typeof getClientWithConfig>>,
-  schedTime: string,
+  schedTime: string | undefined,
   publishDate: string,
   photoItems: PhotoUploadItem[],
   videoR2Url: string | null,
@@ -560,9 +575,10 @@ async function postGbpMultiLocation(
   if (!client) return localStats;
 
   const locations: ClientGbpLocationRow[] = client.gbp_locations;
+  const ownerOverride = post.owner_approval_override === 1;
 
   for (const loc of locations) {
-    if (loc.paused === 1) {
+    if (loc.paused === 1 && !ownerOverride) {
       stats.skipped++;
       localStats.skipped++;
       continue;
@@ -572,10 +588,12 @@ async function postGbpMultiLocation(
     const captionField = getGbpCaptionField(loc);
     const caption =
       (captionField ? (post[captionField] as string | null) : null) ??
-      post.cap_google_business;
+      post.cap_google_business ??
+      post.master_caption ??
+      '';
     const postedField = getGbpPostedKey(loc);
 
-    if (!caption) {
+    if (!caption && !ownerOverride) {
       stats.skipped++;
       localStats.skipped++;
       continue;
@@ -583,6 +601,7 @@ async function postGbpMultiLocation(
 
     if (
       isGovernedLocksmith(client)
+      && !ownerOverride
       && (
         loc.verification_status !== 'verified'
         || !loc.verified_business_name

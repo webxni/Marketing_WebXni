@@ -335,6 +335,9 @@ export interface PostRow {
   last_automation_run:    string | null;
   scheduled_by_automation: number;
   platform_manual_override: number;
+  owner_approval_override: number;
+  owner_approved_by:       string | null;
+  owner_approved_at:       number | null;
   automation_slot_key:    string | null;
   generation_run_id:      string | null;
   created_by:             string | null;
