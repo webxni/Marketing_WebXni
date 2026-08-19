@@ -31,6 +31,15 @@
     return post.approval_blockers?.[0]?.message ?? 'Approval blocked';
   }
 
+  function toDatetimeLocal(value: string | null): string | null {
+    if (!value) return null;
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value)) return value;
+    const parsed = new Date(value);
+    if (!Number.isFinite(parsed.getTime())) return value.slice(0, 16);
+    const pad = (part: number) => String(part).padStart(2, '0');
+    return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())}T${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`;
+  }
+
   $: eligiblePosts = posts.filter(isApprovalEligible);
   $: allSelected = eligiblePosts.length > 0 && selected.size === eligiblePosts.length;
 
@@ -82,7 +91,7 @@
     loading = true;
     try {
       const r = await postsApi.list({ status: 'pending_approval', limit: 100 });
-      posts = r.posts;
+      posts = r.posts.map((post) => ({ ...post, publish_date: toDatetimeLocal(post.publish_date) }));
     } finally { loading = false; }
   }
 
@@ -390,7 +399,7 @@
                 title={allReady ? 'Approve post' : approvalBlockerMessage(post)}
                 on:click={() => approve(post)}
               >
-                {actionLoading === post.id ? '…' : 'Approve'}
+                {actionLoading === post.id ? '…' : (allReady ? 'Approve' : 'Blocked')}
               </button>
               <button
                 class="btn-danger btn-sm text-xs px-2.5"

@@ -1272,6 +1272,7 @@
         on:reorder={onGalleryChange}
       />
       {#if assets.length > 0}
+        <p class="mt-3 text-xs text-muted">Origen registrado: <span class="text-white/90">{post.asset_source ?? 'pendiente'}</span></p>
         <label class="mt-4 flex items-start gap-3 border-t border-border pt-4 text-xs text-white/90">
           <input
             type="checkbox"

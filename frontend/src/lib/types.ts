@@ -320,6 +320,7 @@ export interface Post {
   notion_page_id:       string | null;
   ready_for_automation: number;
   asset_delivered:      number;
+  asset_source:         string | null;
   asset_rights_confirmed: number;
   asset_rights_notes:   string | null;
   skarleth_status:      string | null;

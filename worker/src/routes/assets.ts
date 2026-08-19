@@ -39,17 +39,17 @@ async function refreshPostPrimaryAsset(db: D1Database, postId: string): Promise<
   // If no assets remain, clear it so the UI reflects an empty media set.
   const row = await db
     .prepare(
-      `SELECT r2_key, r2_bucket, content_type
+      `SELECT r2_key, r2_bucket, content_type, source
        FROM assets WHERE post_id = ? ORDER BY sort_order ASC, created_at ASC LIMIT 1`,
     )
     .bind(postId)
-    .first<{ r2_key: string; r2_bucket: string; content_type: string | null }>();
+    .first<{ r2_key: string; r2_bucket: string; content_type: string | null; source: string | null }>();
   const now = Math.floor(Date.now() / 1000);
   if (!row) {
     await db
       .prepare(
         `UPDATE posts SET asset_r2_key = NULL, asset_r2_bucket = NULL,
-                          asset_type = NULL, asset_delivered = 0,
+                          asset_type = NULL, asset_delivered = 0, asset_source = NULL,
                           asset_rights_confirmed = 0, asset_rights_notes = NULL, updated_at = ?
          WHERE id = ?`,
       )
@@ -58,15 +58,22 @@ async function refreshPostPrimaryAsset(db: D1Database, postId: string): Promise<
     return;
   }
   const isVideo = (row.content_type ?? '').startsWith('video/');
+  const assetSource = normalizePrimaryAssetSource(row.source);
   await db
     .prepare(
       `UPDATE posts SET asset_r2_key = ?, asset_r2_bucket = ?, asset_type = ?,
-                        asset_delivered = 1, asset_rights_confirmed = 0,
+                        asset_delivered = 1, asset_source = ?, asset_rights_confirmed = 0,
                         asset_rights_notes = NULL, updated_at = ?
        WHERE id = ?`,
     )
-    .bind(row.r2_key, row.r2_bucket, isVideo ? 'video' : 'image', now, postId)
+    .bind(row.r2_key, row.r2_bucket, isVideo ? 'video' : 'image', assetSource, now, postId)
     .run();
+}
+
+export function normalizePrimaryAssetSource(source: string | null | undefined): string {
+  const normalized = source?.trim().toLowerCase() ?? '';
+  if (!normalized || normalized === 'upload') return 'designer';
+  return normalized;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -193,6 +200,7 @@ assetRoutes.get('/post/:postId', async (c) => {
     filename:     r.filename,
     content_type: r.content_type,
     size_bytes:   r.size_bytes,
+    source:       r.source,
     sort_order:   r.sort_order,
     url:          mediaUrlFor(c.env, r.r2_key, r.r2_bucket),
     created_at:   r.created_at,
