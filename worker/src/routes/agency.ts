@@ -51,6 +51,7 @@ import {
   approveAgencyStrategyPlan,
   listClientsByOwnerGroup,
   getClientById,
+  getClientWithConfig,
   resolveContentReviewFinding,
   buildTopicFingerprint,
   findRecentTopicConflict,
@@ -73,6 +74,7 @@ import {
   validateLocksmithGeneratedContent,
 } from '../modules/editorial-governance';
 import { agencySafety, backendPriorityForAgent, commandForAgent } from '../modules/agency-contract';
+import { resolvePlatformSelection, withImplicitBlogPlatform } from '../modules/platform-compatibility';
 
 export const agencyRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionData } }>();
 export const agencyInternalRoutes = new Hono<{ Bindings: Env; Variables: Record<string, unknown> }>();
@@ -1075,9 +1077,24 @@ agencyInternalRoutes.post('/draft-post/:id/revise', async (c) => {
   }
   const client = await getClientById(c.env.DB, existing.client_id);
   if (!client) return c.json({ error: 'Client not found' }, 404);
+  const clientConfig = await getClientWithConfig(c.env.DB, existing.client_id);
+  if (!clientConfig) return c.json({ error: 'Client configuration not found' }, 404);
+  const selection = resolvePlatformSelection({
+    contentType: parsed.data.content_type,
+    requestedPlatforms: parsed.data.platforms,
+    clientPlatforms: withImplicitBlogPlatform(clientConfig.platforms, clientConfig, true),
+  });
+  if (selection.incompatible.length > 0 || selection.selected.length === 0) {
+    return c.json({
+      error: 'Draft platforms are incompatible with the content type',
+      code: 'INCOMPATIBLE_PLATFORMS',
+      incompatible_platforms: selection.incompatible,
+      compatible_platforms: selection.compatible,
+    }, 409);
+  }
   if (isGovernedLocksmith(client)) {
     await assertLocksmithContentReady(
-      c.env.DB, client, existing.publish_date?.slice(0, 10) ?? new Date().toISOString().slice(0, 10), parsed.data.platforms,
+      c.env.DB, client, existing.publish_date?.slice(0, 10) ?? new Date().toISOString().slice(0, 10), selection.selected,
     );
   }
   const captions = parsed.data.platform_captions ?? {};
@@ -1085,7 +1102,7 @@ agencyInternalRoutes.post('/draft-post/:id/revise', async (c) => {
     title: parsed.data.title,
     status: 'draft',
     automation_status: null,
-    platforms: JSON.stringify(parsed.data.platforms),
+    platforms: JSON.stringify(selection.selected),
     master_caption: parsed.data.master_caption ?? null,
     cap_facebook: captions.facebook ?? null,
     cap_instagram: captions.instagram ?? null,
@@ -1200,10 +1217,25 @@ agencyInternalRoutes.post('/draft-post', async (c) => {
   if (!parsed.success) return c.json({ error: 'Invalid input', issues: parsed.error.issues }, 400);
   const client = await getClientById(c.env.DB, parsed.data.client_id);
   if (!client) return c.json({ error: 'Client not found' }, 404);
+  const clientConfig = await getClientWithConfig(c.env.DB, parsed.data.client_id);
+  if (!clientConfig) return c.json({ error: 'Client configuration not found' }, 404);
+  const selection = resolvePlatformSelection({
+    contentType: parsed.data.content_type,
+    requestedPlatforms: parsed.data.platforms,
+    clientPlatforms: withImplicitBlogPlatform(clientConfig.platforms, clientConfig, true),
+  });
+  if (selection.incompatible.length > 0 || selection.selected.length === 0) {
+    return c.json({
+      error: 'Draft platforms are incompatible with the content type',
+      code: 'INCOMPATIBLE_PLATFORMS',
+      incompatible_platforms: selection.incompatible,
+      compatible_platforms: selection.compatible,
+    }, 409);
+  }
   if (isGovernedLocksmith(client)) {
     const publishDay = parsed.data.publish_date?.slice(0, 10) || new Date().toISOString().slice(0, 10);
     try {
-      await assertLocksmithContentReady(c.env.DB, client, publishDay, parsed.data.platforms);
+      await assertLocksmithContentReady(c.env.DB, client, publishDay, selection.selected);
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : String(error) }, 409);
     }
@@ -1261,7 +1293,7 @@ agencyInternalRoutes.post('/draft-post', async (c) => {
     title: parsed.data.title,
     status: 'draft',
     content_type: parsed.data.content_type,
-    platforms: JSON.stringify(parsed.data.platforms),
+    platforms: JSON.stringify(selection.selected),
     master_caption: parsed.data.master_caption ?? null,
     cap_facebook: captions.facebook ?? null,
     cap_instagram: captions.instagram ?? null,
@@ -1346,7 +1378,7 @@ agencyInternalRoutes.post('/draft-post', async (c) => {
   if (existing && parsed.data.merge_existing) {
     let existingPlatforms: string[] = [];
     try { existingPlatforms = JSON.parse(existing.platforms ?? '[]') as string[]; } catch { existingPlatforms = []; }
-    const mergedPlatforms = [...new Set([...existingPlatforms, ...parsed.data.platforms])];
+    const mergedPlatforms = [...new Set([...existingPlatforms, ...selection.selected])];
     const mergeUpdates: Record<string, unknown> = {
       platforms: JSON.stringify(mergedPlatforms),
       cap_google_business: captions.google_business ?? existing.cap_google_business,

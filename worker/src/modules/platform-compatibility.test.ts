@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getCompatiblePlatforms, isPostContentComplete, withImplicitBlogPlatform, withImplicitGbpPlatform } from './platform-compatibility';
+import { getCompatiblePlatforms, isPostContentComplete, resolvePlatformSelection, withImplicitBlogPlatform, withImplicitGbpPlatform } from './platform-compatibility';
 
 describe('platform content compatibility', () => {
   it('does not route reels to Google Business', () => {
@@ -12,6 +12,15 @@ describe('platform content compatibility', () => {
     expect(getCompatiblePlatforms('video', [
       'facebook', 'instagram', 'youtube', 'linkedin', 'x', 'google_business',
     ])).toEqual(['facebook', 'instagram', 'youtube', 'linkedin', 'x']);
+  });
+
+  it('keeps a blog slot on website_blog and reports Google Business as incompatible', () => {
+    const selection = resolvePlatformSelection({
+      contentType: 'blog',
+      requestedPlatforms: ['website_blog', 'google_business'],
+    });
+    expect(selection.selected).toEqual(['website_blog']);
+    expect(selection.incompatible).toEqual(['google_business']);
   });
 });
 
