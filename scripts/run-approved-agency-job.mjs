@@ -612,7 +612,9 @@ async function runStructuredAgent(kind, agentSlug, backend, client, snapshot, ta
 }
 
 // Quality gate (§1/§7). Scores a single generated draft against the rubric and,
-// if it fails, runs ONE Claude-routed revision then re-scores. Returns the
+// if it fails, runs one routed revision then re-scores. A deterministic
+// language/adaptation failure gets one targeted correction before the draft
+// is rejected. Returns the
 // (possibly revised) draft with the verdict appended to review_notes so
 // Editorial Review and Marvin see it. Enabled by default; set
 // AGENCY_QUALITY_GATE=0 only for emergency bypass.
@@ -662,9 +664,37 @@ async function qualityGateDraft(agentSlug, backend, client, snapshot, baseTask, 
     throw new Error(`Quality gate blocked ${revisionKind}: score ${verdict.score ?? '?'} below ${minScore} or rubric failed — ${issues}`);
   }
 
-  const deterministicIssues = auditGeneratedDraftContent(current);
+  let deterministicIssues = auditGeneratedDraftContent(current);
   if (deterministicIssues.length > 0) {
-    throw new Error(`Deterministic content gate blocked ${revisionKind}: ${deterministicIssues.map((issue) => issue.code).join(', ')}`);
+    const codes = deterministicIssues.map((issue) => issue.code);
+    try {
+      const corrected = await runStructuredAgent(revisionKind, agentSlug, backend, client, snapshot, {
+        ...baseTask,
+        draft: current,
+        revision_required: true,
+        quality_issues: codes,
+        required_fixes: [
+          'Remove generic/recycled marketing phrases and unsupported outcome language.',
+          'Use a concrete customer problem, service mechanism, verified locality, and client-specific CTA.',
+          'Keep Facebook and Instagram copy materially distinct and platform-appropriate.',
+        ],
+      }, undefined, reviseChain);
+      if (corrected.output && typeof corrected.output === 'object') current = { ...current, ...corrected.output };
+      deterministicIssues = auditGeneratedDraftContent(current);
+      if (deterministicIssues.length === 0) {
+        const correctedCheck = await runStructuredAgent('qualityCheck', agentSlug, backend, client, snapshot,
+          { ...baseTask, draft: current }, 'default', validateChain);
+        verdict = correctedCheck.output || {};
+      }
+    } catch (err) {
+      const message = redactSecrets(err instanceof Error ? err.message : String(err)).slice(0, 240);
+      throw new Error(`Deterministic correction failed; draft was not saved: ${message}`);
+    }
+    if (deterministicIssues.length > 0 || verdictFails(verdict)) {
+      const remaining = deterministicIssues.map((issue) => issue.code);
+      if (verdictFails(verdict)) remaining.push('AI_QUALITY_RECHECK_FAILED');
+      throw new Error(`Deterministic content gate blocked ${revisionKind}: ${remaining.join(', ')}`);
+    }
   }
 
   const note = `Quality gate: ${verdict.pass ? 'PASS' : 'NEEDS REVIEW'} (score ${verdict.score ?? '?'})`
