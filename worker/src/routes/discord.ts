@@ -1100,6 +1100,9 @@ discordInternalRoute.post('/approved-jobs/:id/fail', async (c) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 discordInternalRoute.post('/register', async (c) => {
+  if (!(await requireDiscordBotSecret(c))) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
   const appId    = c.env.DISCORD_APPLICATION_ID ?? '';
   const botToken = c.env.DISCORD_BOT_TOKEN      ?? '';
 
@@ -1122,6 +1125,9 @@ discordInternalRoute.post('/register', async (c) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 discordInternalRoute.post('/notify', async (c) => {
+  if (!(await requireDiscordBotSecret(c))) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
   const channelId = c.env.DISCORD_CHANNEL_ID ?? '';
   const botToken  = c.env.DISCORD_BOT_TOKEN  ?? '';
 
@@ -1161,6 +1167,9 @@ discordInternalRoute.post('/notify', async (c) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 discordInternalRoute.post('/dm', async (c) => {
+  if (!(await requireDiscordBotSecret(c))) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
   const botToken = c.env.DISCORD_BOT_TOKEN ?? '';
   const ownerId  = c.env.DISCORD_OWNER_ID  ?? '';
 
