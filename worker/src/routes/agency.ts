@@ -1048,7 +1048,8 @@ agencyInternalRoutes.post('/keywords/approve', async (c) => {
   if (inactive.length > 0) return c.json({ error: 'Archived or rejected keywords cannot be reactivated through this endpoint', inactive }, 409);
   await c.env.DB.prepare(`UPDATE client_keywords
                           SET status = 'active', approval_status = 'approved', approved_by = ?, approved_at = unixepoch(),
-                              editorial_notes = ?, updated_at = unixepoch()
+                              opportunity_notes = trim(COALESCE(opportunity_notes, '') || '\nApproved: ' || ?),
+                              updated_at = unixepoch()
                           WHERE client_id = ? AND keyword IN (${placeholders}) AND status IN ('active', 'proposed')`)
     .bind(parsed.data.approved_by, parsed.data.reason, client.id, ...keywords).run();
   await appendAgencyLog(c.env.DB, {
