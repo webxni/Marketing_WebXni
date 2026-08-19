@@ -27,8 +27,11 @@ There are two Discord entry paths:
 There is also a separate approved terminal job runner:
 
 - bot poller: `discord-bot/bot.js`
+- runner-only poller: `scripts/run-approved-job-poller.mjs` (preferred when Discord gateway chat is hosted separately)
 - local runner script: `scripts/run-approved-terminal-job.mjs`
 - queue table: `approved_command_jobs`
+
+The runner-only poller requires only `API_BASE_URL` and `DISCORD_BOT_SECRET` from a mode-600 environment file. It does not require a Discord gateway token. It accepts the same fixed command whitelist and passes the secret to child runners through the environment, never through command-line arguments.
 
 ## Non-Negotiable Security Rules
 
