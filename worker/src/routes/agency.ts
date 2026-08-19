@@ -1113,7 +1113,6 @@ agencyInternalRoutes.post('/draft-post/:id/revise', async (c) => {
     asset_delivered: 0,
     asset_rights_confirmed: 0,
     generation_run_id: parsed.data.generation_run_id ?? existing.generation_run_id,
-    created_by: parsed.data.agent_slug,
     topic_fingerprint: buildTopicFingerprint({
       title: parsed.data.title, contentType: parsed.data.content_type, targetKeyword: parsed.data.target_keyword ?? null,
     }),
