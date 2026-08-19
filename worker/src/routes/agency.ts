@@ -1012,17 +1012,30 @@ agencyInternalRoutes.post('/draft-post', async (c) => {
   if (governanceIssues.length > 0) {
     return c.json({ error: `Editorial gate failed: ${governanceIssues.join('; ')}` }, 409);
   }
-  const duplicateConflict = await findRecentTopicConflict(c.env.DB, {
-    clientId: client.id,
-    candidateTitle: postData.title,
-    candidateKeyword: postData.target_keyword,
-    candidateCaption: postData.master_caption,
-    candidateLocality: postData.target_locality,
-    contentType: postData.content_type,
-    topicFingerprint: postData.topic_fingerprint,
-    publishDate: postData.publish_date,
-    excludePostId: existing?.id ?? null,
-  });
+  let duplicateConflict;
+  try {
+    duplicateConflict = await findRecentTopicConflict(c.env.DB, {
+      clientId: client.id,
+      candidateTitle: postData.title,
+      candidateKeyword: postData.target_keyword,
+      candidateCaption: postData.master_caption,
+      candidateLocality: postData.target_locality,
+      contentType: postData.content_type,
+      topicFingerprint: postData.topic_fingerprint,
+      publishDate: postData.publish_date,
+      excludePostId: existing?.id ?? null,
+    });
+  } catch (error) {
+    const detail = redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 600);
+    await appendAgencyLog(c.env.DB, {
+      agent_slug: parsed.data.agent_slug,
+      task_id: parsed.data.task_id ?? null,
+      status: 'error',
+      step: 'duplicate-validation',
+      summary: `Duplicate validation failed before draft persistence: ${detail}`,
+    }).catch(() => undefined);
+    return c.json({ error: 'Duplicate validation failed', code: 'DUPLICATE_VALIDATION_ERROR', detail }, 500);
+  }
   if (duplicateConflict) {
     await appendAgencyLog(c.env.DB, {
       agent_slug: parsed.data.agent_slug,
@@ -1084,7 +1097,20 @@ agencyInternalRoutes.post('/draft-post', async (c) => {
     return c.json({ ok: true, post_id: existing.id, merged: true });
   }
 
-  const post = await createPost(c.env.DB, postData);
+  let post;
+  try {
+    post = await createPost(c.env.DB, postData);
+  } catch (error) {
+    const detail = redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 600);
+    await appendAgencyLog(c.env.DB, {
+      agent_slug: parsed.data.agent_slug,
+      task_id: parsed.data.task_id ?? null,
+      status: 'error',
+      step: 'draft-persistence',
+      summary: `Draft persistence failed: ${detail}`,
+    }).catch(() => undefined);
+    return c.json({ error: 'Draft persistence failed', code: 'DRAFT_PERSISTENCE_ERROR', detail }, 500);
+  }
 
   // GMB structured fields + per-location captions are set via updatePost (keeps
   // createPost's column list untouched). Never changes gates: status stays draft,
