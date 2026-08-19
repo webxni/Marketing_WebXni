@@ -36,12 +36,6 @@ export async function preflightLocksmithEditorialGate(
   db: D1Database,
 ): Promise<PreflightResult> {
   if (!isGovernedLocksmith(client)) return { ok: true, tag: 'OK', reason: '' };
-  if (post.asset_r2_key && post.asset_rights_confirmed !== 1) {
-    return {
-      ok: false, tag: 'BLOCKED',
-      reason: 'Post media rights and excluded-service imagery have not been confirmed',
-    };
-  }
   const publishDay = post.publish_date?.slice(0, 10) || new Date().toISOString().slice(0, 10);
   try {
     let selectedPlatforms: string[] = [];

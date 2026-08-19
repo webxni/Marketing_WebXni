@@ -15,6 +15,8 @@ export const assetRoutes = new Hono<{ Bindings: Env; Variables: { user: SessionD
 export const publicAssetRoutes = new Hono<{ Bindings: Env }>();
 
 const DEFAULT_PUBLIC_MEDIA_PROXY = 'https://marketing.webxni.com/media';
+export const AGENCY_AI_MEDIA_RIGHTS_NOTE =
+  'Agency policy: WebXni assumes responsibility for AI-created media uploaded through Diseño.';
 
 function resolveMediaBase(env: Env): string {
   const publicBase = env.R2_MEDIA_PUBLIC_URL?.trim();
@@ -62,17 +64,25 @@ async function refreshPostPrimaryAsset(db: D1Database, postId: string): Promise<
   await db
     .prepare(
       `UPDATE posts SET asset_r2_key = ?, asset_r2_bucket = ?, asset_type = ?,
-                        asset_delivered = 1, asset_source = ?, asset_rights_confirmed = 0,
-                        asset_rights_notes = NULL, updated_at = ?
+                        asset_delivered = 1, asset_source = ?, asset_rights_confirmed = 1,
+                        asset_rights_notes = ?, updated_at = ?
        WHERE id = ?`,
     )
-    .bind(row.r2_key, row.r2_bucket, isVideo ? 'video' : 'image', assetSource, now, postId)
+    .bind(
+      row.r2_key,
+      row.r2_bucket,
+      isVideo ? 'video' : 'image',
+      assetSource,
+      AGENCY_AI_MEDIA_RIGHTS_NOTE,
+      now,
+      postId,
+    )
     .run();
 }
 
 export function normalizePrimaryAssetSource(source: string | null | undefined): string {
   const normalized = source?.trim().toLowerCase() ?? '';
-  if (!normalized || normalized === 'upload') return 'designer';
+  if (!normalized || normalized === 'upload' || normalized === 'designer') return 'ai_generated';
   return normalized;
 }
 

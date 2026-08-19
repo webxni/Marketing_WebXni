@@ -54,7 +54,7 @@ describe('validatePostApprovalReadiness', () => {
     ]));
   });
 
-  it('blocks unconfirmed asset rights and platform delivery failures', async () => {
+  it('does not require manual rights confirmation under the agency AI-media policy', async () => {
     const candidate = post({ asset_source: null, asset_rights_confirmed: 0 });
     const hash = await buildPostContentHash(candidate);
     const result = await validatePostApprovalReadiness(mockDb({
@@ -63,9 +63,9 @@ describe('validatePostApprovalReadiness', () => {
     }, { platform: 'facebook', error_message: 'rights missing' }), candidate, client(), { now });
     expect(result.blockers.map((item) => item.code)).toEqual(expect.arrayContaining([
       'ASSET_SOURCE_REQUIRED',
-      'ASSET_RIGHTS_UNCONFIRMED',
       'PLATFORM_DELIVERY_BLOCKED',
     ]));
+    expect(result.blockers.map((item) => item.code)).not.toContain('ASSET_RIGHTS_UNCONFIRMED');
   });
 
   it('accepts only a current clean review for post approval', async () => {

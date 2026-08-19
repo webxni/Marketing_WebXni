@@ -46,10 +46,6 @@ export async function validatePostApprovalReadiness(
   if (automated && mediaRequired && post.asset_r2_key && !post.asset_source?.trim()) {
     blockers.push({ code: 'ASSET_SOURCE_REQUIRED', message: 'Media source is missing' });
   }
-  if (automated && mediaRequired && post.asset_r2_key && post.asset_rights_confirmed !== 1) {
-    blockers.push({ code: 'ASSET_RIGHTS_UNCONFIRMED', message: 'Media rights have not been confirmed' });
-  }
-
   let cleanReviewId: string | null = null;
   if (automated) {
     const review = await getLatestContentReview(db, post.id);

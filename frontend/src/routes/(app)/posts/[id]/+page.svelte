@@ -254,30 +254,6 @@
     } catch { toast.error('Failed to update'); }
   }
 
-  async function confirmAssetRights(event: Event) {
-    if (!post || !(event.currentTarget instanceof HTMLInputElement)) return;
-    const confirmed = event.currentTarget.checked;
-    try {
-      await postsApi.update(post.id, {
-        asset_rights_confirmed: confirmed ? 1 : 0,
-        asset_rights_notes: confirmed
-          ? 'Confirmed in Diseño: authorized media with no excluded locksmith services depicted.'
-          : null,
-      });
-      post = {
-        ...post,
-        asset_rights_confirmed: confirmed ? 1 : 0,
-        asset_rights_notes: confirmed
-          ? 'Confirmed in Diseño: authorized media with no excluded locksmith services depicted.'
-          : null,
-      };
-      toast.success(confirmed ? 'Derechos y contenido visual confirmados' : 'Confirmación visual removida');
-    } catch {
-      event.currentTarget.checked = !confirmed;
-      toast.error('No se pudo guardar la confirmación visual');
-    }
-  }
-
   let skarlethNotesEdit = false;
   let skarlethNotesDraft = '';
   function startEditNotes() { skarlethNotesDraft = post?.skarleth_notes ?? ''; skarlethNotesEdit = true; }
@@ -1273,15 +1249,9 @@
       />
       {#if assets.length > 0}
         <p class="mt-3 text-xs text-muted">Origen registrado: <span class="text-white/90">{post.asset_source ?? 'pendiente'}</span></p>
-        <label class="mt-4 flex items-start gap-3 border-t border-border pt-4 text-xs text-white/90">
-          <input
-            type="checkbox"
-            class="mt-0.5 h-4 w-4 accent-[#1a73e8]"
-            checked={post.asset_rights_confirmed === 1}
-            on:change={confirmAssetRights}
-          />
-          <span>Confirmo que WebXni o el cliente tiene derecho a usar estos archivos y que no muestran copia de llaves, llaveros, programación, transponders, igniciones ni otros servicios excluidos.</span>
-        </label>
+        <p class="mt-4 border-t border-border pt-4 text-xs text-white/90">
+          Medios creados con IA bajo responsabilidad de WebXni. No se requiere confirmación manual de derechos.
+        </p>
       {/if}
     </div>
 
