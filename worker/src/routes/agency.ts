@@ -914,7 +914,76 @@ agencyInternalRoutes.get('/editorial-gate/:clientId', async (c) => {
   if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
   const month = c.req.query('month') ?? new Date().toISOString().slice(0, 7);
   if (!/^\d{4}-\d{2}$/.test(month)) return c.json({ error: 'month must be YYYY-MM' }, 400);
-  return c.json(await evaluateLocksmithGenerationGate(c.env.DB, c.req.param('clientId'), month));
+  const clientId = c.req.param('clientId');
+  const [gate, platforms, research, keywords] = await Promise.all([
+    evaluateLocksmithGenerationGate(c.env.DB, clientId, month),
+    c.env.DB.prepare(`SELECT id, platform, username, profile_url, connection_status,
+                             verification_status, verified_business_name, verified_phone,
+                             verified_market, verified_at, verification_notes, paused, paused_reason
+                      FROM client_platforms WHERE client_id = ? ORDER BY platform`)
+      .bind(clientId).all<Record<string, unknown>>(),
+    c.env.DB.prepare(`SELECT id, source, freshness_date, brand_name, source_url, source_domain,
+                             source_title, entity_match, geography_match, service_match,
+                             prohibited_service_detected, confidence, review_status, expires_at,
+                             notes, research_json, created_at, updated_at
+                      FROM client_research_notes WHERE client_id = ? ORDER BY created_at DESC LIMIT 20`)
+      .bind(clientId).all<Record<string, unknown>>(),
+    c.env.DB.prepare(`SELECT id, keyword, kw_type, search_intent, locality, source, confidence,
+                             status, approval_status, approved_by, approved_at
+                      FROM client_keywords WHERE client_id = ? ORDER BY keyword`)
+      .bind(clientId).all<Record<string, unknown>>(),
+  ]);
+  return c.json({
+    ...gate,
+    diagnostics: {
+      platforms: platforms.results,
+      research: research.results,
+      keywords: keywords.results,
+    },
+  });
+});
+
+// Exact-date QA export for the supervising content reviewer. This route is
+// intentionally read-only and bot-secret protected; it exposes the stored
+// content and readiness evidence needed to audit a batch without relying on a
+// paginated dashboard queue.
+agencyInternalRoutes.get('/content-batch', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const date = c.req.query('date') ?? '';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return c.json({ error: 'date must be YYYY-MM-DD' }, 400);
+  const posts = await c.env.DB.prepare(`
+    SELECT p.*, c.slug AS client_slug, c.canonical_name AS client_name,
+           c.phone AS client_phone, c.cta_text AS client_cta,
+           c.upload_post_profile
+    FROM posts p
+    JOIN clients c ON c.id = p.client_id
+    WHERE substr(COALESCE(p.publish_date, ''), 1, 10) = ?
+      AND COALESCE(p.status, '') != 'cancelled'
+    ORDER BY c.canonical_name, p.publish_date, p.content_type, p.created_at
+  `).bind(date).all<Record<string, unknown>>();
+
+  const items = [];
+  for (const post of posts.results) {
+    const postId = String(post.id ?? '');
+    const [platforms, assets, reviews] = await Promise.all([
+      c.env.DB.prepare(`SELECT platform, status, error_message, attempted_at, idempotency_key,
+                               attempt_count, published_at, real_url
+                        FROM post_platforms WHERE post_id = ? ORDER BY platform`)
+        .bind(postId).all<Record<string, unknown>>(),
+      c.env.DB.prepare(`SELECT id, r2_key, r2_bucket, filename, content_type, size_bytes,
+                               source, sort_order, created_at
+                        FROM assets WHERE post_id = ? ORDER BY sort_order, created_at`)
+        .bind(postId).all<Record<string, unknown>>(),
+      c.env.DB.prepare(`SELECT id, severity, notes_json, disposition, finding_type,
+                               source_record_type, source_record_id, recommended_source_fix,
+                               review_status, reviewed_by, created_at, resolved_at
+                        FROM content_review_notes WHERE post_id = ? OR blog_id = ?
+                        ORDER BY created_at DESC`)
+        .bind(postId, postId).all<Record<string, unknown>>(),
+    ]);
+    items.push({ ...post, platform_rows: platforms.results, assets: assets.results, reviews: reviews.results });
+  }
+  return c.json({ ok: true, date, count: items.length, items });
 });
 
 agencyInternalRoutes.post('/content-review', async (c) => {
