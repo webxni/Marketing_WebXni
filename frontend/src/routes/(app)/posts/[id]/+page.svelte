@@ -39,6 +39,13 @@
     return Number.isFinite(scheduled) && scheduled > Date.now();
   }
 
+  function advisoryMessage(blocker: { code: string; message: string }): string {
+    if (blocker.code === 'PUBLISH_DATE_OVERDUE') {
+      return 'Publish date has passed; owner approval will replace it with the current time and post now.';
+    }
+    return blocker.message;
+  }
+
   async function load() {
     loading = true;
     try {
@@ -718,7 +725,7 @@
       {#if post.approval_blockers?.length}
         <ul class="space-y-1">
           {#each post.approval_blockers.slice(0, 5) as blocker}
-            <li><span class="font-mono text-xs">{blocker.code}</span>: {blocker.message}</li>
+            <li><span class="font-mono text-xs">{blocker.code}</span>: {advisoryMessage(blocker)}</li>
           {/each}
         </ul>
       {/if}

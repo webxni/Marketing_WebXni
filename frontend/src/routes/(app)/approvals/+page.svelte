@@ -26,6 +26,13 @@
     return post.status === 'pending_approval';
   }
 
+  function advisoryMessage(blocker: { code: string; message: string }): string {
+    if (blocker.code === 'PUBLISH_DATE_OVERDUE') {
+      return 'Publish date has passed; owner approval will replace it with the current time and post now.';
+    }
+    return blocker.message;
+  }
+
   function toDatetimeLocal(value: string | null): string | null {
     if (!value) return null;
     if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value)) return value;
@@ -376,7 +383,7 @@
             <div class="rounded border border-red-500/30 bg-red-500/5 px-2 py-1.5 text-[10px] text-red-300">
               <div class="font-semibold mb-0.5">Advisory — owner approval will override</div>
               {#each post.approval_blockers.slice(0, 3) as blocker}
-                <div title={blocker.code}>{blocker.message}</div>
+                <div title={blocker.code}>{advisoryMessage(blocker)}</div>
               {/each}
               {#if post.approval_blockers.length > 3}
                 <div>+{post.approval_blockers.length - 3} more blocker(s)</div>
