@@ -145,7 +145,7 @@ function harnessFlow() {
     ['Discord command or scheduled trigger', 'User intent starts at Discord, cron, or the protected dashboard.'],
     ['Protected backend endpoint', 'The Worker validates auth and maps the request to a fixed agent slug.'],
     ['approved_command_jobs', 'Only fixed command_name values are queued. No shell command comes from the user.'],
-    ['Local Discord bot / PM2 runner', 'The bot claims one approved job and runs a fixed script from the whitelist.'],
+    ['Supervised approved-job poller', 'The restart-persistent poller claims one approved job at a time and runs only fixed scripts from the whitelist.'],
     ['Whitelisted script', 'The script builds deterministic prompts and validates structured JSON.'],
     ['Hermes CLI / Gemini API / Claude/OpenAI fallback', 'Backend choice is agent-specific and budget controlled; Codex is not part of active agency routing.'],
     ['Database save', 'Outputs are saved as tasks, findings, research, strategy, or draft content.'],
