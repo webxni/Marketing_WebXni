@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { auditPostContentQuality, auditPostsContentQuality } from './content-quality-audit.mjs';
+import { auditGeneratedDraftContent, auditPostContentQuality, auditPostsContentQuality } from './content-quality-audit.mjs';
 
 let passed = 0;
 const ok = (label, fn) => { fn(); passed++; console.log(`  ok  ${label}`); };
@@ -61,6 +61,27 @@ ok('batch audit summarizes duplicate title families and issue counts', () => {
   assert.equal(result.total, 2);
   assert.equal(result.duplicate_title_families.length, 1);
   assert.ok(result.issue_counts.GENERIC_MARKETING_LANGUAGE >= 1);
+});
+
+ok('generated draft gate blocks generic filler even when an AI score passes', () => {
+  const issues = auditGeneratedDraftContent({
+    title: 'Transform Your Los Angeles Home with Professional Remodeling',
+    master_caption: 'Discover an ideal space with our expert team and peace of mind.',
+    platform_captions: {
+      facebook: 'Ready to elevate your home with our expert touch.',
+      instagram: 'Dreaming of a home makeover? Trust the experts.',
+    },
+  });
+  assert.ok(issues.some((issue) => issue.code === 'GENERIC_MARKETING_LANGUAGE' && issue.severity === 'blocker'));
+});
+
+ok('generated draft gate requires distinct Facebook and Instagram copy', () => {
+  const issues = auditGeneratedDraftContent({
+    title: 'Pasadena Deadbolt Alignment Before Hardware Replacement',
+    master_caption: 'A dragging deadbolt can point to door alignment before the cylinder needs replacement.',
+    platform_captions: { facebook: 'Check the bolt with the door open.', instagram: 'Check the bolt with the door open.' },
+  });
+  assert.ok(issues.some((issue) => issue.code === 'IDENTICAL_CORE_PLATFORM_COPY'));
 });
 
 console.log(`\n${passed} content quality audit tests passed`);

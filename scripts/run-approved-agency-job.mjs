@@ -6,6 +6,7 @@ import { runTerminalJsonAgent } from './lib/terminal-json-agent.mjs';
 import { pick_executor, executorLead, taskTypeForAgent } from './lib/executor-router.mjs';
 import { automationSlotKey, deliveryPlatforms, packageBlogSlots, packageSlots, packageSocialSlots, recoveryPackageSlotsForClient } from './lib/agency-package-slots.mjs';
 import { agencySafety, backendPriorityForAgent } from './lib/agency-harness-contract.mjs';
+import { auditGeneratedDraftContent } from './lib/content-quality-audit.mjs';
 
 function arg(name) {
   const idx = process.argv.indexOf(name);
@@ -659,6 +660,11 @@ async function qualityGateDraft(agentSlug, backend, client, snapshot, baseTask, 
       ? verdict.issues.slice(0, 4).join('; ')
       : 'quality gate failed';
     throw new Error(`Quality gate blocked ${revisionKind}: score ${verdict.score ?? '?'} below ${minScore} or rubric failed — ${issues}`);
+  }
+
+  const deterministicIssues = auditGeneratedDraftContent(current);
+  if (deterministicIssues.length > 0) {
+    throw new Error(`Deterministic content gate blocked ${revisionKind}: ${deterministicIssues.map((issue) => issue.code).join(', ')}`);
   }
 
   const note = `Quality gate: ${verdict.pass ? 'PASS' : 'NEEDS REVIEW'} (score ${verdict.score ?? '?'})`

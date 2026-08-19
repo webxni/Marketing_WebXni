@@ -15,6 +15,7 @@ const PLATFORM_CAPTION_FIELD = {
 const GENERIC_MARKETING_RE = /\b(?:ready to|transform|elevate|unlock|discover|game.?changer|boost|optimize your|stunning|dreaming of|stress-free)\b/i;
 const OVERSTRONG_CLAIM_RE = /\b(?:guarantee|guaranteed|no surprises|hidden fees|prevent(?:s|ing)?\b|ensure(?:s)?\b|stay pristine for decades|saves you money|costly repairs|lasting value)\b/i;
 const PHONE_RE = /\(?(\d{3})\)?[-. ]?(\d{3})[-. ]?(\d{4})/g;
+const RECYCLED_COPY_RE = /\b(?:trusted (?:team|experts?)|expert (?:team|touch|craftsmanship)|highest satisfaction|ideal space|home makeover|peace of mind|look no further|top-notch|exceptional service|your go-to)\b/i;
 
 function parsePlatforms(raw) {
   if (Array.isArray(raw)) return raw;
@@ -46,6 +47,38 @@ function collectText(post) {
     post.ai_video_prompt,
     post.video_script,
   ].filter(Boolean).join('\n');
+}
+
+export function auditGeneratedDraftContent(draft) {
+  const hasPlatformCaptions = Boolean(draft?.platform_captions && typeof draft.platform_captions === 'object');
+  const platformCaptions = hasPlatformCaptions
+    ? Object.values(draft.platform_captions)
+    : [];
+  const combined = [
+    draft?.title,
+    draft?.master_caption,
+    draft?.body,
+    draft?.excerpt,
+    draft?.designer_prompt_es,
+    draft?.ai_image_prompt,
+    draft?.ai_video_prompt,
+    ...platformCaptions,
+  ].filter(Boolean).join('\n');
+  const issues = [];
+  if (GENERIC_MARKETING_RE.test(combined) || RECYCLED_COPY_RE.test(combined)) {
+    issues.push({ code: 'GENERIC_MARKETING_LANGUAGE', severity: 'blocker' });
+  }
+  if (OVERSTRONG_CLAIM_RE.test(combined)) {
+    issues.push({ code: 'UNSUPPORTED_OR_OVERSTRONG_OUTCOME_CLAIM', severity: 'blocker' });
+  }
+  const facebook = typeof draft?.platform_captions?.facebook === 'string' ? draft.platform_captions.facebook.trim() : '';
+  const instagram = typeof draft?.platform_captions?.instagram === 'string' ? draft.platform_captions.instagram.trim() : '';
+  if (hasPlatformCaptions && (!facebook || !instagram)) {
+    issues.push({ code: 'MISSING_CORE_PLATFORM_ADAPTATIONS', severity: 'blocker' });
+  } else if (hasPlatformCaptions && facebook.toLowerCase() === instagram.toLowerCase()) {
+    issues.push({ code: 'IDENTICAL_CORE_PLATFORM_COPY', severity: 'blocker' });
+  }
+  return issues;
 }
 
 function titleFamily(title) {
