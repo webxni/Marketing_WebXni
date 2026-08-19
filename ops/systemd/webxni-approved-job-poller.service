@@ -1,0 +1,27 @@
+[Unit]
+Description=WebXni approved job poller
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/home/webxni-ms/Marketing_WebXni
+EnvironmentFile=/home/webxni-ms/.config/webxni-upload-post/env
+Environment=DISCORD_RUNNER_ID=webxni-ms:approved-job-poller
+Environment=APPROVED_JOB_POLL_MS=10000
+Environment=MAX_CONCURRENT_APPROVED_JOBS=1
+ExecStart=/usr/bin/node /home/webxni-ms/Marketing_WebXni/scripts/run-approved-job-poller.mjs
+Restart=always
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=120
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+UMask=0077
+
+[Install]
+WantedBy=default.target
