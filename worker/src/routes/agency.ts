@@ -910,6 +910,13 @@ agencyInternalRoutes.get('/review-queue', async (c) => {
   return c.json({ items });
 });
 
+agencyInternalRoutes.get('/editorial-gate/:clientId', async (c) => {
+  if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
+  const month = c.req.query('month') ?? new Date().toISOString().slice(0, 7);
+  if (!/^\d{4}-\d{2}$/.test(month)) return c.json({ error: 'month must be YYYY-MM' }, 400);
+  return c.json(await evaluateLocksmithGenerationGate(c.env.DB, c.req.param('clientId'), month));
+});
+
 agencyInternalRoutes.post('/content-review', async (c) => {
   if (!(await requireBotSecret(c))) return c.json({ error: 'Unauthorized' }, 401);
   const parsed = internalReviewSchema.safeParse(await c.req.json().catch(() => ({})));
