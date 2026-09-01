@@ -1,9 +1,59 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { redactSecrets } from './lib/agency-redaction.mjs';
 import { expandPriority, isBackendAvailable } from './lib/terminal-json-agent.mjs';
+
+function parseEnvFile(content) {
+  const values = {};
+  for (const rawLine of String(content || '').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const body = line.startsWith('export ') ? line.slice(7).trim() : line;
+    const eq = body.indexOf('=');
+    if (eq <= 0) continue;
+    const key = body.slice(0, eq).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    let value = body.slice(eq + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    values[key] = value;
+  }
+  return values;
+}
+
+const DOCTOR_ENV_ALLOWLIST = new Set([
+  'API_BASE_URL',
+  'DISCORD_BOT_SECRET',
+  'D1_DATABASE_NAME',
+  'HERMES_CLI_PATH',
+  'HERMES_COMMAND',
+  'HERMES_BIN',
+  'HERMES_PROVIDER',
+  'HERMES_MODEL',
+  'AGENCY_EXECUTE_AI',
+  'AGENCY_ALLOW_DRAFT_POSTS',
+  'AGENCY_ALLOW_CODEX',
+]);
+
+function loadOperationalEnvDefaults() {
+  const candidates = [join(process.cwd(), '.env'), join(process.cwd(), 'discord-bot', '.env')];
+  const loaded = [];
+  for (const envPath of candidates) {
+    if (!existsSync(envPath)) continue;
+    const values = parseEnvFile(readFileSync(envPath, 'utf8'));
+    for (const [key, value] of Object.entries(values)) {
+      if (!DOCTOR_ENV_ALLOWLIST.has(key) || process.env[key]) continue;
+      process.env[key] = value;
+      loaded.push(key);
+    }
+  }
+  return loaded;
+}
+
+const OPERATIONAL_ENV_KEYS = loadOperationalEnvDefaults();
 
 const API_BASE_URL = process.env.API_BASE_URL || 'https://marketing.webxni.com';
 const BOT_SECRET = process.env.DISCORD_BOT_SECRET || '';
