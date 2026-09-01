@@ -237,7 +237,10 @@ async function inspectRemoteHarness() {
   const status = await post('/internal/agency/status');
   ok('Worker internal status', status.ok ? 'reachable' : 'unexpected response');
   const health = await post('/internal/agency/stale-check');
-  ok('heartbeat stale-check', `stale=${health.stale_count ?? 0}, failed=${health.failed_count ?? 0}`);
+  ok(
+    'heartbeat and task/job lifecycle check',
+    `stale=${health.stale_count ?? 0}, failed=${health.failed_count ?? 0}, reconciled_tasks=${health.reconciled_task_count ?? 0}`,
+  );
   const snapshotRes = await post('/internal/agency/snapshot');
   const snapshot = snapshotRes.snapshot;
   ok('approved_command_jobs access', `${snapshot.approved_jobs.length} recent harness jobs visible`);

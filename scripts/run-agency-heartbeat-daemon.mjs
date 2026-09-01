@@ -47,15 +47,21 @@ async function runCheck() {
     const data = await request('/internal/agency/stale-check');
     consecutiveErrors = 0;
 
-    const { stale_count = 0, failed_count = 0, marked = [], agents = [] } = data;
+    const {
+      stale_count = 0,
+      failed_count = 0,
+      reconciled_task_count = 0,
+      marked = [],
+      agents = [],
+    } = data;
     const running = agents.filter((a) => a.heartbeat_status === 'running').length;
     const healthy = agents.filter((a) => a.heartbeat_status === 'healthy').length;
 
-    if (stale_count > 0 || failed_count > 0) {
+    if (stale_count > 0 || failed_count > 0 || reconciled_task_count > 0) {
       const list = marked.length > 0 ? ` [${marked.join(', ')}]` : '';
-      console.warn(`[heartbeat] ${ts} ALERT stale=${stale_count} failed=${failed_count}${list}`);
+      console.warn(`[heartbeat] ${ts} ALERT stale=${stale_count} failed=${failed_count} reconciled_tasks=${reconciled_task_count}${list}`);
     } else {
-      console.log(`[heartbeat] ${ts} ok — healthy=${healthy} running=${running} idle=${agents.length - healthy - running}`);
+      console.log(`[heartbeat] ${ts} ok — healthy=${healthy} running=${running} idle=${agents.length - healthy - running} reconciled_tasks=0`);
     }
   } catch (err) {
     consecutiveErrors++;
