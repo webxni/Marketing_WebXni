@@ -137,6 +137,11 @@ function inspectLocalHarness() {
     else fail(`whitelist ${commandName}`, `${script} missing`);
   }
 
+  const systemdBot = spawnSync('systemctl', ['--user', 'is-active', 'webxni-bot.service'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  if (systemdBot.status === 0 && systemdBot.stdout.trim() === 'active') {
+    ok('systemd webxni-bot', 'active');
+  } else {
+
   const pm2 = spawnSync('pm2', ['jlist'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   if (pm2.status === 0) {
     try {
@@ -154,6 +159,7 @@ function inspectLocalHarness() {
     warn('pm2', 'not available from this shell');
   }
 
+  }
   for (const cmd of ['claude', 'gemini', 'codex', 'npx']) {
     const version = commandVersion(cmd);
     if (version) ok(`${cmd} command`, version);
