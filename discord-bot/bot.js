@@ -161,7 +161,7 @@ async function askHermesAgent(userMessage, userId, username) {
     'You are WebXni Assistant powered by Hermes.',
     'Reply in JSON only and keep the response short, clear, and practical.',
     'You are speaking with a Discord user inside the WebXni marketing platform.',
-    'Truthfulness rule: the Discord bot runs Hermes first and falls back to OpenAI only when Hermes is unavailable. If the user asks about the backend, say that directly.',
+    'Truthfulness rule: every Discord request is handled by Hermes Harness. There is no OpenAI, Codex, Claude, or direct Gemini fallback.',
     `Discord user: ${username}`,
     'Use the recent conversation history for context.',
     'If you do not know a platform-specific or app-specific fact, say so instead of inventing it.',
@@ -177,37 +177,14 @@ async function askHermesAgent(userMessage, userId, username) {
   const result = await runTerminalJsonAgent({
     prompt,
     schema,
-    preferredBackend: ['hermes', 'openai'],
+    preferredBackend: ['hermes'],
   });
 
   return result.output;
 }
 
-async function askWorkerAgent(userMessage, userId, username) {
-  const history = getHistory(userId);
-
-  const res = await fetch(`${API_BASE_URL}/api/ai/dispatch`, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      source:       'discord',
-      bot_token:    BOT_SECRET,
-      message:      userMessage,
-      history:      history.slice(-6),
-      discord_user: username,
-    }),
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    console.error(`[agent] dispatch ${res.status}:`, err.slice(0, 200));
-    throw new Error(`Agent returned ${res.status}`);
-  }
-
-  const data = await res.json();
-
-  // Update history — include numbered item list so the agent can resolve
-  // ordinal references like "approve the 8th post" in the next turn.
+async function askAgent(userMessage, userId, username) {
+  const data = await askHermesAgent(userMessage, userId, username);
   pushHistory(userId, 'user', userMessage);
   let assistantEntry = data.message || '';
   if (Array.isArray(data.items) && data.items.length > 0) {
@@ -219,41 +196,7 @@ async function askWorkerAgent(userMessage, userId, username) {
     assistantEntry += `\n\n[Items shown in this response:\n${itemLines.join('\n')}]`;
   }
   pushHistory(userId, 'assistant', assistantEntry);
-
   return data;
-}
-
-async function askAgent(userMessage, userId, username) {
-  try {
-    const data = await askHermesAgent(userMessage, userId, username);
-    pushHistory(userId, 'user', userMessage);
-    let assistantEntry = data.message || '';
-    if (Array.isArray(data.items) && data.items.length > 0) {
-      const itemLines = data.items.map((item, i) => {
-        const id    = item.id    ?? '?';
-        const title = item.title ?? item.name ?? '—';
-        return `${i + 1}. [id:${id}] ${title}`;
-      });
-      assistantEntry += `\n\n[Items shown in this response:\n${itemLines.join('\n')}]`;
-    }
-    pushHistory(userId, 'assistant', assistantEntry);
-    return data;
-  } catch (hermesErr) {
-    console.warn('[agent] Hermes path failed; falling back to OpenAI worker dispatch:', hermesErr.message);
-    const data = await askWorkerAgent(userMessage, userId, username);
-    pushHistory(userId, 'user', userMessage);
-    let assistantEntry = data.message || '';
-    if (Array.isArray(data.items) && data.items.length > 0) {
-      const itemLines = data.items.map((item, i) => {
-        const id    = item.id    ?? '?';
-        const title = item.title ?? item.name ?? '—';
-        return `${i + 1}. [id:${id}] ${title}`;
-      });
-      assistantEntry += `\n\n[Items shown in this response:\n${itemLines.join('\n')}]`;
-    }
-    pushHistory(userId, 'assistant', assistantEntry);
-    return data;
-  }
 }
 
 // ── Format agent response for Discord ─────────────────────────────────────────
@@ -368,10 +311,16 @@ const client = new Client({
   ],
 });
 
+const APPROVED_JOB_POLLER_ENABLED = process.env.APPROVED_JOB_POLLER_ENABLED === '1';
+
 client.once(Events.ClientReady, (c) => {
   console.log(`[bot] Ready as ${c.user.tag}`);
   c.user.setActivity('WebXni Assistant powered by Hermes', { type: ActivityType.Watching });
-  startApprovedJobPoller().catch((err) => console.error('[jobs] poller init error:', err));
+  if (APPROVED_JOB_POLLER_ENABLED) {
+    startApprovedJobPoller().catch((err) => console.error('[jobs] poller init error:', err));
+  } else {
+    console.log('[jobs] approved-job polling disabled; canonical supervised runner owns the queue');
+  }
 });
 
 // Concurrency cap for approved jobs. Default 1 preserves today's one-at-a-time
@@ -539,8 +488,6 @@ async function runApprovedJob(job) {
   const allowed = {
     weekly_content_terminal: ['scripts/run-approved-terminal-job.mjs'],
     regenerate_content_terminal: ['scripts/run-approved-terminal-job.mjs'],
-    weekly_content_claude: ['scripts/run-approved-terminal-job.mjs'],
-    regenerate_content_claude: ['scripts/run-approved-terminal-job.mjs'],
     agency_system_review: ['scripts/run-approved-agency-job.mjs'],
     agency_security_review: ['scripts/run-approved-agency-job.mjs'],
     agency_client_research: ['scripts/run-approved-agency-job.mjs'],
@@ -576,7 +523,7 @@ async function runApprovedJob(job) {
       API_BASE_URL,
       DISCORD_BOT_SECRET: BOT_SECRET,
       DISCORD_RUNNER_ID: RUNNER_ID,
-      TERMINAL_AGENT: process.env.TERMINAL_AGENT || process.env.TERMINAL_AI_BACKEND || '',
+      TERMINAL_AGENT: 'hermes',
     },
   });
 
@@ -675,10 +622,8 @@ client.on(Events.MessageCreate, async (message) => {
   if (pseudoWeekly) {
     const rawArgs = pseudoWeekly[1] ?? '';
     const clientMatch = rawArgs.match(/\bclient:([^\s]+)/i);
-    const providerMatch = rawArgs.match(/\bprovider:([^\s]+)/i);
     const rangeMatch = rawArgs.match(/\bdate_range:([^\s]+)/i);
     const clientArg = (clientMatch?.[1] ?? 'all').trim();
-    const providerArg = (providerMatch?.[1] ?? 'terminal').trim().toLowerCase();
     const rangeArg = (rangeMatch?.[1] ?? 'this_week').trim().toLowerCase();
     const { start, end } = resolveWeeklyDateRange(rangeArg);
     const clientPhrase = clientArg === 'all' ? 'all active clients' : clientArg;
@@ -686,7 +631,7 @@ client.on(Events.MessageCreate, async (message) => {
       client_slugs: clientArg === 'all' ? [] : [clientArg],
       date_from: start,
       date_to: end,
-      provider: ['terminal', 'claude', 'codex', 'gemini'].includes(providerArg) ? 'terminal' : 'openai',
+      provider: 'terminal',
       overwrite_existing: false,
     })}. Content only, no image generation unless explicitly requested.`;
   }
