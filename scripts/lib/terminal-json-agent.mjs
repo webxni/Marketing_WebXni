@@ -1,65 +1,19 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 
 const JSON_ONLY_SYSTEM =
-  'You are a WebXni marketing agency AI agent. ' +
+  'You are WebXni Hermes Harness. ' +
   'CRITICAL OUTPUT RULE: Reply with exactly one JSON object matching the provided schema. ' +
   'No prose, no markdown, no code fences, no trailing text. ' +
-  'All Claude skills (webxni-agency-orchestrator, webxni-system-reliability, webxni-security-sentinel, ' +
-  'webxni-client-research, webxni-strategist, webxni-social-copywriter, webxni-blog-writer, ' +
-  'webxni-editorial-reviewer) apply equally to every backend.';
+  'Use the loaded Hermes skills for the requested role. Hermes is the only orchestrator/backend. ' +
+  'Do not call another model provider or model CLI. Perform research through Hermes tools only.';
 
-const BROKEN_BACKEND_TTL_MS = Number(process.env.AGENCY_BACKEND_FAILURE_TTL_MS || 15 * 60 * 1000);
+const BROKEN_BACKEND_TTL_MS = Number(process.env.AGENCY_BACKEND_FAILURE_TTL_MS || 0);
 const TERMINAL_PROCESS_TIMEOUT_MS = Number(process.env.AGENCY_TERMINAL_TIMEOUT_MS || 15 * 60 * 1000);
-const HERMES_ENV_ALLOWLIST = new Set([
-  'GOOGLE_API_KEY',
-  'GEMINI_API_KEY',
-  'GEMINI_API_KEYS',
-  'GEMINI_API_KEY_BACKUP',
-  'GEMINI_API_KEY_3',
-  'OPENAI_API_KEY',
-  'ANTHROPIC_API_KEY',
-  'HERMES_PROVIDER',
-  'HERMES_MODEL',
-  'HERMES_BLOG_MODEL',
-]);
 const brokenBackends = new Map();
-
-function parseEnvFile(content) {
-  const values = {};
-  for (const rawLine of String(content || '').split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith('#')) continue;
-    const body = line.startsWith('export ') ? line.slice(7).trim() : line;
-    const eq = body.indexOf('=');
-    if (eq <= 0) continue;
-    const key = body.slice(0, eq).trim();
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
-    let value = body.slice(eq + 1).trim();
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-    values[key] = value;
-  }
-  return values;
-}
-
-function loadHermesEnvDefaults(env = process.env) {
-  const envPath = env.HERMES_ENV_PATH || join(homedir(), '.hermes', '.env');
-  if (!existsSync(envPath)) return [];
-  const loaded = [];
-  const values = parseEnvFile(readFileSync(envPath, 'utf8'));
-  for (const [key, value] of Object.entries(values)) {
-    if (!HERMES_ENV_ALLOWLIST.has(key) || env[key]) continue;
-    env[key] = value;
-    loaded.push(key);
-  }
-  return loaded;
-}
-
-loadHermesEnvDefaults();
+let geminiKeyCursor = 2;
 
 // ── Backend availability ─────────────────────────────────────────────────────
 
@@ -90,9 +44,10 @@ function resolveHermesCommand() {
 function normalizeBackendName(backend) {
   const b = String(backend || '').trim().toLowerCase();
   if (b === 'hermes_cli' || b === 'hermes-agent' || b === 'hermes-agent-cli') return 'hermes';
-  if (b === 'claude_code' || b === 'claude-code') return 'claude';
-  if (b === 'gemini_cli' || b === 'gemini-cli' || b === 'google') return 'disabled_gemini';
-  if (b === 'openai_api' || b === 'openai-api') return 'openai';
+  if (b === 'claude_code' || b === 'claude-code' || b === 'claude' || b === 'anthropic') return 'blocked';
+  if (b === 'codex' || b === 'openai-codex') return 'blocked';
+  if (b === 'openai_api' || b === 'openai-api' || b === 'openai') return 'blocked';
+  if (b === 'gemini_cli' || b === 'gemini-cli' || b === 'gemini' || b === 'google') return 'hermes';
   return b;
 }
 
@@ -101,19 +56,8 @@ function isBackendAvailable(backend) {
   const brokenUntil = brokenBackends.get(b) || 0;
   if (brokenUntil > Date.now()) return false;
   if (brokenUntil) brokenBackends.delete(b);
-  if (b === 'openai') return !!process.env.OPENAI_API_KEY;
-  if (b === 'hermes') {
-    if (!resolveHermesCommand()) return false;
-    try {
-      resolveHermesProviderOverride(process.env);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  // Gemini direct execution is disabled for Marketing_WebXni Upload Post routing.
-  if (b === 'gemini' || b === 'disabled_gemini') return false;
-  if (b === 'claude' || b === 'codex') return commandAvailable(b);
+  if (b === 'blocked') return false;
+  if (b === 'hermes') return !!resolveHermesCommand();
   return false;
 }
 
@@ -121,19 +65,9 @@ function isBackendAvailable(backend) {
  * Expand a priority list into an ordered list of available backends.
  * 'auto' expands to all available backends in default order.
  */
-function completePriority(backends, excludedBackends = []) {
-  const AUTO_ORDER = ['hermes', 'claude', 'openai'];
+function completePriority(_backends, excludedBackends = []) {
   const excluded = new Set(excludedBackends.map(normalizeBackendName));
-  const requested = backends.flatMap((backend) => {
-    const normalized = normalizeBackendName(backend);
-    return normalized === 'auto' ? AUTO_ORDER : [normalized];
-  });
-  const allowCodex = process.env.AGENCY_ALLOW_CODEX === '1';
-  return [...new Set([
-    ...requested.filter((backend) => backend && backend !== 'openai' && backend !== 'gemini' && backend !== 'disabled_gemini'),
-    ...AUTO_ORDER.filter((backend) => backend !== 'openai'),
-    'openai',
-  ])].filter((backend) => !excluded.has(backend) && (allowCodex || backend !== 'codex'));
+  return excluded.has('hermes') ? [] : ['hermes'];
 }
 
 function expandPriority(backends, excludedBackends = []) {
@@ -150,7 +84,7 @@ function expandPriority(backends, excludedBackends = []) {
     const tried = backends.join(', ');
     throw new Error(
       `No backend available. Tried: ${tried}. ` +
-      'Check CLI installations (hermes/claude/gemini --version) and OPENAI_API_KEY.',
+      'Check Hermes CLI / HERMES_CLI_PATH. OpenAI, Codex, Claude, and direct Gemini backends are disabled by policy.',
     );
   }
   return result;
@@ -158,7 +92,10 @@ function expandPriority(backends, excludedBackends = []) {
 
 function markBackendBroken(backend) {
   const normalized = normalizeBackendName(backend);
-  if (!normalized || normalized === 'openai' || BROKEN_BACKEND_TTL_MS <= 0) return;
+  // Hermes is the only approved executor. Do not suppress it for the rest of a
+  // multi-slot batch after one transient model/validation failure; let slot-level
+  // retry feedback correct the output instead.
+  if (!normalized || normalized === 'blocked' || normalized === 'hermes' || BROKEN_BACKEND_TTL_MS <= 0) return;
   brokenBackends.set(normalized, Date.now() + BROKEN_BACKEND_TTL_MS);
 }
 
@@ -209,13 +146,63 @@ function sanitizeJsonControlChars(s) {
   return out;
 }
 
-function parseJsonFromText(text) {
+export class TerminalJsonAgentError extends Error {
+  constructor(message, details = {}) {
+    super(message);
+    this.name = 'TerminalJsonAgentError';
+    this.code = details.code || 'TERMINAL_JSON_AGENT_ERROR';
+    this.backend = details.backend || null;
+    this.command = details.command || null;
+    this.exitStatus = details.exitStatus ?? null;
+    this.signal = details.signal ?? null;
+    this.stderrPreview = safePreview(details.stderr || '');
+    this.stdoutPreview = safePreview(details.stdout || '');
+    this.bodyPreview = safePreview(details.body || details.stdout || details.stderr || '');
+    this.retryable = details.retryable === true;
+    this.status = details.status || (this.retryable ? 'retryable_backend_error' : 'failed');
+  }
+}
+
+function safePreview(value, max = 1200) {
+  return String(value || '')
+    .replace(/(sk-[A-Za-z0-9_-]{12,}|cfut_[A-Za-z0-9_-]{12,}|AIza[0-9A-Za-z_-]{20,})/g, '[redacted]')
+    .slice(0, max);
+}
+
+function isRetryableBackendBody(text) {
+  const lower = String(text || '').toLowerCase();
+  return lower.includes('api call failed')
+    || lower.includes('api_call_failed')
+    || lower.includes('rate limit')
+    || lower.includes('quota')
+    || lower.includes('temporarily unavailable')
+    || lower.includes('timeout')
+    || lower.includes('503')
+    || lower.includes('502')
+    || lower.includes('429');
+}
+
+function parseJsonFromText(text, context = {}) {
   const candidate = extractJsonObject(text) ?? text.trim();
   try {
     return JSON.parse(candidate);
   } catch {
-    // Retry after escaping in-string control characters.
-    return JSON.parse(sanitizeJsonControlChars(candidate));
+    try {
+      // Retry after escaping in-string control characters.
+      return JSON.parse(sanitizeJsonControlChars(candidate));
+    } catch {
+      const body = candidate || text;
+      const retryable = isRetryableBackendBody(body);
+      throw new TerminalJsonAgentError('Backend returned non-JSON output before a schema object could be parsed', {
+        code: 'NON_JSON_BACKEND_OUTPUT',
+        backend: context.backend,
+        command: context.command,
+        stdout: text,
+        body,
+        retryable,
+        status: retryable ? 'retryable_non_json_backend_output' : 'non_json_backend_output',
+      });
+    }
   }
 }
 
@@ -229,211 +216,57 @@ function buildWrappedPrompt(prompt, schema) {
 
 // ── Backend runners ──────────────────────────────────────────────────────────
 
-function runClaude(prompt, schema, mode) {
-  const { schemaStr, wrappedPrompt } = buildWrappedPrompt(prompt, schema);
-  const env = { ...process.env };
-  if (process.env.AGENCY_CLAUDE_USE_API_KEY !== '1') {
-    delete env.ANTHROPIC_API_KEY;
-  }
-  const args = [
-    '-p',
-    '--safe-mode',
-    '--tools', '',
-    '--output-format', 'json',
-    '--effort', mode === 'blog' ? 'medium' : 'low',
-    '--model', process.env.CLAUDE_CODE_MODEL || 'sonnet',
-    '--max-turns', process.env.CLAUDE_CODE_MAX_TURNS || '6',
-    '--no-session-persistence',
-    '--append-system-prompt', JSON_ONLY_SYSTEM,
-    '--json-schema', schemaStr,
-  ];
-  if (process.env.AGENCY_CLAUDE_BARE === '1') {
-    args.splice(1, 0, '--bare');
-  }
-  return runSpawnJson('claude', args, (stdout) => {
-    const wrapper = JSON.parse(stdout.trim());
-    if (wrapper?.is_error) throw new Error(`Claude error: api_status=${wrapper.api_error_status} stop=${wrapper.stop_reason}`);
-    // Claude Code's JSON wrapper reports actual spend — capture it.
-    const cost_usd = typeof wrapper?.total_cost_usd === 'number' ? wrapper.total_cost_usd : null;
-    const output = (wrapper?.structured_output && typeof wrapper.structured_output === 'object')
-      ? wrapper.structured_output
-      : parseJsonFromText(wrapper?.result || stdout);
-    return { output, cost_usd };
-  }, { env, input: wrappedPrompt });
-}
-
-// Rough per-1M-token USD prices (input, output) for cost estimation.
-const GEMINI_PRICES = {
-  'gemini-2.5-flash': { in: 0.30, out: 2.50 },
-  'gemini-2.5-pro':   { in: 1.25, out: 10.0 },
-};
-
-// Round-robin cursor so consecutive Gemini calls start from a different key —
-// spreads load across keys and dodges per-key rate limits.
-let _geminiKeyCursor = 0;
-function geminiKeys() {
-  const raw = [
-    ...(process.env.GEMINI_API_KEYS ? process.env.GEMINI_API_KEYS.split(',') : []),
-    process.env.GEMINI_API_KEY,
-    process.env.GEMINI_API_KEY_BACKUP,
-    process.env.GEMINI_API_KEY_3,
-    process.env.GOOGLE_API_KEY,
-  ].map((k) => (k || '').trim()).filter(Boolean);
-  return [...new Set(raw)];
-}
-
-async function runGemini(prompt, schema, mode) {
-  // All configured keys, rotated per call and failed-over within a call.
-  const keys = geminiKeys();
-  const model = mode === 'blog'
-    ? (process.env.GEMINI_BLOG_MODEL || 'gemini-2.5-pro')
-    : (process.env.GEMINI_SOCIAL_MODEL || 'gemini-2.5-flash');
-  const { wrappedPrompt } = buildWrappedPrompt(prompt, schema);
-
-  // Preferred path: REST API (the CLI's free OAuth tier was deprecated by Google).
-  if (keys.length) {
-    // Research must stay web-grounded so it never invents client facts — enable
-    // Google Search grounding for research (which also means no JSON mime mode;
-    // the prompt already demands raw JSON and parseJsonFromText extracts it).
-    const grounded = mode === 'research';
-    const body = {
-      contents: [{ role: 'user', parts: [{ text: `${JSON_ONLY_SYSTEM}\n\n${wrappedPrompt}` }] }],
-      // Research/blog JSON is large — give it room so it doesn't truncate
-      // ("Expected ',' or '}'" on parse).
-      generationConfig: { temperature: 0.7, maxOutputTokens: (mode === 'blog' || mode === 'research') ? 8192 : 4096 },
-    };
-    if (grounded) body.tools = [{ google_search: {} }];
-    else body.generationConfig.responseMimeType = 'application/json';
-
-    const n = keys.length;
-    const start = _geminiKeyCursor % n;
-    _geminiKeyCursor = (_geminiKeyCursor + 1) % n; // rotate for the next call
-    const keyErrors = [];
-    for (let i = 0; i < n; i++) {
-      const key = keys[(start + i) % n];
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const detail = `key #${(start + i) % n + 1} Gemini API ${res.status}: ${(await res.text()).slice(0, 200)}`;
-        keyErrors.push(detail);
-        // Failover to the next key on auth/quota/rate/server errors, or a 400
-        // that's specifically an API-key problem (revoked/invalid key).
-        const keyError = res.status === 400 && /api.?key/i.test(detail);
-        const retriable = [401, 403, 429, 500, 503].includes(res.status) || keyError;
-        if (retriable && i < n - 1) {
-          console.warn(`[gemini] key #${(start + i) % n + 1} failed (${res.status}), rotating to next key`);
-          continue;
-        }
-        throw new Error(`All Gemini keys failed:\n${keyErrors.join('\n')}`);
-      }
-      const data = await res.json();
-      const text = (data.candidates?.[0]?.content?.parts ?? []).map((p) => p.text || '').join('').trim();
-      if (!text) throw new Error('Gemini returned empty response');
-      let cost_usd = null;
-      const um = data.usageMetadata;
-      const price = GEMINI_PRICES[model];
-      if (um && price) cost_usd = (um.promptTokenCount / 1e6) * price.in + (um.candidatesTokenCount / 1e6) * price.out;
-      return { output: parseJsonFromText(text), cost_usd };
-    }
-    throw new Error(keyErrors.length ? `All Gemini keys failed:\n${keyErrors.join('\n')}` : 'All Gemini keys failed');
-  }
-
-  // Legacy fallback: the gemini CLI (only works if its OAuth is still valid).
-  return runSpawnJson('gemini', ['-p', '', '-o', 'json', '-m', model],
-    (stdout) => ({ output: parseJsonFromText(stdout), cost_usd: null }),
-    { input: wrappedPrompt });
-}
-
-function resolveHermesProviderOverride(env = process.env) {
-  const provider = String(env.HERMES_PROVIDER || '').trim().toLowerCase();
-  const allowCodex = env.AGENCY_ALLOW_CODEX === '1';
-  if (provider) {
-    if (['google', 'gemini'].includes(provider)) {
-      throw new Error('Hermes backend refuses Google/Gemini provider for Marketing_WebXni agency routing');
-    }
-    if (!allowCodex && ['codex', 'openai-codex', 'openai_codex'].includes(provider)) {
-      throw new Error('Hermes backend refuses Codex provider for agency routing unless AGENCY_ALLOW_CODEX=1');
-    }
-    return env.HERMES_PROVIDER;
-  }
-  if (allowCodex) return '';
-  if (env.ANTHROPIC_API_KEY) return 'anthropic';
-  if (env.OPENROUTER_API_KEY) return 'openrouter';
-  if (env.OPENAI_API_KEY) return 'openai';
-  throw new Error('Hermes backend requires a non-Gemini HERMES_PROVIDER or non-Gemini provider key when AGENCY_ALLOW_CODEX is not enabled');
-}
-
-function defaultHermesModelForProvider(provider, mode) {
-  const p = String(provider || '').trim().toLowerCase();
-  if (p === 'google' || p === 'gemini') throw new Error('Gemini models are disabled for Marketing_WebXni agency routing');
-  if (p === 'anthropic') return 'claude-sonnet-4';
-  if (p === 'openrouter') return 'anthropic/claude-sonnet-4';
-  if (p === 'openai') return mode === 'blog' ? 'gpt-5' : 'gpt-5-mini';
-  return '';
-}
-
-export function buildHermesChatArgs({ wrappedPrompt, skills = [], mode = 'default', env = process.env }) {
-  const args = ['-z', wrappedPrompt];
+export function buildHermesArgs({ prompt, mode = 'default', skills = [] }) {
+  const args = ['-z', prompt, '--toolsets', 'safe'];
   if (skills.length) args.push('--skills', skills.join(','));
-  const provider = resolveHermesProviderOverride(env);
-  const model = env.HERMES_MODEL
-    || (mode === 'blog' ? env.HERMES_BLOG_MODEL : undefined)
-    || env.HERMES_INFERENCE_MODEL
-    || defaultHermesModelForProvider(provider, mode);
-  if (provider) args.push('--provider', provider);
+
+  const researchMode = mode === 'research';
+  if (researchMode) {
+    args[args.indexOf('--toolsets') + 1] = 'safe,terminal';
+    args[1] = `${args[1]}\n\nResearch execution policy: you are Hermes. Use terminal and other Hermes tools only for source inspection and evidence gathering. Do not invoke another model provider or model CLI.`;
+  }
+  const provider = process.env.HERMES_PROVIDER || process.env.HERMES_HARNESS_PROVIDER || '';
+  const model = process.env.HERMES_MODEL
+    || (mode === 'blog' ? process.env.HERMES_BLOG_MODEL : '')
+    || process.env.HERMES_HARNESS_MODEL
+    || '';
+  const blockedProvider = /openai|codex|claude|anthropic/i;
+  if (!provider) {
+    throw new Error('HERMES_PROVIDER or HERMES_HARNESS_PROVIDER must be set to an allowed non-OpenAI/non-Codex/non-Claude provider. Refusing to inherit the server Hermes default.');
+  }
+  if (blockedProvider.test(provider)) {
+    throw new Error(`Blocked Hermes provider by policy: ${provider}. Use Hermes with a non-OpenAI/non-Codex/non-Claude provider, e.g. Gemini.`);
+  }
+  args.push('--provider', provider);
   if (model) args.push('--model', model);
   return args;
 }
 
-function selectHermesGoogleApiKey(env = process.env) {
-  const candidates = [
-    ...(env.GEMINI_API_KEYS ? env.GEMINI_API_KEYS.split(',') : []),
-    env.GEMINI_API_KEY,
-    env.GEMINI_API_KEY_BACKUP,
-    env.GEMINI_API_KEY_3,
-    env.GOOGLE_API_KEY,
-  ].map((key) => String(key || '').trim()).filter(Boolean);
-  return candidates[0] || '';
-}
+function hermesEnv() {
+  const env = { ...process.env };
+  // Keep the job runner non-interactive and deterministic; never inherit a
+  // gateway/session source that could deliver the subagent output elsewhere.
+  env.HERMES_YOLO_MODE = env.HERMES_YOLO_MODE || '1';
+  env.HERMES_SOURCE = 'marketing-webxni-approved-job';
 
-export function createHermesAgencyRuntimeEnv(env = process.env) {
-  const realHome = env.HERMES_HOME || join(homedir(), '.hermes');
-  const home = mkdtempSync(join(tmpdir(), 'webxni-hermes-agency-'));
-  const skillsDir = join(realHome, 'skills');
-  const config = [
-    'model:',
-    `  default: ${env.HERMES_MODEL || env.HERMES_BLOG_MODEL || defaultHermesModelForProvider(resolveHermesProviderOverride(env), 'default')}`,
-    `  provider: ${resolveHermesProviderOverride(env)}`,
-    'agent:',
-    '  max_turns: 8',
-    'platform_toolsets:',
-    '  cli:',
-    '    - safe',
-    'mcp_servers: {}',
-    'skills:',
-    '  external_dirs:',
-    ...(existsSync(skillsDir) ? [`    - ${skillsDir}`] : []),
-    '',
-  ].join('\n');
-  const runtimeEnv = { ...env };
-  const hermesGoogleApiKey = selectHermesGoogleApiKey(runtimeEnv);
-  if (hermesGoogleApiKey) runtimeEnv.GOOGLE_API_KEY = hermesGoogleApiKey;
-  writeFileSync(join(home, 'config.yaml'), config);
-  mkdirSync(join(home, 'sessions'), { recursive: true });
-  if (existsSync(skillsDir)) {
-    symlinkSync(skillsDir, join(home, 'skills'), 'dir');
+  // The approved runner can execute dozens of slots in one batch. Google free
+  // tier quota is per key, so rotate same-provider keys for each Hermes process
+  // instead of pinning every slot to the first exhausted key.
+  const pooledGeminiKeys = String(env.GEMINI_API_KEYS || '')
+    .split(/[\s,]+/)
+    .map((key) => key.trim())
+    .filter(Boolean);
+  if (pooledGeminiKeys.length > 0 && /^(google|gemini)$/i.test(env.HERMES_PROVIDER || env.HERMES_HARNESS_PROVIDER || '')) {
+    const key = pooledGeminiKeys[geminiKeyCursor++ % pooledGeminiKeys.length];
+    env.GEMINI_API_KEY = key;
+    env.GOOGLE_API_KEY = key;
   }
-  return {
-    env: {
-      ...runtimeEnv,
-      HERMES_HOME: home,
-    },
-    cleanup: () => rmSync(home, { recursive: true, force: true }),
-    home,
-  };
+
+  delete env.OPENAI_API_KEY;
+  delete env.ANTHROPIC_API_KEY;
+  delete env.CLAUDE_API_KEY;
+  delete env.CODEX_API_KEY;
+  return env;
 }
 
 function runHermes(prompt, schema, mode, skills = []) {
@@ -443,93 +276,11 @@ function runHermes(prompt, schema, mode, skills = []) {
   if (Buffer.byteLength(wrappedPrompt, 'utf8') > 120000) {
     throw new Error('Hermes prompt exceeds the safe CLI argument limit');
   }
-  const args = buildHermesChatArgs({ wrappedPrompt, skills, mode });
-  const runtime = createHermesAgencyRuntimeEnv();
-  return runSpawnJson(hermesCmd, args, (stdout) => ({ output: parseJsonFromText(stdout), cost_usd: null }), runtime);
-}
-
-export function buildCodexExecArgs({ prompt, schemaPath, outputPath, model }) {
-  const args = [
-    'exec',
-    '--skip-git-repo-check',
-    '--ephemeral',
-    '--ignore-user-config',
-    '--output-schema', schemaPath,
-    '--output-last-message', outputPath,
-    '-C', process.cwd(),
-  ];
-  if (model) args.push('-m', model);
-  args.push(prompt);
-  return args;
-}
-
-function runCodex(prompt, schema, mode) {
-  const { wrappedPrompt } = buildWrappedPrompt(prompt, schema);
-  const workDir = mkdtempSync(join(tmpdir(), 'webxni-agency-codex-'));
-  const schemaPath = join(workDir, 'schema.json');
-  const outputPath = join(workDir, 'last-message.txt');
-  writeFileSync(schemaPath, JSON.stringify(schema));
-  const configuredModel = mode === 'blog'
-    ? (process.env.CODEX_BLOG_MODEL || 'gpt-4.1')
-    : (process.env.CODEX_SOCIAL_MODEL || 'gpt-4.1-mini');
-  const model = (process.env.CODEX_BLOG_MODEL || process.env.CODEX_SOCIAL_MODEL || process.env.CODEX_MODEL)
-    ? (process.env.CODEX_MODEL || configuredModel)
-    : '';
-  const args = buildCodexExecArgs({ prompt: '-', schemaPath, outputPath, model });
-  return runSpawnJson('codex', args, () => ({ output: parseJsonFromText(readFileSync(outputPath, 'utf8')), cost_usd: null }), {
-    cleanup: () => rmSync(workDir, { recursive: true, force: true }),
-    input: wrappedPrompt,
+  const args = buildHermesArgs({ prompt: wrappedPrompt, mode, skills });
+  return runSpawnJson(hermesCmd, args, (stdout) => ({ output: parseJsonFromText(stdout, { backend: 'hermes', command: hermesCmd }), cost_usd: null }), {
+    env: hermesEnv(),
+    backend: 'hermes',
   });
-}
-
-// Rough per-1M-token USD prices for cost estimation (input, output).
-const OPENAI_PRICES = {
-  'gpt-4o':      { in: 2.5,  out: 10 },
-  'gpt-4o-mini': { in: 0.15, out: 0.6 },
-};
-
-async function runOpenAI(prompt, schema, mode) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error('OPENAI_API_KEY not set');
-  // 'batch' and 'blog' modes use gpt-4o with higher token budget for large outputs
-  const isBig = mode === 'blog' || mode === 'batch';
-  const model = isBig
-    ? (process.env.OPENAI_BLOG_MODEL || 'gpt-4o')
-    : (process.env.OPENAI_MODEL || 'gpt-4o-mini');
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        {
-          role: 'system',
-          content: `${JSON_ONLY_SYSTEM}\n\nOutput must match this JSON schema exactly:\n${JSON.stringify(schema)}`,
-        },
-        { role: 'user', content: prompt },
-      ],
-      response_format: { type: 'json_object' },
-      max_tokens: isBig ? 4096 : 2048,
-    }),
-  });
-  if (!res.ok) {
-    const err = await res.text().catch(() => '');
-    throw new Error(`OpenAI API ${res.status}: ${err.slice(0, 300)}`);
-  }
-  const data = await res.json();
-  const text = data.choices?.[0]?.message?.content;
-  if (!text) throw new Error('OpenAI returned empty response');
-  // Estimate spend from token usage.
-  let cost_usd = null;
-  const usage = data.usage;
-  const price = OPENAI_PRICES[model];
-  if (usage && price) {
-    cost_usd = (usage.prompt_tokens / 1e6) * price.in + (usage.completion_tokens / 1e6) * price.out;
-  }
-  return { output: parseJsonFromText(text), cost_usd };
 }
 
 function runSpawnJson(command, args, parser, extra = {}) {
@@ -573,13 +324,20 @@ function runSpawnJson(command, args, parser, extra = {}) {
           return;
         }
         if (code !== 0) {
-          const combined = `${stderr}\n${stdout}`;
-          reject(new Error(
-            `${command} exited ${code}\n` +
-            `${classifyBackendFailure(command, combined)}\n` +
-            `stderr: ${stderr.slice(0, 800).trim() || '(empty)'}\n` +
-            `stdout: ${stdout.slice(0, 800).trim() || '(empty)'}`,
-          ));
+          const combined = `${stderr}
+${stdout}`;
+          const classification = classifyBackendFailure(command, combined);
+          reject(new TerminalJsonAgentError(`${command} exited ${code}: ${classification}`, {
+            code: 'BACKEND_PROCESS_FAILED',
+            backend: extra.backend || null,
+            command,
+            exitStatus: code,
+            stderr,
+            stdout,
+            body: combined,
+            retryable: isRetryableBackendBody(combined),
+            status: isRetryableBackendBody(combined) ? 'retryable_backend_process_failed' : 'backend_process_failed',
+          }));
           return;
         }
         resolve(parser(stdout));
@@ -596,32 +354,8 @@ function runSpawnJson(command, args, parser, extra = {}) {
 
 function classifyBackendFailure(command, text) {
   const lower = text.toLowerCase();
-  const authFailure = (
-    lower.includes('401 unauthorized')
-    || lower.includes('api_error_status":401')
-    || lower.includes('missing bearer')
-    || lower.includes('not logged in')
-    || lower.includes('please run /login')
-    || lower.includes('authentication required')
-    || lower.includes('api key not valid')
-    || lower.includes('invalid api key')
-    || (lower.includes('invalid_argument') && lower.includes('api key'))
-  );
-  const quotaFailure = (
-    lower.includes('429')
-    || lower.includes('rate limit')
-    || lower.includes('rate_limit')
-    || lower.includes('resource_exhausted')
-    || lower.includes('quota')
-  );
-  if (authFailure && quotaFailure) {
-    return `cause: ${command} had mixed authentication and quota/rate-limit failures`;
-  }
-  if (authFailure) {
+  if (lower.includes('401 unauthorized') || lower.includes('api_error_status":401') || lower.includes('missing bearer')) {
     return `cause: ${command} authentication is missing or expired`;
-  }
-  if (quotaFailure) {
-    return `cause: ${command} quota or rate limit was exceeded`;
   }
   if (lower.includes('model is not supported')) {
     return `cause: ${command} model is not supported by the authenticated account`;
@@ -629,10 +363,7 @@ function classifyBackendFailure(command, text) {
   if (lower.includes('refusing to create helper binaries') || lower.includes('could not update path')) {
     return `cause: ${command} helper/PATH setup warning; verify auth/model if the command also failed`;
   }
-  if (command === 'codex' && lower.includes('reading additional input from stdin')) {
-    return 'cause: codex CLI did not receive a valid non-interactive prompt/output argument';
-  }
-  if (command.includes('hermes') && (lower.includes('agent failed: code') || lower.includes('no final response was produced'))) {
+  if (command.includes('hermes') && lower.includes('agent failed: code')) {
     return 'cause: hermes agent execution failed before returning JSON';
   }
   return 'cause: unknown terminal backend failure';
@@ -661,11 +392,7 @@ export async function runTerminalJsonAgent({ prompt, schema, preferredBackend, m
     try {
       let res;
       if (backend === 'hermes') res = await runHermes(prompt, schema, mode, skills);
-      else if (backend === 'claude') res = await runClaude(prompt, schema, mode);
-      else if (backend === 'gemini') throw new Error('direct Gemini backend is disabled for Marketing_WebXni agency routing');
-      else if (backend === 'codex') res = await runCodex(prompt, schema, mode);
-      else if (backend === 'openai') res = await runOpenAI(prompt, schema, mode);
-      else throw new Error(`Unknown backend: ${backend}`);
+      else throw new Error(`Blocked backend by policy: ${backend}. Hermes is the only allowed executor.`);
       const cost_usd = res && typeof res === 'object' && 'cost_usd' in res ? res.cost_usd : null;
       const output = res && typeof res === 'object' && 'output' in res ? res.output : res;
       attempts.push({ backend, status: 'completed', cost_usd });
@@ -680,11 +407,21 @@ export async function runTerminalJsonAgent({ prompt, schema, preferredBackend, m
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       markBackendBroken(backend);
-      const classified = classifyBackendFailure(backend, msg);
-      const safeMsg = msg.includes('cause: ') ? msg : `${classified}\n${msg}`;
-      errors.push(`[${backend}] ${safeMsg.slice(0, 200)}`);
-      attempts.push({ backend, status: 'failed', error: safeMsg.slice(0, 300) });
-      console.warn(`[agency] backend ${backend} failed, trying next: ${safeMsg.slice(0, 120)}`);
+      const typed = err && typeof err === 'object' ? err : {};
+      const status = typed.status || (typed.retryable ? 'retryable_failed' : 'failed');
+      const safeError = [msg, typed.bodyPreview ? `body: ${typed.bodyPreview}` : ''].filter(Boolean).join(' | ');
+      errors.push(`[${backend}] ${safeError.slice(0, 700)}`);
+      attempts.push({
+        backend,
+        status,
+        error: safeError.slice(0, 1200),
+        code: typed.code || null,
+        retryable: typed.retryable === true,
+        body_preview: typed.bodyPreview || null,
+        stderr_preview: typed.stderrPreview || null,
+        stdout_preview: typed.stdoutPreview || null,
+      });
+      console.warn(`[harness] Hermes backend failed: ${safeError.slice(0, 160)}`);
     }
   }
 
@@ -693,4 +430,4 @@ export async function runTerminalJsonAgent({ prompt, schema, preferredBackend, m
   throw failure;
 }
 
-export { isBackendAvailable, expandPriority, completePriority, normalizeBackendName, parseEnvFile, loadHermesEnvDefaults, classifyBackendFailure };
+export { isBackendAvailable, expandPriority, completePriority, normalizeBackendName };
