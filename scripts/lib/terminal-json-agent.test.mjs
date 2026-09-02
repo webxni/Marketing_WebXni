@@ -1,10 +1,9 @@
 // Run: node scripts/lib/terminal-json-agent.test.mjs
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { buildCodexExecArgs, buildHermesChatArgs, classifyBackendFailure, completePriority, createHermesAgencyRuntimeEnv, isBackendAvailable, loadHermesEnvDefaults, parseEnvFile } from './terminal-json-agent.mjs';
+import { buildCodexExecArgs, buildHermesChatArgs, classifyBackendFailure, completePriority, createHermesAgencyRuntimeEnv, isBackendAvailable, loadHermesEnvDefaults, normalizeBackendName, parseEnvFile } from './terminal-json-agent.mjs';
 
 let passed = 0;
 const ok = (label, fn) => { fn(); passed++; console.log(`  ok  ${label}`); };
@@ -44,31 +43,40 @@ ok('codex exec can read oversized prompts from stdin', () => {
   assert.equal(args.at(-1), '-');
 });
 
-ok('explicit agent priorities exclude direct Gemini and still try every approved terminal before OpenAI', () => {
+ok('every explicit and legacy priority resolves to Hermes only', () => {
   assert.deepEqual(
     completePriority(['claude_code', 'hermes', 'openai']),
-    ['claude', 'hermes', 'openai'],
+    ['hermes'],
   );
+  assert.deepEqual(completePriority(['gemini']), ['hermes']);
+  assert.deepEqual(completePriority(['auto']), ['hermes']);
 });
 
 ok('cooling backends are not added back into the fallback chain', () => {
   assert.deepEqual(
     completePriority(['codex', 'openai'], ['codex', 'hermes']),
-    ['claude', 'openai'],
+    [],
   );
 });
 
-ok('codex is not routed unless explicitly re-enabled', () => {
+ok('Codex cannot be re-enabled through the legacy override', () => {
   const prior = process.env.AGENCY_ALLOW_CODEX;
   delete process.env.AGENCY_ALLOW_CODEX;
-  assert.deepEqual(completePriority(['codex', 'openai']), ['hermes', 'claude', 'openai']);
+  assert.deepEqual(completePriority(['codex', 'openai']), ['hermes']);
   process.env.AGENCY_ALLOW_CODEX = '1';
-  assert.deepEqual(completePriority(['codex', 'openai']), ['codex', 'hermes', 'claude', 'openai']);
+  assert.deepEqual(completePriority(['codex', 'openai']), ['hermes']);
   if (prior === undefined) delete process.env.AGENCY_ALLOW_CODEX;
   else process.env.AGENCY_ALLOW_CODEX = prior;
 });
 
-ok('hermes runner refuses implicit Codex-backed Hermes defaults when no non-Codex provider key exists', () => {
+ok('legacy backend names cannot select a direct executor', () => {
+  assert.equal(normalizeBackendName('claude_code'), 'blocked');
+  assert.equal(normalizeBackendName('openai-api'), 'blocked');
+  assert.equal(normalizeBackendName('codex'), 'blocked');
+  assert.equal(normalizeBackendName('gemini_cli'), 'hermes');
+});
+
+ok('Hermes runner refuses an implicit provider when no approved key exists', () => {
   assert.throws(
     () => buildHermesChatArgs({
       wrappedPrompt: 'Return {"ok":true}',
@@ -76,29 +84,27 @@ ok('hermes runner refuses implicit Codex-backed Hermes defaults when no non-Code
       mode: 'default',
       env: {},
     }),
-    /non-Gemini HERMES_PROVIDER|non-Gemini provider key/,
+    /requires HERMES_PROVIDER=google/,
   );
 });
 
-ok('hermes runner refuses Google/Gemini credentials for agency routing', () => {
-  assert.throws(
-    () => buildHermesChatArgs({
-      wrappedPrompt: 'Return JSON',
-      mode: 'default',
-      env: { GOOGLE_API_KEY: 'configured' },
-    }),
-    /non-Gemini HERMES_PROVIDER|non-Gemini provider key/,
-  );
+ok('Hermes runner infers the approved Google provider from configured credentials', () => {
+  const args = buildHermesChatArgs({
+    wrappedPrompt: 'Return JSON',
+    mode: 'default',
+    env: { GOOGLE_API_KEY: 'configured' },
+  });
+  assert.deepEqual(args, ['-z', 'Return JSON', '--toolsets', 'safe', '--provider', 'google', '--model', 'gemini-2.5-flash']);
 });
 
-ok('hermes runner refuses explicit Codex provider unless agency Codex routing is allowed', () => {
+ok('Hermes runner always refuses explicit Codex providers', () => {
   assert.throws(
     () => buildHermesChatArgs({
       wrappedPrompt: 'Return JSON',
       mode: 'default',
       env: { HERMES_PROVIDER: 'openai-codex' },
     }),
-    /refuses Codex provider/,
+    /refuses blocked provider/,
   );
   assert.throws(
     () => buildHermesChatArgs({
@@ -106,46 +112,44 @@ ok('hermes runner refuses explicit Codex provider unless agency Codex routing is
       mode: 'default',
       env: { HERMES_PROVIDER: 'codex' },
     }),
-    /refuses Codex provider/,
+    /refuses blocked provider/,
   );
 });
 
-ok('hermes runner allows explicit Codex provider only with agency override', () => {
-  const args = buildHermesChatArgs({
+ok('legacy Codex override cannot bypass Hermes provider policy', () => {
+  assert.throws(() => buildHermesChatArgs({
     wrappedPrompt: 'Return JSON',
     mode: 'default',
     env: { HERMES_PROVIDER: 'openai-codex', AGENCY_ALLOW_CODEX: '1' },
-  });
-  assert.deepEqual(args, ['-z', 'Return JSON', '--provider', 'openai-codex']);
+  }), /refuses blocked provider/);
 });
 
-ok('hermes runner rejects explicit Google/Gemini providers', () => {
-  assert.throws(
-    () => buildHermesChatArgs({
-      wrappedPrompt: 'Return JSON',
-      mode: 'default',
-      env: { HERMES_PROVIDER: 'google', GOOGLE_API_KEY: 'configured' },
-    }),
-    /refuses Google\/Gemini provider/,
-  );
-});
-
-ok('hermes runner preserves explicit provider override', () => {
-  const args = buildHermesChatArgs({
-    wrappedPrompt: 'Return JSON',
-    mode: 'blog',
-    env: { HERMES_PROVIDER: 'anthropic', HERMES_MODEL: 'claude-sonnet-4', GOOGLE_API_KEY: 'configured' },
-  });
-  assert.deepEqual(args, ['-z', 'Return JSON', '--provider', 'anthropic', '--model', 'claude-sonnet-4']);
-});
-
-ok('hermes runner can use the configured Hermes default only when Codex is allowed', () => {
+ok('Hermes runner accepts explicit Google/Gemini providers inside Hermes', () => {
   const args = buildHermesChatArgs({
     wrappedPrompt: 'Return JSON',
     mode: 'default',
-    env: { AGENCY_ALLOW_CODEX: '1', GOOGLE_API_KEY: 'configured' },
+    env: { HERMES_PROVIDER: 'google', GOOGLE_API_KEY: 'configured' },
   });
-  assert.deepEqual(args, ['-z', 'Return JSON']);
+  assert.equal(args[args.indexOf('--provider') + 1], 'google');
+});
+
+ok('Hermes runner rejects OpenAI, Claude, Anthropic, and OpenRouter providers', () => {
+  for (const provider of ['openai', 'claude', 'anthropic', 'openrouter']) assert.throws(() => buildHermesChatArgs({
+    wrappedPrompt: 'Return JSON',
+    mode: 'blog',
+    env: { HERMES_PROVIDER: provider, GOOGLE_API_KEY: 'configured' },
+  }), /refuses blocked provider/);
+});
+
+ok('Hermes research mode exposes terminal tools without allowing another model CLI', () => {
+  const args = buildHermesChatArgs({
+    wrappedPrompt: 'Research and return JSON',
+    mode: 'research',
+    env: { HERMES_PROVIDER: 'google', GOOGLE_API_KEY: 'configured' },
+  });
+  assert.equal(args[args.indexOf('--toolsets') + 1], 'safe,terminal');
+  assert.match(args[1], /Hermes terminal and safe tools only/);
+  assert.doesNotMatch(args[1], /may call .*CLI/i);
 });
 
 ok('hermes availability matches the provider guard used by the runner', () => {
@@ -154,7 +158,8 @@ ok('hermes availability matches the provider guard used by the runner', () => {
   const priorGoogleApiKey = process.env.GOOGLE_API_KEY;
   const priorGeminiApiKey = process.env.GEMINI_API_KEY;
   const priorGeminiApiKeys = process.env.GEMINI_API_KEYS;
-  const hasHermesCommand = spawnSync('hermes', ['--version'], { stdio: 'ignore' }).status === 0;
+  const priorHermesCliPath = process.env.HERMES_CLI_PATH;
+  process.env.HERMES_CLI_PATH = process.execPath;
   delete process.env.HERMES_PROVIDER;
   delete process.env.AGENCY_ALLOW_CODEX;
   delete process.env.GOOGLE_API_KEY;
@@ -163,18 +168,14 @@ ok('hermes availability matches the provider guard used by the runner', () => {
   assert.equal(isBackendAvailable('hermes'), false);
   assert.equal(isBackendAvailable('gemini'), false);
   process.env.GOOGLE_API_KEY = 'configured';
-  assert.equal(isBackendAvailable('hermes'), false);
-  delete process.env.GOOGLE_API_KEY;
+  assert.equal(isBackendAvailable('hermes'), true);
   process.env.HERMES_PROVIDER = 'google';
+  assert.equal(isBackendAvailable('hermes'), true);
+  process.env.HERMES_PROVIDER = 'openai';
   assert.equal(isBackendAvailable('hermes'), false);
-  delete process.env.HERMES_PROVIDER;
   process.env.AGENCY_ALLOW_CODEX = '1';
-  assert.equal(typeof isBackendAvailable('hermes'), 'boolean');
   process.env.HERMES_PROVIDER = 'openai-codex';
-  delete process.env.AGENCY_ALLOW_CODEX;
   assert.equal(isBackendAvailable('hermes'), false);
-  process.env.AGENCY_ALLOW_CODEX = '1';
-  assert.equal(typeof isBackendAvailable('hermes'), 'boolean');
   if (priorProvider === undefined) delete process.env.HERMES_PROVIDER;
   else process.env.HERMES_PROVIDER = priorProvider;
   if (priorAllowCodex === undefined) delete process.env.AGENCY_ALLOW_CODEX;
@@ -185,6 +186,8 @@ ok('hermes availability matches the provider guard used by the runner', () => {
   else process.env.GEMINI_API_KEY = priorGeminiApiKey;
   if (priorGeminiApiKeys === undefined) delete process.env.GEMINI_API_KEYS;
   else process.env.GEMINI_API_KEYS = priorGeminiApiKeys;
+  if (priorHermesCliPath === undefined) delete process.env.HERMES_CLI_PATH;
+  else process.env.HERMES_CLI_PATH = priorHermesCliPath;
 });
 
 ok('terminal agent parses simple dotenv content for central Hermes defaults', () => {
@@ -252,15 +255,21 @@ ok('backend failure classifier preserves Hermes no-final failures as execution f
   );
 });
 
-ok('hermes runtime refuses Gemini key pool and Google provider for agency routing', () => {
-  assert.throws(
-    () => createHermesAgencyRuntimeEnv({
-      GOOGLE_API_KEY: 'stale-google-key',
-      GEMINI_API_KEYS: 'pooled-key-1,pooled-key-2',
-      HERMES_PROVIDER: 'google',
-    }),
-    /refuses Google\/Gemini provider/,
-  );
+ok('Hermes runtime accepts the approved Google key pool and strips direct-provider secrets', () => {
+  const runtime = createHermesAgencyRuntimeEnv({
+    GOOGLE_API_KEY: 'approved-google-key',
+    GEMINI_API_KEYS: 'pooled-key-1,pooled-key-2',
+    HERMES_PROVIDER: 'google',
+    OPENAI_API_KEY: 'must-not-reach-child',
+    ANTHROPIC_API_KEY: 'must-not-reach-child',
+  });
+  try {
+    assert.equal(runtime.env.GOOGLE_API_KEY, 'pooled-key-1');
+    assert.equal(runtime.env.OPENAI_API_KEY, undefined);
+    assert.equal(runtime.env.ANTHROPIC_API_KEY, undefined);
+  } finally {
+    runtime.cleanup();
+  }
 });
 
 ok('hermes runner isolates agency runs from globally configured MCP OAuth servers', () => {
@@ -269,8 +278,9 @@ ok('hermes runner isolates agency runs from globally configured MCP OAuth server
     writeFileSync(join(realHome, 'config.yaml'), 'mcp_servers:\n  noisy-oauth-server:\n    url: https://example.com/mcp\n    auth: oauth\n');
     const runtime = createHermesAgencyRuntimeEnv({
       HERMES_HOME: realHome,
-      HERMES_PROVIDER: 'anthropic',
-      HERMES_MODEL: 'claude-sonnet-4',
+      HERMES_PROVIDER: 'google',
+      HERMES_MODEL: 'gemini-2.5-flash',
+      GOOGLE_API_KEY: 'configured',
     });
     try {
       assert.notEqual(runtime.home, realHome);
@@ -280,7 +290,7 @@ ok('hermes runner isolates agency runs from globally configured MCP OAuth server
       assert.match(config, /mcp_servers: \{\}/);
       assert.doesNotMatch(config, /noisy-oauth-server/);
       assert.match(config, /- safe/);
-      assert.match(config, /provider: anthropic/);
+      assert.match(config, /provider: google/);
     } finally {
       runtime.cleanup();
       assert.equal(existsSync(runtime.home), false);

@@ -4,12 +4,11 @@ import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 
 const JSON_ONLY_SYSTEM =
-  'You are a WebXni marketing agency AI agent. ' +
+  'You are WebXni Hermes Harness. ' +
   'CRITICAL OUTPUT RULE: Reply with exactly one JSON object matching the provided schema. ' +
   'No prose, no markdown, no code fences, no trailing text. ' +
-  'All Claude skills (webxni-agency-orchestrator, webxni-system-reliability, webxni-security-sentinel, ' +
-  'webxni-client-research, webxni-strategist, webxni-social-copywriter, webxni-blog-writer, ' +
-  'webxni-editorial-reviewer) apply equally to every backend.';
+  'Use the loaded Hermes skills for the requested role. Hermes is the only orchestrator and executor. ' +
+  'Do not call another model provider or model CLI directly.';
 
 const BROKEN_BACKEND_TTL_MS = Number(process.env.AGENCY_BACKEND_FAILURE_TTL_MS || 15 * 60 * 1000);
 const TERMINAL_PROCESS_TIMEOUT_MS = Number(process.env.AGENCY_TERMINAL_TIMEOUT_MS || 15 * 60 * 1000);
@@ -19,8 +18,6 @@ const HERMES_ENV_ALLOWLIST = new Set([
   'GEMINI_API_KEYS',
   'GEMINI_API_KEY_BACKUP',
   'GEMINI_API_KEY_3',
-  'OPENAI_API_KEY',
-  'ANTHROPIC_API_KEY',
   'HERMES_PROVIDER',
   'HERMES_MODEL',
   'HERMES_BLOG_MODEL',
@@ -90,9 +87,8 @@ function resolveHermesCommand() {
 function normalizeBackendName(backend) {
   const b = String(backend || '').trim().toLowerCase();
   if (b === 'hermes_cli' || b === 'hermes-agent' || b === 'hermes-agent-cli') return 'hermes';
-  if (b === 'claude_code' || b === 'claude-code') return 'claude';
-  if (b === 'gemini_cli' || b === 'gemini-cli' || b === 'google') return 'disabled_gemini';
-  if (b === 'openai_api' || b === 'openai-api') return 'openai';
+  if (b === 'gemini_cli' || b === 'gemini-cli' || b === 'google' || b === 'gemini') return 'hermes';
+  if (['claude_code', 'claude-code', 'claude', 'anthropic', 'codex', 'openai-codex', 'openai_codex', 'openai_api', 'openai-api', 'openai', 'openrouter'].includes(b)) return 'blocked';
   return b;
 }
 
@@ -101,7 +97,7 @@ function isBackendAvailable(backend) {
   const brokenUntil = brokenBackends.get(b) || 0;
   if (brokenUntil > Date.now()) return false;
   if (brokenUntil) brokenBackends.delete(b);
-  if (b === 'openai') return !!process.env.OPENAI_API_KEY;
+  if (b === 'blocked') return false;
   if (b === 'hermes') {
     if (!resolveHermesCommand()) return false;
     try {
@@ -111,9 +107,6 @@ function isBackendAvailable(backend) {
       return false;
     }
   }
-  // Gemini direct execution is disabled for Marketing_WebXni Upload Post routing.
-  if (b === 'gemini' || b === 'disabled_gemini') return false;
-  if (b === 'claude' || b === 'codex') return commandAvailable(b);
   return false;
 }
 
@@ -121,19 +114,9 @@ function isBackendAvailable(backend) {
  * Expand a priority list into an ordered list of available backends.
  * 'auto' expands to all available backends in default order.
  */
-function completePriority(backends, excludedBackends = []) {
-  const AUTO_ORDER = ['hermes', 'claude', 'openai'];
+function completePriority(_backends, excludedBackends = []) {
   const excluded = new Set(excludedBackends.map(normalizeBackendName));
-  const requested = backends.flatMap((backend) => {
-    const normalized = normalizeBackendName(backend);
-    return normalized === 'auto' ? AUTO_ORDER : [normalized];
-  });
-  const allowCodex = process.env.AGENCY_ALLOW_CODEX === '1';
-  return [...new Set([
-    ...requested.filter((backend) => backend && backend !== 'openai' && backend !== 'gemini' && backend !== 'disabled_gemini'),
-    ...AUTO_ORDER.filter((backend) => backend !== 'openai'),
-    'openai',
-  ])].filter((backend) => !excluded.has(backend) && (allowCodex || backend !== 'codex'));
+  return excluded.has('hermes') ? [] : ['hermes'];
 }
 
 function expandPriority(backends, excludedBackends = []) {
@@ -150,7 +133,7 @@ function expandPriority(backends, excludedBackends = []) {
     const tried = backends.join(', ');
     throw new Error(
       `No backend available. Tried: ${tried}. ` +
-      'Check CLI installations (hermes/claude/gemini --version) and OPENAI_API_KEY.',
+      'Check Hermes CLI, HERMES_PROVIDER, and the approved provider credentials.',
     );
   }
   return result;
@@ -158,7 +141,9 @@ function expandPriority(backends, excludedBackends = []) {
 
 function markBackendBroken(backend) {
   const normalized = normalizeBackendName(backend);
-  if (!normalized || normalized === 'openai' || BROKEN_BACKEND_TTL_MS <= 0) return;
+  // Hermes is the sole executor. A transient slot failure must not silently
+  // suppress it and turn the rest of a batch into false no-backend failures.
+  if (!normalized || normalized === 'blocked' || normalized === 'hermes' || BROKEN_BACKEND_TTL_MS <= 0) return;
   brokenBackends.set(normalized, Date.now() + BROKEN_BACKEND_TTL_MS);
 }
 
@@ -349,34 +334,27 @@ async function runGemini(prompt, schema, mode) {
 
 function resolveHermesProviderOverride(env = process.env) {
   const provider = String(env.HERMES_PROVIDER || '').trim().toLowerCase();
-  const allowCodex = env.AGENCY_ALLOW_CODEX === '1';
+  const blocked = ['codex', 'openai-codex', 'openai_codex', 'openai', 'anthropic', 'claude', 'openrouter'];
   if (provider) {
-    if (['google', 'gemini'].includes(provider)) {
-      throw new Error('Hermes backend refuses Google/Gemini provider for Marketing_WebXni agency routing');
-    }
-    if (!allowCodex && ['codex', 'openai-codex', 'openai_codex'].includes(provider)) {
-      throw new Error('Hermes backend refuses Codex provider for agency routing unless AGENCY_ALLOW_CODEX=1');
-    }
-    return env.HERMES_PROVIDER;
+    if (blocked.includes(provider)) throw new Error(`Hermes backend refuses blocked provider: ${provider}`);
+    if (!['google', 'gemini'].includes(provider)) throw new Error(`Hermes backend requires the approved Google/Gemini provider, received: ${provider}`);
+    return provider;
   }
-  if (allowCodex) return '';
-  if (env.ANTHROPIC_API_KEY) return 'anthropic';
-  if (env.OPENROUTER_API_KEY) return 'openrouter';
-  if (env.OPENAI_API_KEY) return 'openai';
-  throw new Error('Hermes backend requires a non-Gemini HERMES_PROVIDER or non-Gemini provider key when AGENCY_ALLOW_CODEX is not enabled');
+  if (env.GOOGLE_API_KEY || env.GEMINI_API_KEY || env.GEMINI_API_KEYS) return 'google';
+  throw new Error('Hermes backend requires HERMES_PROVIDER=google (or gemini) and approved Google/Gemini credentials');
 }
 
 function defaultHermesModelForProvider(provider, mode) {
   const p = String(provider || '').trim().toLowerCase();
-  if (p === 'google' || p === 'gemini') throw new Error('Gemini models are disabled for Marketing_WebXni agency routing');
-  if (p === 'anthropic') return 'claude-sonnet-4';
-  if (p === 'openrouter') return 'anthropic/claude-sonnet-4';
-  if (p === 'openai') return mode === 'blog' ? 'gpt-5' : 'gpt-5-mini';
+  if (p === 'google' || p === 'gemini') return mode === 'blog' ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
   return '';
 }
 
 export function buildHermesChatArgs({ wrappedPrompt, skills = [], mode = 'default', env = process.env }) {
-  const args = ['-z', wrappedPrompt];
+  const researchPolicy = mode === 'research'
+    ? '\n\nResearch execution policy: use Hermes terminal and safe tools only for evidence gathering. Do not invoke another model provider or model CLI directly.'
+    : '';
+  const args = ['-z', `${wrappedPrompt}${researchPolicy}`, '--toolsets', mode === 'research' ? 'safe,terminal' : 'safe'];
   if (skills.length) args.push('--skills', skills.join(','));
   const provider = resolveHermesProviderOverride(env);
   const model = env.HERMES_MODEL
@@ -421,6 +399,11 @@ export function createHermesAgencyRuntimeEnv(env = process.env) {
   const runtimeEnv = { ...env };
   const hermesGoogleApiKey = selectHermesGoogleApiKey(runtimeEnv);
   if (hermesGoogleApiKey) runtimeEnv.GOOGLE_API_KEY = hermesGoogleApiKey;
+  delete runtimeEnv.OPENAI_API_KEY;
+  delete runtimeEnv.ANTHROPIC_API_KEY;
+  delete runtimeEnv.CLAUDE_API_KEY;
+  delete runtimeEnv.CODEX_API_KEY;
+  delete runtimeEnv.OPENROUTER_API_KEY;
   writeFileSync(join(home, 'config.yaml'), config);
   mkdirSync(join(home, 'sessions'), { recursive: true });
   if (existsSync(skillsDir)) {
@@ -641,7 +624,7 @@ function classifyBackendFailure(command, text) {
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Run a structured-JSON agent call with automatic backend fallback.
+ * Run a structured-JSON agent call through the Hermes Harness only.
  * @param {object} opts
  * @param {string} opts.prompt
  * @param {object} opts.schema
@@ -661,11 +644,7 @@ export async function runTerminalJsonAgent({ prompt, schema, preferredBackend, m
     try {
       let res;
       if (backend === 'hermes') res = await runHermes(prompt, schema, mode, skills);
-      else if (backend === 'claude') res = await runClaude(prompt, schema, mode);
-      else if (backend === 'gemini') throw new Error('direct Gemini backend is disabled for Marketing_WebXni agency routing');
-      else if (backend === 'codex') res = await runCodex(prompt, schema, mode);
-      else if (backend === 'openai') res = await runOpenAI(prompt, schema, mode);
-      else throw new Error(`Unknown backend: ${backend}`);
+      else throw new Error(`Blocked backend by policy: ${backend}. Hermes is the only allowed executor.`);
       const cost_usd = res && typeof res === 'object' && 'cost_usd' in res ? res.cost_usd : null;
       const output = res && typeof res === 'object' && 'output' in res ? res.output : res;
       attempts.push({ backend, status: 'completed', cost_usd });
@@ -684,7 +663,7 @@ export async function runTerminalJsonAgent({ prompt, schema, preferredBackend, m
       const safeMsg = msg.includes('cause: ') ? msg : `${classified}\n${msg}`;
       errors.push(`[${backend}] ${safeMsg.slice(0, 200)}`);
       attempts.push({ backend, status: 'failed', error: safeMsg.slice(0, 300) });
-      console.warn(`[agency] backend ${backend} failed, trying next: ${safeMsg.slice(0, 120)}`);
+      console.warn(`[harness] Hermes execution failed: ${safeMsg.slice(0, 120)}`);
     }
   }
 
