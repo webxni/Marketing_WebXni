@@ -1,66 +1,22 @@
-// Pure unit tests for the executor router. Run: node scripts/lib/executor-router.test.mjs
+// Pure unit tests for Hermes-only executor router. Run: node scripts/lib/executor-router.test.mjs
 import assert from 'node:assert/strict';
 import { pick_executor, executorLead, taskTypeForAgent } from './executor-router.mjs';
 
-let passed = 0;
-const ok = (label, fn) => { fn(); passed++; console.log(`  ok  ${label}`); };
+function ok(name, fn) { try { fn(); console.log(`✓ ${name}`); } catch (e) { console.error(`✗ ${name}`); throw e; } }
 
-// task_type leads
-ok('long_form -> claude lead', () => assert.equal(executorLead({ task_type: 'long_form' })[0], 'claude'));
-ok('blog -> claude lead', () => assert.equal(executorLead({ task_type: 'blog' })[0], 'claude'));
-ok('structured -> hermes lead', () => assert.equal(executorLead({ task_type: 'structured' })[0], 'hermes'));
-ok('research -> hermes lead', () => assert.equal(executorLead({ task_type: 'research' })[0], 'hermes'));
-ok('plan/validate -> hermes lead', () => {
-  assert.equal(executorLead({ task_type: 'plan' })[0], 'hermes');
-  assert.equal(executorLead({ task_type: 'validate' })[0], 'hermes');
-});
-ok('unknown -> default hermes lead', () => assert.equal(executorLead({ task_type: 'nope' })[0], 'hermes'));
-
-// quality target forces Claude
-ok('quality high forces claude lead', () => {
-  assert.equal(executorLead({ task_type: 'structured', quality_target: 'high' })[0], 'claude');
-});
-
-// budget drops expensive executors
-ok('over budget drops claude', () => {
-  assert.ok(!executorLead({ task_type: 'blog', budget_state: 'over' }).includes('claude'));
-});
-ok('over budget keeps structured routing codex-free', () => {
-  assert.ok(!executorLead({ task_type: 'structured', budget_state: 'over' }).includes('codex'));
-});
-ok('over budget never empties chain', () => {
-  assert.ok(pick_executor({ task_type: 'blog', budget_state: 'over' }).length > 0);
-});
-
-// full chain keeps a hermes/openai tail and dedups
-ok('pick_executor keeps hermes + openai tail', () => {
-  const chain = pick_executor({ task_type: 'blog' });
-  assert.ok(chain.includes('hermes'));
-  assert.ok(chain.includes('openai'));
-  assert.equal(chain.length, new Set(chain).size, 'no duplicates');
-});
-
-// agent mapping preserves existing leads
-ok('complex agents map to claude lead', () => {
-  for (const slug of ['blog-writer', 'strategy', 'editorial-review', 'system-reliability']) {
-    assert.equal(executorLead({ task_type: taskTypeForAgent(slug) })[0], 'claude', slug);
+ok('every task leads with hermes only', () => {
+  for (const task_type of ['long_form','blog','research','revision','validate','default']) {
+    assert.deepEqual(executorLead({ task_type }), ['hermes']);
+    assert.deepEqual(pick_executor({ task_type }), ['hermes']);
   }
 });
-ok('simple agents map to hermes lead', () => {
-  for (const slug of ['social-copy', 'agency-orchestrator', 'security-sentinel']) {
-    assert.equal(executorLead({ task_type: taskTypeForAgent(slug) })[0], 'hermes', slug);
-  }
+
+ok('quality and budget never add Claude/OpenAI/Gemini backends', () => {
+  assert.deepEqual(pick_executor({ task_type: 'revision', quality_target: 'high', budget_state: 'over' }), ['hermes']);
 });
-ok('client-research routes to hermes (research)', () => {
+
+ok('agent task type labels preserved for observability only', () => {
   assert.equal(taskTypeForAgent('client-research'), 'research');
-  assert.equal(executorLead({ task_type: 'research' })[0], 'hermes');
-});
-ok('blog mode forces blog task type', () => {
-  assert.equal(taskTypeForAgent('social-copy', 'blog'), 'blog');
-});
-ok('gmb-rank routes to hermes (structured)', () => {
   assert.equal(taskTypeForAgent('gmb-rank'), 'structured');
-  assert.equal(executorLead({ task_type: taskTypeForAgent('gmb-rank') })[0], 'hermes');
+  assert.equal(taskTypeForAgent('blog-writer', 'blog'), 'blog');
 });
-
-console.log(`\n${passed} router tests passed`);

@@ -1,93 +1,23 @@
-// Hermes-as-brain executor router.
+// Hermes Harness executor router.
 //
-// Hermes plans, routes, and validates; the other CLIs are executors it delegates
-// to. pick_executor maps a task to the ordered executor chain best suited to it,
-// honoring budget state and quality target. It is pure and testable so routing
-// is not scattered across scripts.
-//
-// Backends: hermes (brain/default), claude (long-form/brand/polish),
-// hermes (primary agency executor), openai (final fallback). Codex is
-// intentionally not in the active Marketing_WebXni routing chain; stale Codex
-// OAuth/model state has caused weekly generation dead letters. Every chain keeps
-// hermes + openai at the tail so a single backend outage never blocks the back-office.
+// Marvin directive: Hermes is the only orchestrator/backend. Do not route
+// structured agency, research, editorial, generation, cron-created content, or
+// Discord/chatbot requests to OpenAI, Codex, Claude, or direct Gemini backends.
+// Gemini CLI may be used only as a research helper invoked by Hermes.
 
-// task_type -> preferred lead executors (before the hermes/openai safety tail).
-const TASK_LEAD = {
-  long_form:   ['claude'],
-  brand_voice: ['claude'],
-  blog:        ['claude'],
-  polish:      ['claude'],
-  revision:    ['claude'],
-  structured:  ['hermes'],
-  schema:      ['hermes'],
-  templated:   ['hermes'],
-  research:    ['hermes'],
-  bulk:        ['hermes'],
-  web:         ['hermes'],
-  plan:        ['hermes'],
-  decide:      ['hermes'],
-  validate:    ['hermes'],
-  default:     ['hermes'],
-};
+const HERMES_ONLY = ['hermes'];
 
-// Executors that cost meaningfully more — dropped when an agent is over budget.
-const EXPENSIVE = new Set(['claude']);
-// Cheapest viable chain when budget is exhausted.
-const CHEAP_FALLBACK = ['hermes', 'openai'];
-
-/**
- * Compute just the LEAD executors for a task (no safety tail). Used by the
- * existing preferredBackend() so its observable chain stays behavior-preserving.
- * @param {{task_type?: string, budget_state?: 'ok'|'over', quality_target?: 'normal'|'high'}} opts
- * @returns {string[]}
- */
-export function executorLead({ task_type = 'default', budget_state = 'ok', quality_target = 'normal' } = {}) {
-  let lead = [...(TASK_LEAD[task_type] || TASK_LEAD.default)];
-
-  // A high quality bar forces a Claude lead (nuance/brand voice/accuracy).
-  if (quality_target === 'high' && lead[0] !== 'claude') {
-    lead = ['claude', ...lead];
-  }
-
-  // Over budget: drop expensive executors; fall back to the cheap chain if empty.
-  if (budget_state === 'over') {
-    lead = lead.filter((b) => !EXPENSIVE.has(b));
-    if (lead.length === 0) lead = [...CHEAP_FALLBACK];
-  }
-
-  return [...new Set(lead)];
+export function executorLead(_opts = {}) {
+  return [...HERMES_ONLY];
 }
 
-/**
- * The full ordered executor chain for a task, including the hermes/openai safety
- * tail. This is the primary API for new callers (quality gate, GMB agent).
- * @param {{task_type?: string, budget_state?: 'ok'|'over', quality_target?: 'normal'|'high'}} opts
- * @returns {string[]}
- */
-export function pick_executor(opts = {}) {
-  const lead = executorLead(opts);
-  return [...new Set([...lead, 'hermes', 'openai'])];
+export function pick_executor(_opts = {}) {
+  return [...HERMES_ONLY];
 }
 
-// Agents that need a Claude lead (Hermes = gpt-5.4-mini is too small for these).
-// Mirrors COMPLEX_AGENTS in the runner so delegation preserves today's routing.
-const COMPLEX_AGENTS = new Set(['blog-writer', 'strategy', 'editorial-review', 'system-reliability']);
-
-/**
- * Map an agent slug (+ optional mode) to a task_type, so per-agent routing can
- * delegate to the router without changing observable backend order.
- * @param {string} agentSlug
- * @param {string} [mode] - 'blog' | 'default' | ...
- * @returns {string}
- */
 export function taskTypeForAgent(agentSlug, mode) {
   if (mode === 'blog') return 'blog';
-  // GMB posts are schema-bound structured JSON — keep Hermes as the lead.
-  if (agentSlug === 'gmb-rank') return 'structured';
-  // Client research is fast/cheap, web-grounded lookups — Gemini's sweet spot
-  // (via REST API + Google Search grounding). Hermes stays as fallback.
   if (agentSlug === 'client-research') return 'research';
-  // Complex agents -> long_form (Claude lead); everything else -> default
-  // (Hermes lead).
-  return COMPLEX_AGENTS.has(agentSlug) ? 'long_form' : 'default';
+  if (agentSlug === 'gmb-rank') return 'structured';
+  return 'default';
 }
