@@ -1,22 +1,22 @@
 # WebXni Assistant (Discord Bot)
 
-Primary chat path: Hermes first, with OpenAI API fallback when Hermes is unavailable.
+Primary chat path: Hermes Harness only. Google/Gemini may provide inference inside Hermes; Discord has no OpenAI, Codex, Claude, or direct model-CLI fallback.
 
 ## Arquitectura
 
 El bot corre en **dos partes separadas**:
 
 ```
-Discord mensaje → bot.js (servidor/PC) → /api/ai/dispatch (Cloudflare Worker) → respuesta → Discord
+Discord mensaje → bot.js (servidor openclaw) → Hermes Harness CLI local → respuesta → Discord
 ```
 
 | Parte | Dónde corre | Qué hace |
 |-------|-------------|----------|
-| `bot.js` | Tu computadora o servidor | Conecta al Gateway de Discord, escucha mensajes |
-| `/api/ai/*` | Cloudflare Workers | Agente AI, herramientas, base de datos |
+| `bot.js` | Servidor openclaw | Conecta al Gateway de Discord y entrega solicitudes a Hermes |
+| Hermes Harness | Servidor openclaw | Ejecuta skills y herramientas en un entorno aislado |
 | Slash commands | Cloudflare Workers | `/ask`, `/status`, `/queue`, `/failed` |
 
-> ⚠️ **Si apagas la computadora, el bot se detiene.** El API de Cloudflare sigue funcionando — solo deja de escuchar mensajes del canal. Las notificaciones automáticas (posting runs, etc.) siguen funcionando desde el Worker.
+> El bot se ejecuta mediante el servicio de usuario `webxni-bot.service`. La cola de jobs aprobados pertenece al runner supervisado separado; el bot de Discord no la consume salvo habilitación operativa explícita.
 
 ---
 
@@ -55,24 +55,22 @@ npx wrangler kv key get --binding=KV_BINDING --remote "settings:system"
 
 ```bash
 # Ver estado del bot
-pm2 status webxni-bot
+systemctl --user status webxni-bot.service
 
 # Ver logs en vivo
-pm2 logs webxni-bot
+tail -f ~/.local/state/webxni/webxni-bot.log
 
 # Reiniciar
-pm2 restart webxni-bot
+systemctl --user restart webxni-bot.service
 
 # Detener
-pm2 stop webxni-bot
+systemctl --user stop webxni-bot.service
 
 # Arrancar si no está corriendo
-pm2 start bot.js --name webxni-bot --time
-cd /home/marvinesu/projects/Marketing_WebXni/discord-bot && pm2 start bot.js --name webxni-bot --time
+systemctl --user start webxni-bot.service
 
-# Que pm2 arranque automáticamente al reiniciar la PC
-pm2 startup
-pm2 save
+# Habilitar al iniciar la sesión del servidor
+systemctl --user enable webxni-bot.service
 ```
 
 ---
