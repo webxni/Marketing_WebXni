@@ -3,6 +3,16 @@ name: Deploy
 on:
   push:
     branches: [main]
+    # Discord/Hermes and documentation releases share this repository but do
+    # not own the production Worker.  Restrict automatic Worker deployments to
+    # files that actually participate in the Worker or its static asset build.
+    paths:
+      - 'worker/**'
+      - 'frontend/**'
+      - 'db/**'
+      - 'wrangler.toml'
+      - 'wrangler.loader.toml'
+      - 'scripts/stamp-deployment-identity.mjs'
 
 concurrency:
   group: production-deploy
